@@ -2,17 +2,36 @@
 
 ## Phase 0: Build Infrastructure
 
+### T-000 — Ghostty API サーベイ（確認済み 2026-02-28）
+- **Status**: DONE
+- **Priority**: P0
+- **Phase**: 0
+- **Description**: `ghostty.h` の公開 API を調査し、Swift バインディングに必要な型・関数を確認する。
+- **Acceptance Criteria**:
+  - [x] `ghostty_surface_config_s` の全フィールドを確認（`platform_tag`, `platform` union, `command: const char*`, `scale_factor` など）
+  - [x] `ghostty_platform_macos_s.nsview` が platform union 経由であることを確認
+  - [x] `wakeup_cb` の C シグネチャ（`void (*)(void*)`）を確認
+  - [x] `ghostty_surface_key` が `bool`（consumed フラグ）を返すことを確認
+  - [x] `ghostty_surface_ime_point` による IME 位置取得 API を確認
+- **Notes**: `docs/40_design.md` の `ghostty_surface_config_s` 正確な API セクションに記録済み。
+
+---
+
 ### T-001 — GhosttyKit.xcframework ビルド環境構築
 - **Status**: TODO
 - **Priority**: P0 (blocks everything)
 - **Phase**: 0
+- **Depends**: T-000
 - **Description**: Ghostty リポジトリを vendor/ に追加し、`zig build xcframework` で GhosttyKit.xcframework を生成。Package.swift で binaryTarget として参照する。
 - **Acceptance Criteria**:
   - [ ] Ghostty ソースが vendor/ghostty/ に存在する（submodule or clone）
   - [ ] `cd vendor/ghostty && zig build xcframework` が成功する
   - [ ] GhosttyKit.xcframework が Package.swift の binaryTarget で参照されている
+  - [ ] Package.swift に linker flags 設定済み（Metal, Cocoa, IOKit, CoreText, QuartzCore 等）
+  - [ ] `module.modulemap` が生成され Swift から `import GhosttyKit` できる
   - [ ] `swift build` がエラーなしで完了する
   - [ ] `ghostty_app_new` シンボルが解決される
+  - [ ] macOS entitlements / App Sandbox 設定の要否を確認した
 - **Notes**: Zig 0.14.x が必要。xcframework は .gitignore に追加してビルドスクリプトで再生成を推奨。
 
 ---
@@ -72,23 +91,50 @@
 
 ## Phase 2: Sidebar UI Port
 
-### T-006 — AppViewModel.swift port from POC
+### T-006a — DaemonModels.swift — AgtmuxSnapshot / AgtmuxPane / StatusFilter
 - **Status**: TODO
 - **Priority**: P1
 - **Phase**: 2
-- **Description**: POC の AppViewModel を agtmux daemon 対応に移植。Go daemon 接続 → AgtmuxDaemonClient (agtmux CLI) に変更。
+- **Description**: `agtmux json` の実際のスキーマに合わせた Codable モデル定義。
+  POC の Go daemon スキーマとは異なる点に注意（`docs/20_spec.md` の JSON Schema 参照）。
 - **Acceptance Criteria**:
-  - [ ] `AppViewModel` が `ObservableObject` として動作する
+  - [ ] `AgtmuxPane` が `pane_id`, `activity_state`, `conversation_title`, `presence`, `session_name` を持つ
+  - [ ] `AgtmuxSnapshot` が `{version: 1, panes: [...]}` を decode できる
+  - [ ] `StatusFilter` enum（all / managed / attention / pinned）が定義されている
+  - [ ] `AgtmuxPane.needsAttention` computed property が存在する
+
+### T-006b — AgtmuxDaemonClient.swift — agtmux CLI wrapper
+- **Status**: TODO
+- **Priority**: P1
+- **Phase**: 2
+- **Depends**: T-006a
+- **Description**: `agtmux json` CLI を async subprocess 実行して JSON を取得・パース。
+  `docs/40_design.md` の AgtmuxDaemonClient 設計を実装する。
+- **Acceptance Criteria**:
+  - [ ] `fetchSnapshot()` が `terminationHandler` ベースの非同期実装
+  - [ ] `AGTMUX_BIN` 環境変数 → PATH 検索の順で agtmux を解決する
+  - [ ] daemon 未起動時に `DaemonError.daemonUnavailable` を throw する（クラッシュしない）
+  - [ ] `socketPath` が設定可能
+
+### T-006c — AppViewModel.swift — polling + state management
+- **Status**: TODO
+- **Priority**: P1
+- **Phase**: 2
+- **Depends**: T-006a, T-006b
+- **Description**: `@MainActor ObservableObject` の AppViewModel。1秒ポーリング、isOffline フラグ、フィルタリング。
+  POC の AppViewModel（4,911行）から UI ロジック部分のみ移植（Go daemon 接続コードは除外）。
+- **Acceptance Criteria**:
   - [ ] `@Published var panes: [AgtmuxPane]` がダミーデータで populated される
-  - [ ] `isOffline: Bool` が存在する
+  - [ ] `isOffline: Bool` が存在し、daemon 未起動時に `true` になる
   - [ ] `statusFilter: StatusFilter` が切り替え可能
   - [ ] `filteredPanes` が StatusFilter に従ってフィルタリングされる
+  - [ ] `startPolling()` / `stopPolling()` が実装されている
 
 ### T-007 — Sidebar UI port (SidebarView + SessionRowView + FilterBarView)
 - **Status**: TODO
 - **Priority**: P1
 - **Phase**: 2
-- **Depends**: T-006
+- **Depends**: T-006c
 - **Description**: POC からサイドバー UI を移植。SidebarView、SessionRowView、FilterBarView の3コンポーネント。
 - **Acceptance Criteria**:
   - [ ] SidebarView に pane 一覧がスクロールリストで表示される
@@ -127,11 +173,15 @@
 - **Priority**: P1
 - **Phase**: 3
 - **Depends**: T-008, T-009
-- **Description**: サイドバーで pane を選択するとターミナルがその pane を表示する。`tmux attach-session` を surface のコマンドとして実行。
+- **Description**: サイドバーで pane を選択するとターミナルがその pane を表示する。
+  `tmux attach-session -t sessionName` を surface コマンドとして実行（セッション共有方式）。
+  `TerminalPanel.Coordinator.$selectedPane` サブスクリプションで surface 切り替えを実装する。
 - **Acceptance Criteria**:
   - [ ] サイドバーで pane を選択するとターミナルが切り替わる
-  - [ ] 旧 surface が適切に解放される（メモリリークなし）
+  - [ ] 旧 surface が適切に解放される（`GhosttyApp.shared.releaseSurface` 呼び出し確認）
   - [ ] tmux セッションが存在しない pane を選択した際にエラーが適切に処理される
+  - [ ] セッション名にスペースを含む場合もクォート処理で正常動作
+- **Notes**: pane 単位での viewport 制御は Phase 4+ で `tmux new-session -t` 方式に移行予定。
 
 ### T-011 — agent state リアルタイム表示
 - **Status**: TODO

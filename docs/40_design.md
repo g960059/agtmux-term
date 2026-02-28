@@ -113,14 +113,20 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     override func keyDown(with event: NSEvent) {
         inKeyDown = true
         keyTextAccumulator = ""
-        interpretKeyEvents([event])
-        // ghostty_surface_key でも送る（Ctrl+C など特殊キー用）
+        // ghostty_surface_key を先に呼ぶ。consumed = true なら ghostty 側で処理済み。
+        // consumed = false の場合のみ interpretKeyEvents で IME pipeline を通す。
+        // これにより通常キーが ghostty_surface_key + sendText で二重送信されるのを防ぐ。
+        // 注意: IME 変換中は ghostty_surface_key が false を返すことを前提とする（T-004 で確認）。
+        var consumed = false
         if let surface {
             let key = GhosttyInput.toGhosttyKey(event)
-            _ = ghostty_surface_key(surface, key)
+            consumed = ghostty_surface_key(surface, key)
         }
-        if !keyTextAccumulator.isEmpty {
-            sendText(keyTextAccumulator)
+        if !consumed {
+            interpretKeyEvents([event])
+            if !keyTextAccumulator.isEmpty {
+                sendText(keyTextAccumulator)
+            }
         }
         inKeyDown = false
         keyTextAccumulator = ""
@@ -157,20 +163,46 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
 
 `ghostty_app_t` のライフサイクルを管理するシングルトン。`wakeup_cb` を C 関数ポインタとして渡す。
 
+### ghostty_surface_config_s の正確な API（ghostty.h 確認済み 2026-02-28）
+
+```c
+// ghostty_surface_config_s の実際の定義
+typedef struct {
+  ghostty_platform_e platform_tag;   // GHOSTTY_PLATFORM_MACOS
+  ghostty_platform_u platform;       // union { ghostty_platform_macos_s macos; }
+  void*              userdata;
+  double             scale_factor;
+  float              font_size;
+  const char*        working_directory;
+  const char*        command;        // 単一文字列。引数は /bin/sh -c 経由
+  ghostty_env_var_s* env_vars;
+  size_t             env_var_count;
+  const char*        initial_input;
+  bool               wait_after_command;
+  ghostty_surface_context_e context;
+} ghostty_surface_config_s;
+
+// NSView は platform.macos.nsview に入れる（直接フィールドではない）
+typedef struct { void* nsview; } ghostty_platform_macos_s;
+```
+
+**重要**: `command` は `const char*`（argv 配列ではない）。複数引数は文字列に含める。`nsview` は `ghostty_platform_macos_s.nsview` 経由。
+
 ```swift
 final class GhosttyApp {
     static let shared = GhosttyApp()
     private(set) var app: ghostty_app_t?
+    // WeakRef pattern で dangling pointer 防止
+    private var activeSurfaces: NSHashTable<GhosttyTerminalView> = .weakObjects()
 
     private init() {
         var runtimeConfig = ghostty_runtime_config_s()
-        runtimeConfig.wakeup_cb = { appUD in
-            // libghostty が 8ms ごとに呼ぶ。DispatchQueue.main で tick。
+        // userdata に self を渡し、クロージャ内で参照（シングルトンなので実質同等だが明示）
+        runtimeConfig.userdata = Unmanaged.passUnretained(self).toOpaque()
+        runtimeConfig.wakeup_cb = { ud in
+            // libghostty internal timer thread から呼ばれる。main で tick。
             DispatchQueue.main.async {
-                guard let app = GhosttyApp.shared.app else { return }
-                ghostty_app_tick(app)
-                // 全 surface に draw を要求
-                GhosttyApp.shared.activeSurfaces.forEach { $0.triggerDraw() }
+                GhosttyApp.shared.tick()
             }
         }
         let config = ghostty_config_new()
@@ -178,21 +210,48 @@ final class GhosttyApp {
         app = ghostty_app_new(&runtimeConfig, config)
     }
 
+    private func tick() {
+        guard let app else { return }
+        ghostty_app_tick(app)
+        activeSurfaces.allObjects.forEach { $0.triggerDraw() }
+    }
+
     deinit {
         if let app { ghostty_app_free(app) }
     }
 
+    /// surface を作成して activeSurfaces に登録する。
+    /// command は "tmux attach-session -t sessionName" のような shell コマンド文字列。
     func newSurface(for view: GhosttyTerminalView,
-                    command: [String]? = nil) -> ghostty_surface_t? {
+                    command: String? = nil) -> ghostty_surface_t? {
         guard let app else { return nil }
-        var cfg = ghostty_surface_config_s()
-        cfg.nsview = Unmanaged.passUnretained(view).toOpaque()
-        // command が指定されていれば起動コマンドを設定
-        // (ghostty_surface_config_s の command/argv フィールド)
-        return ghostty_surface_new(app, &cfg)
+        // command を C 文字列として withCString でスタック上に確保（スコープ外は無効）
+        func build(_ cmd: UnsafePointer<CChar>?) -> ghostty_surface_t? {
+            var cfg = ghostty_surface_config_s()
+            cfg.platform_tag = GHOSTTY_PLATFORM_MACOS
+            cfg.platform = ghostty_platform_u(macos: ghostty_platform_macos_s(
+                nsview: Unmanaged.passUnretained(view).toOpaque()
+            ))
+            cfg.scale_factor = NSScreen.main?.backingScaleFactor ?? 1.0
+            cfg.userdata = Unmanaged.passUnretained(view).toOpaque()
+            cfg.command = cmd  // nil = デフォルトシェル
+            cfg.context = GHOSTTY_SURFACE_CONTEXT_WINDOW
+            return ghostty_surface_new(app, &cfg)
+        }
+        let surface: ghostty_surface_t?
+        if let command {
+            surface = command.withCString { build($0) }
+        } else {
+            surface = build(nil)
+        }
+        if surface != nil { activeSurfaces.add(view) }
+        return surface
     }
 
-    var activeSurfaces: [GhosttyTerminalView] = []
+    /// surface 解放時に activeSurfaces から削除する
+    func releaseSurface(for view: GhosttyTerminalView) {
+        activeSurfaces.remove(view)
+    }
 }
 ```
 
@@ -209,24 +268,53 @@ actor AgtmuxDaemonClient {
     }
 
     /// agtmux CLI を実行して JSON スナップショットを取得する
+    /// waitUntilExit() はスレッドブロッキングのため terminationHandler + continuation を使用
     func fetchSnapshot() async throws -> AgtmuxSnapshot {
+        guard let agtmuxURL = Self.resolveBinaryURL() else {
+            throw DaemonError.daemonUnavailable
+        }
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/local/bin/agtmux")
+        process.executableURL = agtmuxURL
         process.arguments = ["--socket-path", socketPath, "json"]
 
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = Pipe()  // エラーは捨てる（daemon 未起動時はオフラインモード）
 
-        try process.run()
-        process.waitUntilExit()
-
-        guard process.terminationStatus == 0 else {
-            throw DaemonError.daemonUnavailable
+        return try await withCheckedThrowingContinuation { continuation in
+            process.terminationHandler = { proc in
+                guard proc.terminationStatus == 0 else {
+                    continuation.resume(throwing: DaemonError.daemonUnavailable)
+                    return
+                }
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                do {
+                    let snapshot = try JSONDecoder().decode(AgtmuxSnapshot.self, from: data)
+                    continuation.resume(returning: snapshot)
+                } catch {
+                    continuation.resume(throwing: DaemonError.parseError(error.localizedDescription))
+                }
+            }
+            do {
+                try process.run()
+            } catch {
+                continuation.resume(throwing: DaemonError.daemonUnavailable)
+            }
         }
+    }
 
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        return try JSONDecoder().decode(AgtmuxSnapshot.self, from: data)
+    /// AGTMUX_BIN 環境変数 → PATH 検索の順で agtmux バイナリを探す
+    private static func resolveBinaryURL() -> URL? {
+        let env = ProcessInfo.processInfo.environment
+        if let envPath = env["AGTMUX_BIN"] {
+            return URL(fileURLWithPath: envPath)
+        }
+        let searchPaths = (env["PATH"] ?? "").split(separator: ":").map(String.init)
+        for dir in searchPaths {
+            let url = URL(fileURLWithPath: dir).appendingPathComponent("agtmux")
+            if FileManager.default.isExecutableFile(atPath: url.path) { return url }
+        }
+        return nil
     }
 }
 
@@ -245,7 +333,8 @@ enum DaemonError: Error {
 func selectPane(_ pane: AgtmuxPane) {
     selectedPane = pane
     // tmux attach-session で対象 session に接続する surface を作る
-    let command = ["tmux", "attach-session", "-t", pane.sessionName]
+    // command は String（const char*）。複数引数は文字列に含める。
+    let command = "tmux attach-session -t \(pane.sessionName)"
     guard let surface = GhosttyApp.shared.newSurface(for: terminalView,
                                                       command: command) else {
         return
@@ -254,7 +343,10 @@ func selectPane(_ pane: AgtmuxPane) {
 }
 ```
 
-**注意**: `tmux attach-session` は既存のクライアントがいれば共有セッションになる（同一セッションへの複数アタッチは tmux の標準動作）。
+**注意**:
+- `tmux attach-session -t sessionName` は既存のクライアントがいれば共有セッションになる（同一セッションへの複数アタッチは tmux の標準動作）。
+- pane 単位での viewport 制御（`-t session:window.pane`）は Phase 3+ で `tmux new-session -t existingSession` 方式に移行する。
+- セッション名にスペースが含まれる場合は `"tmux attach-session -t '\(pane.sessionName)'"` のようにクォートする。
 
 ## CockpitView 設計 [MVP]
 
@@ -282,14 +374,31 @@ struct TerminalPanel: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: GhosttyTerminalView, context: Context) {
-        // selectedPane 変更時に surface を切り替える
-        // (AppViewModel.objectWillChange を観測してコーディネータで処理)
+        // selectedPane 変更を Coordinator 経由で観測する
+        context.coordinator.observe(viewModel)
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
-    class Coordinator {
-        var view: GhosttyTerminalView?
+    class Coordinator: NSObject {
+        weak var view: GhosttyTerminalView?
+        private weak var observedViewModel: AppViewModel?
+        private var cancellable: AnyCancellable?
+
+        /// viewModel が変わった場合のみ購読を張り直す
+        func observe(_ viewModel: AppViewModel) {
+            guard observedViewModel !== viewModel else { return }
+            observedViewModel = viewModel
+            cancellable = viewModel.$selectedPane
+                .dropFirst()   // 初回は makeNSView 時に処理済み
+                .sink { [weak self] pane in
+                    guard let self, let view, let pane else { return }
+                    let command = "tmux attach-session -t \(pane.sessionName)"
+                    if let surface = GhosttyApp.shared.newSurface(for: view, command: command) {
+                        view.attachSurface(surface)
+                    }
+                }
+        }
     }
 }
 ```
