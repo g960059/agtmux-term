@@ -222,7 +222,9 @@ Phase 4: Polish [Post-MVP]
 
 | ID | Risk | Mitigation |
 |----|------|------------|
-| R-001 | libghostty API breaking changes | Ghostty upstream に追従。xcframework を再ビルド。CI で xcframework commit hash を固定 |
-| R-002 | Zig ビルドが CI で複雑 | xcframework を pre-built でリポジトリにコミット（.gitignore から除外）または GitHub Actions で Zig install |
-| R-003 | ghostty_surface_config_s の command 設定方法が不明 | Ghostty 本体 `src/apprt/swift/` をリファレンスとして参照。必要なら Ghostty の Issue/PR を追う |
-| R-004 | POC の AppViewModel が古い agtmux API を使っている | DaemonModels.swift に新 API スキーマを定義し、AppViewModel を適応させる |
+| R-001 | libghostty API breaking changes | Ghostty upstream に追従。xcframework を再ビルド。`build-ghosttykit.sh` でバージョンを固定管理 |
+| R-002 | xcframework の配布 | **Git LFS 採用**（ADR-20260228b）。`git lfs install` が必要。LFS 未設定の clone はポインタファイルが残る点を README に記載 |
+| R-003 | ghostty_surface_config_s の command 設定方法 | T-000 で確認済み（`const char*`）。Ghostty 本体 `src/apprt/swift/SurfaceView_AppKit.swift` が常にリファレンス |
+| R-004 | POC の AppViewModel が古い agtmux API を使っている | DaemonModels.swift（T-006a）に新 API スキーマを定義し、AppViewModel を適応させる |
+| R-005 | `tmux attach-session` が既存クライアントを共有セッションにする | 複数 agtmux-term ウィンドウを同一セッションに attach すると detach 時に両方切れる。Phase 4 で `tmux new-session -t` 方式に移行。MVP では既知の制限として許容 |
+| R-006 | surface lifecycle: `ghostty_surface_free()` 後の同一 NSView への再 attach | T-003 で `SurfaceView_AppKit.swift` の deinit パターンを確認し、CAMetalLayer の再利用可否を検証する |

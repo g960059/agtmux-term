@@ -60,6 +60,8 @@
   - [ ] `layout()` で `ghostty_surface_set_size()` に正しい pixel サイズが渡る（backingScaleFactor 適用）
   - [ ] `triggerDraw()` が `ghostty_surface_draw()` を呼ぶ
   - [ ] ウィンドウリサイズ時に surface サイズが更新される
+  - [ ] `attachSurface()` を2回連続で呼んでもクラッシュしない（旧 surface の free + 新 surface の付け替え検証）
+  - [ ] `SurfaceView_AppKit.swift` の `deinit` / surface 付け替えパターンを確認し、CAMetalLayer の ownership を docs に記録する
 
 ### T-004 — GhosttyInput.swift — NSEvent → ghostty_input_key_s + NSTextInputClient IME
 - **Status**: TODO
@@ -98,10 +100,11 @@
 - **Description**: `agtmux json` の実際のスキーマに合わせた Codable モデル定義。
   POC の Go daemon スキーマとは異なる点に注意（`docs/20_spec.md` の JSON Schema 参照）。
 - **Acceptance Criteria**:
-  - [ ] `AgtmuxPane` が `pane_id`, `activity_state`, `conversation_title`, `presence`, `session_name` を持つ
+  - [ ] `AgtmuxPane` が `pane_id`, `activity_state`, `conversation_title`, `presence`, `session_name`, `window_index` を持つ
   - [ ] `AgtmuxSnapshot` が `{version: 1, panes: [...]}` を decode できる
   - [ ] `StatusFilter` enum（all / managed / attention / pinned）が定義されている
   - [ ] `AgtmuxPane.needsAttention` computed property が存在する
+  - [ ] `AgtmuxPane.isPinned` は Post-MVP のため `false` 固定スタブとして実装する（JSON フィールドなし）
 
 ### T-006b — AgtmuxDaemonClient.swift — agtmux CLI wrapper
 - **Status**: TODO
@@ -157,16 +160,18 @@
 
 ## Phase 3: Daemon Integration
 
-### T-009 — AgtmuxDaemonClient.swift — agtmux CLI wrapper
+### T-009 — daemon 統合テスト（実機接続確認）
 - **Status**: TODO
 - **Priority**: P1
 - **Phase**: 3
-- **Description**: `agtmux json` CLI を subprocess 実行して JSON を取得・パース。daemon 未起動時は DaemonError.daemonUnavailable。
+- **Description**: T-006b で実装した `AgtmuxDaemonClient` を実際に動作している agtmux daemon に接続して動作確認する。
+  T-006b はスタブ/ダミーデータで動作するが、T-009 で実 daemon との統合を検証する。
 - **Acceptance Criteria**:
-  - [ ] `fetchSnapshot()` が agtmux daemon 起動中に正常データを返す
-  - [ ] daemon 未起動時は `DaemonError.daemonUnavailable` を throw する（クラッシュしない）
-  - [ ] `AgtmuxSnapshot` / `AgtmuxPane` が正しく decode される
-  - [ ] `socketPath` が設定可能
+  - [ ] agtmux daemon 起動中に `fetchSnapshot()` が実際の pane データを返す
+  - [ ] daemon 未起動時は `DaemonError.processError` を throw し、UI が isOffline = true になる
+  - [ ] `AgtmuxSnapshot` / `AgtmuxPane` が実際の `agtmux json` 出力と一致する
+  - [ ] `socketPath` が設定可能で、デフォルトが `~/.local/share/agtmux/daemon.sock` であることを agtmux-v5 の実装と照合して確認
+- **Notes**: T-006b との違い: T-006b は実装（ダミーデータで単体テスト可）、T-009 は実環境での統合確認。
 
 ### T-010 — pane 選択 → tmux attach surface 切り替え
 - **Status**: TODO
@@ -178,9 +183,11 @@
   `TerminalPanel.Coordinator.$selectedPane` サブスクリプションで surface 切り替えを実装する。
 - **Acceptance Criteria**:
   - [ ] サイドバーで pane を選択するとターミナルが切り替わる
+  - [ ] `tmux attach-session -t sessionName:windowIndex` で正しい window が表示される（複数 window があるセッションで確認）
   - [ ] 旧 surface が適切に解放される（`GhosttyApp.shared.releaseSurface` 呼び出し確認）
   - [ ] tmux セッションが存在しない pane を選択した際にエラーが適切に処理される
   - [ ] セッション名にスペースを含む場合もクォート処理で正常動作
+  - [ ] surface 切り替えは Coordinator のみが行い、`selectPane()` は `selectedPane` の更新だけ
 - **Notes**: pane 単位での viewport 制御は Phase 4+ で `tmux new-session -t` 方式に移行予定。
 
 ### T-011 — agent state リアルタイム表示

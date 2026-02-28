@@ -199,6 +199,9 @@ final class GhosttyApp {
         var runtimeConfig = ghostty_runtime_config_s()
         // userdata に self を渡し、クロージャ内で参照（シングルトンなので実質同等だが明示）
         runtimeConfig.userdata = Unmanaged.passUnretained(self).toOpaque()
+        // @convention(c) 制約: C 関数ポインタに代入できるのはキャプチャなしのクロージャのみ。
+        // GhosttyApp.shared はスタティック参照なのでキャプチャに該当せず、コンパイルが通る。
+        // クロージャ内で self や他のローカル変数をキャプチャした場合はコンパイルエラーになる。
         runtimeConfig.wakeup_cb = { ud in
             // libghostty internal timer thread から呼ばれる。main で tick。
             DispatchQueue.main.async {
@@ -281,10 +284,17 @@ actor AgtmuxDaemonClient {
         process.standardOutput = pipe
         process.standardError = Pipe()  // エラーは捨てる（daemon 未起動時はオフラインモード）
 
+        let stderrPipe = Pipe()
+        process.standardError = stderrPipe
+
         return try await withCheckedThrowingContinuation { continuation in
             process.terminationHandler = { proc in
+                let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
                 guard proc.terminationStatus == 0 else {
-                    continuation.resume(throwing: DaemonError.daemonUnavailable)
+                    // CLAUDE.md "Fail loudly": stderr を捨てずに伝播させる
+                    let stderrStr = String(data: stderrData, encoding: .utf8) ?? ""
+                    continuation.resume(throwing: DaemonError.processError(
+                        exitCode: proc.terminationStatus, stderr: stderrStr))
                     return
                 }
                 let data = pipe.fileHandleForReading.readDataToEndOfFile()
@@ -298,7 +308,7 @@ actor AgtmuxDaemonClient {
             do {
                 try process.run()
             } catch {
-                continuation.resume(throwing: DaemonError.daemonUnavailable)
+                continuation.resume(throwing: DaemonError.processError(exitCode: -1, stderr: error.localizedDescription))
             }
         }
     }
@@ -320,6 +330,7 @@ actor AgtmuxDaemonClient {
 
 enum DaemonError: Error {
     case daemonUnavailable
+    case processError(exitCode: Int32, stderr: String)  // プロセスが非ゼロで終了（stderr 付き）
     case parseError(String)
 }
 ```
@@ -328,25 +339,42 @@ enum DaemonError: Error {
 
 ## pane アタッチ設計 [MVP]
 
+surface の切り替えは **`TerminalPanel.Coordinator` に一本化**する。
+`AppViewModel.selectPane()` は `selectedPane` を更新するだけ。Coordinator が `$selectedPane` を観測して surface 操作を実行する。
+
 ```swift
-// AppViewModel 内
+// AppViewModel — selectedPane を更新するだけ（surface 操作しない）
 func selectPane(_ pane: AgtmuxPane) {
     selectedPane = pane
-    // tmux attach-session で対象 session に接続する surface を作る
-    // command は String（const char*）。複数引数は文字列に含める。
-    let command = "tmux attach-session -t \(pane.sessionName)"
-    guard let surface = GhosttyApp.shared.newSurface(for: terminalView,
-                                                      command: command) else {
-        return
-    }
-    terminalView.attachSurface(surface)
 }
 ```
 
-**注意**:
-- `tmux attach-session -t sessionName` は既存のクライアントがいれば共有セッションになる（同一セッションへの複数アタッチは tmux の標準動作）。
-- pane 単位での viewport 制御（`-t session:window.pane`）は Phase 3+ で `tmux new-session -t existingSession` 方式に移行する。
-- セッション名にスペースが含まれる場合は `"tmux attach-session -t '\(pane.sessionName)'"` のようにクォートする。
+```swift
+// TerminalPanel.Coordinator — surface 切り替えの責務をここに集約
+func observe(_ viewModel: AppViewModel) {
+    guard observedViewModel !== viewModel else { return }
+    observedViewModel = viewModel
+    cancellable = viewModel.$selectedPane
+        .dropFirst()
+        .sink { [weak self] pane in
+            guard let self, let view, let pane else { return }
+            // window_index を使って正しい window を表示（H-002 対応）
+            // セッション名にスペースが含まれる場合はクォートが必要
+            let target = pane.sessionName.contains(" ")
+                ? "'\(pane.sessionName)':\(pane.windowIndex)"
+                : "\(pane.sessionName):\(pane.windowIndex)"
+            let command = "tmux attach-session -t \(target)"
+            if let surface = GhosttyApp.shared.newSurface(for: view, command: command) {
+                view.attachSurface(surface)
+            }
+        }
+}
+```
+
+**設計上の注意**:
+- `tmux attach-session -t sessionName:windowIndex` でセッション内の特定 window を表示する（`windowIndex` なしだとカレント window になり、意図した pane が表示されないケースがある）
+- `tmux attach-session` は既存のクライアントがいれば共有セッションになる（同一セッションへの複数アタッチは tmux の標準動作）
+- 複数の `agtmux-term` ウィンドウを開くと同じセッションを共有するため、どちらかで `detach` するともう一方も切断される（Phase 4 で `tmux new-session -t` 方式に移行予定）
 
 ## CockpitView 設計 [MVP]
 
@@ -435,10 +463,16 @@ final class AppViewModel: ObservableObject {
                     let snapshot = try await daemonClient.fetchSnapshot()
                     panes = snapshot.panes
                     isOffline = false
+                } catch is CancellationError {
+                    break  // キャンセル時は即座にループを抜ける
                 } catch {
                     isOffline = true
                 }
-                try? await Task.sleep(for: .seconds(1))
+                do {
+                    try await Task.sleep(for: .seconds(1))
+                } catch {
+                    break  // sleep のキャンセルも明示的に終了
+                }
             }
         }
     }
