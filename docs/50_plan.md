@@ -15,7 +15,9 @@ Phase 1: Terminal Core
   └── T-005: HelloWorld 統合確認
 
 Phase 2: Sidebar UI Port
-  ├── T-006: AppViewModel.swift port from POC
+  ├── T-006a: DaemonModels.swift (AgtmuxSnapshot / AgtmuxPane / StatusFilter)
+  ├── T-006b: AgtmuxDaemonClient.swift (async subprocess + PATH 解決)
+  ├── T-006c: AppViewModel.swift (polling + state management)
   ├── T-007: Sidebar UI port (SidebarView + SessionRowView + FilterBarView)
   └── T-008: CockpitView.swift (HSplitView 統合)
 
@@ -39,33 +41,38 @@ Phase 4: Polish [Post-MVP]
 **目標**: `swift build` が GhosttyKit.xcframework を参照してコンパイルできる状態にする
 
 **手順:**
-1. Ghostty リポジトリを取得（vendor/ サブディレクトリまたは git submodule）
+1. Git LFS のセットアップ（ADR-20260228b で決定済み。submodule は不採用）
    ```bash
-   git submodule add https://github.com/ghostty-org/ghostty vendor/ghostty
-   # または
+   git lfs install
+   git lfs track "GhosttyKit/**/*.a"
+   git lfs track "GhosttyKit/**/*.framework/**"
+   git add .gitattributes
+   ```
+2. Ghostty ソースを git clone で取得（vendor/ は .gitignore 済み、コミットしない）
+   ```bash
    git clone https://github.com/ghostty-org/ghostty vendor/ghostty
    ```
-2. `zig build xcframework` を実行して `GhosttyKit.xcframework` を生成
+3. `zig build xcframework` を実行して `GhosttyKit.xcframework` を生成
    ```bash
    cd vendor/ghostty
    zig build xcframework
    # 生成物: zig-out/lib/GhosttyKit.xcframework
    ```
-3. xcframework を `GhosttyKit/` にコピー
-4. `Package.swift` で binaryTarget として参照
-   ```swift
-   .binaryTarget(
-       name: "GhosttyKit",
-       path: "GhosttyKit/GhosttyKit.xcframework"
-   )
+4. xcframework を `GhosttyKit/` にコピーし Git LFS でコミット
+   ```bash
+   cp -r zig-out/lib/GhosttyKit.xcframework ../../GhosttyKit/
+   cd ../..
+   git add GhosttyKit/
+   git commit -m "build: add GhosttyKit.xcframework via Git LFS"
    ```
-5. `Package.swift` に依存として追加し、ターゲットに link
+5. `build.zig` を参照して必要な linker flags をリスト化し `Package.swift` に追加
+6. `scripts/build-ghosttykit.sh` を作成（バージョン更新時の再生成手順）
 
 **Exit Criteria**: `swift build` が GhosttyKit をリンクしてコンパイルできる（`ghostty_app_new` が解決される）
 
 **Risks:**
 - R-001: Zig バージョン不一致 → `zig version` が 0.14.x であること確認
-- R-002: xcframework を git に追加するとサイズ大 → `.gitignore` で除外し、ビルドスクリプトで再生成
+- R-002: Git LFS 未設定で clone した場合、xcframework がポインタファイルになる → README に警告必須
 
 ---
 
@@ -169,17 +176,17 @@ Phase 4: Polish [Post-MVP]
 
 ## Phase 3: Daemon Integration
 
-### T-009: AgtmuxDaemonClient.swift — agtmux CLI wrapper
+### T-009: daemon 統合テスト（実機接続確認）
 
-**目標**: `agtmux json` CLI を subprocess 実行して JSON を取得・パース
+**目標**: T-006b で実装した `AgtmuxDaemonClient` を実際の agtmux daemon に接続して動作確認する
 
-**実装内容:**
-- `AgtmuxDaemonClient` actor
-- `Process()` で `agtmux --socket-path <path> json` を実行
-- stdout を JSON デコード → `AgtmuxSnapshot`
-- `DaemonError.daemonUnavailable` で daemon 未起動を graceful に処理
+**実施内容:**
+- 実際に動作している agtmux daemon に `fetchSnapshot()` を呼んで正常データを確認
+- daemon 未起動時の `DaemonError.processError` 発生を確認（UI が isOffline = true になる）
+- 実際の `agtmux json` 出力と `AgtmuxSnapshot` / `AgtmuxPane` のデコード結果を照合
+- daemon の socket path デフォルト値を agtmux-v5 実装と突き合わせて確認
 
-**Exit Criteria**: agtmux daemon 起動中に `fetchSnapshot()` が正常データを返す。未起動時は `DaemonError.daemonUnavailable` を throw する
+**Exit Criteria**: 実際の agtmux daemon との接続で正常データを取得できる。未起動時は `DaemonError.processError` が発生し UI がオフラインモードになる
 
 ### T-010: pane 選択 → tmux attach surface 切り替え
 

@@ -82,11 +82,12 @@ AgtmuxDaemonClient
 
 ```
 User selects pane in SidebarView
-  → AppViewModel.selectedPane = pane
-  → CockpitView observes change
-  → GhosttyApp.newSurface(command: ["tmux", "attach-session", "-t", sessionName])
-  → ghostty_surface_new(app, &cfg) where cfg.command = argv
-  → GhosttyTerminalView.surface = new surface
+  → AppViewModel.selectPane(pane) → selectedPane = pane のみ更新
+  → TerminalPanel.Coordinator の $selectedPane sink が発火
+  → shellEscaped(sessionName):windowIndex でコマンド文字列を構築
+  → GhosttyApp.newSurface(command: "tmux attach-session -t <session>:<window>")
+  → ghostty_surface_new(app, &cfg) where cfg.command = const char*（単一文字列）
+  → GhosttyTerminalView.attachSurface(surface)  ← 旧 surface を ghostty_surface_free() + releaseSurface()
   → ghostty_surface_draw(surface) [Metal GPU render loop]
 ```
 
@@ -95,15 +96,17 @@ User selects pane in SidebarView
 ```
 NSEvent (keyDown)
   → GhosttyTerminalView.keyDown(_:)
+  → ghostty_surface_key(surface, key)    ← 先に試す（consumed: Bool を返す）
+    ↓ consumed = true（通常キー）
+    → PTY へ送信完了（interpretKeyEvents は呼ばない）
+    ↓ consumed = false（IME 入力中など）
   → interpretKeyEvents([event])          ← NSTextInputClient プロトコル
-    ↓ (IME なし)
-  → insertText(_:replacementRange:)
-  → GhosttyInput.toGhosttyKey(event)
-  → ghostty_surface_key(surface, key)    ← PTY へ送信
-    ↓ (IME あり)
+    ↓ (IME プリエディット中)
   → setMarkedText(_:selectedRange:replacementRange:)
   → ghostty_surface_preedit(surface, text, len)
-  → insertText → ghostty_surface_text(surface, text, len)
+    ↓ (IME 確定 or 直接入力)
+  → insertText(_:replacementRange:) → keyTextAccumulator に蓄積
+  → sendText() → ghostty_surface_text(surface, text, len)
 ```
 
 ### Flow-004: IME 候補ウィンドウ位置

@@ -24,15 +24,18 @@
 - **Depends**: T-000
 - **Description**: Ghostty リポジトリを vendor/ に追加し、`zig build xcframework` で GhosttyKit.xcframework を生成。Package.swift で binaryTarget として参照する。
 - **Acceptance Criteria**:
-  - [ ] Ghostty ソースが vendor/ghostty/ に存在する（submodule or clone）
+  - [ ] Ghostty ソースが vendor/ghostty/ に git clone されている（submodule 不採用、ADR-20260228b）
   - [ ] `cd vendor/ghostty && zig build xcframework` が成功する
   - [ ] GhosttyKit.xcframework が Package.swift の binaryTarget で参照されている
-  - [ ] Package.swift に linker flags 設定済み（Metal, Cocoa, IOKit, CoreText, QuartzCore 等）
+  - [ ] `build.zig` を参照して必要な linker flags を確定し Package.swift に記載済み（Metal, Cocoa, IOKit, CoreText, QuartzCore など — 「等」ではなく具体的なリスト）
+  - [ ] `.gitattributes` に `GhosttyKit/**` の Git LFS 追跡設定が追加されている
+  - [ ] `git lfs ls-files` で xcframework が LFS 追跡されていることを確認
   - [ ] `module.modulemap` が生成され Swift から `import GhosttyKit` できる
+  - [ ] `scripts/build-ghosttykit.sh` が作成されている
   - [ ] `swift build` がエラーなしで完了する
   - [ ] `ghostty_app_new` シンボルが解決される
   - [ ] macOS entitlements / App Sandbox 設定の要否を確認した
-- **Notes**: Zig 0.14.x が必要。xcframework は .gitignore に追加してビルドスクリプトで再生成を推奨。
+- **Notes**: Zig 0.14.x が必要。xcframework は Git LFS で管理（ADR-20260228b）。`vendor/ghostty/` は .gitignore 除外。`scripts/build-ghosttykit.sh` で再ビルド手順を管理。
 
 ---
 
@@ -75,6 +78,8 @@
   - [ ] 日本語 IME でひらがな入力・変換確定ができる
   - [ ] IME 候補ウィンドウが正しい位置（カーソル付近）に表示される
   - [ ] `firstRect(forCharacterRange:actualRange:)` が実装されている
+  - [ ] `ghostty_input_scroll_mods_s` が ghostty.h に存在することを確認（T-000 未確認）
+  - [ ] `ghostty_surface_mouse_scroll` のシグネチャを ghostty.h で確認する
 
 ### T-005 — HelloWorld 統合確認
 - **Status**: TODO
@@ -100,7 +105,7 @@
 - **Description**: `agtmux json` の実際のスキーマに合わせた Codable モデル定義。
   POC の Go daemon スキーマとは異なる点に注意（`docs/20_spec.md` の JSON Schema 参照）。
 - **Acceptance Criteria**:
-  - [ ] `AgtmuxPane` が `pane_id`, `activity_state`, `conversation_title`, `presence`, `session_name`, `window_index` を持つ
+  - [ ] `AgtmuxPane` が `pane_id`, `activity_state`, `conversation_title`, `presence`, `session_name`, `window_index`, `pane_index` を持つ（`pane_index` は MVP では使用しないが decode のために保持）
   - [ ] `AgtmuxSnapshot` が `{version: 1, panes: [...]}` を decode できる
   - [ ] `StatusFilter` enum（all / managed / attention / pinned）が定義されている
   - [ ] `AgtmuxPane.needsAttention` computed property が存在する
@@ -179,8 +184,9 @@
 - **Phase**: 3
 - **Depends**: T-008, T-009
 - **Description**: サイドバーで pane を選択するとターミナルがその pane を表示する。
-  `tmux attach-session -t sessionName` を surface コマンドとして実行（セッション共有方式）。
-  `TerminalPanel.Coordinator.$selectedPane` サブスクリプションで surface 切り替えを実装する。
+  `AppViewModel.selectPane()` は `selectedPane` の更新のみ行う。
+  `TerminalPanel.Coordinator` が `$selectedPane` を観測し、`"tmux attach-session -t <sessionName:windowIndex>"` を
+  `GhosttyApp.newSurface(command:)` に渡して surface を切り替える。
 - **Acceptance Criteria**:
   - [ ] サイドバーで pane を選択するとターミナルが切り替わる
   - [ ] `tmux attach-session -t sessionName:windowIndex` で正しい window が表示される（複数 window があるセッションで確認）

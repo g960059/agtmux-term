@@ -27,6 +27,7 @@ agtmux daemon と連携し、tmux セッション内の AI エージェント状
 | File | Title | Status |
 |------|-------|--------|
 | `docs/80_decisions/ADR-20260228-libghostty-over-swiftterm.md` | libghostty を SwiftTerm の代替として採用 | Accepted |
+| `docs/80_decisions/ADR-20260228-ghosttykit-distribution.md` | GhosttyKit.xcframework 配布戦略（Git LFS 採用） | Accepted |
 
 ## Source Structure
 
@@ -55,7 +56,7 @@ agtmux-term/
 │       │   └── DaemonModels.swift
 │       └── CockpitView.swift
 ├── vendor/
-│   └── ghostty/                         ← Ghostty ソース (submodule)
+│   └── ghostty/                         ← Ghostty ソース (git clone、.gitignore 除外)
 └── docs/
     ├── 00_router.md
     ├── 10_foundation.md
@@ -77,15 +78,14 @@ agtmux-term/
 ```bash
 # Prerequisites
 brew install zig  # Zig 0.14.x
+git lfs install   # Git LFS（xcframework 取得に必要）
 
-# Clone with submodules
-git clone --recursive https://github.com/g960059/agtmux-term
+# Clone（LFS 対応 clone で xcframework も自動取得）
+git clone https://github.com/g960059/agtmux-term
+cd agtmux-term
 
-# Build GhosttyKit
-cd vendor/ghostty
-zig build xcframework
-cp -r zig-out/lib/GhosttyKit.xcframework ../../GhosttyKit/
-cd ../..
+# GhosttyKit を再ビルドする場合（通常は LFS から自動取得）
+# bash scripts/build-ghosttykit.sh
 
 # Build Swift app
 swift build

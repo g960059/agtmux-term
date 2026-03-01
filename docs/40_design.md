@@ -19,8 +19,19 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
 
     // MARK: - Lifecycle
 
+    deinit {
+        // View 破棄時に surface と activeSurfaces 登録を確実に解放する
+        if let surface { ghostty_surface_free(surface) }
+        GhosttyApp.shared.releaseSurface(for: self)
+    }
+
     func attachSurface(_ newSurface: ghostty_surface_t) {
-        surface?.free()  // 旧 surface を解放
+        // 旧 surface を解放してから activeSurfaces から除去
+        // surface?.free() は不可（ghostty_surface_t は OpaquePointer 相当で .free() メソッドを持たない）
+        if let old = surface {
+            ghostty_surface_free(old)
+            GhosttyApp.shared.releaseSurface(for: self)
+        }
         surface = newSurface
         // libghostty が layer に直接描画する。layer は ghostty_surface_new 時に設定済み
         needsDisplay = true
@@ -134,7 +145,6 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
 
     override func mouseDown(with event: NSEvent) {
         guard let surface else { return }
-        let loc = convert(event.locationInWindow, from: nil)
         ghostty_surface_mouse_button(surface,
                                      GHOSTTY_MOUSE_LEFT,
                                      GHOSTTY_MOUSE_PRESS,
@@ -192,7 +202,8 @@ typedef struct { void* nsview; } ghostty_platform_macos_s;
 final class GhosttyApp {
     static let shared = GhosttyApp()
     private(set) var app: ghostty_app_t?
-    // WeakRef pattern で dangling pointer 防止
+    // Swift 標準に弱参照コレクションがないため NSHashTable.weakObjects() を使用。
+    // これにより view が ARC で解放されると自動的にコレクションから除去され dangling pointer を防ぐ。
     private var activeSurfaces: NSHashTable<GhosttyTerminalView> = .weakObjects()
 
     private init() {
@@ -282,8 +293,6 @@ actor AgtmuxDaemonClient {
 
         let pipe = Pipe()
         process.standardOutput = pipe
-        process.standardError = Pipe()  // エラーは捨てる（daemon 未起動時はオフラインモード）
-
         let stderrPipe = Pipe()
         process.standardError = stderrPipe
 
@@ -329,8 +338,11 @@ actor AgtmuxDaemonClient {
 }
 
 enum DaemonError: Error {
+    /// agtmux バイナリが AGTMUX_BIN / PATH のいずれにも見つからない
     case daemonUnavailable
-    case processError(exitCode: Int32, stderr: String)  // プロセスが非ゼロで終了（stderr 付き）
+    /// バイナリは実行できたが非ゼロで終了（daemon 未起動・クラッシュ・スキーマ不一致を含む）
+    case processError(exitCode: Int32, stderr: String)
+    /// プロセスは正常終了したが JSON デコードに失敗
     case parseError(String)
 }
 ```
@@ -351,6 +363,7 @@ func selectPane(_ pane: AgtmuxPane) {
 
 ```swift
 // TerminalPanel.Coordinator — surface 切り替えの責務をここに集約
+// shellEscaped() は Coordinator のプライベートメソッドとして定義する（CockpitView 設計セクション参照）
 func observe(_ viewModel: AppViewModel) {
     guard observedViewModel !== viewModel else { return }
     observedViewModel = viewModel
@@ -358,12 +371,9 @@ func observe(_ viewModel: AppViewModel) {
         .dropFirst()
         .sink { [weak self] pane in
             guard let self, let view, let pane else { return }
-            // window_index を使って正しい window を表示（H-002 対応）
-            // セッション名にスペースが含まれる場合はクォートが必要
-            let target = pane.sessionName.contains(" ")
-                ? "'\(pane.sessionName)':\(pane.windowIndex)"
-                : "\(pane.sessionName):\(pane.windowIndex)"
-            let command = "tmux attach-session -t \(target)"
+            // window_index を含めて正しい window を指定（H-002 対応）
+            // セッション名はシェルメタ文字対応のため POSIX クォートエスケープを適用
+            let command = "tmux attach-session -t \(shellEscaped(pane.sessionName)):\(pane.windowIndex)"
             if let surface = GhosttyApp.shared.newSurface(for: view, command: command) {
                 view.attachSurface(surface)
             }
@@ -418,14 +428,23 @@ struct TerminalPanel: NSViewRepresentable {
             guard observedViewModel !== viewModel else { return }
             observedViewModel = viewModel
             cancellable = viewModel.$selectedPane
-                .dropFirst()   // 初回は makeNSView 時に処理済み
+                // 起動時の初期値は nil なので dropFirst() で skip しても問題なし。
+                // sink 内の `guard let pane` が nil ガードとして機能するため安全。
+                // ※ 起動時に前回の selectedPane を復元する場合は dropFirst() を外して要検討。
+                .dropFirst()
                 .sink { [weak self] pane in
                     guard let self, let view, let pane else { return }
-                    let command = "tmux attach-session -t \(pane.sessionName)"
+                    let command = "tmux attach-session -t \(shellEscaped(pane.sessionName)):\(pane.windowIndex)"
                     if let surface = GhosttyApp.shared.newSurface(for: view, command: command) {
                         view.attachSurface(surface)
                     }
                 }
+        }
+
+        /// tmux コマンド引数用 POSIX シェルエスケープ
+        /// スペース・$・\・' などのメタ文字を含むセッション名を安全にクォートする
+        private func shellEscaped(_ s: String) -> String {
+            "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
         }
     }
 }
@@ -457,6 +476,7 @@ final class AppViewModel: ObservableObject {
     }
 
     func startPolling() {
+        guard pollingTask == nil else { return }  // 多重起動防止
         pollingTask = Task {
             while !Task.isCancelled {
                 do {
@@ -477,6 +497,9 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    func stopPolling() { pollingTask?.cancel() }
+    func stopPolling() {
+        pollingTask?.cancel()
+        pollingTask = nil  // nil 化して startPolling() の再呼び出しを可能にする
+    }
 }
 ```

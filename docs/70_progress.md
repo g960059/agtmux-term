@@ -49,8 +49,8 @@
 - Zig 0.14.x のインストール確認
 
 ### 未解決事項
-- [ ] GhosttyKit.xcframework をリポジトリにコミットするか、ビルドスクリプトで再生成するかの決定
-- [ ] agtmux daemon の socket path（デフォルト）の確認
+- [x] GhosttyKit.xcframework 配布戦略 → **ADR-20260228b で Git LFS に決定**
+- [ ] agtmux daemon の socket path（デフォルト）の確認（T-009 前に agtmux-v5 実装と照合）
 
 ---
 
