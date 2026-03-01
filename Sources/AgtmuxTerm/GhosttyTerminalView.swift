@@ -246,9 +246,15 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
 
     override func scrollWheel(with event: NSEvent) {
         guard let surface else { return }
-        ghostty_surface_mouse_scroll(surface,
-                                      event.scrollingDeltaX,
-                                      -event.scrollingDeltaY,
-                                      GhosttyInput.toScrollMods(event))
+        // Pass deltas raw — Ghostty expects the same sign convention as
+        // NSEvent.scrollingDeltaY (positive = up). Negating was inverting scroll.
+        var x = event.scrollingDeltaX
+        var y = event.scrollingDeltaY
+        // Match Ghostty's own SurfaceView: 2x multiplier for trackpad precision.
+        if event.hasPreciseScrollingDeltas {
+            x *= 2
+            y *= 2
+        }
+        ghostty_surface_mouse_scroll(surface, x, y, GhosttyInput.toScrollMods(event))
     }
 }
