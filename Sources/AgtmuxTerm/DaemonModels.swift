@@ -10,8 +10,7 @@ struct AgtmuxPane: Codable, Identifiable {
 
     let paneId: String          // "%42" format — tmux pane id
     let sessionName: String
-    let windowIndex: Int
-    let paneIndex: Int
+    let windowId: String
     let activityState: ActivityState
     let presence: String?       // "claude" if managed, nil if plain shell
     let conversationTitle: String?
@@ -47,8 +46,7 @@ struct AgtmuxPane: Codable, Identifiable {
     enum CodingKeys: String, CodingKey {
         case paneId            = "pane_id"
         case sessionName       = "session_name"
-        case windowIndex       = "window_index"
-        case paneIndex         = "pane_index"
+        case windowId          = "window_id"
         case activityState     = "activity_state"
         case presence
         case conversationTitle = "conversation_title"

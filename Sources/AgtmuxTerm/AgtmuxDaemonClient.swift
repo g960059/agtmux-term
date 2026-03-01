@@ -25,7 +25,7 @@ enum DaemonError: Error {
 actor AgtmuxDaemonClient {
     private let socketPath: String
 
-    init(socketPath: String = "\(NSHomeDirectory())/.local/share/agtmux/daemon.sock") {
+    init(socketPath: String = "/tmp/agtmux-\(ProcessInfo.processInfo.userName)/agtmuxd.sock") {
         self.socketPath = socketPath
     }
 

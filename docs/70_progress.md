@@ -191,6 +191,37 @@
 - **Condition**: T-010 manual test で `GhosttyApp.shared.newSurface(command:)` が shell 経由か直接 args か確認。`shellEscaped()` の必要性を T-010 で検証。
 
 ### 次のアクション
-- T-009: daemon 統合テスト（socketPath を agtmux-v5 実装と照合）
-- T-010: pane 選択 → surface 切り替え + shellEscaped 検証
-- T-011: agent state リアルタイム表示確認
+- ~~T-009: daemon 統合テスト~~ → コード修正完了（下記参照）
+- T-010: pane 選択 → surface 切り替え + shellEscaped 検証（手動）
+- T-011: agent state リアルタイム表示確認（手動）
+
+---
+
+## 2026-03-01 — T-009 コード修正（daemon 統合確認の前提）
+
+### agtmux-v5 API 照合結果
+
+| 項目 | 実装 (T-006b) | agtmux-v5 実際の値 | 修正 |
+|------|-------------|-------------------|------|
+| デフォルト socketPath | `~/.local/share/agtmux/daemon.sock` | `/tmp/agtmux-$USER/agtmuxd.sock` | ✅ 修正済み |
+| CLI サブコマンド | `json` | `json`（v5 T-139 CLI redesign 以降） | ✅ 正しい |
+| 出力形式 | `{"version":1, "panes":[...]}` | 同じ（`build_json_v1` の実装と一致） | ✅ 正しい |
+| `window_index: Int` | `CodingKey: window_index` | フィールド不存在。実際: `window_id: String` ("@250") | ✅ 修正済み |
+| `pane_index: Int` | `CodingKey: pane_index` | フィールド不存在 | ✅ 削除済み |
+| `activity_state` 値 | lowercase ("running") | lowercase（cmd_json.rs の normalize 関数） | ✅ 正しい |
+
+### 修正ファイル
+
+| ファイル | 変更内容 |
+|---------|---------|
+| `DaemonModels.swift` | `windowIndex: Int` → `windowId: String`（CodingKey: `window_id`）、`paneIndex` 削除 |
+| `AgtmuxDaemonClient.swift` | デフォルト socketPath を `/tmp/agtmux-$USER/agtmuxd.sock` に修正 |
+| `CockpitView.swift` | `pane.windowIndex` → `pane.windowId` |
+| `SidebarView.swift` | `pane.windowIndex` → `pane.windowId`（コンパイルエラー修正） |
+
+### ビルド確認
+- `swift build` → Build complete! 0.14s
+
+### 残り T-009 作業（手動）
+- agtmux daemon 起動後に `fetchSnapshot()` が実際データを返すか確認
+- installed binary (`go/bin/agtmux`, Feb 26) は `list-panes` サブコマンド。v5 HEAD は `json`。**`json` を使う場合は `cargo install` で最新バイナリのリビルドが必要**

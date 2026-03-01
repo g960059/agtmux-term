@@ -52,7 +52,7 @@ struct SessionRowView: View {
                     .truncationMode(.tail)
 
                 // Secondary label: session:windowIndex
-                Text("\(pane.sessionName):\(pane.windowIndex)")
+                Text("\(pane.sessionName):\(pane.windowId)")
                     .font(.system(size: 11))
                     .foregroundColor(.secondary)
                     .lineLimit(1)

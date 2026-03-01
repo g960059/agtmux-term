@@ -173,17 +173,24 @@
 ## Phase 3: Daemon Integration
 
 ### T-009 — daemon 統合テスト（実機接続確認）
-- **Status**: TODO
+- **Status**: IN_PROGRESS
 - **Priority**: P1
 - **Phase**: 3
 - **Description**: T-006b で実装した `AgtmuxDaemonClient` を実際に動作している agtmux daemon に接続して動作確認する。
   T-006b はスタブ/ダミーデータで動作するが、T-009 で実 daemon との統合を検証する。
 - **Acceptance Criteria**:
-  - [ ] agtmux daemon 起動中に `fetchSnapshot()` が実際の pane データを返す
-  - [ ] daemon 未起動時は `DaemonError.processError` を throw し、UI が isOffline = true になる
-  - [ ] `AgtmuxSnapshot` / `AgtmuxPane` が実際の `agtmux json` 出力と一致する
-  - [ ] `socketPath` が設定可能で、デフォルトが `~/.local/share/agtmux/daemon.sock` であることを agtmux-v5 の実装と照合して確認
-- **Notes**: T-006b との違い: T-006b は実装（ダミーデータで単体テスト可）、T-009 は実環境での統合確認。
+  - [x] `socketPath` のデフォルトを agtmux-v5 実装と照合（正しいデフォルト: `/tmp/agtmux-$USER/agtmuxd.sock`）
+  - [x] `agtmux json` サブコマンドが v5 現行仕様であることを確認（T-139 CLI redesign、commit c1f6486）
+  - [x] `agtmux json` 出力スキーマを実 daemon で確認: `{"version":1, "panes":[...]}`、`window_id: String`（"@250"形式）
+  - [x] `DaemonModels.swift` の `window_index: Int` → `windowId: String` 修正（実フィールド: `window_id`）
+  - [x] `DaemonModels.swift` の `pane_index: Int` を削除（実 JSON に存在しない）
+  - [x] `AgtmuxDaemonClient` のデフォルト socketPath を修正
+  - [ ] agtmux daemon 起動中に `fetchSnapshot()` が実際の pane データを返す（手動確認）
+  - [ ] daemon 未起動時は `DaemonError.processError` を throw し、UI が isOffline = true になる（手動確認）
+- **Notes**:
+  - agtmux binary: `/Users/virtualmachine/go/bin/agtmux`（Feb 26 ビルド）は `list-panes` コマンド。v5 HEAD（be2dbba 以降）は `json` コマンド。`json` を使用。
+  - 実 daemon のデフォルト socketPath: `/tmp/agtmux-$USER/agtmuxd.sock`（macOS、XDG_RUNTIME_DIR 未設定時）
+  - `window_id` フォーマット: `"@250"` (tmux window ID) — tmux での指定: `attach-session -t session:@250`
 
 ### T-010 — pane 選択 → tmux attach surface 切り替え
 - **Status**: TODO

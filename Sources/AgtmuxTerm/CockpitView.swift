@@ -61,7 +61,7 @@ struct TerminalPanel: NSViewRepresentable {
                 .sink { [weak self] pane in
                     guard let self, let view = self.view, let pane = pane else { return }
                     // Attach the selected pane's tmux window.
-                    let command = "tmux attach-session -t \(shellEscaped(pane.sessionName)):\(pane.windowIndex)"
+                    let command = "tmux attach-session -t \(shellEscaped(pane.sessionName)):\(pane.windowId)"
                     if let surface = GhosttyApp.shared.newSurface(for: view, command: command) {
                         view.attachSurface(surface)
                     }
