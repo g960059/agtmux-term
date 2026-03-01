@@ -34,12 +34,16 @@ final class GhosttyApp {
             }
         }
 
-        // action_cb, clipboard callbacks — nil for MVP.
-        runtimeConfig.action_cb = nil
-        runtimeConfig.read_clipboard_cb = nil
-        runtimeConfig.confirm_read_clipboard_cb = nil
-        runtimeConfig.write_clipboard_cb = nil
-        runtimeConfig.close_surface_cb = nil
+        // action_cb is required by libghostty during surface init.
+        runtimeConfig.action_cb = { app, target, action in
+            GhosttyApp.handleAction(app, target: target, action: action)
+        }
+        // Clipboard callbacks: non-optional in Zig (*const fn), so nil → crash
+        // if clipboard is ever accessed. Provide no-op stubs for MVP.
+        runtimeConfig.read_clipboard_cb = { _, _, _ in }
+        runtimeConfig.confirm_read_clipboard_cb = { _, _, _, _ in }
+        runtimeConfig.write_clipboard_cb = { _, _, _, _ in }
+        runtimeConfig.close_surface_cb = nil   // optional (?*const fn) — nil is safe
         runtimeConfig.supports_selection_clipboard = false
 
         let config = ghostty_config_new()
@@ -57,6 +61,45 @@ final class GhosttyApp {
         ghostty_config_finalize(config)
 
         app = ghostty_app_new(&runtimeConfig, config)
+    }
+
+    // MARK: - Runtime callbacks
+
+    private static func handleAction(_ app: ghostty_app_t?,
+                                     target: ghostty_target_s,
+                                     action: ghostty_action_s) -> Bool {
+        _ = app
+
+        // These are emitted during surface creation and can be safely ignored
+        // in this embedding.
+        switch action.tag {
+        case GHOSTTY_ACTION_CELL_SIZE,
+             GHOSTTY_ACTION_SIZE_LIMIT,
+             GHOSTTY_ACTION_INITIAL_SIZE:
+            return true
+        default:
+            break
+        }
+
+        // Keep title updates in sync with the hosting NSWindow if possible.
+        if action.tag == GHOSTTY_ACTION_SET_TITLE,
+           target.tag == GHOSTTY_TARGET_SURFACE,
+           let surface = target.target.surface,
+           let titlePtr = action.action.set_title.title,
+           let view = view(for: surface) {
+            let title = String(cString: titlePtr)
+            DispatchQueue.main.async {
+                view.window?.title = title
+            }
+            return true
+        }
+
+        return false
+    }
+
+    private static func view(for surface: ghostty_surface_t) -> GhosttyTerminalView? {
+        guard let userdata = ghostty_surface_userdata(surface) else { return nil }
+        return Unmanaged<GhosttyTerminalView>.fromOpaque(userdata).takeUnretainedValue()
     }
 
     deinit {
