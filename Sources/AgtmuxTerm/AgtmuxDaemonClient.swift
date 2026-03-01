@@ -66,7 +66,7 @@ actor AgtmuxDaemonClient {
 
                 let data = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
                 do {
-                    let snapshot = try JSONDecoder().decode(AgtmuxSnapshot.self, from: data)
+                    let snapshot = try AgtmuxSnapshot.decode(from: data, source: "local")
                     continuation.resume(returning: snapshot)
                 } catch {
                     continuation.resume(

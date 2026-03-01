@@ -56,16 +56,38 @@ struct TerminalPanel: NSViewRepresentable {
             observedViewModel = viewModel
             cancellable = viewModel.$selectedPane
                 // Skip the initial nil value at launch.
-                // The guard-let below handles nil pane safely.
                 .dropFirst()
                 .sink { [weak self] pane in
                     guard let self, let view = self.view, let pane = pane else { return }
-                    // Attach the selected pane's tmux window.
-                    let command = "tmux attach-session -t \(shellEscaped(pane.sessionName)):\(pane.windowId)"
+                    let hostsConfig = viewModel.hostsConfig
+                    let command = self.attachCommand(for: pane, hostsConfig: hostsConfig)
                     if let surface = GhosttyApp.shared.newSurface(for: view, command: command) {
                         view.attachSurface(surface)
                     }
                 }
+        }
+
+        // MARK: - Command builders
+
+        /// Build the shell command to attach to the given pane's tmux window.
+        ///
+        /// - Local pane: `tmux attach-session -t 'session':@windowId`
+        /// - Remote SSH:  `ssh -t user@host tmux attach-session -t 'session':@windowId`
+        /// - Remote mosh: `mosh user@host -- tmux attach-session -t 'session':@windowId`
+        private func attachCommand(for pane: AgtmuxPane, hostsConfig: HostsConfig) -> String {
+            let attach = "tmux attach-session -t \(shellEscaped(pane.sessionName)):\(pane.windowId)"
+
+            guard pane.source != "local",
+                  let host = hostsConfig.host(for: pane.source) else {
+                return attach
+            }
+
+            switch host.transport {
+            case .ssh:
+                return "ssh -t \(host.sshTarget) \(attach)"
+            case .mosh:
+                return "mosh \(host.sshTarget) -- \(attach)"
+            }
         }
 
         /// POSIX single-quote escaping for tmux session names.

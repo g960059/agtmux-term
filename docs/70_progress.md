@@ -225,3 +225,49 @@
 ### 残り T-009 作業（手動）
 - agtmux daemon 起動後に `fetchSnapshot()` が実際データを返すか確認
 - installed binary (`go/bin/agtmux`, Feb 26) は `list-panes` サブコマンド。v5 HEAD は `json`。**`json` を使う場合は `cargo install` で最新バイナリのリビルドが必要**
+
+---
+
+## 2026-03-01 — T-009〜T-011 完了 + クラッシュ修正多数
+
+### 完了事項
+- **T-009 DONE**: agtmux daemon 実機接続確認。`activity_state: null` の pane が `parseError` になるバグを修正（custom `init(from:)` + `decodeIfPresent ?? .unknown`）。commit `6a0f446`
+- **T-010 DONE**: pane 選択 → tmux attach surface 切り替え動作確認。以下のクラッシュを修正:
+  - `ghostty_config_finalize` 未呼び出しによる SIGSEGV（commit `91d4559`）
+  - `action_cb` / clipboard callbacks の non-optional Zig fn ptr に nil 設定 → SIGSEGV（commit `b077b7b`）
+  - スクロール方向反転（negation 除去 + trackpad 2x multiplier）（commit `805d238`）
+- **T-011 DONE**: activity_state 表示はポーリングで動作確認済み。ユーザー確認完了。
+
+### 発見した重要事項（lessons）
+
+| 事象 | 根本原因 | 修正 |
+|------|---------|------|
+| `ghostty_surface_new` SIGSEGV | `ghostty_config_finalize` 未呼び出し — config 内部 defaults が未初期化のまま surface 作成 | `ghostty_app_new` 前に `load_default_files` + `load_recursive_files` + `finalize` を呼ぶ |
+| `action_cb = nil` SIGSEGV | Zig `*const fn`（non-nullable）フィールドに nil → `CoreSurface.init` 内 `performAction(.cell_size)` で null call | 全 non-optional fn ptr（action, read_clipboard, confirm_read_clipboard, write_clipboard）をスタブで埋める |
+| `close_surface_cb = nil` は OK | Zig で `?*const fn`（nullable optional）として宣言されているため nil が安全 | そのまま nil でよい |
+| スクロール方向反転 | `scrollingDeltaY` を negation していた — Ghostty 本家 SurfaceView は raw で渡す | negation 除去 + `hasPreciseScrollingDeltas` 時に 2x multiplier |
+
+### 次のアクション
+- T-015〜T-021: SSH remote tmux feature（plan 承認済み）
+
+---
+
+## 2026-03-01 — T-015〜T-021 SSH Remote tmux（IN_PROGRESS）
+
+### 設計方針（承認済み）
+- リモート discovery: `ssh host tmux list-panes -a -F "..."` — **agtmux 不要**
+- リモート VM に必要なのは tmux + SSH アクセスのみ
+- agent state はリモート pane では `.unknown`（agtmux なし）
+- terminal 接続: `ssh -t host tmux attach` または `mosh host -- tmux attach`
+- config: `~/.config/agtmux-term/hosts.json`
+
+### 実装対象ファイル
+| ファイル | 変更種別 |
+|---------|---------|
+| `Sources/AgtmuxTerm/RemoteHostsConfig.swift` | 新規作成 |
+| `Sources/AgtmuxTerm/RemoteTmuxClient.swift` | 新規作成 |
+| `Sources/AgtmuxTerm/DaemonModels.swift` | source フィールド追加、composite id |
+| `Sources/AgtmuxTerm/AgtmuxDaemonClient.swift` | source = "local" タグ付け |
+| `Sources/AgtmuxTerm/AppViewModel.swift` | マルチソースポーリング、offlineHosts |
+| `Sources/AgtmuxTerm/SidebarView.swift` | ホスト別セクション表示 |
+| `Sources/AgtmuxTerm/CockpitView.swift` | SSH/mosh コマンドビルダー |

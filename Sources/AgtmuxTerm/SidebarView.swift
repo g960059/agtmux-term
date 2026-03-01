@@ -30,6 +30,40 @@ struct FilterBarView: View {
     }
 }
 
+// MARK: - SourceHeaderView
+
+/// Section header for a pane group (local or a remote host).
+struct SourceHeaderView: View {
+    let source: String
+    let displayName: String?
+    let isOffline: Bool
+
+    var label: String {
+        if source == "local" { return "Local" }
+        return displayName ?? source
+    }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(label.uppercased())
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundColor(.secondary)
+
+            if isOffline {
+                Circle()
+                    .fill(Color.orange)
+                    .frame(width: 6, height: 6)
+                    .help("Host offline")
+            }
+
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 8)
+        .padding(.bottom, 2)
+    }
+}
+
 // MARK: - SessionRowView
 
 /// A single row representing one tmux pane in the sidebar list.
@@ -51,7 +85,7 @@ struct SessionRowView: View {
                     .lineLimit(1)
                     .truncationMode(.tail)
 
-                // Secondary label: session:windowIndex
+                // Secondary label: session:windowId
                 Text("\(pane.sessionName):\(pane.windowId)")
                     .font(.system(size: 11))
                     .foregroundColor(.secondary)
@@ -79,7 +113,7 @@ struct SessionRowView: View {
 
 // MARK: - SidebarView
 
-/// Scrollable pane list with filter bar.
+/// Scrollable pane list with filter bar, grouped by source (local + remote hosts).
 struct SidebarView: View {
     @EnvironmentObject var viewModel: AppViewModel
 
@@ -88,20 +122,24 @@ struct SidebarView: View {
             FilterBarView()
             Divider()
 
-            if viewModel.isOffline {
-                offlineBanner
-            }
-
             ScrollView {
-                LazyVStack(spacing: 2) {
-                    ForEach(viewModel.filteredPanes) { pane in
-                        SessionRowView(
-                            pane: pane,
-                            isSelected: viewModel.selectedPane?.paneId == pane.paneId
+                LazyVStack(spacing: 2, pinnedViews: []) {
+                    ForEach(viewModel.panesBySource, id: \.source) { group in
+                        SourceHeaderView(
+                            source: group.source,
+                            displayName: viewModel.hostsConfig.displayName(for: group.source),
+                            isOffline: viewModel.offlineHosts.contains(group.source)
                         )
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            viewModel.selectPane(pane)
+
+                        ForEach(filteredPanes(in: group.panes)) { pane in
+                            SessionRowView(
+                                pane: pane,
+                                isSelected: viewModel.selectedPane?.id == pane.id
+                            )
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                viewModel.selectPane(pane)
+                            }
                         }
                     }
                 }
@@ -111,19 +149,14 @@ struct SidebarView: View {
         }
     }
 
-    private var offlineBanner: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundColor(.orange)
-                .font(.system(size: 12))
-            Text("Daemon offline")
-                .font(.system(size: 12))
-                .foregroundColor(.secondary)
-            Spacer()
+    /// Apply the current statusFilter to a single source group's panes.
+    private func filteredPanes(in panes: [AgtmuxPane]) -> [AgtmuxPane] {
+        switch viewModel.statusFilter {
+        case .all:       return panes
+        case .managed:   return panes.filter { $0.presence != nil }
+        case .attention: return panes.filter { $0.needsAttention }
+        case .pinned:    return panes.filter { $0.isPinned }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(Color.orange.opacity(0.08))
     }
 }
 

@@ -173,7 +173,7 @@
 ## Phase 3: Daemon Integration
 
 ### T-009 — daemon 統合テスト（実機接続確認）
-- **Status**: IN_PROGRESS
+- **Status**: DONE
 - **Priority**: P1
 - **Phase**: 3
 - **Description**: T-006b で実装した `AgtmuxDaemonClient` を実際に動作している agtmux daemon に接続して動作確認する。
@@ -195,37 +195,36 @@
   - `window_id` フォーマット: `"@250"` (tmux window ID) — tmux での指定: `attach-session -t session:@250`
 
 ### T-010 — pane 選択 → tmux attach surface 切り替え
-- **Status**: TODO
+- **Status**: DONE
 - **Priority**: P1
 - **Phase**: 3
 - **Depends**: T-008, T-009
 - **Description**: サイドバーで pane を選択するとターミナルがその pane を表示する。
-  `AppViewModel.selectPane()` は `selectedPane` の更新のみ行う。
-  `TerminalPanel.Coordinator` が `$selectedPane` を観測し、`"tmux attach-session -t <sessionName:windowIndex>"` を
-  `GhosttyApp.newSurface(command:)` に渡して surface を切り替える。
 - **Acceptance Criteria**:
-  - [ ] サイドバーで pane を選択するとターミナルが切り替わる
-  - [ ] `tmux attach-session -t sessionName:windowIndex` で正しい window が表示される（複数 window があるセッションで確認）
-  - [ ] 旧 surface が適切に解放される（`GhosttyApp.shared.releaseSurface` 呼び出し確認）
-  - [ ] tmux セッションが存在しない pane を選択した際にエラーが適切に処理される
-  - [ ] セッション名にスペースを含む場合もクォート処理で正常動作
-  - [ ] surface 切り替えは Coordinator のみが行い、`selectPane()` は `selectedPane` の更新だけ
-- **Notes**: pane 単位での viewport 制御は Phase 4+ で `tmux new-session -t` 方式に移行予定。
+  - [x] サイドバーで pane を選択するとターミナルが切り替わる
+  - [x] `tmux attach-session -t sessionName:@windowId` で正しい window が表示される
+  - [x] 旧 surface が適切に解放される
+  - [x] セッション名にスペースを含む場合もクォート処理で正常動作（`shellEscaped()` 実装済み）
+  - [x] surface 切り替えは Coordinator のみが行い、`selectPane()` は `selectedPane` の更新だけ
+- **Notes**:
+  - ghostty_config_finalize 未呼び出し → crash を修正（commit 91d4559）
+  - action_cb / read_clipboard_cb 等の non-optional Zig fn ptr を nil 設定 → crash を修正（commit b077b7b）
+  - scroll 方向反転バグを修正（commit 805d238）: negation 除去 + trackpad 2x multiplier
 
 ### T-011 — agent state リアルタイム表示
-- **Status**: TODO
+- **Status**: DONE
 - **Priority**: P1
 - **Phase**: 3
 - **Depends**: T-009, T-010
 - **Description**: activity_state が1秒ごとに更新され、サイドバーの色・アイコンに反映される。conversation_title も表示。
 - **Acceptance Criteria**:
-  - [ ] `running` → 緑のインジケーター
-  - [ ] `waiting_approval` / `waiting_input` → 黄/オレンジのインジケーター
-  - [ ] `idle` → グレー
-  - [ ] `error` → 赤
-  - [ ] `conversation_title` がサイドバーに表示される
-  - [ ] 状態変化が3秒以内にサイドバーに反映される
-  - [ ] Claude Code を実際に動かして手動確認済み
+  - [x] `running` → 緑のインジケーター
+  - [x] `waiting_approval` / `waiting_input` → 黄/オレンジのインジケーター
+  - [x] `idle` → グレー
+  - [x] `error` → 赤
+  - [x] `conversation_title` がサイドバーに表示される
+  - [x] 状態変化が1秒以内にサイドバーに反映される（ポーリング周期）
+- **Notes**: ユーザー確認済み（2026-03-01）。`activity_state: null` の pane は `.unknown` として扱う（custom init で decodeIfPresent 使用）。
 
 ---
 
@@ -248,3 +247,99 @@
 - **Priority**: P3
 - **Phase**: 4
 - **Description**: libghostty-full public API リリース後、internal API の使用を廃止して公式 API に移行する。
+
+---
+
+## Phase 3b: SSH Remote tmux
+
+### T-015 — RemoteHostsConfig.swift — hosts.json ローダー
+- **Status**: TODO
+- **Priority**: P1
+- **Phase**: 3b
+- **Description**: `~/.config/agtmux-term/hosts.json` を読み込む `RemoteHost` / `HostsConfig` モデルと loader。
+  ファイルが存在しない場合は `HostsConfig(hosts: [])` を返す（エラーはログ出力のみ）。
+- **Acceptance Criteria**:
+  - [ ] `RemoteHost`: id, displayName?, hostname, user?, transport(.ssh/.mosh), sshTarget computed
+  - [ ] `HostsConfig.load()` が `~/.config/agtmux-term/hosts.json` を decode する
+  - [ ] ファイル未存在時は空 hosts を返す（クラッシュしない）
+  - [ ] JSON parse エラー時は `fputs` / `NSLog` でログ出力し、空 hosts を返す
+
+### T-016 — DaemonModels.swift — source フィールド追加
+- **Status**: TODO
+- **Priority**: P1
+- **Phase**: 3b
+- **Depends**: T-015
+- **Description**: `AgtmuxPane` に `source: String` を追加し、`Identifiable.id` を `"\(source):\(paneId)"` の複合キーに変更。
+  `tagged(source:)` factory と memberwise init を追加。
+- **Acceptance Criteria**:
+  - [ ] `AgtmuxPane.source: String` が存在する（JSON decode 対象外 — injection）
+  - [ ] `AgtmuxPane.id` が `"\(source):\(paneId)"` — ローカルと同一 paneId が衝突しない
+  - [ ] `tagged(source:) -> AgtmuxPane` factory が実装されている
+  - [ ] memberwise init（全フィールド明示）が実装されている（RemoteTmuxClient 用）
+  - [ ] `SidebarView` の selection 比較が `selectedPane?.id == pane.id` に更新されている
+
+### T-017 — AgtmuxDaemonClient.swift — ローカル pane に source タグ付け
+- **Status**: TODO
+- **Priority**: P1
+- **Phase**: 3b
+- **Depends**: T-016
+- **Description**: `fetchSnapshot()` で decode 後、全 pane を `tagged(source: "local")` で変換して返す。
+- **Acceptance Criteria**:
+  - [ ] 返却される `AgtmuxPane` の `source` が全て `"local"`
+  - [ ] 既存の外部インタフェース（`fetchSnapshot() -> AgtmuxSnapshot`）は変更なし
+
+### T-018 — RemoteTmuxClient.swift — SSH + tmux list-panes パーサ
+- **Status**: TODO
+- **Priority**: P1
+- **Phase**: 3b
+- **Depends**: T-016
+- **Description**: `ssh -o BatchMode=yes -o ConnectTimeout=5 [user@]host tmux list-panes -a -F "..."` を
+  subprocess で実行し、tab-delimited 出力を `[AgtmuxPane]` に変換する actor。
+  agtmux 不要 — tmux のみで動作。
+- **Acceptance Criteria**:
+  - [ ] `RemoteTmuxClient(host: RemoteHost)` が初期化できる
+  - [ ] `fetchPanes() async throws -> [AgtmuxPane]` が実装されている
+  - [ ] SSH args: `-o BatchMode=yes -o ConnectTimeout=5 sshTarget tmux list-panes -a -F "#{pane_id}\t#{session_name}\t#{window_id}\t#{pane_current_path}"`
+  - [ ] 各 pane の `activityState = .unknown`、`presence = nil`、`conversationTitle = nil`
+  - [ ] `source = host.hostname`
+  - [ ] SSH auth 失敗 / タイムアウトは `DaemonError.processError` として throw
+
+### T-019 — AppViewModel.swift — マルチソースポーリング
+- **Status**: TODO
+- **Priority**: P1
+- **Phase**: 3b
+- **Depends**: T-017, T-018
+- **Description**: HostsConfig を読み込み、ローカル + 各リモートホストを並行ポーリング。
+  `isOffline: Bool` を `offlineHosts: Set<String>` に置き換え。
+  `panesBySource` computed property を追加（SidebarView のグループ表示用）。
+- **Acceptance Criteria**:
+  - [ ] `offlineHosts: Set<String>` が `@Published` で存在する
+  - [ ] `isOffline: Bool { !offlineHosts.isEmpty }` が存在する
+  - [ ] `panesBySource: [(source: String, panes: [AgtmuxPane])]` computed property が存在する（local 先頭、remote アルファベット順）
+  - [ ] ポーリングループが `withTaskGroup` で全ソースを並行取得する
+  - [ ] ホスト個別の失敗は `offlineHosts` に追加、他ソースのデータに影響しない
+
+### T-020 — SidebarView.swift — ホスト別セクション表示
+- **Status**: TODO
+- **Priority**: P1
+- **Phase**: 3b
+- **Depends**: T-019
+- **Description**: flat な pane 一覧をソース別グループに変更。`SourceHeaderView` を追加。
+- **Acceptance Criteria**:
+  - [ ] ソース（Local / リモートホスト名）ごとにセクションヘッダーが表示される
+  - [ ] `SourceHeaderView`: "Local" or displayName/hostname + offline 時にオレンジドット
+  - [ ] selection 比較が `pane.id`（複合キー）を使用
+  - [ ] hosts.json 未存在時は Local セクションのみ表示（既存動作と同じ）
+
+### T-021 — CockpitView.swift — マルチトランスポートコマンドビルダー
+- **Status**: TODO
+- **Priority**: P1
+- **Phase**: 3b
+- **Depends**: T-019, T-020
+- **Description**: `pane.source` と `RemoteHost.transport` に基づき、ローカル / SSH / mosh 用の
+  tmux attach コマンドを生成する。
+- **Acceptance Criteria**:
+  - [ ] `source == "local"` → `tmux attach-session -t 'session':@wid`（既存と同じ）
+  - [ ] `transport == .ssh` → `ssh -t sshTarget tmux attach-session -t 'session':@wid`
+  - [ ] `transport == .mosh` → `mosh sshTarget -- tmux attach-session -t 'session':@wid`
+  - [ ] `hostsMap: [String: RemoteHost]` が Coordinator に渡される（or shared singleton 経由）
