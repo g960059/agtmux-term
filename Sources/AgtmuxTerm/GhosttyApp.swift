@@ -45,6 +45,17 @@ final class GhosttyApp {
         let config = ghostty_config_new()
         defer { ghostty_config_free(config) }
 
+        // Mirror the loading sequence from Ghostty's own Ghostty.Config.loadConfig():
+        //   1. load default files (~/.config/ghostty/config, etc.)
+        //   2. load CLI args (skipped — we don't forward CLI args to Ghostty)
+        //   3. load recursively-referenced files
+        //   4. finalize — populates internal defaults; MUST be called before
+        //      ghostty_app_new / ghostty_surface_new, otherwise surface creation
+        //      reads uninitialized config fields and crashes.
+        ghostty_config_load_default_files(config)
+        ghostty_config_load_recursive_files(config)
+        ghostty_config_finalize(config)
+
         app = ghostty_app_new(&runtimeConfig, config)
     }
 
