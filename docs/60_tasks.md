@@ -18,24 +18,30 @@
 ---
 
 ### T-001 — GhosttyKit.xcframework ビルド環境構築
-- **Status**: TODO
+- **Status**: DONE
 - **Priority**: P0 (blocks everything)
 - **Phase**: 0
 - **Depends**: T-000
 - **Description**: Ghostty リポジトリを vendor/ に追加し、`zig build xcframework` で GhosttyKit.xcframework を生成。Package.swift で binaryTarget として参照する。
 - **Acceptance Criteria**:
-  - [ ] Ghostty ソースが vendor/ghostty/ に git clone されている（submodule 不採用、ADR-20260228b）
-  - [ ] `cd vendor/ghostty && zig build xcframework` が成功する
-  - [ ] GhosttyKit.xcframework が Package.swift の binaryTarget で参照されている
-  - [ ] `build.zig` を参照して必要な linker flags を確定し Package.swift に記載済み（Metal, Cocoa, IOKit, CoreText, QuartzCore など — 「等」ではなく具体的なリスト）
-  - [ ] `.gitattributes` に `GhosttyKit/**` の Git LFS 追跡設定が追加されている
-  - [ ] `git lfs ls-files` で xcframework が LFS 追跡されていることを確認
-  - [ ] `module.modulemap` が生成され Swift から `import GhosttyKit` できる
-  - [ ] `scripts/build-ghosttykit.sh` が作成されている
-  - [ ] `swift build` がエラーなしで完了する
-  - [ ] `ghostty_app_new` シンボルが解決される
-  - [ ] macOS entitlements / App Sandbox 設定の要否を確認した
-- **Notes**: Zig 0.14.x が必要。xcframework は Git LFS で管理（ADR-20260228b）。`vendor/ghostty/` は .gitignore 除外。`scripts/build-ghosttykit.sh` で再ビルド手順を管理。
+  - [x] Ghostty ソースが vendor/ghostty/ に git clone されている（submodule 不採用、ADR-20260228b）
+  - [x] `cd vendor/ghostty && zig build -Demit-xcframework=true` が成功する（correct flag は `xcframework` ではなく `-Demit-xcframework=true`）
+  - [x] GhosttyKit.xcframework が Package.swift の binaryTarget で参照されている
+  - [x] `build.zig` / `pkg/macos/build.zig` を参照して必要な linker flags を確定し Package.swift に記載済み（Metal, MetalKit, QuartzCore, CoreGraphics, IOSurface, CoreText, CoreFoundation, CoreVideo, AppKit, Foundation, Carbon, UserNotifications, UniformTypeIdentifiers, iconv）
+  - [x] `.gitattributes` に `GhosttyKit/**` の Git LFS 追跡設定が追加されている
+  - [x] `git lfs ls-files` で xcframework が LFS 追跡されていることを確認（全 10 ファイル追跡済み）
+  - [x] `module.modulemap` が生成され Swift から `import GhosttyKit` できる（xcframework に自動含有）
+  - [x] `scripts/build-ghosttykit.sh` が作成されている
+  - [x] `swift build` がエラーなしで完了する（Build complete! 2.16s）
+  - [x] `ghostty_app_new` シンボルが解決される（`_ghostty_app_new T` 確認済み）
+  - [x] macOS entitlements / App Sandbox 設定の要否を確認した（**App Sandbox 不要** — Ghostty 本体も Debug/Release ともに無効。tmux spawn / daemon socket アクセスのため Sandbox は無効で運用）
+- **Notes**:
+  - zig 0.14.1 (brew install zig@0.14)。build コマンドは `zig build xcframework` ではなく `zig build -Demit-xcframework=true`
+  - iterm2_themes 依存が 404 → build.zig.zon の URL を最新リリースに更新が必要（2026-02-28 時点での対処済み）
+  - Metal Toolchain 要インストール: `xcodebuild -downloadComponent MetalToolchain`
+  - xcframework 出力先は `vendor/ghostty/macos/GhosttyKit.xcframework`（`zig-out/` ではない）
+  - xcframework は static lib 形式（`libghostty.a` を直接含む、`.framework` バンドルではない）
+  - `vendor/ghostty/` は .gitignore 除外。`scripts/build-ghosttykit.sh` で再ビルド手順を管理。
 
 ---
 

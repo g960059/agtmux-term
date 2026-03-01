@@ -43,11 +43,6 @@
 - [x] README.md 作成
 - [x] タスクボード (docs/60_tasks.md) 作成 — T-001〜T-014
 
-### 次のアクション
-- T-001: GhosttyKit.xcframework ビルド環境構築から着手
-- Ghostty リポジトリの取得方法を決定（submodule vs clone）
-- Zig 0.14.x のインストール確認
-
 ### 未解決事項
 - [x] GhosttyKit.xcframework 配布戦略 → **ADR-20260228b で Git LFS に決定**
 - [ ] agtmux daemon の socket path（デフォルト）の確認（T-009 前に agtmux-v5 実装と照合）
@@ -93,6 +88,48 @@
   - T-010 pane attach 設計の注記更新
 
 ### 次のアクション
-- T-001: GhosttyKit.xcframework ビルド環境構築から着手
-- Ghostty リポジトリの取得方法を決定（submodule vs clone）
-- Zig 0.14.x のインストール確認
+- ~~T-001 起動~~ → IN_PROGRESS（subagent 委任）
+
+---
+
+## 2026-02-28 — T-001 GhosttyKit.xcframework ビルド環境構築（IN_PROGRESS）
+
+### 環境確認結果
+- brew: 5.0.15 ✅
+- Swift: 6.2.4 (arm64-apple-macosx26.0) ✅
+- Xcode: /Applications/Xcode.app ✅
+- git-lfs: **未インストール** → 要 brew install
+- zig: **未インストール** → 要 brew install zig@0.14
+- vendor/ghostty: 未存在 → 要 git clone
+- GhosttyKit/: 未存在 → zig build 後コピー
+
+### 作業内容・完了事項
+
+| ステップ | 結果 |
+|---------|------|
+| brew install git-lfs | ✅ (3.7.1) |
+| brew install zig@0.14 | ✅ (0.14.1, /opt/homebrew/Cellar/zig@0.14/0.14.1) |
+| git lfs install / .gitattributes | ✅ |
+| .gitignore に vendor/ 追加 | ✅ (subagent が対応済み) |
+| git clone ghostty vendor/ghostty | ✅ |
+| build.zig.zon の iterm2_themes URL 修正 | ✅ (404 を最新リリースに更新) |
+| xcodebuild -downloadComponent MetalToolchain | ✅ (704.6MB) |
+| zig build -Demit-xcframework=true | ✅ (macos-arm64_x86_64 + iOS slices) |
+| GhosttyKit/ にコピー | ✅ (805MB) |
+| module.modulemap 確認 | ✅ (xcframework に含有) |
+| git lfs ls-files 確認 | ✅ (全 10 ファイル追跡) |
+| Package.swift 作成 | ✅ (binaryTarget + linkerSettings) |
+| scripts/build-ghosttykit.sh 作成 | ✅ |
+| swift build | ✅ (Build complete! 2.16s) |
+| ghostty_app_new シンボル確認 | ✅ (_ghostty_app_new T) |
+| App Sandbox 要否確認 | ✅ 不要（Ghostty 本体も無効） |
+
+### 発見した重要事項
+- zig build コマンドは `xcframework` step ではなく `-Demit-xcframework=true` フラグで起動
+- xcframework 出力先: `vendor/ghostty/macos/GhosttyKit.xcframework`（handover v2 の `zig-out/lib/` 記述は誤り）
+- static lib xcframework（`.framework` バンドルでなく `libghostty.a` を直接含む）
+- App Sandbox 不要（tmux spawn + daemon socket アクセスのため）
+
+### 次のアクション
+- Review Pack 作成 → commit "build: add GhosttyKit.xcframework + Package.swift (T-001)"
+- T-002: GhosttyApp.swift 実装へ
