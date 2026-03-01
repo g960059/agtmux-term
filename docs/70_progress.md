@@ -163,5 +163,34 @@
 - バイナリサイズ: 60MB arm64 Mach-O
 
 ### 次のアクション
-- Review Pack 作成 → commit T-002〜T-005
-- T-006a〜T-008: Phase 2 Sidebar UI
+- ~~Review Pack 作成 → commit T-002〜T-005~~ → **DONE** (f5c390c)
+- ~~T-006a〜T-008~~ → **DONE** (下記参照)
+
+---
+
+## 2026-02-28 — T-006a〜T-008 Phase 2 Sidebar UI（DONE）
+
+### 実装ファイル
+
+| ファイル | 内容 | 行数 |
+|---------|------|------|
+| `Sources/AgtmuxTerm/DaemonModels.swift` | AgtmuxPane/Snapshot/StatusFilter Codable モデル | 76 |
+| `Sources/AgtmuxTerm/AgtmuxDaemonClient.swift` | agtmux CLI subprocess wrapper (actor) | 105 |
+| `Sources/AgtmuxTerm/AppViewModel.swift` | @MainActor ObservableObject、1秒ポーリング | 76 |
+| `Sources/AgtmuxTerm/SidebarView.swift` | FilterBarView / SessionRowView / SidebarView | ~150 |
+| `Sources/AgtmuxTerm/CockpitView.swift` | HSplitView + TerminalPanel + @MainActor Coordinator | 80 |
+| `Sources/AgtmuxTerm/main.swift` | NSHostingView<CockpitView> + AppViewModel 注入 | 更新 |
+
+### ビルド確認
+- `swift build` → Build complete! (8.73s) — エラーなし・警告なし
+- SourceKit false-positive（xcframework binary target + cross-file 解決）は既知の制限
+
+### レビュー結果（GO_WITH_CONDITIONS）
+- 全ファイル concurrency safety 正常（actor, @MainActor, weak 参照によるサイクル防止）
+- "Fail loudly" ポリシー準拠（DaemonError 3ケース、全て呼び出し元に伝播）
+- **Condition**: T-010 manual test で `GhosttyApp.shared.newSurface(command:)` が shell 経由か直接 args か確認。`shellEscaped()` の必要性を T-010 で検証。
+
+### 次のアクション
+- T-009: daemon 統合テスト（socketPath を agtmux-v5 実装と照合）
+- T-010: pane 選択 → surface 切り替え + shellEscaped 検証
+- T-011: agent state リアルタイム表示確認

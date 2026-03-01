@@ -60,3 +60,6 @@ fastlane/report.xml
 fastlane/Preview.html
 fastlane/screenshots/**/*.png
 fastlane/test_output
+
+# Vendor (not committed - use scripts/build-ghosttykit.sh to rebuild)
+vendor/

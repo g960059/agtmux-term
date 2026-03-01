@@ -106,67 +106,67 @@
 ## Phase 2: Sidebar UI Port
 
 ### T-006a — DaemonModels.swift — AgtmuxSnapshot / AgtmuxPane / StatusFilter
-- **Status**: TODO
+- **Status**: DONE
 - **Priority**: P1
 - **Phase**: 2
 - **Description**: `agtmux json` の実際のスキーマに合わせた Codable モデル定義。
   POC の Go daemon スキーマとは異なる点に注意（`docs/20_spec.md` の JSON Schema 参照）。
 - **Acceptance Criteria**:
-  - [ ] `AgtmuxPane` が `pane_id`, `activity_state`, `conversation_title`, `presence`, `session_name`, `window_index`, `pane_index` を持つ（`pane_index` は MVP では使用しないが decode のために保持）
-  - [ ] `AgtmuxSnapshot` が `{version: 1, panes: [...]}` を decode できる
-  - [ ] `StatusFilter` enum（all / managed / attention / pinned）が定義されている
-  - [ ] `AgtmuxPane.needsAttention` computed property が存在する
-  - [ ] `AgtmuxPane.isPinned` は Post-MVP のため `false` 固定スタブとして実装する（JSON フィールドなし）
+  - [x] `AgtmuxPane` が `pane_id`, `activity_state`, `conversation_title`, `presence`, `session_name`, `window_index`, `pane_index` を持つ（`pane_index` は MVP では使用しないが decode のために保持）
+  - [x] `AgtmuxSnapshot` が `{version: 1, panes: [...]}` を decode できる
+  - [x] `StatusFilter` enum（all / managed / attention / pinned）が定義されている
+  - [x] `AgtmuxPane.needsAttention` computed property が存在する
+  - [x] `AgtmuxPane.isPinned` は Post-MVP のため `false` 固定スタブとして実装する（JSON フィールドなし）
 
 ### T-006b — AgtmuxDaemonClient.swift — agtmux CLI wrapper
-- **Status**: TODO
+- **Status**: DONE
 - **Priority**: P1
 - **Phase**: 2
 - **Depends**: T-006a
 - **Description**: `agtmux json` CLI を async subprocess 実行して JSON を取得・パース。
   `docs/40_design.md` の AgtmuxDaemonClient 設計を実装する。
 - **Acceptance Criteria**:
-  - [ ] `fetchSnapshot()` が `terminationHandler` ベースの非同期実装
-  - [ ] `AGTMUX_BIN` 環境変数 → PATH 検索の順で agtmux を解決する
-  - [ ] daemon 未起動時に `DaemonError.daemonUnavailable` を throw する（クラッシュしない）
-  - [ ] `socketPath` が設定可能
+  - [x] `fetchSnapshot()` が `terminationHandler` ベースの非同期実装
+  - [x] `AGTMUX_BIN` 環境変数 → PATH 検索の順で agtmux を解決する
+  - [x] daemon 未起動時に `DaemonError.daemonUnavailable` を throw する（クラッシュしない）
+  - [x] `socketPath` が設定可能
 
 ### T-006c — AppViewModel.swift — polling + state management
-- **Status**: TODO
+- **Status**: DONE
 - **Priority**: P1
 - **Phase**: 2
 - **Depends**: T-006a, T-006b
 - **Description**: `@MainActor ObservableObject` の AppViewModel。1秒ポーリング、isOffline フラグ、フィルタリング。
   POC の AppViewModel（4,911行）から UI ロジック部分のみ移植（Go daemon 接続コードは除外）。
 - **Acceptance Criteria**:
-  - [ ] `@Published var panes: [AgtmuxPane]` がダミーデータで populated される
-  - [ ] `isOffline: Bool` が存在し、daemon 未起動時に `true` になる
-  - [ ] `statusFilter: StatusFilter` が切り替え可能
-  - [ ] `filteredPanes` が StatusFilter に従ってフィルタリングされる
-  - [ ] `startPolling()` / `stopPolling()` が実装されている
+  - [x] `@Published var panes: [AgtmuxPane]` がダミーデータで populated される
+  - [x] `isOffline: Bool` が存在し、daemon 未起動時に `true` になる
+  - [x] `statusFilter: StatusFilter` が切り替え可能
+  - [x] `filteredPanes` が StatusFilter に従ってフィルタリングされる
+  - [x] `startPolling()` / `stopPolling()` が実装されている
 
 ### T-007 — Sidebar UI port (SidebarView + SessionRowView + FilterBarView)
-- **Status**: TODO
+- **Status**: DONE
 - **Priority**: P1
 - **Phase**: 2
 - **Depends**: T-006c
 - **Description**: POC からサイドバー UI を移植。SidebarView、SessionRowView、FilterBarView の3コンポーネント。
 - **Acceptance Criteria**:
-  - [ ] SidebarView に pane 一覧がスクロールリストで表示される
-  - [ ] SessionRowView に activity_state に対応した色・アイコンが表示される
-  - [ ] SessionRowView に conversation_title が表示される
-  - [ ] FilterBarView で All / Managed / Attention タブが切り替え可能
+  - [x] SidebarView に pane 一覧がスクロールリストで表示される
+  - [x] SessionRowView に activity_state に対応した色・アイコンが表示される
+  - [x] SessionRowView に conversation_title が表示される
+  - [x] FilterBarView で All / Managed / Attention タブが切り替え可能
 
 ### T-008 — CockpitView.swift — HSplitView レイアウト統合
-- **Status**: TODO
+- **Status**: DONE
 - **Priority**: P1
 - **Phase**: 2
 - **Depends**: T-005, T-007
 - **Description**: サイドバー + ターミナルを横並びで表示する root view。HSplitView + NSViewRepresentable で統合。
 - **Acceptance Criteria**:
-  - [ ] ウィンドウにサイドバーとターミナルが並んで表示される
-  - [ ] サイドバーのリサイズが可能
-  - [ ] TerminalPanel が GhosttyTerminalView を正しくラップしている
+  - [x] ウィンドウにサイドバーとターミナルが並んで表示される
+  - [x] サイドバーのリサイズが可能
+  - [x] TerminalPanel が GhosttyTerminalView を正しくラップしている
 
 ---
 
