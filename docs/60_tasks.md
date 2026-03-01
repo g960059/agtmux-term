@@ -185,8 +185,10 @@
   - [x] `DaemonModels.swift` の `window_index: Int` → `windowId: String` 修正（実フィールド: `window_id`）
   - [x] `DaemonModels.swift` の `pane_index: Int` を削除（実 JSON に存在しない）
   - [x] `AgtmuxDaemonClient` のデフォルト socketPath を修正
-  - [ ] agtmux daemon 起動中に `fetchSnapshot()` が実際の pane データを返す（手動確認）
-  - [ ] daemon 未起動時は `DaemonError.processError` を throw し、UI が isOffline = true になる（手動確認）
+  - [x] agtmux daemon 起動中に `fetchSnapshot()` が実際の pane データを返す（生ソケット + 新バイナリで確認）
+  - [x] daemon 未起動時は exit code 1 → `DaemonError.processError` → `isOffline = true`（確認済み）
+  - [x] `AgtmuxDaemonClient.resolveBinaryURL()` に `~/go/bin`、`~/.cargo/bin`、`/usr/local/bin`、`/opt/homebrew/bin` フォールバック追加（macOS GUI 向け）
+  - [x] `go/bin/agtmux` を v5 HEAD（be2dbba）からリビルド（`json` コマンド確認済み）
 - **Notes**:
   - agtmux binary: `/Users/virtualmachine/go/bin/agtmux`（Feb 26 ビルド）は `list-panes` コマンド。v5 HEAD（be2dbba 以降）は `json` コマンド。`json` を使用。
   - 実 daemon のデフォルト socketPath: `/tmp/agtmux-$USER/agtmuxd.sock`（macOS、XDG_RUNTIME_DIR 未設定時）

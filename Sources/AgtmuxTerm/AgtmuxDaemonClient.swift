@@ -86,13 +86,23 @@ actor AgtmuxDaemonClient {
 
     // MARK: - Binary Resolution
 
-    /// Resolve the agtmux binary: AGTMUX_BIN env var takes priority, then PATH search.
+    /// Resolve the agtmux binary: AGTMUX_BIN env var → PATH search → common fallback dirs.
+    ///
+    /// macOS GUI apps inherit a restricted PATH that omits ~/go/bin, ~/.cargo/bin, etc.
+    /// The fallback list covers the most common install locations so the app works
+    /// without requiring the user to set AGTMUX_BIN explicitly.
     private static func resolveBinaryURL() -> URL? {
         let env = ProcessInfo.processInfo.environment
         if let envPath = env["AGTMUX_BIN"] {
             return URL(fileURLWithPath: envPath)
         }
-        let searchPaths = (env["PATH"] ?? "").split(separator: ":").map(String.init)
+        let home = NSHomeDirectory()
+        let searchPaths: [String] = (env["PATH"] ?? "").split(separator: ":").map(String.init) + [
+            "\(home)/go/bin",
+            "\(home)/.cargo/bin",
+            "/usr/local/bin",
+            "/opt/homebrew/bin",
+        ]
         for dir in searchPaths {
             let url = URL(fileURLWithPath: dir).appendingPathComponent("agtmux")
             if FileManager.default.isExecutableFile(atPath: url.path) {
