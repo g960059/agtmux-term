@@ -37,6 +37,8 @@ let package = Package(
                 .linkedFramework("UniformTypeIdentifiers"),
                 // i18n (libintl bundled in xcframework)
                 .linkedLibrary("iconv"),
+                // C++ standard library (required by libghostty.a — glslang, spirv-cross, etc.)
+                .linkedLibrary("c++"),
             ]
         ),
     ]

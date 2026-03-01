@@ -131,5 +131,37 @@
 - App Sandbox 不要（tmux spawn + daemon socket アクセスのため）
 
 ### 次のアクション
-- Review Pack 作成 → commit "build: add GhosttyKit.xcframework + Package.swift (T-001)"
-- T-002: GhosttyApp.swift 実装へ
+- ~~Review Pack 作成 → commit T-001~~ → **DONE** (7f2f00b)
+- ~~T-002〜T-005~~ → **DONE** (下記参照)
+
+---
+
+## 2026-02-28 — T-002〜T-005 Phase 1 Terminal Core（DONE）
+
+### 実装ファイル
+
+| ファイル | 内容 |
+|---------|------|
+| `Sources/AgtmuxTerm/GhosttyApp.swift` | ghostty_app_t singleton、wakeup_cb、activeSurfaces |
+| `Sources/AgtmuxTerm/GhosttyTerminalView.swift` | NSView+NSTextInputClient、CAMetalLayer、IME、マウス |
+| `Sources/AgtmuxTerm/GhosttyInput.swift` | keyCode→ghostty変換、modifier flags、scroll mods |
+| `Sources/AgtmuxTerm/main.swift` | NSApplication HelloWorld（T-005） |
+| `Package.swift` | `.linkedLibrary("c++")` 追加（libghostty.a の C++ 依存） |
+
+### API 差異（design doc との相違）
+
+| 項目 | design doc | 実際の ghostty.h |
+|-----|-----------|----------------|
+| `ghostty_surface_config_s.context` | 存在 | **存在しない** |
+| `ghostty_surface_mouse_button` 引数順 | `button, state, mods` | **`state, button, mods`** |
+| `ghostty_surface_mouse_pos` 引数数 | 3（x, y） | **4（x, y, mods）** |
+| `ghostty_input_scroll_mods_s` | struct | **`typedef int`（bitmask）** |
+| `ghostty_input_key_s.keycode` 型 | `ghostty_input_key_e` | **`uint32_t`（Mac keyCode 直渡し）** |
+
+### ビルド確認
+- `swift build` → Build complete! 0.13s（全 T-002〜T-005 実装後）
+- バイナリサイズ: 60MB arm64 Mach-O
+
+### 次のアクション
+- Review Pack 作成 → commit T-002〜T-005
+- T-006a〜T-008: Phase 2 Sidebar UI

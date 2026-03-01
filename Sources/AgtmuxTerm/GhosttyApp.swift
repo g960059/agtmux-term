@@ -1,0 +1,115 @@
+import AppKit
+import GhosttyKit
+
+/// Singleton that owns the ghostty_app_t lifecycle.
+///
+/// Design constraints:
+/// - wakeup_cb must be a @convention(c) function pointer (no captures).
+///   We reference GhosttyApp.shared which is a static property and thus
+///   not a closure capture in the C-function-pointer sense.
+/// - activeSurfaces uses NSHashTable<GhosttyTerminalView>.weakObjects() so that
+///   ARC-deallocated views are automatically removed, preventing dangling pointers.
+final class GhosttyApp {
+    static let shared = GhosttyApp()
+
+    private(set) var app: ghostty_app_t?
+
+    /// Weak collection of all live terminal views.
+    /// NSHashTable.weakObjects() nil-ifies entries when the view is deallocated.
+    private var activeSurfaces: NSHashTable<GhosttyTerminalView> = .weakObjects()
+
+    private init() {
+        var runtimeConfig = ghostty_runtime_config_s()
+
+        // Pass self as userdata (passUnretained — singleton, never deallocated).
+        runtimeConfig.userdata = Unmanaged.passUnretained(self).toOpaque()
+
+        // @convention(c) closure: no captures allowed.
+        // GhosttyApp.shared is a static reference, not a capture.
+        runtimeConfig.wakeup_cb = { _ in
+            // libghostty calls this from an internal timer thread.
+            // Marshal tick() to the main thread.
+            DispatchQueue.main.async {
+                GhosttyApp.shared.tick()
+            }
+        }
+
+        // action_cb, clipboard callbacks — nil for MVP.
+        runtimeConfig.action_cb = nil
+        runtimeConfig.read_clipboard_cb = nil
+        runtimeConfig.confirm_read_clipboard_cb = nil
+        runtimeConfig.write_clipboard_cb = nil
+        runtimeConfig.close_surface_cb = nil
+        runtimeConfig.supports_selection_clipboard = false
+
+        let config = ghostty_config_new()
+        defer { ghostty_config_free(config) }
+
+        app = ghostty_app_new(&runtimeConfig, config)
+    }
+
+    deinit {
+        if let app { ghostty_app_free(app) }
+    }
+
+    // MARK: - Tick
+
+    private func tick() {
+        guard let app else { return }
+        ghostty_app_tick(app)
+        // Trigger a Metal draw on every active surface.
+        activeSurfaces.allObjects.forEach { $0.triggerDraw() }
+    }
+
+    // MARK: - Surface Management
+
+    /// Create a new ghostty surface for the given view and register it.
+    ///
+    /// - Parameters:
+    ///   - view: The GhosttyTerminalView that will host this surface.
+    ///   - command: Shell command string (e.g. "tmux attach-session -t main").
+    ///              nil = default shell ($SHELL).
+    /// - Returns: The new surface, or nil if ghostty_surface_new failed.
+    func newSurface(for view: GhosttyTerminalView,
+                    command: String? = nil) -> ghostty_surface_t? {
+        guard let app else { return nil }
+
+        // Inner builder; uses withCString scope for safe C-string lifetime.
+        func build(_ cmd: UnsafePointer<CChar>?) -> ghostty_surface_t? {
+            var cfg = ghostty_surface_config_s()
+            cfg.platform_tag = GHOSTTY_PLATFORM_MACOS
+            cfg.platform = ghostty_platform_u(
+                macos: ghostty_platform_macos_s(
+                    nsview: Unmanaged.passUnretained(view).toOpaque()
+                )
+            )
+            cfg.scale_factor = Double(NSScreen.main?.backingScaleFactor ?? 1.0)
+            cfg.userdata = Unmanaged.passUnretained(view).toOpaque()
+            cfg.command = cmd       // nil → default shell
+            cfg.font_size = 0       // 0 = use Ghostty config default
+            cfg.working_directory = nil
+            cfg.env_vars = nil
+            cfg.env_var_count = 0
+            cfg.initial_input = nil
+            cfg.wait_after_command = false
+            return ghostty_surface_new(app, &cfg)
+        }
+
+        let surface: ghostty_surface_t?
+        if let command {
+            surface = command.withCString { build($0) }
+        } else {
+            surface = build(nil)
+        }
+
+        if surface != nil {
+            activeSurfaces.add(view)
+        }
+        return surface
+    }
+
+    /// Remove a view from the active surface set (called from deinit / attachSurface).
+    func releaseSurface(for view: GhosttyTerminalView) {
+        activeSurfaces.remove(view)
+    }
+}
