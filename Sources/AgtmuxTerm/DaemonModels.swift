@@ -52,6 +52,22 @@ struct AgtmuxPane: Codable, Identifiable {
         case conversationTitle = "conversation_title"
         case cwd
     }
+
+    // MARK: Decodable
+
+    /// Custom decoder so that `"activity_state": null` (returned by agtmux for
+    /// panes with unrecognised states) is treated as `.unknown` rather than
+    /// causing a `valueNotFound` error.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        paneId             = try c.decode(String.self,        forKey: .paneId)
+        sessionName        = try c.decode(String.self,        forKey: .sessionName)
+        windowId           = try c.decode(String.self,        forKey: .windowId)
+        activityState      = try c.decodeIfPresent(ActivityState.self, forKey: .activityState) ?? .unknown
+        presence           = try c.decodeIfPresent(String.self,        forKey: .presence)
+        conversationTitle  = try c.decodeIfPresent(String.self,        forKey: .conversationTitle)
+        cwd                = try c.decodeIfPresent(String.self,        forKey: .cwd)
+    }
 }
 
 // MARK: - AgtmuxSnapshot
