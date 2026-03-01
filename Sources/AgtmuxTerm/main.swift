@@ -15,6 +15,20 @@ import GhosttyKit
 // ghostty_app_new runs before any surface is created.
 // ---------------------------------------------------------------------------
 
+// 0. Initialise Ghostty global state (allocator, logging, etc.).
+//
+// ghostty_init() must be called before any other ghostty_* function.
+// Specifically, ghostty_config_new() dereferences state.alloc which is
+// set up here. Calling it out-of-order causes a null-pointer crash.
+// Mirrors the pattern used in Ghostty's own pkg/macos/Sources/main.swift.
+let ghosttyInitResult = ghostty_init(UInt(CommandLine.argc), CommandLine.unsafeArgv)
+guard ghosttyInitResult == 0 else {
+    fatalError("ghostty_init failed with code \(ghosttyInitResult)")
+}
+// Handle CLI subcommands (ghostty +inspect-config, etc.) if present.
+// Returns only when no CLI action was requested.
+ghostty_cli_try_action()
+
 // 1. Bootstrap NSApplication.
 let app = NSApplication.shared
 app.setActivationPolicy(.regular)
