@@ -69,13 +69,16 @@ struct TerminalPanel: NSViewRepresentable {
 
         // MARK: - Command builders
 
-        /// Build the shell command to attach to the given pane's tmux window.
+        /// Build the shell command to attach to the given pane directly.
         ///
-        /// - Local pane: `tmux attach-session -t 'session':@windowId`
-        /// - Remote SSH:  `ssh -t user@host tmux attach-session -t 'session':@windowId`
-        /// - Remote mosh: `mosh user@host -- tmux attach-session -t 'session':@windowId`
+        /// Targets the pane by its tmux pane ID (e.g. `%42`) so that tmux navigates
+        /// to the correct session/window and focuses the exact pane.
+        ///
+        /// - Local pane: `tmux attach-session -t %42`
+        /// - Remote SSH:  `ssh -t user@host tmux attach-session -t %42`
+        /// - Remote mosh: `mosh user@host -- tmux attach-session -t %42`
         private func attachCommand(for pane: AgtmuxPane, hostsConfig: HostsConfig) -> String {
-            let attach = "tmux attach-session -t \(shellEscaped(pane.sessionName)):\(pane.windowId)"
+            let attach = "tmux attach-session -t \(pane.paneId)"
 
             guard pane.source != "local",
                   let host = hostsConfig.host(for: pane.source) else {
@@ -88,14 +91,6 @@ struct TerminalPanel: NSViewRepresentable {
             case .mosh:
                 return "mosh \(host.sshTarget) -- \(attach)"
             }
-        }
-
-        /// POSIX single-quote escaping for tmux session names.
-        ///
-        /// Wraps the string in single quotes and escapes any embedded single quotes
-        /// using the `'\''` trick so that shell metacharacters are handled safely.
-        private func shellEscaped(_ s: String) -> String {
-            "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
         }
     }
 }

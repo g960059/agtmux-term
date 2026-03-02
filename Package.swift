@@ -14,6 +14,9 @@ let package = Package(
             name: "AgtmuxTerm",
             dependencies: ["GhosttyKit"],
             path: "Sources/AgtmuxTerm",
+            resources: [
+                .process("Resources"),
+            ],
             linkerSettings: [
                 // Core rendering & graphics (from pkg/macos/build.zig)
                 .linkedFramework("Metal"),

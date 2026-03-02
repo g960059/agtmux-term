@@ -14,27 +14,45 @@ struct AgtmuxPane: Identifiable {
     let sessionName: String
     let windowId: String
     let activityState: ActivityState
-    let presence: String?       // "claude" if managed, nil if plain shell
+    let presence: PanePresence  // "managed" | "unmanaged"
+    let provider: Provider?     // which AI agent, if any
+    let evidenceMode: EvidenceMode
     let conversationTitle: String?
-    let cwd: String?
+    let currentPath: String?    // working directory (field: current_path)
+    let gitBranch: String?      // git branch derived from currentPath
+    let currentCmd: String?     // running process name
+    let updatedAt: Date?        // last state update from daemon
+    let ageSecs: Int?           // seconds since updatedAt
 
-    /// Memberwise init (defined here to provide defaults and suppress the synthesized one).
+    /// Memberwise init.
     init(source: String,
          paneId: String,
          sessionName: String,
          windowId: String,
          activityState: ActivityState = .unknown,
-         presence: String? = nil,
+         presence: PanePresence = .unmanaged,
+         provider: Provider? = nil,
+         evidenceMode: EvidenceMode = .none,
          conversationTitle: String? = nil,
-         cwd: String? = nil) {
+         currentPath: String? = nil,
+         gitBranch: String? = nil,
+         currentCmd: String? = nil,
+         updatedAt: Date? = nil,
+         ageSecs: Int? = nil) {
         self.source            = source
         self.paneId            = paneId
         self.sessionName       = sessionName
         self.windowId          = windowId
         self.activityState     = activityState
         self.presence          = presence
+        self.provider          = provider
+        self.evidenceMode      = evidenceMode
         self.conversationTitle = conversationTitle
-        self.cwd               = cwd
+        self.currentPath       = currentPath
+        self.gitBranch         = gitBranch
+        self.currentCmd        = currentCmd
+        self.updatedAt         = updatedAt
+        self.ageSecs           = ageSecs
     }
 
     // MARK: Post-MVP stubs
@@ -44,6 +62,23 @@ struct AgtmuxPane: Identifiable {
 
     // MARK: Derived properties
 
+    /// True when the pane is tracked by an agent (presence == .managed).
+    var isManaged: Bool { presence == .managed }
+
+    /// Display label for the sidebar row.
+    ///
+    /// - managed pane: `conversationTitle` → `provider.rawValue` ("claude"/"codex") → `paneId`
+    ///   NOTE: `currentCmd` is intentionally skipped for managed panes because Claude Code
+    ///   runs as a Node.js process, making `pane_current_command` = "node" (unhelpful).
+    /// - unmanaged pane: `currentCmd` (e.g. "vim", "python", "bash") → `paneId`
+    var primaryLabel: String {
+        if isManaged {
+            return conversationTitle ?? provider?.rawValue ?? paneId
+        } else {
+            return currentCmd ?? paneId
+        }
+    }
+
     /// True when the pane requires user attention (approval, input, or error).
     var needsAttention: Bool {
         activityState == .waitingApproval
@@ -51,7 +86,7 @@ struct AgtmuxPane: Identifiable {
             || activityState == .error
     }
 
-    // MARK: ActivityState
+    // MARK: - ActivityState
 
     enum ActivityState: String, Codable {
         case running          = "running"
@@ -60,6 +95,30 @@ struct AgtmuxPane: Identifiable {
         case waitingInput     = "waiting_input"
         case error            = "error"
         case unknown          = "unknown"
+    }
+
+    // MARK: - PanePresence
+
+    enum PanePresence: String, Codable {
+        case managed   = "managed"
+        case unmanaged = "unmanaged"
+    }
+
+    // MARK: - Provider
+
+    enum Provider: String, Codable {
+        case claude  = "claude"
+        case codex   = "codex"
+        case gemini  = "gemini"
+        case copilot = "copilot"
+    }
+
+    // MARK: - EvidenceMode
+
+    enum EvidenceMode: String, Codable {
+        case deterministic = "deterministic"
+        case heuristic     = "heuristic"
+        case none          = "none"
     }
 }
 
@@ -74,8 +133,14 @@ extension AgtmuxPane {
                    windowId: windowId,
                    activityState: activityState,
                    presence: presence,
+                   provider: provider,
+                   evidenceMode: evidenceMode,
                    conversationTitle: conversationTitle,
-                   cwd: cwd)
+                   currentPath: currentPath,
+                   gitBranch: gitBranch,
+                   currentCmd: currentCmd,
+                   updatedAt: updatedAt,
+                   ageSecs: ageSecs)
     }
 }
 
@@ -87,20 +152,25 @@ struct AgtmuxSnapshot {
     let panes: [AgtmuxPane]
 
     /// Decode from `agtmux json` output, tagging all panes with the given source identifier.
-    ///
-    /// Parsing is handled via private `RawSnapshot` DTO to keep `AgtmuxPane` clean of
-    /// JSON decoding concerns (source is injected, not from JSON).
     static func decode(from data: Data, source: String) throws -> AgtmuxSnapshot {
-        let raw = try JSONDecoder().decode(RawSnapshot.self, from: data)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let raw = try decoder.decode(RawSnapshot.self, from: data)
         let panes = raw.panes.map { dto in
             AgtmuxPane(source: source,
                        paneId: dto.paneId,
                        sessionName: dto.sessionName,
                        windowId: dto.windowId,
                        activityState: dto.activityState ?? .unknown,
-                       presence: dto.presence,
+                       presence: dto.presence ?? .unmanaged,
+                       provider: dto.provider,
+                       evidenceMode: dto.evidenceMode ?? .none,
                        conversationTitle: dto.conversationTitle,
-                       cwd: dto.cwd)
+                       currentPath: dto.currentPath,
+                       gitBranch: dto.gitBranch,
+                       currentCmd: dto.currentCmd,
+                       updatedAt: dto.updatedAt,
+                       ageSecs: dto.ageSecs)
         }
         return AgtmuxSnapshot(version: raw.version, panes: panes)
     }
@@ -118,9 +188,15 @@ private struct RawPane: Decodable {
     let sessionName: String
     let windowId: String
     let activityState: AgtmuxPane.ActivityState?
-    let presence: String?
+    let presence: AgtmuxPane.PanePresence?
+    let provider: AgtmuxPane.Provider?
+    let evidenceMode: AgtmuxPane.EvidenceMode?
     let conversationTitle: String?
-    let cwd: String?
+    let currentPath: String?
+    let gitBranch: String?
+    let currentCmd: String?
+    let updatedAt: Date?
+    let ageSecs: Int?
 
     enum CodingKeys: String, CodingKey {
         case paneId            = "pane_id"
@@ -128,8 +204,14 @@ private struct RawPane: Decodable {
         case windowId          = "window_id"
         case activityState     = "activity_state"
         case presence
+        case provider
+        case evidenceMode      = "evidence_mode"
         case conversationTitle = "conversation_title"
-        case cwd
+        case currentPath       = "current_path"
+        case gitBranch         = "git_branch"
+        case currentCmd        = "current_cmd"
+        case updatedAt         = "updated_at"
+        case ageSecs           = "age_secs"
     }
 }
 

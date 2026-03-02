@@ -252,16 +252,16 @@
 
 ---
 
-## 2026-03-01 — T-015〜T-021 SSH Remote tmux（IN_PROGRESS）
+## 2026-03-01 — T-015〜T-021 SSH Remote tmux（DONE）
 
-### 設計方針（承認済み）
+### 設計方針
 - リモート discovery: `ssh host tmux list-panes -a -F "..."` — **agtmux 不要**
 - リモート VM に必要なのは tmux + SSH アクセスのみ
 - agent state はリモート pane では `.unknown`（agtmux なし）
 - terminal 接続: `ssh -t host tmux attach` または `mosh host -- tmux attach`
 - config: `~/.config/agtmux-term/hosts.json`
 
-### 実装対象ファイル
+### 実装済みファイル
 | ファイル | 変更種別 |
 |---------|---------|
 | `Sources/AgtmuxTerm/RemoteHostsConfig.swift` | 新規作成 |
@@ -271,3 +271,132 @@
 | `Sources/AgtmuxTerm/AppViewModel.swift` | マルチソースポーリング、offlineHosts |
 | `Sources/AgtmuxTerm/SidebarView.swift` | ホスト別セクション表示 |
 | `Sources/AgtmuxTerm/CockpitView.swift` | SSH/mosh コマンドビルダー |
+
+---
+
+## 2026-03-01 — Phase 5 GUI Redesign 開始（T-022〜T-024）
+
+### 背景
+agtmux 本体が v5 アーキテクチャに更新され、以下の新フィールドが `agtmux json` に追加された：
+- `provider`: "claude" | "codex" | "gemini" | "copilot" | null
+- `evidence_mode`: "deterministic" | "heuristic" | "none"
+- `git_branch`: String?（cwd から自動導出）
+- `current_cmd`: String?（実行中プロセス名）
+- `current_path`: String?（旧 `cwd` フィールドのリネーム）
+- `updated_at`: ISO 8601 文字列
+- `age_secs`: Int?
+- `presence` セマンティクス変更: 旧 "claude"|nil → 新 "managed"|"unmanaged"
+
+### 確定 UI/UX 方針（ユーザー承認済み 2026-03-01）
+| 方針 | 詳細 |
+|------|------|
+| ビューモード | by-session のみ（by-status 廃止、filter/sort で代替） |
+| window grouping | なし（flat pane list within session）|
+| session ヘッダー | sessionName + 代表 gitBranch 表示 |
+| pane 行 | state dot + title + provider icon + age（グレー固定、色変化なし）|
+| subtitle | なし |
+| branch/cwd | hover tooltip で表示（常時非表示）|
+| provider 表示 | SF Symbol アイコン（sparkles/terminal.fill/star.fill/airplane）|
+
+### 対象タスク
+- **T-022**: DaemonModels.swift — v5 スキーマ対応（Provider/EvidenceMode/PanePresence enum、新フィールド追加）
+- **T-023**: AppViewModel.swift — panesBySession computed property 追加
+- **T-024**: SidebarView.swift — by-session リデザイン（SessionBlockView、新 SessionRowView、tooltip）
+
+---
+
+## 2026-03-01 — T-022〜T-024 GUI Redesign（DONE）
+
+### 実装ファイル
+
+| ファイル | 変更内容 |
+|---------|---------|
+| `DaemonModels.swift` | Provider / PanePresence / EvidenceMode enum 追加；presence セマンティクス修正；gitBranch / currentCmd / evidenceMode / provider / updatedAt / ageSecs / currentPath フィールド追加；ISO 8601 dateDecodingStrategy 設定 |
+| `AppViewModel.swift` | SessionGroup struct 追加；panesBySession computed property 追加；filteredPanes の .managed フィルタ修正（$0.isManaged）；sortedSources private helper 追加 |
+| `SidebarView.swift` | SessionBlockView 新規（セッションヘッダー + flat pane list）；SessionRowView リデザイン（provider icon + age、subtitle なし、hover tooltip）；ProviderIcon / FreshnessLabel 新規；ActivityState/Provider 表示 helpers 更新 |
+| `RemoteTmuxClient.swift` | `cwd:` → `currentPath:` リネーム対応 |
+
+### 設計方針（確定）
+- サイドバーは by-session のみ（window grouping なし）
+- session ヘッダーに代表 gitBranch 表示
+- pane 行: state dot + title + provider SF Symbol + age（グレー固定）
+- branch/cwd/evidenceMode は `.help()` tooltip で表示
+- provider icons: sparkles(claude) / terminal.fill(codex) / star.fill(gemini) / airplane(copilot)
+
+### ビルド確認
+- `swift build` → Build complete! (12.91s) エラーなし
+
+---
+
+## 2026-03-01 — T-025 バグ修正 + UI細改善（DONE）
+
+### 背景
+スクリーンショット確認で判明した問題の修正。
+
+### 修正内容
+
+| ファイル | 変更内容 |
+|---------|---------|
+| `DaemonModels.swift` | `primaryLabel` fallback: managed pane は `conversationTitle ?? currentCmd ?? paneId`（以前は `paneId` 直落ち） |
+| `SidebarView.swift` | age 表示を running 状態で非表示に変更（idle/error/waiting のみ）。`ProviderIcon` を colored rounded rect + 頭文字（C/✦/G/P）に変更 |
+| `CockpitView.swift` | `attachCommand` を `tmux attach-session -t %paneId` に変更。`shellEscaped()` 不要につき削除 |
+
+### ビルド確認
+- `swift build` → Build complete! (45.72s) エラーなし
+
+---
+
+## 2026-03-02 — バイナリ署名修正 + conversation_title 確認 + T-026 UI アイコン刷新
+
+### agtmux バイナリ署名修正
+
+| 事象 | 原因 | 修正 |
+|------|------|------|
+| AgtmuxTerm アプリが `~/go/bin/agtmux` を spawn すると exit 137 (SIGKILL) | "Code Signature Invalid" — アプリコンテキストはターミナルより厳格な署名検証を行うため、cargo install 後に再署名されていなかったバイナリが拒否された | `codesign --force --sign - /Users/virtualmachine/go/bin/agtmux` で ad-hoc 再署名 |
+
+- CI/CD 通過後、agtmux が `brew install` で `/opt/homebrew/bin/agtmux` にインストール済み（Homebrew 管理バイナリは署名済み）
+
+### conversation_title 動作確認
+
+テスト daemon (`/tmp/agtmux-e2e-codex-title-*/agtmuxd.sock`) で確認:
+- `%493`: `"claudeのOSC sequencesについて..."` — Claude Code セッションの実タイトル表示 ✅
+- `%566/%578/%584`: `"Updated E2E Title"` — JSONL `customTitle` フィールド反映 ✅
+- `%579/%585`: `"Custom Title Wins Over Summary"` — カスタムタイトル優先 ✅
+- 実環境の Claude Code pane は JSONL `customTitle` が emit されるまで `conversation_title: null`（正常動作）
+
+### T-026 UI アイコン刷新（DONE）
+
+#### 変更内容
+
+| 項目 | 変更前 | 変更後 |
+|------|--------|--------|
+| state indicator (idle/unmanaged) | グレードット | **非表示（Color.clear）** |
+| state indicator (running) | 緑ドット | **SpinnerView（回転アニメーション付き緑弧）** |
+| state indicator (waitingApproval) | オレンジドット | **`hand.raised.fill` (orange)** |
+| state indicator (waitingInput) | 黄ドット | **`ellipsis.circle.fill` (yellow)** |
+| state indicator (error) | 赤ドット | **`xmark.circle.fill` (red)** |
+| session ヘッダー | sessionName のみ | **`folder.fill` アイコン + sessionName** |
+| provider icon | colored rect + 頭文字 (C/✦/G/P) | **SVG バンドルから NSImage で描画** |
+
+#### SVG ファイル（新規作成: `Sources/AgtmuxTerm/Resources/`）
+
+| ファイル | 内容 | レンダリング |
+|---------|------|------------|
+| `icon-claude.svg` | 8本腕アスタリスク（orange #D97749）カスタム作成 | カラー |
+| `icon-openai.svg` | OpenAI スワールロゴ（simple-icons `openai`） | `isTemplate=true`（ダーク/ライト追従） |
+| `icon-gemini.svg` | Gemini 4尖星（simple-icons `googlegemini`、blue gradient） | カラー |
+| `icon-copilot.svg` | GitHub Copilot アイコン（simple-icons `githubcopilot`） | `isTemplate=true`（ダーク/ライト追従） |
+
+#### Package.swift 変更
+- `resources: [.process("Resources")]` 追加 → `Bundle.module` でリソース参照可能に
+
+#### ビルド確認
+- `swift build` → Build complete! エラーなし
+
+#### 発見した実装上の注意点（lessons）
+
+| 問題 | 根本原因 | 修正 |
+|------|---------|------|
+| SwiftUI type-check timeout（Canvas closure） | Canvas 内に複雑な数式クロージャ → コンパイラがタイムアウト | `Canvas(renderer: codexRenderer)` として別メソッドに抽出 |
+| `LinearGradient` type-check timeout | インライン `LinearGradient` が型推論を爆発させる | `private static let gradient` として切り出し |
+| `cos` ambiguous reference | `CGFloat` 変数に `Double` 引数の `cos()` → 型推論失敗 | `CGFloat(cos(a))` と明示キャスト |

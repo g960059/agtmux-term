@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-12 -12 24 24">
+  <g fill="#D97749">
+    <rect x="-1.5" y="-10.5" width="3" height="10.5" rx="1.5"/>
+    <rect x="-1.5" y="-10.5" width="3" height="10.5" rx="1.5" transform="rotate(45)"/>
+    <rect x="-1.5" y="-10.5" width="3" height="10.5" rx="1.5" transform="rotate(90)"/>
+    <rect x="-1.5" y="-10.5" width="3" height="10.5" rx="1.5" transform="rotate(135)"/>
+    <rect x="-1.5" y="-10.5" width="3" height="10.5" rx="1.5" transform="rotate(180)"/>
+    <rect x="-1.5" y="-10.5" width="3" height="10.5" rx="1.5" transform="rotate(225)"/>
+    <rect x="-1.5" y="-10.5" width="3" height="10.5" rx="1.5" transform="rotate(270)"/>
+    <rect x="-1.5" y="-10.5" width="3" height="10.5" rx="1.5" transform="rotate(315)"/>
+  </g>
+</svg>

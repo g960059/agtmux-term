@@ -84,14 +84,14 @@ actor RemoteTmuxClient {
                 let paneId      = fields[0]
                 let sessionName = fields[1]
                 let windowId    = fields[2]
-                let cwd         = fields.count >= 4 ? fields[3] : nil
+                let currentPath  = fields.count >= 4 ? fields[3] : nil
                 guard !paneId.isEmpty, !sessionName.isEmpty, !windowId.isEmpty else { return nil }
                 return AgtmuxPane(source: source,
                                   paneId: paneId,
                                   sessionName: sessionName,
                                   windowId: windowId,
                                   activityState: .unknown,
-                                  cwd: cwd)
+                                  currentPath: currentPath)
             }
     }
 }

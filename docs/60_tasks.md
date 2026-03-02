@@ -253,93 +253,123 @@
 ## Phase 3b: SSH Remote tmux
 
 ### T-015 — RemoteHostsConfig.swift — hosts.json ローダー
-- **Status**: TODO
+- **Status**: DONE
 - **Priority**: P1
 - **Phase**: 3b
-- **Description**: `~/.config/agtmux-term/hosts.json` を読み込む `RemoteHost` / `HostsConfig` モデルと loader。
-  ファイルが存在しない場合は `HostsConfig(hosts: [])` を返す（エラーはログ出力のみ）。
-- **Acceptance Criteria**:
-  - [ ] `RemoteHost`: id, displayName?, hostname, user?, transport(.ssh/.mosh), sshTarget computed
-  - [ ] `HostsConfig.load()` が `~/.config/agtmux-term/hosts.json` を decode する
-  - [ ] ファイル未存在時は空 hosts を返す（クラッシュしない）
-  - [ ] JSON parse エラー時は `fputs` / `NSLog` でログ出力し、空 hosts を返す
+- **Notes**: `Sources/AgtmuxTerm/RemoteHostsConfig.swift` として実装済み（2026-03-01）
 
 ### T-016 — DaemonModels.swift — source フィールド追加
-- **Status**: TODO
+- **Status**: DONE
 - **Priority**: P1
 - **Phase**: 3b
-- **Depends**: T-015
-- **Description**: `AgtmuxPane` に `source: String` を追加し、`Identifiable.id` を `"\(source):\(paneId)"` の複合キーに変更。
-  `tagged(source:)` factory と memberwise init を追加。
-- **Acceptance Criteria**:
-  - [ ] `AgtmuxPane.source: String` が存在する（JSON decode 対象外 — injection）
-  - [ ] `AgtmuxPane.id` が `"\(source):\(paneId)"` — ローカルと同一 paneId が衝突しない
-  - [ ] `tagged(source:) -> AgtmuxPane` factory が実装されている
-  - [ ] memberwise init（全フィールド明示）が実装されている（RemoteTmuxClient 用）
-  - [ ] `SidebarView` の selection 比較が `selectedPane?.id == pane.id` に更新されている
+- **Notes**: `AgtmuxPane.source` + composite id + `tagged()` factory 実装済み
 
 ### T-017 — AgtmuxDaemonClient.swift — ローカル pane に source タグ付け
-- **Status**: TODO
+- **Status**: DONE
 - **Priority**: P1
 - **Phase**: 3b
-- **Depends**: T-016
-- **Description**: `fetchSnapshot()` で decode 後、全 pane を `tagged(source: "local")` で変換して返す。
-- **Acceptance Criteria**:
-  - [ ] 返却される `AgtmuxPane` の `source` が全て `"local"`
-  - [ ] 既存の外部インタフェース（`fetchSnapshot() -> AgtmuxSnapshot`）は変更なし
 
 ### T-018 — RemoteTmuxClient.swift — SSH + tmux list-panes パーサ
-- **Status**: TODO
+- **Status**: DONE
 - **Priority**: P1
 - **Phase**: 3b
-- **Depends**: T-016
-- **Description**: `ssh -o BatchMode=yes -o ConnectTimeout=5 [user@]host tmux list-panes -a -F "..."` を
-  subprocess で実行し、tab-delimited 出力を `[AgtmuxPane]` に変換する actor。
-  agtmux 不要 — tmux のみで動作。
-- **Acceptance Criteria**:
-  - [ ] `RemoteTmuxClient(host: RemoteHost)` が初期化できる
-  - [ ] `fetchPanes() async throws -> [AgtmuxPane]` が実装されている
-  - [ ] SSH args: `-o BatchMode=yes -o ConnectTimeout=5 sshTarget tmux list-panes -a -F "#{pane_id}\t#{session_name}\t#{window_id}\t#{pane_current_path}"`
-  - [ ] 各 pane の `activityState = .unknown`、`presence = nil`、`conversationTitle = nil`
-  - [ ] `source = host.hostname`
-  - [ ] SSH auth 失敗 / タイムアウトは `DaemonError.processError` として throw
+- **Notes**: `Sources/AgtmuxTerm/RemoteTmuxClient.swift` として実装済み
 
 ### T-019 — AppViewModel.swift — マルチソースポーリング
-- **Status**: TODO
+- **Status**: DONE
 - **Priority**: P1
 - **Phase**: 3b
-- **Depends**: T-017, T-018
-- **Description**: HostsConfig を読み込み、ローカル + 各リモートホストを並行ポーリング。
-  `isOffline: Bool` を `offlineHosts: Set<String>` に置き換え。
-  `panesBySource` computed property を追加（SidebarView のグループ表示用）。
-- **Acceptance Criteria**:
-  - [ ] `offlineHosts: Set<String>` が `@Published` で存在する
-  - [ ] `isOffline: Bool { !offlineHosts.isEmpty }` が存在する
-  - [ ] `panesBySource: [(source: String, panes: [AgtmuxPane])]` computed property が存在する（local 先頭、remote アルファベット順）
-  - [ ] ポーリングループが `withTaskGroup` で全ソースを並行取得する
-  - [ ] ホスト個別の失敗は `offlineHosts` に追加、他ソースのデータに影響しない
+- **Notes**: `offlineHosts: Set<String>` + `panesBySource` + `withTaskGroup` 並行ポーリング実装済み
 
 ### T-020 — SidebarView.swift — ホスト別セクション表示
-- **Status**: TODO
+- **Status**: DONE
 - **Priority**: P1
 - **Phase**: 3b
-- **Depends**: T-019
-- **Description**: flat な pane 一覧をソース別グループに変更。`SourceHeaderView` を追加。
-- **Acceptance Criteria**:
-  - [ ] ソース（Local / リモートホスト名）ごとにセクションヘッダーが表示される
-  - [ ] `SourceHeaderView`: "Local" or displayName/hostname + offline 時にオレンジドット
-  - [ ] selection 比較が `pane.id`（複合キー）を使用
-  - [ ] hosts.json 未存在時は Local セクションのみ表示（既存動作と同じ）
 
 ### T-021 — CockpitView.swift — マルチトランスポートコマンドビルダー
-- **Status**: TODO
+- **Status**: DONE
 - **Priority**: P1
 - **Phase**: 3b
-- **Depends**: T-019, T-020
-- **Description**: `pane.source` と `RemoteHost.transport` に基づき、ローカル / SSH / mosh 用の
-  tmux attach コマンドを生成する。
+
+---
+
+### T-025 — バグ修正 + UI細改善
+- **Status**: DONE
+- **Priority**: P1
+- **Phase**: 5
+- **Description**: スクリーンショット確認後の修正。
+- **Changes**:
+  - `primaryLabel`: managed pane の title fallback を `conversationTitle ?? provider?.rawValue ?? paneId` に変更（`%280` → `"claude"` 表示）。NOTE: managed pane では `currentCmd` は使わない（Claude Code は Node.js プロセスのため `node` が返り非有益）
+  - age 表示: running 状態では非表示、idle/error/waiting のみ表示（「idle になってから X 時間」の意味を明確化）
+  - `ProviderIcon`: SF Symbol から colored rounded rectangle + 頭文字バッジに変更（C/✦/G/P）
+  - `attachCommand`: `tmux attach-session -t session:@window` → `tmux attach-session -t %paneId` に変更（直接 pane ターゲット）
+  - `shellEscaped()` helper は不要になったため削除
+
+---
+
+## Phase 5: GUI Redesign (agtmux v5 対応)
+
+### T-022 — DaemonModels.swift — agtmux v5 スキーマ対応
+- **Status**: DONE
+- **Priority**: P1
+- **Phase**: 5
+- **Description**: agtmux v5 の新 JSON フィールドを追加。`presence` のセマンティクス変更（"managed"/"unmanaged"）に対応。
 - **Acceptance Criteria**:
-  - [ ] `source == "local"` → `tmux attach-session -t 'session':@wid`（既存と同じ）
-  - [ ] `transport == .ssh` → `ssh -t sshTarget tmux attach-session -t 'session':@wid`
-  - [ ] `transport == .mosh` → `mosh sshTarget -- tmux attach-session -t 'session':@wid`
-  - [ ] `hostsMap: [String: RemoteHost]` が Coordinator に渡される（or shared singleton 経由）
+  - [x] `AgtmuxPane.Provider` enum: `claude | codex | gemini | copilot`
+  - [x] `AgtmuxPane.EvidenceMode` enum: `deterministic | heuristic | none`
+  - [x] `AgtmuxPane.PanePresence` enum: `managed | unmanaged`（`presence: String?` を置き換え）
+  - [x] `AgtmuxPane` に新フィールド追加: `provider: Provider?`, `evidenceMode: EvidenceMode`, `gitBranch: String?`, `currentCmd: String?`, `updatedAt: Date?`, `ageSecs: Int?`
+  - [x] `cwd: String?` → `currentPath: String?`（CodingKey: `"current_path"`）
+  - [x] `RawPane` の CodingKeys 更新（`current_path`, `git_branch`, `current_cmd`, `evidence_mode`, `updated_at`, `age_secs`）
+  - [x] `AgtmuxSnapshot.decode` でフィールドを正しくマップ
+  - [x] `tagged()` factory が全新フィールドを伝播する
+  - [x] `AgtmuxPane.isManaged: Bool { presence == .managed }` computed property 追加
+  - [x] `AppViewModel.filteredPanes` の `.managed` フィルタを `$0.isManaged` に修正
+
+### T-023 — AppViewModel.swift — panesBySession 追加
+- **Status**: DONE
+- **Priority**: P1
+- **Phase**: 5
+- **Depends**: T-022
+- **Description**: セッション別グループ表示用の computed property を追加。
+- **Acceptance Criteria**:
+  - [x] `SessionGroup` struct: `id`, `source`, `sessionName`, `panes: [AgtmuxPane]`, `representativeBranch`
+  - [x] `panesBySession: [(source: String, sessions: [SessionGroup])]` computed property 実装
+    - source 順: "local" 先頭、remote アルファベット順
+    - session 内 pane は `paneId` でソート
+  - [x] `representativeBranch`: managed pane 優先で非 nil な最初の gitBranch を返す
+
+### T-024 — SidebarView.swift — by-session リデザイン
+- **Status**: DONE
+- **Priority**: P1
+- **Phase**: 5
+- **Depends**: T-022, T-023
+- **Description**: セッション別表示にリデザイン。provider アイコン・age 表示・hover tooltip を追加。
+  window grouping なし。source header（ホスト名）の下にセッションブロックを並べる。
+- **Acceptance Criteria**:
+  - [x] `SessionBlockView`: セッションヘッダー（sessionName + gitBranch）+ flat pane 一覧
+  - [x] `SessionRowView` リデザイン（state indicator + primaryLabel + provider icon + age）
+  - [x] `FreshnessLabel`: `ageSecs` → "Xs" / "Xm" / "Xh"、常にグレー（色変化なし）
+  - [x] hover tooltip（`.help()`）: gitBranch / currentPath / evidenceMode / currentCmd
+  - [x] `SourceHeaderView` を維持（ホスト名ヘッダー、offline ドット）
+  - [x] `SidebarView.body` が `panesBySession` を使って SessionBlockView を ForEach
+
+---
+
+### T-026 — UI アイコン刷新（state indicator + provider icon）
+- **Status**: DONE
+- **Priority**: P1
+- **Phase**: 5
+- **Description**: state indicator をアイコン化（running=スピナー, waiting=手/省略記号, error=バツ, idle/unmanaged=なし）。provider icon を実際のブランドロゴ SVG に変更。session ヘッダーにフォルダアイコン追加。
+- **Changes**:
+  - `SpinnerView`: 新規。回転アニメーション付き部分円弧（running 状態用）
+  - `stateIndicator`: idle / unknown / unmanaged は非表示。running=緑スピナー、waitingApproval=`hand.raised.fill`(orange)、waitingInput=`ellipsis.circle.fill`(yellow)、error=`xmark.circle.fill`(red)
+  - `SessionBlockView`: session 名の前に `folder.fill` アイコン追加
+  - `ProviderIcon`: NSImage でバンドル内 SVG を読み込む方式に変更（macOS ネイティブ SVG 描画）
+    - `icon-claude.svg`: 8本腕アスタリスク（orange #D97749）
+    - `icon-openai.svg`: OpenAI スワールロゴ（simple-icons より、currentColor/template）
+    - `icon-gemini.svg`: Gemini 4尖星（simple-icons より、blue gradient）
+    - `icon-copilot.svg`: GitHub Copilot ゴーストアイコン（simple-icons より、currentColor/template）
+  - `Package.swift`: `.process("Resources")` 追加
+  - codex/copilot は `isTemplate = true` → ダーク/ライトモード自動追従
+- **Build**: `swift build` → Build complete!
