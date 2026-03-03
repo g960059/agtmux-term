@@ -235,3 +235,54 @@ Phase 4: Polish [Post-MVP]
 | R-004 | POC の AppViewModel が古い agtmux API を使っている | DaemonModels.swift（T-006a）に新 API スキーマを定義し、AppViewModel を適応させる |
 | R-005 | `tmux attach-session` が既存クライアントを共有セッションにする | 複数 agtmux-term ウィンドウを同一セッションに attach すると detach 時に両方切れる。Phase 4 で `tmux new-session -t` 方式に移行。MVP では既知の制限として許容 |
 | R-006 | surface lifecycle: `ghostty_surface_free()` 後の同一 NSView への再 attach | T-003 で `SurfaceView_AppKit.swift` の deinit パターンを確認し、CAMetalLayer の再利用可否を検証する |
+
+---
+
+# Phase 3 Implementation Plan
+
+> 設計確定: 2026-03-02
+
+## Overview
+
+```
+Step 0: Spikes（早期検証 — 全スパイク通過後に Step 1 へ）
+Step 1: ドメインモデル拡張（WindowGroup + SessionGroup 拡張）
+Step 2: サイドバー 4 階層化 + 管理 UI（T-031 + T-041）
+Step 3: macOS 通知 + Needs Attention（T-032 + T-033）
+Step 4: BSP LayoutNode + WorkspaceStore（T-034）
+Step 5: WorkspaceArea + TabBarView + LayoutNodeView（T-035）
+Step 6: SurfacePool + LinkedSessionManager（T-036 + T-037）
+Step 7: Mode A — Cross-session Compose（T-038）
+Step 8: TmuxControlMode + TmuxControlModeRegistry（T-039 + T-042）
+Step 9: Mode B — Within-window Sync（T-040）
+```
+
+## Step 0: Spikes
+
+### Spike A: 複数 surface 同時表示（30分）
+- 2つの GhosttyTerminalView を HSplitView に並べて crash しないか確認
+- **追加確認**: `ghostty_surface_set_occlusion(surface, true)` がレンダリングを止めるか（SurfacePool.backgrounded の実現可能性）
+
+### Spike B: linked session 独立表示（2時間）
+```bash
+tmux new-session -d -s "agtmux-test" -t backend-api
+tmux select-window -t "agtmux-test:0"
+tmux select-pane -t "agtmux-test:%250"
+tmux attach-session -t "agtmux-test"
+```
+確認: 2つのターミナルが同じ session の異なる pane を独立表示できるか（**Phase 3 最高リスク**）
+
+### Spike C: tmux control mode イベント（1時間）
+```bash
+tmux -C attach-session -t backend-api
+```
+確認: %layout-change のフォーマット、list-panes との組み合わせ
+
+**全スパイク成功 → Step 1 へ。Spike B 失敗 → 設計全体を再検討。**
+
+## Step 4 補足: WorkspaceStore.updateContainer()
+
+SplitContainerView は `@Binding var container: SplitContainer` を受け取るが、
+`LayoutNode` は enum のため SwiftUI 標準パスで Binding を取り出せない。
+WorkspaceStore に `updateContainer(id: UUID, to: SplitContainer)` を追加し、
+カスタム Binding 経由でツリーを更新する。

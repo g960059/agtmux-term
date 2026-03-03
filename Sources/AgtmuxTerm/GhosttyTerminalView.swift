@@ -38,10 +38,24 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     // MARK: - Lifecycle
 
     deinit {
+        // clearSurface() may have already freed the surface (SurfacePool GC path).
+        // If surface is still non-nil, free it here.
         if let surface {
             ghostty_surface_free(surface)
         }
         GhosttyApp.shared.releaseSurface(for: self)
+    }
+
+    /// Free the current surface and nil it out.
+    ///
+    /// Called by SurfacePool.gc() before releasing its strong reference.
+    /// Sets surface = nil so deinit won't double-free.
+    func clearSurface() {
+        if let s = surface {
+            ghostty_surface_free(s)
+            GhosttyApp.shared.releaseSurface(for: self)
+            surface = nil
+        }
     }
 
     /// Replace the current surface with a new one.

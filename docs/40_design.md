@@ -503,3 +503,131 @@ final class AppViewModel: ObservableObject {
     }
 }
 ```
+
+---
+
+# Phase 3 Design
+
+> 設計確定: 2026-03-02
+
+## Core Data Types
+
+### LayoutNode (BSP tree)
+
+```swift
+indirect enum LayoutNode: Identifiable, Equatable, Codable {
+    case leaf(LeafPane)
+    case split(SplitContainer)
+    var id: UUID { ... }
+}
+
+struct LeafPane: Identifiable, Equatable, Codable {
+    let id: UUID
+    let tmuxPaneID: String       // "%250"
+    let sessionName: String      // "backend-api"
+    let source: String           // "local" or hostname
+    var linkedSession: LinkedSessionState
+}
+
+enum LinkedSessionState: Codable, Equatable, Sendable {
+    case creating
+    case ready(String)           // "agtmux-{uuid}"
+    case failed(String)          // error description
+}
+
+struct SplitContainer: Identifiable, Equatable, Codable {
+    let id: UUID
+    let axis: SplitAxis          // .horizontal (左右) / .vertical (上下)
+    var ratio: CGFloat           // 0.1 〜 0.9
+    var first: LayoutNode
+    var second: LayoutNode
+    mutating func setRatio(_ r: CGFloat) { ratio = max(0.1, min(0.9, r)) }
+}
+
+enum SplitAxis: String, Codable, Equatable {
+    case horizontal   // Left | Right — divider is a vertical bar  (tmux split-window -h)
+    case vertical     // Top / Bottom — divider is a horizontal bar (tmux split-window -v)
+}
+```
+
+LayoutNode ユーティリティ:
+- `validateUniqueIDs()` — 重複 UUID を early-fail で検出
+- `replacing(leafID:with:depth:)` — depth < 256 ガード付き
+- `splitLeaf`, `removingLeaf`, `allLeafIDs`, `allPaneIDs`
+
+WorkspaceStore には `updateContainer(id:to:)` を追加して SplitContainerView の @Binding を提供する:
+```swift
+// SplitContainerView での利用
+SplitContainerView(
+    container: Binding(
+        get: { c },
+        set: { store.updateContainer(id: $0.id, to: $0) }
+    ), ...
+)
+```
+
+### SurfacePool
+
+状態遷移: `active → backgrounded → pendingGC (5s grace) → defunct`
+
+デュアルインデックス:
+- `leafIDsByPaneID: [String: Set<UUID>]` — %pane-exited イベント用
+- `leafIDByLinkedSession: [String: UUID]` — linked session 破棄用
+
+gc() はタイマー駆動（タブ切り替え時に呼ばない）。
+
+### TmuxCommandRunner / TmuxCommandError
+
+```swift
+actor TmuxCommandRunner {
+    static let shared = TmuxCommandRunner()
+    func run(_ args: [String], source: String) async throws -> String
+}
+
+enum TmuxCommandError: Error, Sendable {
+    case tmuxNotFound(source: String)
+    case permissionDenied(source: String, detail: String)
+    case sshFailed(host: String, code: Int32, stderr: String)
+    case failed(args: [String], code: Int32, stderr: String)
+    case timeout(args: [String])
+}
+```
+
+### TmuxControlMode + Registry
+
+```swift
+actor TmuxControlMode {
+    var events: AsyncStream<ControlModeEvent> { get }
+    enum ConnectionState { case connected, reconnecting(attempt: Int), degraded, stopped }
+    // 再接続: 1s/2s/4s/8s/16s backoff, maxRetries=5
+}
+
+@MainActor
+final class TmuxControlModeRegistry {
+    static let shared = TmuxControlModeRegistry()
+    func safeKillSession(_ name: String, source: String) async throws
+    // stop TmuxControlMode → kill-session の順序を保証
+}
+```
+
+WorkspaceController での AsyncStream 消費:
+```swift
+func startMonitoring(sessionName: String, source: String) {
+    controlModeTasks[sessionName] = Task { [weak self] in
+        for await event in await mode.events {
+            guard let self else { break }
+            await self.handle(event: event, sessionName: sessionName)
+        }
+    }
+}
+```
+
+## ghostty_surface_config_s フィールド（Phase 3 確認済み）
+
+| フィールド | 型 | 用途 |
+|-----------|-----|------|
+| platform_tag | ghostty_platform_tag_e | GHOSTTY_PLATFORM_MACOS |
+| platform.macos.nsview | void* | NSView* として渡す |
+| scale_factor | double | backingScaleFactor |
+| userdata | void* | GhosttyTerminalView* |
+| command | const char* | "tmux attach-session -t agtmux-{uuid}" |

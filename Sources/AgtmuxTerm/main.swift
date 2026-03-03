@@ -46,9 +46,17 @@ let viewModel: AppViewModel = MainActor.assumeIsolated {
     return vm
 }
 
-// 4. Build the SwiftUI view hierarchy wrapped in NSHostingView.
+// 4. Create WorkspaceStore with a default tab.
+let workspaceStore: WorkspaceStore = MainActor.assumeIsolated {
+    let store = WorkspaceStore()
+    store.createTab(title: "Main")
+    return store
+}
+
+// 5. Build the SwiftUI view hierarchy wrapped in NSHostingView.
 let cockpit = CockpitView()
     .environmentObject(viewModel)
+    .environment(workspaceStore)
 
 let hostingView = NSHostingView(rootView: cockpit)
 hostingView.frame = NSRect(x: 0, y: 0, width: 1080, height: 680)

@@ -400,3 +400,130 @@ agtmux 本体が v5 アーキテクチャに更新され、以下の新フィー
 | SwiftUI type-check timeout（Canvas closure） | Canvas 内に複雑な数式クロージャ → コンパイラがタイムアウト | `Canvas(renderer: codexRenderer)` として別メソッドに抽出 |
 | `LinearGradient` type-check timeout | インライン `LinearGradient` が型推論を爆発させる | `private static let gradient` として切り出し |
 | `cos` ambiguous reference | `CGFloat` 変数に `Double` 引数の `cos()` → 型推論失敗 | `CGFloat(cos(a))` と明示キャスト |
+
+---
+
+## 2026-03-02 — Phase 3 設計確定
+
+### 設計プロセス
+
+1. 6エージェントコンペ（Opus x4 + Codex x2）でアーキテクチャ案を収集
+2. /tmp にドラフト設計を書き出し（01-overview, 02-requirements, 03-design, 04-plan）
+3. 4エージェント並行レビュー（Codex x2 + Claude subagent x2）実施
+4. 全採択事項を /tmp に反映、docs/ に同期
+
+### 採択事項
+
+**Critical**
+- C-001: LeafPane に sessionName 追加 ✅
+- C-002: placePane() async 化（updateNSView 時点で linked session 確定）✅
+- C-003: WorkspaceStore Binding → updateContainer() パターン ✅
+- AC-006: Phase 3 は tmux→Ghostty 一方向のみ（resize-pane 書き戻しなし）✅
+
+**High**
+- LinkedSessionState enum（creating/ready/failed）✅
+- TmuxControlMode AsyncStream + exponential backoff reconnect ✅
+- TmuxCommandRunner 共有 actor（TmuxCommandError typed enum）✅
+- TmuxControlModeRegistry + safeKillSession（SIGPIPE 防止）✅
+- SplitContainerView @Binding + SplitContainer.setRatio() clamp ✅
+
+**Medium**
+- SurfacePool pendingGC + デュアルインデックス ✅
+- LayoutNode.validateUniqueIDs() + replacing() depth guard ✅
+- WorkspaceController AsyncStream 消費パターン ✅
+
+**UX 決定**
+- 管理 UI（作成・削除）は右クリックのみ（[+] ボタンなし）✅
+- 通知フォアグラウンドスキップ ✅
+- Opt+Cmd+Arrow キーボードリサイズ ✅
+
+**延期**
+- T-043 GhosttyBridge モジュール分離 → Phase 4
+
+### 次のアクション（2026-03-02 更新）
+
+- [x] T-027: Spike A DONE — 2つの GhosttyTerminalView が crash なしで共存。`ghostty_surface_set_occlusion(surface, visible: Bool)` 動作確認（`false`=backgrounded, QoS.utility, Metal DisplayLink 停止）
+- [x] T-028: Spike B DONE — linked session 独立表示確認。セッショングループ内で各セッションが **独立した current-window** を維持。pane 干渉なし（active pane は同 window 内で共有されるが許容範囲）
+- [x] T-029: Spike C DONE — tmux control mode イベント全種確認（%layout-change, %window-add, %window-pane-changed, %unlinked-window-close など）。layout 文字列フォーマット記録済み
+
+**→ 全スパイク成功。Step 1 (T-030) へ進む。**
+
+## 2026-03-03 — Phase 6 実装完了 + 4並列レビュー → Blocking 修正
+
+### Phase 6 完了サマリ (T-034〜T-042)
+
+| タスク | 内容 | 状態 |
+|-------|------|------|
+| T-034 | BSP LayoutNode + WorkspaceStore | DONE |
+| T-035 | WorkspaceArea + TabBarView + LayoutNodeView | DONE |
+| T-036 | SurfacePool (active/backgrounded/pendingGC/defunct) | DONE |
+| T-037 | LinkedSessionManager + TmuxCommandRunner | DONE |
+| T-038 | Mode A: Cross-session Compose | DONE |
+| T-039 | TmuxControlMode (AsyncStream + exponential backoff) | DONE |
+| T-040 | Mode B: Within-window Sync (TmuxLayoutConverter) | DONE |
+| T-041 | TmuxManager (session/window/pane CRUD) | DONE |
+| T-042 | TmuxControlModeRegistry + safeKillSession | DONE |
+
+### 4並列レビュー Round 1 — 全員 NO_GO
+
+4エージェント（Codex-role × 2, Claude-role × 2）がフェーズ6全ファイルをレビュー。
+主要 Blocking 指摘（T-043 で修正済み）:
+
+| ID | 指摘 | 修正 |
+|----|------|------|
+| B-α | readLoop busy-poll (availableData + 10ms sleep) | AsyncBytes push-based に置き換え |
+| B-β | safeKillSession TOCTOU (fire-and-forget Task) | await m.stop() 直接呼び出し |
+| B-γ | tabIdx stale capture → wrong tab overwrite | tabID: UUID キャプチャ + 再索引 |
+| B-δ | handle.write throws 無視 | try handle.write(contentsOf:) |
+| B-ε | dismantleNSView assumeIsolated crash | Task { @MainActor in } に変更 |
+| B-ζ | DividerHandle cursor.pop() 漏れ | onHover bool 分岐で pop() 追加 |
+| B-η | DragGesture global 座標ミスマッチ | translation-based + dragStartRatio state |
+| B-θ | AsyncStream events race + ObjectIdentifier struct 比較バグ | makeStream() で init 時単一 continuation |
+
+### Crash bug (T-044) 修正
+
+e2e testing 調査 (docs/research/e2e-testing.md) で根本原因特定:
+`ghostty_surface_new` が `nsView.window == nil` タイミングで呼ばれていた。
+`_GhosttyNSView.updateNSView` に `guard nsView.window != nil else { return }` を追加。
+
+### Round 2 レビュー結果 — 4/4 GO_WITH_CONDITIONS ✅
+
+| Reviewer | Verdict | 主な条件 |
+|----------|---------|---------|
+| R1 Concurrency & Memory Safety | GO_WITH_CONDITIONS | stopMonitoring async化 / GhosttyApp @MainActor |
+| R2 tmux subprocess & error handling | GO_WITH_CONDITIONS | stopMonitoring async化 / updateLeaf guard 修正 |
+| R3 SwiftUI & Ghostty surface lifecycle | GO_WITH_CONDITIONS | Timer MainActor isolation (Swift 6 future) |
+| R4 Architecture & BSP edge cases | GO_WITH_CONDITIONS | stopMonitoring async化 / updateLeaf guard 修正 |
+
+Round 1 全修正が全員により confirmed。2/4 GO 目標クリア。
+
+### Round 2 Blocking 条件の採択
+
+| 条件 | 採択 | 対応 |
+|------|------|------|
+| stopMonitoring fire-and-forget TOCTOU (R1/R2/R4 共通) | ✅ 採択 | T-043b: stopMonitoring async化 + await m.stop() |
+| updateLeaf activeTabIndex guard 意味不明 (R2/R4 共通) | ✅ 採択 | T-043b: guard 削除 |
+| GhosttyApp @MainActor なし (R1) | 採択→T-048 follow-up | Post-MVP |
+| TmuxControlMode single-use contract 未文書化 (R2) | 採択→T-049 follow-up | Post-MVP |
+
+### T-043b 修正後のビルド確認
+
+修正 + `swift build` → **Build complete! (24.32s)** ✅
+
+変更内容:
+- `TmuxControlModeRegistry.stopMonitoring`: `async` に変更、`modes.removeValue` 先行 → `await m.stop()` 後続
+- `WorkspaceStore.updateLeaf`: `guard tabs.indices.contains(activeTabIndex)` 削除（意味なし guard）
+
+---
+
+## 2026-03-02 — Phase 3 スパイク完了
+
+全3スパイク完了。設計上のリスクが解消された。
+
+| スパイク | 結果 | 重要知見 |
+|---------|------|---------|
+| A: 複数 surface | ✅ PASS | 2 surface 共存可能。`ghostty_surface_set_occlusion` 動作確認 |
+| B: linked session 独立表示 | ✅ PASS | セッショングループ内 current-window は独立。互いに干渉しない |
+| C: control mode イベント | ✅ PASS | `%layout-change` フォーマット・`list-panes` 形式など全て確認 |
+
+次フェーズ: T-030 (WindowGroup/SessionGroup) から T-032 (通知) まで実装開始。

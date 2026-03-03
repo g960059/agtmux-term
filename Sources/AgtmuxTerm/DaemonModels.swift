@@ -12,7 +12,9 @@ struct AgtmuxPane: Identifiable {
     let source: String          // "local" or remote hostname
     let paneId: String          // "%42" format — tmux pane id
     let sessionName: String
-    let windowId: String
+    let windowId: String        // "@42" format
+    let windowIndex: Int?       // tmux window index (1-based), nil when not available
+    let windowName: String?     // tmux window name, nil when not available
     let activityState: ActivityState
     let presence: PanePresence  // "managed" | "unmanaged"
     let provider: Provider?     // which AI agent, if any
@@ -29,6 +31,8 @@ struct AgtmuxPane: Identifiable {
          paneId: String,
          sessionName: String,
          windowId: String,
+         windowIndex: Int? = nil,
+         windowName: String? = nil,
          activityState: ActivityState = .unknown,
          presence: PanePresence = .unmanaged,
          provider: Provider? = nil,
@@ -43,6 +47,8 @@ struct AgtmuxPane: Identifiable {
         self.paneId            = paneId
         self.sessionName       = sessionName
         self.windowId          = windowId
+        self.windowIndex       = windowIndex
+        self.windowName        = windowName
         self.activityState     = activityState
         self.presence          = presence
         self.provider          = provider
@@ -131,6 +137,8 @@ extension AgtmuxPane {
                    paneId: paneId,
                    sessionName: sessionName,
                    windowId: windowId,
+                   windowIndex: windowIndex,
+                   windowName: windowName,
                    activityState: activityState,
                    presence: presence,
                    provider: provider,
@@ -161,6 +169,8 @@ struct AgtmuxSnapshot {
                        paneId: dto.paneId,
                        sessionName: dto.sessionName,
                        windowId: dto.windowId,
+                       windowIndex: dto.windowIndex,
+                       windowName: dto.windowName,
                        activityState: dto.activityState ?? .unknown,
                        presence: dto.presence ?? .unmanaged,
                        provider: dto.provider,
@@ -187,6 +197,8 @@ private struct RawPane: Decodable {
     let paneId: String
     let sessionName: String
     let windowId: String
+    let windowIndex: Int?
+    let windowName: String?
     let activityState: AgtmuxPane.ActivityState?
     let presence: AgtmuxPane.PanePresence?
     let provider: AgtmuxPane.Provider?
@@ -202,6 +214,8 @@ private struct RawPane: Decodable {
         case paneId            = "pane_id"
         case sessionName       = "session_name"
         case windowId          = "window_id"
+        case windowIndex       = "window_index"
+        case windowName        = "window_name"
         case activityState     = "activity_state"
         case presence
         case provider

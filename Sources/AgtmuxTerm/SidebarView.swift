@@ -10,10 +10,24 @@ struct FilterBarView: View {
         HStack(spacing: 0) {
             ForEach(StatusFilter.allCases, id: \.self) { filter in
                 Button(action: { viewModel.statusFilter = filter }) {
-                    Text(filter.displayName)
-                        .font(.system(size: 12, weight: viewModel.statusFilter == filter ? .semibold : .regular))
-                        .padding(.vertical, 5)
-                        .padding(.horizontal, 10)
+                    ZStack(alignment: .topTrailing) {
+                        Text(filter.displayName)
+                            .font(.system(size: 12, weight: viewModel.statusFilter == filter ? .semibold : .regular))
+                            .padding(.vertical, 5)
+                            .padding(.horizontal, 10)
+
+                        // Attention badge — only on the .attention tab, only when count > 0
+                        if filter == .attention, viewModel.attentionCount > 0 {
+                            Text("\(viewModel.attentionCount)")
+                                .font(.system(size: 8, weight: .bold))
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 3)
+                                .padding(.vertical, 1)
+                                .background(Color.accentColor)
+                                .clipShape(Capsule())
+                                .offset(x: 4, y: -2)
+                        }
+                    }
                 }
                 .buttonStyle(.plain)
                 .background(
@@ -33,10 +47,13 @@ struct FilterBarView: View {
 // MARK: - SourceHeaderView
 
 /// Section header for a source (local or a remote host).
+/// Right-click → New Session.
 struct SourceHeaderView: View {
     let source: String
     let displayName: String?
     let isOffline: Bool
+
+    @EnvironmentObject private var viewModel: AppViewModel
 
     var label: String {
         if source == "local" { return "Local" }
@@ -61,20 +78,28 @@ struct SourceHeaderView: View {
         .padding(.horizontal, 12)
         .padding(.top, 8)
         .padding(.bottom, 2)
+        .contextMenu {
+            Button("New Session") {
+                TmuxManager.shared.createSession(source: source, viewModel: viewModel)
+            }
+        }
     }
 }
 
 // MARK: - SessionBlockView
 
-/// A session block: header row (folder icon + name + branch) followed by a flat list of pane rows.
+/// A session block: session header + window sub-blocks.
+/// Right-click → New Window / Kill Session.
 struct SessionBlockView: View {
     let session: SessionGroup
-    @Binding var selectedPaneId: String?
+    let selectedPaneId: String?
     let onSelect: (AgtmuxPane) -> Void
+
+    @EnvironmentObject private var viewModel: AppViewModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
-            // Session header — folder icon + session name + branch
+            // Session header
             HStack(spacing: 5) {
                 Image(systemName: "folder.fill")
                     .font(.system(size: 10))
@@ -88,44 +113,140 @@ struct SessionBlockView: View {
 
                 Spacer(minLength: 4)
 
+                WindowStateBadge(panes: session.panes)
+
                 if let branch = session.representativeBranch {
                     Text(branch)
                         .font(.system(size: 10))
                         .foregroundColor(.secondary)
                         .lineLimit(1)
                         .truncationMode(.head)
-                        .frame(maxWidth: 120, alignment: .trailing)
+                        .frame(maxWidth: 100, alignment: .trailing)
                 }
             }
             .padding(.horizontal, 12)
             .padding(.top, 6)
             .padding(.bottom, 2)
+            .contextMenu {
+                Button("New Window") {
+                    TmuxManager.shared.createWindow(
+                        sessionName: session.sessionName, source: session.source, viewModel: viewModel)
+                }
+                Divider()
+                Button("Kill Session", role: .destructive) {
+                    TmuxManager.shared.killSession(
+                        session.sessionName, source: session.source, viewModel: viewModel)
+                }
+            }
 
-            // Pane rows
-            ForEach(session.panes) { pane in
-                SessionRowView(
-                    pane: pane,
-                    isSelected: selectedPaneId == pane.id
+            // Window sub-blocks
+            ForEach(session.windows) { window in
+                WindowBlockView(
+                    window: window,
+                    selectedPaneId: selectedPaneId,
+                    onSelect: onSelect
                 )
-                .contentShape(Rectangle())
-                .onTapGesture { onSelect(pane) }
             }
         }
     }
 }
 
-// MARK: - SessionRowView
+// MARK: - WindowBlockView
+
+/// A collapsible window block: window header + pane rows.
+/// Right-click → New Pane / Kill Window.
+struct WindowBlockView: View {
+    let window: WindowGroup
+    let selectedPaneId: String?
+    let onSelect: (AgtmuxPane) -> Void
+
+    @State private var isExpanded: Bool = true
+    @EnvironmentObject private var viewModel: AppViewModel
+    @Environment(WorkspaceStore.self) private var workspaceStore
+
+    var windowLabel: String {
+        if let name = window.windowName, !name.isEmpty {
+            if let idx = window.windowIndex { return "\(idx): \(name)" }
+            return name
+        }
+        return window.windowId
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 1) {
+            // Window header row
+            HStack(spacing: 4) {
+                Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                    .font(.system(size: 8, weight: .medium))
+                    .foregroundColor(.secondary)
+                    .frame(width: 10)
+
+                Image(systemName: "terminal")
+                    .font(.system(size: 9))
+                    .foregroundColor(.secondary)
+
+                Text(windowLabel)
+                    .font(.system(size: 11))
+                    .foregroundColor(.primary.opacity(0.6))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+
+                Spacer(minLength: 4)
+
+                WindowStateBadge(panes: window.panes)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 3)
+            .contentShape(Rectangle())
+            .onTapGesture { isExpanded.toggle() }
+            .contextMenu {
+                Button("Open in Workspace") {
+                    Task { await workspaceStore.placeWindow(window) }
+                }
+                Divider()
+                Button("New Pane") {
+                    if let pane = window.panes.first {
+                        TmuxManager.shared.createPane(
+                            pane.paneId, source: window.source, viewModel: viewModel)
+                    }
+                }
+                Divider()
+                Button("Kill Window", role: .destructive) {
+                    TmuxManager.shared.killWindow(
+                        window.windowId, sessionName: window.sessionName,
+                        source: window.source, viewModel: viewModel)
+                }
+            }
+
+            // Pane rows (collapsible)
+            if isExpanded {
+                ForEach(window.panes) { pane in
+                    PaneRowView(
+                        pane: pane,
+                        isSelected: selectedPaneId == pane.id
+                    )
+                    .contentShape(Rectangle())
+                    .onTapGesture { onSelect(pane) }
+                }
+            }
+        }
+    }
+}
+
+// MARK: - PaneRowView
 
 /// A single row representing one tmux pane.
-struct SessionRowView: View {
+/// Right-click → Kill Pane.
+struct PaneRowView: View {
     let pane: AgtmuxPane
     let isSelected: Bool
 
     @State private var isHovered = false
+    @EnvironmentObject private var viewModel: AppViewModel
 
     var body: some View {
         HStack(spacing: 8) {
-            // Activity state indicator (fixed-width slot for alignment)
+            // Activity state indicator (fixed-width slot)
             stateIndicator
                 .frame(width: 12, height: 12)
 
@@ -152,18 +273,24 @@ struct SessionRowView: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 5)
+        .padding(.leading, 8)   // extra indent inside window block
         .background(isSelected ? Color.accentColor.opacity(0.12) : Color.clear)
         .cornerRadius(6)
         .help(tooltipText)
         .onHover { isHovered = $0 }
+        .contextMenu {
+            Button("Kill Pane", role: .destructive) {
+                TmuxManager.shared.killPane(pane.paneId, source: pane.source, viewModel: viewModel)
+            }
+        }
     }
 
-    /// State indicator slot:
+    /// State indicator:
     ///   running         → green spinner
     ///   waitingApproval → orange raised-hand icon
     ///   waitingInput    → yellow ellipsis-circle icon
     ///   error           → red xmark-circle icon
-    ///   idle / unknown / unmanaged → empty (no dot)
+    ///   idle / unknown / unmanaged → empty
     @ViewBuilder
     private var stateIndicator: some View {
         if pane.isManaged {
@@ -202,6 +329,49 @@ struct SessionRowView: View {
     }
 }
 
+// MARK: - WindowStateBadge
+
+/// Compact badge row for running/attention counts within a window or session.
+struct WindowStateBadge: View {
+    let panes: [AgtmuxPane]
+
+    private var runningCount: Int {
+        panes.filter { $0.activityState == .running }.count
+    }
+
+    private var attentionCount: Int {
+        panes.filter { $0.needsAttention }.count
+    }
+
+    var body: some View {
+        HStack(spacing: 4) {
+            if runningCount > 0 {
+                StatBadge(count: runningCount, color: .green)
+            }
+            if attentionCount > 0 {
+                StatBadge(count: attentionCount, color: Color.accentColor)
+            }
+        }
+    }
+}
+
+/// A single colored dot + count badge (used in sidebar hierarchy rows).
+private struct StatBadge: View {
+    let count: Int
+    let color: Color
+
+    var body: some View {
+        HStack(spacing: 2) {
+            Circle()
+                .fill(color)
+                .frame(width: 5, height: 5)
+            Text("\(count)")
+                .font(.system(size: 9).monospacedDigit())
+                .foregroundColor(.secondary)
+        }
+    }
+}
+
 // MARK: - SpinnerView
 
 /// Continuously rotating arc — used for the "running" activity state.
@@ -228,7 +398,6 @@ struct SpinnerView: View {
 // MARK: - ProviderIcon
 
 /// Brand-accurate SVG icon for each AI provider.
-/// Loaded from bundled SVG resources via NSImage.
 struct ProviderIcon: View {
     let provider: AgtmuxPane.Provider
     var size: CGFloat = 16
@@ -245,10 +414,6 @@ struct ProviderIcon: View {
 }
 
 private extension AgtmuxPane.Provider {
-    /// Load the bundled SVG for this provider.
-    /// - `currentColor` SVGs (openai, copilot) are returned as template images
-    ///   so they automatically adapt to light/dark mode (label color).
-    /// - Colored SVGs (claude, gemini) are returned as-is.
     var svgImage: NSImage? {
         guard let url = Bundle.module.url(forResource: svgResourceName, withExtension: "svg"),
               let img = NSImage(contentsOf: url) else { return nil }
@@ -265,7 +430,6 @@ private extension AgtmuxPane.Provider {
         }
     }
 
-    /// Template rendering makes `currentColor` icons follow the system label color.
     private var usesTemplateRendering: Bool {
         switch self {
         case .claude, .gemini: return false
@@ -276,7 +440,7 @@ private extension AgtmuxPane.Provider {
 
 // MARK: - FreshnessLabel
 
-/// Elapsed time since last daemon update. Always gray — no color-coding.
+/// Elapsed time since last daemon update.
 struct FreshnessLabel: View {
     let ageSecs: Int
 
@@ -297,9 +461,10 @@ struct FreshnessLabel: View {
 
 // MARK: - SidebarView
 
-/// Scrollable pane list with filter bar, grouped by source → session.
+/// Scrollable pane list with filter bar, grouped by source → session → window → pane.
 struct SidebarView: View {
     @EnvironmentObject var viewModel: AppViewModel
+    @Environment(WorkspaceStore.self) private var workspaceStore
 
     var body: some View {
         VStack(spacing: 0) {
@@ -318,11 +483,11 @@ struct SidebarView: View {
                         ForEach(group.sessions) { session in
                             SessionBlockView(
                                 session: session,
-                                selectedPaneId: Binding(
-                                    get: { viewModel.selectedPane?.id },
-                                    set: { _ in }
-                                ),
-                                onSelect: { viewModel.selectPane($0) }
+                                selectedPaneId: viewModel.selectedPane?.id,
+                                onSelect: { pane in
+                                    viewModel.selectPane(pane)
+                                    Task { await workspaceStore.placePane(pane) }
+                                }
                             )
                         }
                     }

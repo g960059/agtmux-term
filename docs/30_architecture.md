@@ -161,3 +161,87 @@ void ghostty_surface_ime_point(ghostty_surface_t, double* x, double* y,
 ```
 
 **フレームレート**: libghostty 内部 8ms タイマー自律駆動（≈125fps）。Swift 側は `wakeup_cb` を受け取り `ghostty_app_tick()` を呼ぶだけ。
+
+---
+
+# Phase 3 Architecture
+
+> 設計確定: 2026-03-02
+
+## Phase 3 System Overview
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│  NSWindow                                                               │
+│  ┌──────────────┐  ┌──────────────────────────────────────────────────┐ │
+│  │  SidebarView │  │  WorkspaceArea                                   │ │
+│  │  4階層ツリー  │  │  TabBar + LayoutNodeView (BSP recursive)         │ │
+│  │  right-click │  │  ┌──────────────┬────────────────────────────┐   │ │
+│  │  管理メニュー  │  │  │ Tile %250    │ SplitContainer (.h)        │   │ │
+│  └──────────────┘  │  │ backend-api  │ ┌──────────┬───────────┐   │   │ │
+│                    │  │             │ │ Tile %303│ Tile %412 │   │   │ │
+│                    │  └──────────────┴─┴──────────┴───────────┴───┘   │ │
+│                    └──────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────────────────┘
+
+Data flow:
+  AgtmuxDaemonClient  ──poll──► AppViewModel ──► SidebarView
+  RemoteTmuxClient    ──poll──►
+  TmuxControlMode     ──AsyncStream──► WorkspaceController ──► LayoutNode mutation
+  WorkspaceController ────────────────────────────────────► SurfacePool
+  SurfacePool ─────────────────────────────────────────────► GhosttyTerminalView
+```
+
+## Phase 3 Layer Structure
+
+### Layer 1: tmux 状態取得（拡張）
+```
+AgtmuxDaemonClient   → [AgtmuxPane]  (agtmux JSON)
+RemoteTmuxClient     → [AgtmuxPane]  (SSH)
+TmuxControlMode      → AsyncStream<ControlModeEvent>  [NEW]
+```
+
+### Layer 2: ドメインモデル（拡張）
+```
+WindowGroup          - windowId, windowIndex, windowName, panes: [AgtmuxPane]  [NEW]
+SessionGroup         - sessionName, windows: [WindowGroup]  [拡張: windows 追加]
+SourceGroup          - source, sessions: [SessionGroup]  (既存)
+```
+
+### Layer 3: レイアウトモデル（全て新規）
+```
+LayoutNode           - BSP tree (value type, indirect enum)
+WorkspaceTab         - id, root: LayoutNode, focusedLeafID: UUID?
+WorkspaceStore       - tabs: [WorkspaceTab], activeTabIndex: Int  (@Observable)
+```
+
+### Layer 4: Surface 管理（新規）
+```
+SurfacePool          - LeafPane.id → ManagedSurface  (active/backgrounded/pendingGC/defunct)
+LinkedSessionManager - linked session 作成・破棄
+TmuxCommandRunner    - 共有 tmux コマンド実行 actor
+TmuxManager          - session/window/pane 作成・削除
+TmuxControlModeRegistry - TmuxControlMode のライフサイクル管理
+```
+
+### Layer 5: UI（拡張）
+```
+SidebarView          - 4階層ツリー + 右クリック管理メニュー  [拡張]
+TabBarView           - WorkspaceTab 一覧  [NEW]
+LayoutNodeView       - BSP を再帰的にレンダリング  [NEW]
+GhosttyPaneTile      - NSViewRepresentable bridge (1 tile = 1 surface)  [NEW]
+NotificationManager  - UNUserNotificationCenter  [NEW]
+WorkspaceController  - TmuxControlMode events → LayoutNode mutation  [NEW]
+```
+
+## Key Design Decisions (Phase 3)
+
+| 判断 | 選択 | 理由 |
+|------|------|------|
+| BSP エンジン | value type (indirect enum) | SwiftUI diffing・Codable・undo が trivial |
+| linked session | 使う | 各 surface が独立した tmux client として任意 pane を表示 |
+| TmuxControlMode events | AsyncStream | コールバックより型安全、backpressure あり |
+| SurfacePool gc | タイマー駆動 | タブ切り替え時に同期削除しない（5秒 grace period） |
+| 管理 UI | 右クリックのみ | keyboard-first ユーザーに [+] ボタンは不要 |
+| kill-session 順序 | stop TmuxControlMode → kill | SIGPIPE 防止 |
+| Phase 3 sync 方向 | tmux → Ghostty のみ | bidirectional sync は Phase 4 以降 |
