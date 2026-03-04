@@ -35,6 +35,8 @@ final class AppViewModel: ObservableObject {
     /// Set of source identifiers that are currently unreachable ("local" or hostname).
     @Published var offlineHosts: Set<String> = []
     @Published var statusFilter: StatusFilter = .all
+    @Published private(set) var pinnedPaneKeys: Set<String> = []
+    @Published private(set) var paneDisplayTitleOverrides: [String: String] = [:]
 
     /// True if any source is offline.
     var isOffline: Bool { !offlineHosts.isEmpty }
@@ -96,8 +98,69 @@ final class AppViewModel: ObservableObject {
         case .all:       return visible
         case .managed:   return visible.filter { $0.isManaged }
         case .attention: return visible.filter { $0.needsAttention }
-        case .pinned:    return visible.filter { $0.isPinned }
+        case .pinned:    return visible.filter { isPanePinned($0) }
         }
+    }
+
+    // MARK: - Pinning
+
+    func isPanePinned(_ pane: AgtmuxPane) -> Bool {
+        pinnedPaneKeys.contains(paneIdentityKey(for: pane))
+    }
+
+    func areAllPanesPinned(in window: WindowGroup) -> Bool {
+        guard !window.panes.isEmpty else { return false }
+        return window.panes.allSatisfy { isPanePinned($0) }
+    }
+
+    func areAllPanesPinned(in session: SessionGroup) -> Bool {
+        let panes = session.panes
+        guard !panes.isEmpty else { return false }
+        return panes.allSatisfy { isPanePinned($0) }
+    }
+
+    func setPanePinned(_ pane: AgtmuxPane, pinned: Bool) {
+        let key = paneIdentityKey(for: pane)
+        if pinned {
+            pinnedPaneKeys.insert(key)
+        } else {
+            pinnedPaneKeys.remove(key)
+        }
+    }
+
+    func setWindowPinned(_ window: WindowGroup, pinned: Bool) {
+        for pane in window.panes {
+            setPanePinned(pane, pinned: pinned)
+        }
+    }
+
+    func setSessionPinned(_ session: SessionGroup, pinned: Bool) {
+        for pane in session.panes {
+            setPanePinned(pane, pinned: pinned)
+        }
+    }
+
+    func paneDisplayTitle(for pane: AgtmuxPane) -> String {
+        let key = paneIdentityKey(for: pane)
+        if let overridden = paneDisplayTitleOverrides[key],
+           !overridden.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return overridden
+        }
+        return pane.primaryLabel
+    }
+
+    func setPaneDisplayTitleOverride(_ title: String?, for pane: AgtmuxPane) {
+        let key = paneIdentityKey(for: pane)
+        let trimmed = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if trimmed.isEmpty {
+            paneDisplayTitleOverrides.removeValue(forKey: key)
+        } else {
+            paneDisplayTitleOverrides[key] = trimmed
+        }
+    }
+
+    private func paneIdentityKey(for pane: AgtmuxPane) -> String {
+        "\(pane.source):\(pane.sessionName):\(pane.windowId):\(pane.paneId)"
     }
 
     // MARK: - Selection
@@ -304,6 +367,9 @@ final class AppViewModel: ObservableObject {
             .flatMap { lastSuccessfulPanesBySource[$0] ?? [] }
         let normalized = await normalizePanes(merged)
         panes = normalized
+        let livePaneKeys = Set(normalized.map(paneIdentityKey(for:)))
+        pinnedPaneKeys = pinnedPaneKeys.intersection(livePaneKeys)
+        paneDisplayTitleOverrides = paneDisplayTitleOverrides.filter { livePaneKeys.contains($0.key) }
         if let currentSelectedPane = selectedPane {
             selectedPane = normalized.first {
                 $0.source == currentSelectedPane.source

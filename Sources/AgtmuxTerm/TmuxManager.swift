@@ -28,7 +28,8 @@ final class TmuxManager {
     func createSession(source: String = "local", viewModel: AppViewModel) {
         guard let name = promptForName(title: "New Session",
                                        message: "Enter a name for the new tmux session:",
-                                       placeholder: "session-name"),
+                                       placeholder: "session-name",
+                                       actionTitle: "Create"),
               !name.isEmpty else { return }
         Task {
             do {
@@ -51,6 +52,30 @@ final class TmuxManager {
                 await viewModel.fetchAll()
             } catch {
                 showError(error, context: "kill session \(sessionName)")
+            }
+        }
+    }
+
+    /// Rename an existing tmux session.
+    func renameSession(_ sessionName: String, source: String = "local", viewModel: AppViewModel) {
+        guard let newName = promptForName(
+            title: "Rename Session",
+            message: "Enter a new name for session '\(sessionName)':",
+            placeholder: sessionName,
+            actionTitle: "Rename"
+        ),
+        !newName.isEmpty,
+        newName != sessionName else { return }
+
+        Task {
+            do {
+                _ = try await TmuxCommandRunner.shared.run(
+                    ["rename-session", "-t", sessionName, newName],
+                    source: source
+                )
+                await viewModel.fetchAll()
+            } catch {
+                showError(error, context: "rename session \(sessionName)")
             }
         }
     }
@@ -84,6 +109,30 @@ final class TmuxManager {
                 await viewModel.fetchAll()
             } catch {
                 showError(error, context: "kill window \(windowId)")
+            }
+        }
+    }
+
+    /// Rename a tmux window.
+    func renameWindow(_ windowId: String, sessionName: String,
+                      source: String = "local", viewModel: AppViewModel) {
+        guard let newName = promptForName(
+            title: "Rename Window",
+            message: "Enter a new name for window '\(windowId)':",
+            placeholder: "window-name",
+            actionTitle: "Rename"
+        ),
+        !newName.isEmpty else { return }
+
+        Task {
+            do {
+                _ = try await TmuxCommandRunner.shared.run(
+                    ["rename-window", "-t", "\(sessionName):\(windowId)", newName],
+                    source: source
+                )
+                await viewModel.fetchAll()
+            } catch {
+                showError(error, context: "rename window \(windowId)")
             }
         }
     }
@@ -124,14 +173,42 @@ final class TmuxManager {
         }
     }
 
+    /// Rename a pane title and reflect it immediately in sidebar display.
+    func renamePane(_ pane: AgtmuxPane, source: String = "local", viewModel: AppViewModel) {
+        let current = viewModel.paneDisplayTitle(for: pane)
+        guard let newTitle = promptForName(
+            title: "Rename Pane",
+            message: "Enter a new title for pane '\(pane.paneId)':",
+            placeholder: current,
+            actionTitle: "Rename"
+        ),
+        !newTitle.isEmpty else { return }
+
+        Task {
+            do {
+                _ = try await TmuxCommandRunner.shared.run(
+                    ["select-pane", "-t", pane.paneId, "-T", newTitle],
+                    source: source
+                )
+                viewModel.setPaneDisplayTitleOverride(newTitle, for: pane)
+                await viewModel.fetchAll()
+            } catch {
+                showError(error, context: "rename pane \(pane.paneId)")
+            }
+        }
+    }
+
     // MARK: - Helpers
 
     /// Present a text-field alert and return the entered string (nil if cancelled).
-    private func promptForName(title: String, message: String, placeholder: String) -> String? {
+    private func promptForName(title: String,
+                               message: String,
+                               placeholder: String,
+                               actionTitle: String) -> String? {
         let alert = NSAlert()
         alert.messageText = title
         alert.informativeText = message
-        alert.addButton(withTitle: "Create")
+        alert.addButton(withTitle: actionTitle)
         alert.addButton(withTitle: "Cancel")
 
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
@@ -140,7 +217,9 @@ final class TmuxManager {
         alert.window.initialFirstResponder = field
 
         let response = alert.runModal()
-        return response == .alertFirstButtonReturn ? field.stringValue : nil
+        guard response == .alertFirstButtonReturn else { return nil }
+        let value = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        return value
     }
 
     private func showError(_ error: Error, context: String) {

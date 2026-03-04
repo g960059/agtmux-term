@@ -1,8 +1,11 @@
 import AppKit
 import SwiftUI
-import Combine
 import GhosttyKit
 import AgtmuxTermCore
+
+final class NonDraggableHostingView<Content: View>: NSHostingView<Content> {
+    override var mouseDownCanMoveWindow: Bool { false }
+}
 
 // ---------------------------------------------------------------------------
 // Phase 2 entry point.
@@ -107,37 +110,28 @@ let cockpit = CockpitView()
     .environmentObject(viewModel)
     .environment(workspaceStore)
 
-let hostingView = NSHostingView(rootView: cockpit)
+let hostingView = NonDraggableHostingView(rootView: cockpit)
 hostingView.frame = NSRect(x: 0, y: 0, width: 1080, height: 680)
 
 // 5. Create the window.
 let window = NSWindow(
     contentRect: NSRect(x: 100, y: 100, width: 1080, height: 680),
-    styleMask: [.titled, .closable, .miniaturizable, .resizable],
+    styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
     backing: .buffered,
     defer: false
 )
-let baseWindowTitle = "agtmux-term"
-window.title = baseWindowTitle
+window.title = ""
+window.titleVisibility = .hidden
+window.titlebarAppearsTransparent = true
+window.isMovableByWindowBackground = false
+window.isOpaque = false
+window.backgroundColor = .clear
 window.contentView = hostingView
 window.makeKeyAndOrderFront(nil)
-
-// Keep NSWindow title in sync with the selected pane session.
-// This is the user-facing title source of truth (not terminal/OSC titles).
-let titleObserver: AnyCancellable = MainActor.assumeIsolated {
-    viewModel.$selectedPane.sink { pane in
-        if let pane {
-            window.title = pane.sessionName
-        } else {
-            window.title = baseWindowTitle
-        }
-    }
-}
 
 // 6. Run the app event loop.
 app.activate(ignoringOtherApps: true)
 app.run()
-_ = titleObserver
 
 if let xpcClient {
     let sema = DispatchSemaphore(value: 0)

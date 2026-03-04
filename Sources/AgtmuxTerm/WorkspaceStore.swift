@@ -297,7 +297,6 @@ final class WorkspaceStore {
             panes:       window.panes,
             monitorSessionName: window.sessionName
         )
-        startLayoutMonitoring(tabID: tabID)
     }
 
     /// Update the pane list stored for a tracked window (called by AppViewModel on poll).
@@ -367,6 +366,7 @@ final class WorkspaceStore {
 
         guard let focusedID = tabs[tabIdx].focusedLeafID,
               let currentLeaf = findLeaf(id: focusedID, in: tabs[tabIdx].root) else { return }
+        guard case .ready = currentLeaf.linkedSession else { return }
 
         let resolvedSessionName = tracked.panes.first(where: { $0.paneId == paneId })?.sessionName
             ?? currentLeaf.sessionName

@@ -85,9 +85,9 @@ final class GhosttyApp {
         // controls lifecycle, so we consume this action and do nothing.
         // Without this, libghostty falls back to NSApp.terminate() -> SIGTERM.
         //
-        // SET_TITLE is also consumed. User-facing window title is controlled by
-        // AppViewModel selection (selected pane session), not by terminal OSC/tmux.
-        // This avoids leaking internal linked-session names into the NSWindow title.
+        // SET_TITLE is also consumed. The host window hides the title text and uses
+        // workspace tabs as the user-facing title surface, so terminal OSC/tmux
+        // titles must never mutate NSWindow chrome.
         case GHOSTTY_ACTION_QUIT_TIMER:
             return true
         case GHOSTTY_ACTION_SET_TITLE:

@@ -1,54 +1,111 @@
+import AppKit
 import SwiftUI
 import AgtmuxTermCore
 
 private enum SidebarRowStyle {
-    static let hoverBackground = Color.white.opacity(0.10)
-    static let selectedBackground = Color.white.opacity(0.18)
-    static let cornerRadius: CGFloat = 6
+    static let rowFill = Color.white.opacity(0.045)
+    static let hoverBackground = Color.white.opacity(0.085)
+    static let hoverStroke = Color.white.opacity(0.16)
+    // Keep selection visually identical to hover so it feels persistent, not "blue-selected".
+    static let selectedBackground = hoverBackground
+    static let selectedStroke = hoverStroke
+    static let sidebarFill = Color(red: 0.10, green: 0.22, blue: 0.33).opacity(0.34)
+    static let sidebarDivider = Color.white.opacity(0.06)
+    static let cornerRadius: CGFloat = 9
 }
 
 // MARK: - FilterBarView
 
 /// Horizontal tab bar for switching between StatusFilter modes.
 struct FilterBarView: View {
+    let onToggleSidebar: () -> Void
     @EnvironmentObject var viewModel: AppViewModel
 
     var body: some View {
-        HStack(spacing: 0) {
-            ForEach(StatusFilter.allCases, id: \.self) { filter in
-                Button(action: { viewModel.statusFilter = filter }) {
-                    ZStack(alignment: .topTrailing) {
-                        Text(filter.displayName)
-                            .font(.system(size: 12, weight: viewModel.statusFilter == filter ? .semibold : .regular))
-                            .padding(.vertical, 5)
-                            .padding(.horizontal, 10)
+        HStack(spacing: 8) {
+            Button(action: onToggleSidebar) {
+                Image(systemName: "sidebar.leading")
+                    .font(.system(size: 12, weight: .semibold))
+                    .frame(width: 18, height: 18)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(Color.white.opacity(0.78))
+            .help("Toggle Sidebar")
 
-                        // Attention badge — only on the .attention tab, only when count > 0
-                        if filter == .attention, viewModel.attentionCount > 0 {
-                            Text("\(viewModel.attentionCount)")
-                                .font(.system(size: 8, weight: .bold))
-                                .foregroundColor(.white)
-                                .padding(.horizontal, 3)
-                                .padding(.vertical, 1)
-                                .background(Color.accentColor)
-                                .clipShape(Capsule())
-                                .offset(x: 4, y: -2)
-                        }
+            filterPill(isActive: viewModel.statusFilter == .managed) {
+                ProviderIcon(provider: .codex, size: 13)
+                    .frame(width: 13, height: 13)
+            } action: {
+                toggleFilter(.managed)
+            }
+            .help("Managed")
+
+            filterPill(isActive: viewModel.statusFilter == .attention) {
+                ZStack(alignment: .topTrailing) {
+                    Image(systemName: viewModel.statusFilter == .attention ? "bell.fill" : "bell")
+                        .font(.system(size: 12, weight: .semibold))
+                        .frame(width: 13, height: 13)
+                    if viewModel.attentionCount > 0 {
+                        Text("\(viewModel.attentionCount)")
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 3)
+                            .padding(.vertical, 1)
+                            .background(Color.accentColor)
+                            .clipShape(Capsule())
+                            .offset(x: 7, y: -6)
                     }
                 }
-                .buttonStyle(.plain)
-                .background(
-                    viewModel.statusFilter == filter
-                        ? Color.accentColor.opacity(0.15)
-                        : Color.clear
-                )
-                .cornerRadius(4)
+            } action: {
+                toggleFilter(.attention)
             }
-            Spacer()
+            .help("Attention")
+
+            filterPill(isActive: viewModel.statusFilter == .pinned) {
+                Image(systemName: viewModel.statusFilter == .pinned ? "pin.fill" : "pin")
+                    .font(.system(size: 12, weight: .semibold))
+                    .frame(width: 13, height: 13)
+            } action: {
+                toggleFilter(.pinned)
+            }
+            .help("Pinned")
+
+            Spacer(minLength: 0)
         }
         .padding(.horizontal, 8)
-        .padding(.vertical, 4)
+        .padding(.vertical, 6)
+        .background(Color.clear)
         .accessibilityIdentifier(AccessibilityID.sidebarFilterBar)
+    }
+
+    private func toggleFilter(_ filter: StatusFilter) {
+        if viewModel.statusFilter == filter {
+            viewModel.statusFilter = .all
+        } else {
+            viewModel.statusFilter = filter
+        }
+    }
+
+    private func filterPill<Content: View>(
+        isActive: Bool,
+        @ViewBuilder content: () -> Content,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            content()
+                .foregroundStyle(isActive ? Color.white.opacity(0.95) : Color.white.opacity(0.78))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(
+                    Capsule(style: .continuous)
+                        .fill(isActive ? SidebarRowStyle.selectedBackground : SidebarRowStyle.rowFill)
+                )
+                .overlay(
+                    Capsule(style: .continuous)
+                        .stroke(isActive ? SidebarRowStyle.selectedStroke : Color.clear, lineWidth: 1)
+                )
+        }
+        .buttonStyle(.plain)
     }
 }
 
@@ -71,8 +128,8 @@ struct SourceHeaderView: View {
     var body: some View {
         HStack(spacing: 6) {
             Text(label.uppercased())
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundColor(.secondary)
+                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                .foregroundStyle(Color.white.opacity(0.56))
 
             if isOffline {
                 Circle()
@@ -84,7 +141,7 @@ struct SourceHeaderView: View {
             Spacer()
         }
         .padding(.horizontal, 12)
-        .padding(.top, 8)
+        .padding(.top, 10)
         .padding(.bottom, 2)
         .contextMenu {
             Button("New Session") {
@@ -101,22 +158,25 @@ struct SourceHeaderView: View {
 struct SessionBlockView: View {
     let session: SessionGroup
     let selectedPaneId: String?
+    @Binding var highlightedRowID: String?
     let onSelect: (AgtmuxPane, AgtmuxTermCore.WindowGroup) -> Void
 
     @EnvironmentObject private var viewModel: AppViewModel
-    @State private var isHovered = false
+
+    private var rowID: String { "session:\(session.id)" }
+    private var isHighlighted: Bool { highlightedRowID == rowID }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
             // Session header
-            HStack(spacing: 5) {
-                Image(systemName: "folder.fill")
-                    .font(.system(size: 10))
-                    .foregroundColor(.secondary)
+            HStack(spacing: 7) {
+                Image(systemName: "folder")
+                    .font(.system(size: 10, weight: .regular))
+                    .foregroundStyle(Color.white.opacity(0.56))
 
                 Text(session.sessionName)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(.primary.opacity(0.7))
+                    .font(.system(size: 13, weight: .regular, design: .rounded))
+                    .foregroundStyle(Color.white.opacity(0.56))
                     .lineLimit(1)
                     .truncationMode(.tail)
 
@@ -126,30 +186,74 @@ struct SessionBlockView: View {
 
                 if let branch = session.representativeBranch {
                     Text(branch)
-                        .font(.system(size: 10))
-                        .foregroundColor(.secondary)
+                        .font(.system(size: 10, weight: .regular, design: .monospaced))
+                        .foregroundStyle(Color.white.opacity(0.56))
                         .lineLimit(1)
                         .truncationMode(.head)
                         .frame(maxWidth: 100, alignment: .trailing)
                 }
             }
-            .padding(.horizontal, 12)
-            .padding(.top, 6)
-            .padding(.bottom, 2)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(isHovered ? SidebarRowStyle.hoverBackground : Color.clear)
-            .cornerRadius(SidebarRowStyle.cornerRadius)
+            .background(
+                RoundedRectangle(cornerRadius: SidebarRowStyle.cornerRadius, style: .continuous)
+                    .fill(isHighlighted ? SidebarRowStyle.hoverBackground : Color.clear)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: SidebarRowStyle.cornerRadius, style: .continuous)
+                    .stroke(isHighlighted ? SidebarRowStyle.hoverStroke : Color.clear, lineWidth: 1)
+            )
             .contentShape(Rectangle())
-            .onHover { isHovered = $0 }
+            .onHover { hovering in
+                if hovering {
+                    highlightedRowID = rowID
+                } else if highlightedRowID == rowID {
+                    highlightedRowID = nil
+                }
+            }
+            .onTapGesture {
+                highlightedRowID = rowID
+                guard let window = session.windows.first,
+                      let pane = window.panes.first else { return }
+                onSelect(pane, window)
+            }
             .contextMenu {
-                Button("New Window") {
+                let allPinned = viewModel.areAllPanesPinned(in: session)
+                Button {
+                    guard let window = session.windows.first,
+                          let pane = window.panes.first else { return }
+                    onSelect(pane, window)
+                } label: {
+                    Label("Open", systemImage: "arrow.up.right.square")
+                }
+                Button {
+                    TmuxManager.shared.renameSession(
+                        session.sessionName,
+                        source: session.source,
+                        viewModel: viewModel
+                    )
+                } label: {
+                    Label("Rename Session", systemImage: "pencil")
+                }
+                Button {
+                    viewModel.setSessionPinned(session, pinned: !allPinned)
+                } label: {
+                    Label(allPinned ? "Unpin Session" : "Pin Session",
+                          systemImage: allPinned ? "pin.slash" : "pin")
+                }
+                Button {
                     TmuxManager.shared.createWindow(
                         sessionName: session.sessionName, source: session.source, viewModel: viewModel)
+                } label: {
+                    Label("New Window", systemImage: "plus.rectangle.on.rectangle")
                 }
                 Divider()
-                Button("Kill Session", role: .destructive) {
+                Button(role: .destructive) {
                     TmuxManager.shared.killSession(
                         session.sessionName, source: session.source, viewModel: viewModel)
+                } label: {
+                    Label("Kill Session", systemImage: "trash")
                 }
             }
 
@@ -158,6 +262,7 @@ struct SessionBlockView: View {
                 WindowBlockView(
                     window: window,
                     selectedPaneId: selectedPaneId,
+                    highlightedRowID: $highlightedRowID,
                     onSelect: onSelect
                 )
             }
@@ -172,12 +277,15 @@ struct SessionBlockView: View {
 struct WindowBlockView: View {
     let window: AgtmuxTermCore.WindowGroup
     let selectedPaneId: String?
+    @Binding var highlightedRowID: String?
     let onSelect: (AgtmuxPane, AgtmuxTermCore.WindowGroup) -> Void
 
     @State private var isExpanded: Bool = true
-    @State private var isHovered = false
     @EnvironmentObject private var viewModel: AppViewModel
     @Environment(WorkspaceStore.self) private var workspaceStore
+
+    private var rowID: String { "window:\(window.id)" }
+    private var isHighlighted: Bool { highlightedRowID == rowID }
 
     var windowLabel: String {
         if let name = window.windowName, !name.isEmpty {
@@ -190,19 +298,19 @@ struct WindowBlockView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
             // Window header row
-            HStack(spacing: 4) {
+            HStack(spacing: 6) {
                 Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                    .font(.system(size: 8, weight: .medium))
-                    .foregroundColor(.secondary)
+                    .font(.system(size: 8, weight: .regular))
+                    .foregroundStyle(Color.white.opacity(0.72))
                     .frame(width: 10)
 
                 Image(systemName: "terminal")
-                    .font(.system(size: 9))
-                    .foregroundColor(.secondary)
+                    .font(.system(size: 9, weight: .regular))
+                    .foregroundStyle(Color.white.opacity(0.72))
 
                 Text(windowLabel)
-                    .font(.system(size: 11))
-                    .foregroundColor(.primary.opacity(0.6))
+                    .font(.system(size: 12, weight: .regular, design: .rounded))
+                    .foregroundStyle(Color.white.opacity(0.56))
                     .lineLimit(1)
                     .truncationMode(.tail)
 
@@ -210,8 +318,8 @@ struct WindowBlockView: View {
 
                 WindowStateBadge(panes: window.panes)
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 3)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 4)
             .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityElement(children: .combine)
             .accessibilityIdentifier(
@@ -222,27 +330,73 @@ struct WindowBlockView: View {
                     windowID: window.windowId
                 )
             )
-            .background(isHovered ? SidebarRowStyle.hoverBackground : Color.clear)
-            .cornerRadius(SidebarRowStyle.cornerRadius)
+            .background(
+                RoundedRectangle(cornerRadius: SidebarRowStyle.cornerRadius, style: .continuous)
+                    .fill(isHighlighted ? SidebarRowStyle.hoverBackground : Color.clear)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: SidebarRowStyle.cornerRadius, style: .continuous)
+                    .stroke(isHighlighted ? SidebarRowStyle.hoverStroke : Color.clear, lineWidth: 1)
+            )
             .contentShape(Rectangle())
-            .onHover { isHovered = $0 }
-            .onTapGesture { isExpanded.toggle() }
+            .onHover { hovering in
+                if hovering {
+                    highlightedRowID = rowID
+                } else if highlightedRowID == rowID {
+                    highlightedRowID = nil
+                }
+            }
+            .onTapGesture {
+                highlightedRowID = rowID
+                isExpanded.toggle()
+            }
             .contextMenu {
-                Button("Open in Workspace") {
+                let allPinned = viewModel.areAllPanesPinned(in: window)
+                Button {
                     Task { await workspaceStore.placeWindow(window) }
+                } label: {
+                    Label("Open in Workspace", systemImage: "rectangle.3.group")
+                }
+                Button {
+                    TmuxManager.shared.renameWindow(
+                        window.windowId,
+                        sessionName: window.sessionName,
+                        source: window.source,
+                        viewModel: viewModel
+                    )
+                } label: {
+                    Label("Rename Window", systemImage: "pencil")
+                }
+                Button {
+                    viewModel.setWindowPinned(window, pinned: !allPinned)
+                } label: {
+                    Label(allPinned ? "Unpin Window" : "Pin Window",
+                          systemImage: allPinned ? "pin.slash" : "pin")
                 }
                 Divider()
-                Button("New Pane") {
+                Button {
                     if let pane = window.panes.first {
                         TmuxManager.shared.createPane(
                             pane.paneId, source: window.source, viewModel: viewModel)
                     }
+                } label: {
+                    Label("Split Right", systemImage: "rectangle.split.2x1")
+                }
+                Button {
+                    if let pane = window.panes.first {
+                        TmuxManager.shared.createPane(
+                            pane.paneId, splitAxis: .vertical, source: window.source, viewModel: viewModel)
+                    }
+                } label: {
+                    Label("Split Below", systemImage: "rectangle.split.1x2")
                 }
                 Divider()
-                Button("Kill Window", role: .destructive) {
+                Button(role: .destructive) {
                     TmuxManager.shared.killWindow(
                         window.windowId, sessionName: window.sessionName,
                         source: window.source, viewModel: viewModel)
+                } label: {
+                    Label("Kill Window", systemImage: "trash")
                 }
             }
 
@@ -251,7 +405,8 @@ struct WindowBlockView: View {
                 ForEach(window.panes) { pane in
                     PaneRowView(
                         pane: pane,
-                        isSelected: selectedPaneId == pane.id
+                        isSelected: selectedPaneId == pane.id,
+                        highlightedRowID: $highlightedRowID
                     )
                     .contentShape(Rectangle())
                     .accessibilityElement(children: .combine)
@@ -264,7 +419,10 @@ struct WindowBlockView: View {
                         )
                     )
                     .accessibilityValue(Text(selectedPaneId == pane.id ? "selected" : "unselected"))
-                    .onTapGesture { onSelect(pane, window) }
+                    .onTapGesture {
+                        highlightedRowID = "pane:\(pane.id)"
+                        onSelect(pane, window)
+                    }
                 }
             }
         }
@@ -278,22 +436,26 @@ struct WindowBlockView: View {
 struct PaneRowView: View {
     let pane: AgtmuxPane
     let isSelected: Bool
+    @Binding var highlightedRowID: String?
 
-    @State private var isHovered = false
     @EnvironmentObject private var viewModel: AppViewModel
+    @Environment(WorkspaceStore.self) private var workspaceStore
+
+    private var rowID: String { "pane:\(pane.id)" }
+    private var isHighlighted: Bool { highlightedRowID == rowID }
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 10) {
             // Activity state indicator (fixed-width slot)
             stateIndicator
-                .frame(width: 12, height: 12)
+                .frame(width: 10, height: 10)
 
             // Primary label
-            Text(pane.primaryLabel)
-                .font(.system(size: 13))
+            Text(viewModel.paneDisplayTitle(for: pane))
+                .font(.system(size: 13, weight: isSelected ? .semibold : .regular, design: .rounded))
                 .lineLimit(1)
                 .truncationMode(.tail)
-                .foregroundColor(pane.isManaged ? .primary : .secondary)
+                .foregroundStyle(pane.isManaged ? Color.white.opacity(0.95) : Color.white.opacity(0.82))
 
             Spacer()
 
@@ -310,24 +472,88 @@ struct PaneRowView: View {
             }
         }
         .padding(.horizontal, 10)
-        .padding(.vertical, 5)
-        .padding(.leading, 8)   // extra indent inside window block
+        .padding(.vertical, 6)
+        .padding(.leading, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(rowBackground)
-        .cornerRadius(SidebarRowStyle.cornerRadius)
+        .background(
+            RoundedRectangle(cornerRadius: SidebarRowStyle.cornerRadius, style: .continuous)
+                .fill(rowBackground)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: SidebarRowStyle.cornerRadius, style: .continuous)
+                .stroke(rowStroke, lineWidth: 1)
+        )
         .contentShape(Rectangle())
         .help(tooltipText)
-        .onHover { isHovered = $0 }
+        .onHover { hovering in
+            if hovering {
+                highlightedRowID = rowID
+            } else if highlightedRowID == rowID {
+                highlightedRowID = nil
+            }
+        }
         .contextMenu {
-            Button("Kill Pane", role: .destructive) {
+            let isPinned = viewModel.isPanePinned(pane)
+            Button {
+                viewModel.selectPane(pane)
+                Task { await workspaceStore.placePane(pane) }
+            } label: {
+                Label("Open", systemImage: "arrow.up.right.square")
+            }
+            Button {
+                TmuxManager.shared.renamePane(pane, source: pane.source, viewModel: viewModel)
+            } label: {
+                Label("Rename Pane", systemImage: "pencil")
+            }
+            Button {
+                viewModel.setPanePinned(pane, pinned: !isPinned)
+            } label: {
+                Label(isPinned ? "Unpin Pane" : "Pin Pane",
+                      systemImage: isPinned ? "pin.slash" : "pin")
+            }
+            Divider()
+            Button {
+                TmuxManager.shared.createPane(
+                    pane.paneId,
+                    splitAxis: .horizontal,
+                    source: pane.source,
+                    viewModel: viewModel
+                )
+            } label: {
+                Label("Split Right", systemImage: "rectangle.split.2x1")
+            }
+            Button {
+                TmuxManager.shared.createPane(
+                    pane.paneId,
+                    splitAxis: .vertical,
+                    source: pane.source,
+                    viewModel: viewModel
+                )
+            } label: {
+                Label("Split Below", systemImage: "rectangle.split.1x2")
+            }
+            Divider()
+            Button {
+                copyPanePath()
+            } label: {
+                Label("Copy Pane Path", systemImage: "doc.on.doc")
+            }
+            Divider()
+            Button(role: .destructive) {
                 TmuxManager.shared.killPane(pane.paneId, source: pane.source, viewModel: viewModel)
+            } label: {
+                Label("Kill Pane", systemImage: "trash")
             }
         }
     }
 
     private var rowBackground: Color {
-        if isSelected { return SidebarRowStyle.selectedBackground }
-        if isHovered { return SidebarRowStyle.hoverBackground }
+        if isSelected || isHighlighted { return SidebarRowStyle.selectedBackground }
+        return .clear
+    }
+
+    private var rowStroke: Color {
+        if isSelected || isHighlighted { return SidebarRowStyle.selectedStroke }
         return .clear
     }
 
@@ -373,6 +599,13 @@ struct PaneRowView: View {
         if let cmd = pane.currentCmd     { parts.append("cmd: \(cmd)") }
         return parts.joined(separator: "\n")
     }
+
+    private func copyPanePath() {
+        let value = "\(pane.source)/\(pane.sessionName)/\(pane.windowId)/\(pane.paneId)"
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(value, forType: .string)
+    }
 }
 
 // MARK: - WindowStateBadge
@@ -413,7 +646,7 @@ private struct StatBadge: View {
                 .frame(width: 5, height: 5)
             Text("\(count)")
                 .font(.system(size: 9).monospacedDigit())
-                .foregroundColor(.secondary)
+                .foregroundStyle(Color.white.opacity(0.72))
         }
     }
 }
@@ -497,8 +730,8 @@ struct FreshnessLabel: View {
 
     var body: some View {
         Text(formatted)
-            .font(.system(size: 10).monospacedDigit())
-            .foregroundColor(.secondary)
+            .font(.system(size: 11, weight: .regular, design: .rounded).monospacedDigit())
+            .foregroundStyle(Color.white.opacity(0.56))
     }
 
     private var formatted: String {
@@ -512,16 +745,14 @@ struct FreshnessLabel: View {
 
 // MARK: - SidebarView
 
-/// Scrollable pane list with filter bar, grouped by source → session → window → pane.
+/// Scrollable pane list, grouped by source → session → window → pane.
 struct SidebarView: View {
     @EnvironmentObject var viewModel: AppViewModel
     @Environment(WorkspaceStore.self) private var workspaceStore
+    @State private var highlightedRowID: String?
 
     var body: some View {
         VStack(spacing: 0) {
-            FilterBarView()
-            Divider()
-
             if viewModel.panesBySession.isEmpty {
                 sidebarEmptyState
             } else {
@@ -538,6 +769,7 @@ struct SidebarView: View {
                                 SessionBlockView(
                                     session: session,
                                     selectedPaneId: viewModel.selectedPane?.id,
+                                    highlightedRowID: $highlightedRowID,
                                     onSelect: { pane, window in
                                         viewModel.selectPane(pane)
                                         Task { await workspaceStore.placeWindow(window, preferredPaneID: pane.paneId) }
@@ -546,11 +778,13 @@ struct SidebarView: View {
                             }
                         }
                     }
-                    .padding(.vertical, 4)
-                    .padding(.horizontal, 4)
+                    .padding(.vertical, 6)
+                    .padding(.horizontal, 8)
                 }
             }
         }
+        .frame(maxHeight: .infinity, alignment: .top)
+        .background(Color.clear)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(AccessibilityID.sidebar)
     }
@@ -558,11 +792,11 @@ struct SidebarView: View {
     private var sidebarEmptyState: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("No panes loaded")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundColor(.secondary)
+                .font(.system(size: 13, weight: .semibold, design: .rounded))
+                .foregroundStyle(Color.white.opacity(0.82))
             Text(emptyStateDetail)
-                .font(.system(size: 11))
-                .foregroundColor(.secondary.opacity(0.9))
+                .font(.system(size: 12, weight: .regular, design: .rounded))
+                .foregroundStyle(Color.white.opacity(0.56))
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .padding(.horizontal, 12)

@@ -12,8 +12,6 @@ struct WorkspaceArea: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            TabBarView()
-            Divider()
             if let tab = store.activeTab,
                tab.root.leaves.contains(where: { !$0.tmuxPaneID.isEmpty }) {
                 @Bindable var bindableStore = store
@@ -49,14 +47,15 @@ struct WorkspaceArea: View {
         VStack(spacing: 12) {
             Image(systemName: "terminal")
                 .font(.system(size: 40))
-                .foregroundColor(.secondary)
+                .foregroundStyle(Color.white.opacity(0.56))
             Text("Select a pane from the sidebar")
-                .foregroundColor(.secondary)
+                .font(.system(size: 13, weight: .semibold, design: .rounded))
+                .foregroundStyle(Color.white.opacity(0.72))
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(AccessibilityID.workspaceEmpty)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(NSColor.textBackgroundColor))
+        .background(Color.clear)
     }
 
     /// Keep sidebar selection in sync with the focused workspace tile.
@@ -106,26 +105,29 @@ struct TabBarView: View {
                         )
                     }
                 }
-                .padding(.horizontal, 6)
-                .padding(.vertical, 4)
+                .padding(.leading, 0)
+                .padding(.trailing, 2)
+                .padding(.vertical, 0)
             }
+            .clipped()
 
             Spacer(minLength: 0)
 
             // New tab button
             Button(action: { store.createTab() }) {
                 Image(systemName: "plus")
-                    .font(.system(size: 12, weight: .medium))
-                    .frame(width: 28, height: 28)
+                    .font(.system(size: 11, weight: .medium))
+                    .frame(width: 22, height: 22)
             }
             .accessibilityLabel("New Tab")
             .accessibilityIdentifier(AccessibilityID.workspaceNewTab)
             .buttonStyle(.plain)
-            .foregroundColor(.secondary)
-            .padding(.trailing, 4)
+            .foregroundStyle(Color.white.opacity(0.62))
+            .padding(.trailing, 6)
         }
         .accessibilityIdentifier(AccessibilityID.workspaceTabBar)
-        .background(Color(NSColor.windowBackgroundColor))
+        .background(Color.clear)
+        .clipped()
         // Keyboard shortcuts: Cmd+T, Cmd+W
         .onKeyPress("t", phases: .down) { keyPress in
             guard keyPress.modifiers.contains(.command) else { return .ignored }
@@ -151,34 +153,51 @@ private struct TabButton: View {
     var body: some View {
         HStack(spacing: 4) {
             Text(tab.displayTitle)
-                .font(.system(size: 12))
+                .font(.system(size: 12, weight: isActive ? .semibold : .regular, design: .rounded))
+                .foregroundStyle(isActive ? Color.white.opacity(0.92) : Color.white.opacity(0.78))
                 .lineLimit(1)
                 .truncationMode(.tail)
-                .frame(maxWidth: 120, alignment: .leading)
+                .frame(maxWidth: 150, alignment: .leading)
 
             if isHovered || isActive {
                 Button(action: onClose) {
                     Image(systemName: "xmark")
                         .font(.system(size: 8, weight: .bold))
-                        .frame(width: 14, height: 14)
-                        .background(Color.secondary.opacity(0.2))
-                        .clipShape(Circle())
+                        .foregroundStyle(Color.white.opacity(isHovered ? 0.6 : 0.42))
+                        .frame(width: 12, height: 12)
                 }
                 .buttonStyle(.plain)
-                .foregroundColor(.secondary)
             } else {
-                Spacer().frame(width: 14)
+                Spacer().frame(width: 12)
             }
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 5)
-        .background(isActive ? Color.accentColor.opacity(0.15) : Color.clear)
-        .cornerRadius(6)
+        .padding(.horizontal, 10)
+        .frame(height: 25)
+        .background(
+            UnevenRoundedRectangle(
+                cornerRadii: .init(topLeading: 7, bottomLeading: 0, bottomTrailing: 0, topTrailing: 7),
+                style: .continuous
+            )
+            .fill(tabBackground)
+        )
+        .overlay(
+            UnevenRoundedRectangle(
+                cornerRadii: .init(topLeading: 7, bottomLeading: 0, bottomTrailing: 0, topTrailing: 7),
+                style: .continuous
+            )
+            .stroke(isActive ? Color.white.opacity(0.08) : Color.clear, lineWidth: 1)
+        )
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier(AccessibilityID.workspaceTabPrefix + tab.id.uuidString)
         .onTapGesture(perform: onSelect)
         .onHover { isHovered = $0 }
+    }
+
+    private var tabBackground: Color {
+        if isActive { return Color.black.opacity(0.14) }
+        if isHovered { return Color.white.opacity(0.05) }
+        return Color.clear
     }
 }
 
@@ -200,11 +219,6 @@ struct LayoutNodeView: View {
             )
             .contentShape(Rectangle())
             .onTapGesture { focusedLeafID = pane.id }
-            .overlay(
-                // Focus ring on focused tile
-                RoundedRectangle(cornerRadius: 2)
-                    .stroke(Color.accentColor.opacity(focusedLeafID == pane.id ? 0.6 : 0), lineWidth: 2)
-            )
 
         case .split(let container):
             SplitContainerView(
