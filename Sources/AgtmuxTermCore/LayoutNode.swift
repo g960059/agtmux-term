@@ -7,7 +7,7 @@ import Foundation
 /// Naming follows SwiftUI / tmux convention:
 ///   - horizontal = Left | Right  (divider is a vertical bar, tmux split-window -h)
 ///   - vertical   = Top  / Bottom (divider is a horizontal bar, tmux split-window -v)
-enum SplitAxis: String, Codable, Equatable, Sendable {
+package enum SplitAxis: String, Codable, Equatable, Sendable {
     case horizontal
     case vertical
 }
@@ -19,7 +19,7 @@ enum SplitAxis: String, Codable, Equatable, Sendable {
 /// - creating: async creation in progress — GhosttyPaneTile shows a spinner
 /// - ready:    linked session name is known (e.g. "agtmux-c4f3a91b") — surface can be created
 /// - failed:   creation failed — GhosttyPaneTile shows an error + retry button
-enum LinkedSessionState: Codable, Equatable, Sendable {
+package enum LinkedSessionState: Codable, Equatable, Sendable {
     case creating
     case ready(String)   // linked session name, e.g. "agtmux-c4f3a91b"
     case failed(String)  // human-readable error description
@@ -28,21 +28,21 @@ enum LinkedSessionState: Codable, Equatable, Sendable {
 // MARK: - LeafPane
 
 /// Terminal tile occupying a leaf of the BSP tree.
-struct LeafPane: Identifiable, Equatable, Codable, Sendable {
-    let id: UUID
-    let tmuxPaneID: String      // "%250"
-    let sessionName: String     // original tmux session name, e.g. "backend-api"
-    let source: String          // "local" or remote hostname
+package struct LeafPane: Identifiable, Equatable, Codable, Sendable {
+    package let id: UUID
+    package let tmuxPaneID: String      // "%250"
+    package let sessionName: String     // original tmux session name, e.g. "backend-api"
+    package let source: String          // "local" or remote hostname
 
     /// Linked session state (created by LinkedSessionManager in T-037).
     /// Starts as `.creating`; transitions to `.ready` or `.failed`.
-    var linkedSession: LinkedSessionState
+    package var linkedSession: LinkedSessionState
 
-    init(id: UUID = UUID(),
-         tmuxPaneID: String,
-         sessionName: String,
-         source: String,
-         linkedSession: LinkedSessionState = .creating) {
+    package init(id: UUID = UUID(),
+                 tmuxPaneID: String,
+                 sessionName: String,
+                 source: String,
+                 linkedSession: LinkedSessionState = .creating) {
         self.id             = id
         self.tmuxPaneID     = tmuxPaneID
         self.sessionName    = sessionName
@@ -54,19 +54,19 @@ struct LeafPane: Identifiable, Equatable, Codable, Sendable {
 // MARK: - SplitContainer
 
 /// An interior node of the BSP tree representing a split region.
-struct SplitContainer: Identifiable, Equatable, Codable, Sendable {
-    let id: UUID
-    let axis: SplitAxis
+package struct SplitContainer: Identifiable, Equatable, Codable, Sendable {
+    package let id: UUID
+    package let axis: SplitAxis
     /// Proportion assigned to `first`. Clamped to 0.1…0.9 by `setRatio()`.
-    var ratio: CGFloat
-    var first: LayoutNode
-    var second: LayoutNode
+    package var ratio: CGFloat
+    package var first: LayoutNode
+    package var second: LayoutNode
 
-    init(id: UUID = UUID(),
-         axis: SplitAxis,
-         ratio: CGFloat = 0.5,
-         first: LayoutNode,
-         second: LayoutNode) {
+    package init(id: UUID = UUID(),
+                 axis: SplitAxis,
+                 ratio: CGFloat = 0.5,
+                 first: LayoutNode,
+                 second: LayoutNode) {
         self.id     = id
         self.axis   = axis
         self.ratio  = max(0.1, min(0.9, ratio))
@@ -75,7 +75,7 @@ struct SplitContainer: Identifiable, Equatable, Codable, Sendable {
     }
 
     /// Update ratio, clamped to 0.1…0.9. Call this from UI drag handlers.
-    mutating func setRatio(_ newRatio: CGFloat) {
+    package mutating func setRatio(_ newRatio: CGFloat) {
         ratio = max(0.1, min(0.9, newRatio))
     }
 }
@@ -85,11 +85,11 @@ struct SplitContainer: Identifiable, Equatable, Codable, Sendable {
 /// Binary Space Partition tree representing the workspace layout.
 ///
 /// Value type: copying a LayoutNode is safe and cheap for SwiftUI diffing.
-indirect enum LayoutNode: Identifiable, Equatable, Codable, Sendable {
+package indirect enum LayoutNode: Identifiable, Equatable, Codable, Sendable {
     case leaf(LeafPane)
     case split(SplitContainer)
 
-    var id: UUID {
+    package var id: UUID {
         switch self {
         case .leaf(let p):  return p.id
         case .split(let s): return s.id
@@ -99,7 +99,7 @@ indirect enum LayoutNode: Identifiable, Equatable, Codable, Sendable {
 
 // MARK: - LayoutError
 
-enum LayoutError: Error, Sendable {
+package enum LayoutError: Error, Sendable {
     case duplicateID(UUID)
     case maxDepthExceeded
 }
@@ -110,7 +110,7 @@ extension LayoutNode {
     // MARK: Validation
 
     /// Verify that all node IDs in the tree are unique. Throws on first duplicate.
-    func validateUniqueIDs() throws {
+    package func validateUniqueIDs() throws {
         var seen = Set<UUID>()
         try _validateUniqueIDs(into: &seen)
     }
@@ -128,7 +128,7 @@ extension LayoutNode {
     // MARK: Leaf enumeration
 
     /// All leaf IDs in tree order.
-    var leafIDs: [UUID] {
+    package var leafIDs: [UUID] {
         switch self {
         case .leaf(let p):
             return [p.id]
@@ -138,7 +138,7 @@ extension LayoutNode {
     }
 
     /// All leaves in tree order.
-    var leaves: [LeafPane] {
+    package var leaves: [LeafPane] {
         switch self {
         case .leaf(let p):
             return [p]
@@ -152,7 +152,7 @@ extension LayoutNode {
     /// Return a new tree with the leaf matching `leafID` replaced by `newNode`.
     /// Returns `nil` if no leaf with that ID is found.
     /// Depth guard prevents stack overflow from malformed trees.
-    func replacing(leafID: UUID, with newNode: LayoutNode, depth: Int = 0) -> LayoutNode? {
+    package func replacing(leafID: UUID, with newNode: LayoutNode, depth: Int = 0) -> LayoutNode? {
         guard depth < 256 else { return nil }
         switch self {
         case .leaf(let p) where p.id == leafID:
@@ -176,7 +176,7 @@ extension LayoutNode {
 
     /// Return a new tree where the leaf matching `id` is split into
     /// a SplitContainer containing the original leaf (first) and `newLeaf` (second).
-    func splitLeaf(id: UUID, axis: SplitAxis, newLeaf: LeafPane) -> LayoutNode? {
+    package func splitLeaf(id: UUID, axis: SplitAxis, newLeaf: LeafPane) -> LayoutNode? {
         guard case .leaf(let p) = self, p.id == id else {
             // recurse
             if case .split(var c) = self {
@@ -202,7 +202,7 @@ extension LayoutNode {
     /// Return a new tree with the leaf matching `id` removed.
     /// - If the leaf's sibling is a leaf/split, the sibling replaces the parent container.
     /// - Returns `nil` if this node IS the leaf to remove (caller should handle).
-    func removingLeaf(id: UUID) -> LayoutNode? {
+    package func removingLeaf(id: UUID) -> LayoutNode? {
         switch self {
         case .leaf(let p):
             return p.id == id ? nil : self

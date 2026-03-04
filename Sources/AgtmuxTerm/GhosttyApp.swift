@@ -17,6 +17,7 @@ final class GhosttyApp {
     /// Weak collection of all live terminal views.
     /// NSHashTable.weakObjects() nil-ifies entries when the view is deallocated.
     private var activeSurfaces: NSHashTable<GhosttyTerminalView> = .weakObjects()
+    private var tickCount = 0
 
     private init() {
         var runtimeConfig = ghostty_runtime_config_s()
@@ -77,6 +78,14 @@ final class GhosttyApp {
              GHOSTTY_ACTION_SIZE_LIMIT,
              GHOSTTY_ACTION_INITIAL_SIZE:
             return true
+
+        // QUIT_TIMER fires when libghostty thinks all surfaces have closed and
+        // wants to terminate the app. In our embedded design the host app
+        // controls lifecycle, so we consume this action and do nothing.
+        // Without this, libghostty falls back to NSApp.terminate() → SIGTERM.
+        case GHOSTTY_ACTION_QUIT_TIMER:
+            return true
+
         default:
             break
         }
@@ -110,6 +119,10 @@ final class GhosttyApp {
 
     private func tick() {
         guard let app else { return }
+        tickCount += 1
+        if tickCount <= 5 || tickCount % 100 == 0 {
+            print("[tick] #\(tickCount) activeSurfaces=\(activeSurfaces.count)")
+        }
         ghostty_app_tick(app)
         // Trigger a Metal draw on every active surface.
         activeSurfaces.allObjects.forEach { $0.triggerDraw() }

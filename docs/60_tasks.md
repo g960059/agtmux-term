@@ -689,3 +689,303 @@
   - [ ] `start()` メソッドに `precondition(!stopped)` を追加、または inline コメントで単一使用制約を文書化
   - [ ] `TmuxControlModeRegistry` が `stopMonitoring` で必ず削除→再作成するパターンを保証することを確認
   - [ ] `swift build` → Build complete!
+
+### T-050 — SIGTERM crash fix: TMUX/TMUX_PANE env var inheritance (2026-03-03)
+- **Status**: DONE
+- **Priority**: P0
+- **Description**: `swift run` を tmux ペイン内から実行すると、ghostty のサブプロセスが `TMUX`/`TMUX_PANE` 環境変数を継承する。`tmux attach-session` が親 tmux クライアントに副作用を起こし SIGTERM で終了する。
+- **Root cause**: `GhosttyPaneTile.attachCommand` が `tmux attach-session -t <session>` を直接組み立てており、TMUX 環境変数をアンセットしていなかった。
+- **Fix**: `WorkspaceArea.swift:attachCommand` で `env -u TMUX -u TMUX_PANE tmux attach-session -t \(sessionTarget)` に変更。
+- **Diagnosis**: Codex が embedded.zig / App.zig / Metal.zig / GhosttyApp.swift を精査し、quit_timer/occlusion/Metal スレッドは無実と確認。環境変数継承が真因。
+- **Build**: `swift build` → Build complete! ✅
+
+### T-051 — layer-backing conflict fix: remove wantsLayer/makeBackingLayer overrides (2026-03-03)
+- **Status**: DONE
+- **Priority**: P0
+- **Description**: `GhosttyTerminalView` の `override var wantsLayer` + `override func makeBackingLayer()` が AppKit の "layer-backed" モードを先に確立し、Ghostty の "layer-hosting" (IOSurfaceLayer) 設定と競合。
+- **Fix**: 両 override と `import QuartzCore` を削除。コメントに layer-hosting パターンの説明を追記。
+- **Build**: `swift build` → Build complete! ✅
+
+### T-052 — Unit test infrastructure: AgtmuxTermCore library target (2026-03-03)
+- **Status**: IN_PROGRESS
+- **Priority**: P1
+- **Description**: Package.swift を library + executable に分割し、純 Swift ロジックを `AgtmuxTermCore` に移動してユニットテストを追加。
+- **Review**: Codex (GO) + Orchestrator (GO) = 2/2 GO
+- **Key constraints from review**:
+  - `package` アクセス修飾子を使用 (`public` ではなく)
+  - `StatusFilter` は UI 依存のため AgtmuxTerm 側に残す
+  - `AgtmuxDaemonClient` は既に別ファイル (移動不要)
+  - Integration tests には `-L/-S` で隔離 tmux サーバを使う
+- **Acceptance Criteria**:
+  - [ ] `Sources/AgtmuxTermCore/` に LayoutNode.swift, TmuxLayoutConverter.swift, DaemonModels (models) を移動
+  - [ ] Package.swift に AgtmuxTermCore target + AgtmuxTermCoreTests testTarget を追加
+  - [ ] 移動した型に `package` アクセス修飾子を追加
+  - [ ] AgtmuxTerm 側から `import AgtmuxTermCore` で参照可能
+  - [ ] `swift test` で TmuxLayoutConverter (6ケース) + LayoutNode (5ケース) が PASS
+  - [ ] `swift build` が引き続き成功
+
+### T-053 — XCUITest E2E infrastructure (2026-03-03)
+- **Status**: DONE
+- **Priority**: P1
+- **Description**: XcodeGen を使って .xcodeproj を生成し、XCUITest で pane 選択 → terminal tile 表示を自動検証する。クラッシュ回帰テスト（pane 選択後 app が生存しているか）を主目的とする。
+- **Planning**: codex x2 + opus x2 の 4 エージェントが独立計画、比較検討の上 XcodeGen 採用。
+- **Key decisions (from multi-agent review)**:
+  1. **XcodeGen** 採用（Tuist より簡単、@main リファクタ不要、YAML 1ファイル）
+  2. **`package` アクセス問題**: `OTHER_SWIFT_FLAGS: -package-name agtmux_term` を両ターゲットに設定してパッケージ共有
+  3. **`Bundle.module` 問題**: SVG リソースに `#if SWIFT_PACKAGE / #else Bundle.main` 条件コンパイル追加
+  4. **`@main` リファクタ不要**: XcodeGen app type は top-level main.swift を扱える
+  5. **アクセシビリティ識別子**: `AccessibilityID.swift` enum で名前空間管理
+- **Files to create**:
+  - `project.yml` — XcodeGen マニフェスト
+  - `Sources/AgtmuxTerm/AccessibilityID.swift` — AX identifier 定数
+  - `Tests/AgtmuxTermUITests/AgtmuxTermUITests.swift` — テスト本体
+  - `Tests/AgtmuxTermUITests/UITestHelpers.swift` — 共通ヘルパー
+- **Files to modify**:
+  - `Sources/AgtmuxTerm/SidebarView.swift` — PaneRowView + SessionBlockView + WindowBlockView に AX identifier 追加
+  - `Sources/AgtmuxTerm/WorkspaceArea.swift` — GhosttyPaneTile に AX identifier + value 追加、空状態に identifier 追加
+  - `Sources/AgtmuxTerm/CockpitView.swift` — sidebar / workspace-area に identifier 追加
+  - `.gitignore` — *.xcodeproj 追加
+- **project.yml key settings**:
+  ```yaml
+  settings.base:
+    OTHER_SWIFT_FLAGS: "$(inherited) -package-name agtmux_term"
+  AgtmuxTermCore:
+    type: framework   # package access 互換のため static library ではなく framework
+    dependencies: []
+  AgtmuxTerm:
+    type: application
+    dependencies: [AgtmuxTermCore, GhosttyKit.xcframework, Metal, MetalKit, ...]
+  AgtmuxTermUITests:
+    type: bundle.ui-testing
+    dependencies: [AgtmuxTerm]
+  ```
+- **Test cases**:
+  - `testPaneSelectionShowsLoadingThenTerminal`: pane 行タップ → ProgressView → GhosttyPaneTile (ready) + app.state == .runningForeground
+  - `testTabCreation`: Cmd+T → タブ数が増加
+  - `testAppLaunchShowsSidebar`: 起動直後に sidebar 確認
+  - `testEmptyStateOnLaunch`: pane 未選択時に空状態確認
+- **Acceptance Criteria**:
+  - [x] `xcodegen generate` が成功する (xcodegen 2.44.1)
+  - [x] `xcodebuild build -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm ...` が成功する
+  - [x] `xcodebuild build-for-testing` (UITests含む) が成功する — TEST BUILD SUCCEEDED
+  - [x] `testAppLaunchShowsSidebar` 実装済み
+  - [x] `testPaneSelectionCreatesTerminalTile` クラッシュ回帰テスト実装済み
+  - [x] `swift build` が引き続き成功
+  - [x] 1/2 review gate 通過 (Codex: Go with changes → 修正後 Go, Claude: Go)
+  - **Notes**:
+    - AccessibilityID を AgtmuxTermCore (public) に移動 — UITests/App両方から参照
+    - project.yml の HEADER_SEARCH_PATHS を削除 (xcframework module redefinition 回避)
+    - tearDown: preExistingSessions で差分管理、本番セッション誤削除防止
+    - testTabCreation: workspaceTabPrefix定数 + TabButton AX identifier 追加
+
+---
+
+### T-054 — Sidebar multi-highlight fix + split regression test (2026-03-03)
+- **Status**: DONE
+- **Priority**: P1
+- **Description**: 2つのバグを修正しリグレッションテストを追加。
+- **Bug 1: Sidebar multi-highlight**:
+  - 根本原因: `LinkedSessionManager` が `agtmux-{UUID}` linked session を作成するとき、元セッションの pane ID をすべて共有する。`agtmux json` はその両方のセッションを返すため、同じ `pane.id = "local:%42"` が複数行に現れ、1つを選択すると複数行がハイライトされる。
+  - 修正: `AppViewModel.filteredPanes` に `!$0.sessionName.hasPrefix("agtmux-")` フィルタ追加。
+- **Bug 2: placePane() split accumulation** (previously fixed in T-053 session):
+  - 根本原因: `splitLeaf()` を使っていた（スプリット追加）。`replacing()` が正しい（in-place 置換）。
+  - 修正: `WorkspaceStore.placePane()` を `replacing(leafID:with:)` に変更済み。
+- **Regression tests added**:
+  - `LayoutNodeTests.testReplacingLeafYieldsSingleLeaf`: `replacing()` が split ではなく single leaf を返す
+  - `LayoutNodeTests.testTwoReplacementsDoNotAccumulateSplits`: 2回 replacing しても tile count = 1 を維持
+  - `PaneFilterTests.testLinkedSessionPanesAreFiltered`: `agtmux-*` セッションが filteredPanes から除外される
+  - `PaneFilterTests.testNonLinkedPanesHaveUniqueIDs`: 通常 pane の ID ユニーク性確認
+  - `PaneFilterTests.testLinkedPaneSharesPaneIDWithOriginal`: linked pane が root cause (同一 pane.id) を文書化
+- **E2E UI tests**: XCUITest on macOS 26 requires either Xcode IDE (has Accessibility/DeveloperTool permissions) or `DevToolsSecurity -enable` (requires sudo). Run via "Cmd+U in Xcode" or `xcodebuild test` after enabling DevToolsSecurity.
+  - `testSecondPaneSelectionReplacesNotSplits` — split regression 検出テスト（要 agtmux daemon + ≥2 panes）
+  - `setUp`: `split-window -d` で2 pane 作成
+  - `main.swift`: `-XCTest` prefix args 検出時 `ghostty_cli_try_action()` をスキップ
+- **Acceptance Criteria**:
+  - [x] `swift test` — 18 tests, 0 failures (13 既存 + 5 新規リグレッション)
+  - [x] `xcodebuild build-for-testing` — TEST BUILD SUCCEEDED
+  - [x] Sidebar で pane 選択時、1行のみハイライト（agtmux-* セッション非表示）
+  - [x] pane を 2回選択しても tile count = 1 (split 非累積)
+
+### T-055 — Bug fix: Wrong pane shown (select-pane missing)
+- **Status**: DONE
+- **Priority**: P1
+- **Description**: `LinkedSessionManager.createSession` called `select-window` but not `select-pane`. When a window had multiple panes, the linked session showed the wrong (current) pane instead of the user-selected one.
+- **Root cause**: Missing `select-pane -t {paneId}` call in createSession.
+- **Fix**:
+  - `LinkedSessionManager.createSession`: add `paneId: String` parameter, call `select-pane -t {paneId}` after `select-window`
+  - `WorkspaceStore.placePane`: pass `pane.paneId` to createSession
+  - `WorkspaceStore.placeWindow`: pass `leaf.tmuxPaneID` to createSession
+  - `WorkspaceStore.handleLayoutChange`: pass `leaf.tmuxPaneID` to createSession
+- **Regression test**: Unit test in `LinkedSessionIntegrationTests.swift`
+
+### T-056 — Bug fix: Status dots hidden (linked session prefix collision)
+- **Status**: DONE
+- **Priority**: P1
+- **Description**: `AppViewModel.filteredPanes` filtered `agtmux-*` sessions to hide linked sessions, but the agtmux CLI also names user sessions `agtmux-{UUID}`. All managed panes (running Claude Code) are in `agtmux-*` sessions, so the filter hid all status dots.
+- **Root cause**: Prefix collision between our linked session names (`agtmux-{UUID}`) and real user sessions (`agtmux-{UUID}`).
+- **Fix**:
+  - `LinkedSessionManager.createSession`: rename prefix from `"agtmux-"` to `"agtmux-linked-"`
+  - `AppViewModel.filteredPanes`: update filter from `"agtmux-"` to `"agtmux-linked-"`
+  - `PaneFilterTests.swift`: update tests to reflect new prefix
+- **Regression tests**: Updated `PaneFilterTests.swift` to verify:
+  1. `agtmux-linked-*` sessions ARE filtered (hidden)
+  2. `agtmux-{UUID}` (real user sessions) are NOT filtered (visible with status dots)
+
+---
+
+### T-057 — E2E テスト基盤刷新: mock AGTMUX_BIN 方式
+- **Status**: DONE
+- **Priority**: P1
+- **Description**: 既存 E2E テストは setUp で生の tmux セッションを作成し、`agtmux json` が返す managed pane を期待していたが、raw tmux セッションはデーモンに追跡されないため素通りしていた。`AGTMUX_BIN` 環境変数でモックスクリプトを差し込む方式に刷新。
+- **Root cause**: `agtmux json` は AI エージェントが動いているペインのみ返す。`new-session` で作った生のセッションは追跡対象外。
+- **Fix**:
+  - `setUpWithError` から `app.launchForUITest()` を除去 — 各テストが自分で launch する
+  - `createMockAgtmux(json:)` helper 追加 — tmp に実行可能スクリプトを生成
+  - 新テスト追加:
+    - `testSidebarShowsDaemonPanes` (T-E2E-007): mock で既知ペインが sidebar に出現することを確認
+    - `testLinkedSessionsHiddenRealSessionsVisible` (T-E2E-008): T-056 リグレッション (linked session フィルタ)
+    - `testManagedFilterShowsOnlyManagedPanes` (T-E2E-009): Managed フィルタ動作確認
+    - `testPaneSelectionWithMockDaemonAndRealTmux` (T-E2E-010): mock + real tmux でタイル表示確認
+- **Acceptance Criteria**:
+  - [x] mock を使う Category A テストはデーモン不要で実行可能
+  - [x] `xcodebuild build-for-testing` — TEST BUILD SUCCEEDED
+  - [x] mock script が引数を無視して valid JSON を出力することを確認 (`python3 -m json.tool` PASS)
+  - [ ] `testSidebarShowsDaemonPanes` PASSED (要 DevToolsSecurity -enable or Xcode IDE)
+  - [ ] `testLinkedSessionsHiddenRealSessionsVisible` PASSED (T-056 リグレッション検出)
+  - [ ] `testAppLaunchShowsSidebar` / `testEmptyStateOnLaunch` / `testTabCreation` 引き続き PASSED
+- **Note**: `xcodebuild test` from CLI fails with "Failed to activate (current state: Running Background)" because `DevToolsSecurity` is disabled on this machine. Tests must be run from Xcode IDE or after `sudo DevToolsSecurity -enable`.
+
+---
+
+### T-058 — agtmux daemon 同梱 + 起動/終了ライフサイクル管理 (2026-03-04)
+- **Status**: IN_PROGRESS
+- **Priority**: P1
+- **Description**: `agtmux` を app bundle から解決できるようにし、app 起動時に daemon を自動起動、app 終了時にこの app が起動した daemon を自動停止する。
+- **Why**:
+  - 初回セットアップ時に「daemon が未起動で空画面」になりやすい
+  - 環境依存（PATH / AGTMUX_BIN）を減らして配布時の再現性を上げたい
+- **実装方針 (今回着手分)**:
+  - `AgtmuxBinaryResolver` 追加
+    - 解決順: `AGTMUX_BIN` → bundle `Resources/Tools/agtmux`（SPM flatten fallback: bundle root `agtmux`）→ PATH/fallback
+    - 既存 `AgtmuxDaemonClient` からも共通利用
+  - `AgtmuxDaemonSupervisor` 追加
+    - app 起動時: daemon 到達不能なら `agtmux daemon` を spawn
+    - app 終了時: app 管理下 child process を terminate
+    - `AGTMUX_AUTOSTART=0` で無効化
+    - `AGTMUX_UITEST=1` では自動起動しない
+  - `main.swift`
+    - SIGTERM handler を child daemon kill 対応版に差し替え
+    - event loop 前 `startIfNeeded()`
+    - event loop 後 `stopIfOwned()`
+  - resources
+    - `Sources/AgtmuxTerm/Resources/Tools/README.md` 追加（同梱配置先の明文化）
+- **Files (created/updated)**:
+  - `Sources/AgtmuxTerm/AgtmuxBinaryResolver.swift` (new)
+  - `Sources/AgtmuxTerm/AgtmuxDaemonSupervisor.swift` (new)
+  - `Sources/AgtmuxTerm/AgtmuxDaemonClient.swift` (updated)
+  - `Sources/AgtmuxTerm/main.swift` (updated)
+  - `Sources/AgtmuxTerm/Resources/Tools/README.md` (new)
+  - `README.md` (updated)
+- **Acceptance Criteria**:
+  - [x] bundle binary を含む実行パス解決が実装されている
+  - [x] app 起動時に daemon 自動起動ロジックが呼ばれる
+  - [x] app 終了時（通常終了 + SIGTERM）に child daemon 停止ロジックがある
+  - [x] `AGTMUX_AUTOSTART=0` で明示無効化できる
+  - [ ] bundle 同梱バイナリの署名/配布フローを CI に組み込む
+
+---
+
+### T-059 — XPC Service 方式への移行 (2026-03-04)
+- **Status**: DONE
+- **Priority**: P1
+- **Description**: local daemon ライフサイクルを app 直下の subprocess 管理から、bundle 同梱 XPC service 経由に移行する。
+- **Pre-review gate (Claude x2)**:
+  - Reviewer A: GO
+  - Reviewer B: GO
+  - Decision: **2/2 GO → 採択して実装開始**
+- **Post-review gate (Claude x2, round 1)**:
+  - Reviewer A: GO_WITH_CONDITIONS
+  - Reviewer B: GO_WITH_CONDITIONS
+  - 採択した修正:
+    - service `startManagedDaemon` が常に success を返す不整合を修正
+    - `interruption/invalidation` 二重発火時の connection カウント二重減算を修正
+    - XPC service 実行時でも host app bundle の `Resources/Tools/agtmux` を解決可能に修正
+- **Post-review gate (Claude x2, round 2)**:
+  - Reviewer A: GO
+  - Reviewer B: GO_WITH_CONDITIONS
+  - Decision: **2/2 GO系 verdict（1/2 gate 通過）で完了**
+- **Scope**:
+  - shared XPC protocol + wire format定義
+  - `AgtmuxDaemonService` ターゲット追加（xpc-service）
+  - app側 persistent XPC client + reconnect-on-demand
+  - service側 daemon start/stop + snapshot fetch
+  - fallback (`AGTMUX_XPC_DISABLED=1`, `AGTMUX_UITEST=1`, XPC失敗時)
+- **Wire contract**:
+  - `startManagedDaemon(reply: (Bool, NSString?) -> Void)`
+  - `fetchSnapshot(reply: (NSData?, NSString?) -> Void)`
+  - `stopManagedDaemon(reply: () -> Void)`
+  - payload: UTF-8 JSON (`AgtmuxSnapshot`, ISO8601 date)
+- **Implementation steps**:
+  1. Step 0: xcodegen で `xpc-service` target 生成可否を先に検証（不可なら helper方式へ切替）
+  2. Step 1: shared protocol追加
+  3. Step 2: service target 実装
+  4. Step 3: app-side XPC client 実装
+  5. Step 4: AppViewModel/main 統合（fallback維持）
+  6. Step 5: build/test + post-review gate (Claude x2, 1/2 GO必須)
+- **Risks**:
+  - xcodegen `xpc-service` サポート差異
+  - XPC invalidation / continuation resume漏れ
+  - stdio pipe deadlock（timeout + drainで対策）
+- **Files (created/updated)**:
+  - `Sources/AgtmuxTermCore/AgtmuxDaemonXPCContract.swift` (new)
+  - `Sources/AgtmuxTermCore/AgtmuxBinaryResolver.swift` (new)
+  - `Sources/AgtmuxTermCore/AgtmuxDaemonClient.swift` (new; app側実装を移動)
+  - `Sources/AgtmuxDaemonService/main.swift` (new)
+  - `Sources/AgtmuxTerm/AgtmuxDaemonXPCClient.swift` (new)
+  - `Sources/AgtmuxTerm/LocalSnapshotClient.swift` (new)
+  - `Sources/AgtmuxTerm/AppViewModel.swift` (updated; local client抽象化)
+  - `Sources/AgtmuxTerm/main.swift` (updated; XPC優先 + fallback統合)
+  - `Sources/AgtmuxTerm/AgtmuxDaemonSupervisor.swift` (updated)
+  - `project.yml` (updated; xpc-service target追加)
+  - `README.md` (updated)
+- **Verification**:
+  - [x] `swift build`
+  - [x] `swift test`
+  - [x] `xcodebuild -scheme AgtmuxTerm build`
+  - [x] `xcodebuild -scheme AgtmuxTerm build-for-testing`
+  - [ ] `xcodebuild test -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testAppLaunchShowsSidebar`
+    - 環境依存の app activation 失敗 (`Running Background`) で再現。XPC migration の build/test gate とは分離して継続調査。
+
+---
+
+### T-060 — E2E cleanup 強化 (tmux session + agent session) (2026-03-04)
+- **Status**: DONE
+- **Priority**: P1
+- **Description**: XCUITest の `tearDown` を強化し、テストが生成した tmux session とその内部 agent session (codex/claude) を確実に cleanup する。今後の新規 E2E でも同じ cleanup 契約を強制する。
+- **Root cause**:
+  - 従来は `preExistingSessions` 差分で `kill-session` するのみで、agent process の明示終了が保証されていなかった。
+  - 新規テストが raw `tmux new-session` を直接使うと、cleanup 契約の逸脱をレビュー時に見逃す余地があった。
+- **Fix**:
+  - `AgtmuxTermUITests.tearDownWithError`
+    - `sessionsToKill = (current - preExisting) ∪ ownedSessions` へ拡張
+    - test-owned session には `terminateSessionProcesses()` を先行実行
+      - `tmux send-keys C-c/C-c/exit`
+      - `pane_tty` / `pgid` / `pane_pid` の3経路で終了
+        - `pkill -TERM/-KILL -t <pane_tty>`
+        - `kill -TERM/-KILL -- -<pgid>`
+        - `pkill -TERM/-KILL -P <pane_pid>` + `kill -TERM/-KILL <pane_pid>`
+    - session kill 後に leak 再検査し、残存があれば `XCTAssertTrue(finalLeaked.isEmpty)` で fail
+  - `createTrackedTmuxSession(prefix:tmux:)` helper 追加
+    - 新規 E2E は raw `tmux new-session` ではなくこの helper を必須化
+    - `ownedSessions` へ自動登録
+    - session 名を `agtmux-e2e-*` に正規化
+  - `testPaneSelectionWithMockDaemonAndRealTmux` を helper 利用に変更
+  - `Tests/AgtmuxTermUITests/README.md` 新規追加（cleanup 契約・新規テスト追加チェックリスト）
+- **Files**:
+  - `Tests/AgtmuxTermUITests/AgtmuxTermUITests.swift` (updated)
+  - `Tests/AgtmuxTermUITests/README.md` (new)
+- **Acceptance Criteria**:
+  - [x] teardown が tmux session cleanup に加えて agent process cleanup を実施
+  - [x] cleanup 後に session leak を fail-fast で検知
+  - [x] 既存 tmux E2E (`testPaneSelectionWithMockDaemonAndRealTmux`) が tracked session helper を使う
+  - [x] 新規 E2E 作成時の cleanup 契約が docs に明文化されている

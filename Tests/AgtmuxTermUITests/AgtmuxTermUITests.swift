@@ -1,0 +1,654 @@
+import XCTest
+import AgtmuxTermCore
+
+/// E2E crash regression tests for agtmux-term.
+///
+/// # Test Categories
+///
+/// ## Category A — No daemon required (mock AGTMUX_JSON)
+/// These tests inject JSON via AGTMUX_JSON.
+/// They run on any machine regardless of whether agtmux daemon is running.
+/// They test: sidebar population, filter logic, empty state, tab creation.
+///
+/// ## Category B — Requires tmux binary
+/// These tests create real tmux sessions to test terminal tile creation.
+/// They require tmux to be installed. Guarded by XCTSkip when tmux unavailable.
+///
+/// ## Category C — Requires agtmux daemon + running sessions
+/// Legacy tests that depend on pre-existing managed panes. Guarded by XCTSkip.
+///
+/// # Sandbox note
+/// The XCUITest runner bundle has `com.apple.security.app-sandbox = true`.
+/// The app itself has App Sandbox disabled (tmux / daemon socket access).
+final class AgtmuxTermUITests: XCTestCase {
+
+    private var app: XCUIApplication!
+    private var tmuxPath: String? = nil
+    /// Sessions that existed before the test started — never delete these.
+    private var preExistingSessions: Set<String> = []
+    /// Sessions explicitly created by this test via `createTrackedTmuxSession`.
+    private var ownedSessions: Set<String> = []
+
+    // MARK: - setUp / tearDown
+
+    override func setUpWithError() throws {
+        continueAfterFailure = false
+        ownedSessions = []
+
+        // Resolve tmux path (best-effort — sandbox may block socket connections later).
+        tmuxPath = resolveTmuxPathBestEffort()
+
+        if let tmux = tmuxPath {
+            // Record pre-existing sessions so tearDown doesn't delete them.
+            if let existing = try? shellOutput([tmux, "list-sessions", "-F", "#{session_name}"]) {
+                preExistingSessions = Set(existing.components(separatedBy: "\n").filter { !$0.isEmpty })
+            }
+        }
+
+        app = XCUIApplication()
+        // NOTE: Each test calls app.launchForUITest() (or sets AGTMUX_JSON first).
+        //       setUp does NOT launch the app so mock tests can inject env vars.
+    }
+
+    override func tearDownWithError() throws {
+        app?.terminate()
+        app = nil
+
+        // Kill sessions created during this test run and ensure agent processes
+        // in test-owned sessions are terminated before session teardown.
+        // Use a fresh path resolution as fallback: if the sandbox blocked the runner's
+        // tmux socket in setUp (tmuxPath == nil), the app (no sandbox) may still have
+        // created agtmux-linked-* sessions that need cleanup.
+        let tmux = tmuxPath ?? resolveTmuxPathBestEffort()
+        guard let tmux, let current = try? listTmuxSessions(tmux) else { return }
+
+        // Any non-preexisting session is test-created residue and must be removed.
+        let discovered = current.subtracting(preExistingSessions)
+        let sessionsToKill = discovered.union(ownedSessions)
+
+        // Agent cleanup is performed only for explicit test sessions to avoid
+        // touching user-managed panes in preexisting sessions.
+        let agentCleanupSessions = sessionsToKill.filter {
+            ownedSessions.contains($0) || $0.hasPrefix("agtmux-e2e-")
+        }
+        for session in agentCleanupSessions {
+            terminateSessionProcesses(session: session, tmux: tmux)
+        }
+
+        for session in sessionsToKill {
+            _ = try? shellRun([tmux, "kill-session", "-t", session])
+        }
+
+        // Hard gate: no leaked non-preexisting sessions after cleanup.
+        if let after = try? listTmuxSessions(tmux) {
+            let leaked = after.subtracting(preExistingSessions)
+            if !leaked.isEmpty {
+                // One last best-effort pass before failing.
+                for session in leaked {
+                    _ = try? shellRun([tmux, "kill-session", "-t", session])
+                }
+                let finalLeaked = (try? listTmuxSessions(tmux).subtracting(preExistingSessions)) ?? []
+                XCTAssertTrue(
+                    finalLeaked.isEmpty,
+                    "E2E cleanup leaked tmux sessions: \(finalLeaked.sorted())"
+                )
+            }
+        }
+    }
+
+    // MARK: - Diagnostic
+
+    /// Dumps the full accessibility tree so we can see what XCUITest actually observes.
+    func testDumpAccessibilityTree() {
+        app.launchForUITest()
+        Thread.sleep(forTimeInterval: 5.0)
+
+        let desc = app.debugDescription
+        XCTContext.runActivity(named: "App AX tree (first 6000 chars)") { activity in
+            let attachment = XCTAttachment(string: String(desc.prefix(6000)))
+            attachment.name = "ax_tree.txt"
+            attachment.lifetime = .keepAlways
+            activity.add(attachment)
+        }
+
+        let windowCount = app.windows.count
+        XCTContext.runActivity(named: "Windows: \(windowCount)") { _ in }
+
+        let anyCount = app.descendants(matching: .any).count
+        XCTContext.runActivity(named: "Total elements: \(anyCount)") { _ in }
+
+        let elements = app.descendants(matching: .any).allElementsBoundByIndex
+        let ids = elements.prefix(50).map { e -> String in
+            let t = e.elementType.rawValue
+            let id = e.identifier
+            let lbl = e.label
+            return "type=\(t) id='\(id)' lbl='\(lbl)'"
+        }
+        XCTContext.runActivity(named: "First 50 elements") { activity in
+            let attachment = XCTAttachment(string: ids.joined(separator: "\n"))
+            attachment.name = "elements.txt"
+            attachment.lifetime = .keepAlways
+            activity.add(attachment)
+        }
+
+        if let win = app.windows.allElementsBoundByIndex.first {
+            let winDesc = win.debugDescription
+            XCTContext.runActivity(named: "Window AX tree") { activity in
+                let attachment = XCTAttachment(string: String(winDesc.prefix(6000)))
+                attachment.name = "window_ax_tree.txt"
+                attachment.lifetime = .keepAlways
+                activity.add(attachment)
+            }
+        }
+
+        XCTAssert(true, "Diagnostic test always passes — check attachments for AX tree")
+    }
+
+    // MARK: - Category A: No daemon required (mock AGTMUX_JSON)
+
+    /// T-E2E-001: App launches and sidebar is visible.
+    func testAppLaunchShowsSidebar() {
+        app.launchForUITest()
+        let predicate = NSPredicate(format: "identifier == %@", AccessibilityID.sidebar)
+        let sidebar = app.descendants(matching: .any).matching(predicate).firstMatch
+        XCTAssertTrue(
+            sidebar.waitForExistence(timeout: TestConstants.settleTimeout),
+            "Sidebar should appear after launch"
+        )
+    }
+
+    /// T-E2E-002: Empty workspace state is shown before any pane is selected.
+    func testEmptyStateOnLaunch() {
+        app.launchForUITest()
+        let predicate = NSPredicate(format: "identifier == %@", AccessibilityID.workspaceEmpty)
+        let emptyState = app.descendants(matching: .any).matching(predicate).firstMatch
+        XCTAssertTrue(
+            emptyState.waitForExistence(timeout: TestConstants.settleTimeout),
+            "Empty state should be visible when no pane is selected"
+        )
+    }
+
+    /// T-E2E-005: New-tab button creates a tab.
+    func testTabCreation() {
+        app.launchForUITest()
+        let tabBarPred = NSPredicate(format: "identifier == %@", AccessibilityID.workspaceTabBar)
+        let tabBar = app.descendants(matching: .any).matching(tabBarPred).firstMatch
+        XCTAssertTrue(tabBar.waitForExistence(timeout: TestConstants.settleTimeout))
+
+        let tabPredicate = NSPredicate(format: "identifier BEGINSWITH %@", AccessibilityID.workspaceTabPrefix)
+        let allDescendants = { self.app.descendants(matching: .any).matching(tabPredicate) }
+        let tabsBefore = allDescendants().count
+
+        let newTabButton = app.buttons.matching(NSPredicate(format: "label == %@", "New Tab")).firstMatch
+        XCTAssertTrue(
+            newTabButton.waitForExistence(timeout: TestConstants.settleTimeout),
+            "New Tab (+) button should be visible in the tab bar"
+        )
+        newTabButton.click()
+
+        let expectedCount = tabsBefore + 1
+        let countPredicate = NSPredicate(format: "count == %d", expectedCount)
+        let countExpectation = expectation(for: countPredicate, evaluatedWith: allDescendants())
+        wait(for: [countExpectation], timeout: 5)
+    }
+
+    /// T-E2E-007: Sidebar shows panes returned by the agtmux daemon.
+    ///
+    /// Uses AGTMUX_JSON so this test runs without a real daemon.
+    /// Verifies:
+    ///   1. Both panes from the mock JSON appear with correct AX identifiers
+    ///   2. The sidebar isn't showing stale data from a previous run
+    func testSidebarShowsDaemonPanes() throws {
+        let pane1ID = "%42"
+        let pane2ID = "%43"
+        let sessionName = "agtmux-e2e-mocktest"
+
+        let json = """
+        {"version":1,"panes":[
+          {"pane_id":"\(pane1ID)","session_name":"\(sessionName)","window_id":"@1",
+           "window_index":1,"window_name":"claude","activity_state":"running",
+           "presence":"managed","provider":"claude","evidence_mode":"deterministic",
+           "conversation_title":"E2E Pane 1","current_path":"/tmp","git_branch":"main",
+           "current_cmd":"node","updated_at":"2026-03-04T00:00:00Z","age_secs":5},
+          {"pane_id":"\(pane2ID)","session_name":"\(sessionName)","window_id":"@1",
+           "window_index":1,"window_name":"claude","activity_state":"idle",
+           "presence":"unmanaged","evidence_mode":"none",
+           "current_cmd":"zsh","updated_at":"2026-03-04T00:00:00Z","age_secs":60}
+        ]}
+        """
+
+        app.launchEnvironment["AGTMUX_JSON"] = json
+        app.launchForUITest()
+
+        // Sidebar must appear
+        let sidebar = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier == %@", AccessibilityID.sidebar)).firstMatch
+        XCTAssertTrue(sidebar.waitForExistence(timeout: TestConstants.settleTimeout),
+                      "Sidebar must appear")
+
+        // Pane 1 (running, managed) must appear
+        let key1 = AccessibilityID.paneKey(source: "local", paneID: pane1ID)
+        let row1 = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier == %@", AccessibilityID.sidebarPanePrefix + key1)).firstMatch
+        XCTAssertTrue(
+            row1.waitForExistence(timeout: TestConstants.sidebarPopulateTimeout),
+            "Pane \(pane1ID) must appear in sidebar (AX id: \(AccessibilityID.sidebarPanePrefix + key1))"
+        )
+
+        // Pane 2 (idle, unmanaged) must also appear
+        let key2 = AccessibilityID.paneKey(source: "local", paneID: pane2ID)
+        let row2 = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier == %@", AccessibilityID.sidebarPanePrefix + key2)).firstMatch
+        XCTAssertTrue(
+            row2.waitForExistence(timeout: TestConstants.sidebarPopulateTimeout),
+            "Pane \(pane2ID) must appear in sidebar (AX id: \(AccessibilityID.sidebarPanePrefix + key2))"
+        )
+
+        // Selecting a pane should replace the workspace empty state.
+        assertWorkspaceStartsEmpty()
+        row1.click()
+        waitForWorkspaceToLeaveEmptyState()
+    }
+
+    /// T-E2E-008: agtmux-linked-* sessions are filtered; real agtmux-* sessions remain visible.
+    ///
+    /// Regression test for T-056 (status dots hidden bug):
+    ///   - Old bug: filter `hasPrefix("agtmux-")` removed real user sessions
+    ///   - Fix: filter `hasPrefix("agtmux-linked-")` removes only internal linked sessions
+    ///
+    /// Mock returns two panes with the same pane_id in two sessions:
+    ///   - "agtmux-REAL-UUID" (real user session → must appear, 1 row)
+    ///   - "agtmux-linked-UUID" (internal linked session → must NOT appear)
+    func testLinkedSessionsHiddenRealSessionsVisible() throws {
+        let sharedPaneID = "%99"
+        let realSession  = "agtmux-ABCDEF01-ABCD-ABCD-ABCD-ABCDEF012345"
+        let linkedSession = "agtmux-linked-ABCDEF01-ABCD-ABCD-ABCD-ABCDEF012345"
+
+        let json = """
+        {"version":1,"panes":[
+          {"pane_id":"\(sharedPaneID)","session_name":"\(realSession)","window_id":"@5",
+           "window_index":1,"window_name":"claude","activity_state":"running",
+           "presence":"managed","provider":"claude","evidence_mode":"deterministic",
+           "current_cmd":"node","updated_at":"2026-03-04T00:00:00Z","age_secs":0},
+          {"pane_id":"\(sharedPaneID)","session_name":"\(linkedSession)","window_id":"@5",
+           "window_index":1,"window_name":"claude","activity_state":"running",
+           "presence":"managed","provider":"claude","evidence_mode":"deterministic",
+           "current_cmd":"node","updated_at":"2026-03-04T00:00:00Z","age_secs":0}
+        ]}
+        """
+
+        app.launchEnvironment["AGTMUX_JSON"] = json
+        app.launchForUITest()
+
+        let key = AccessibilityID.paneKey(source: "local", paneID: sharedPaneID)
+        let pred = NSPredicate(format: "identifier == %@", AccessibilityID.sidebarPanePrefix + key)
+
+        // The real session pane must appear
+        let firstRow = app.descendants(matching: .any).matching(pred).firstMatch
+        XCTAssertTrue(
+            firstRow.waitForExistence(timeout: TestConstants.sidebarPopulateTimeout),
+            "Real agtmux-* session pane must appear (T-056 regression). AX id: \(AccessibilityID.sidebarPanePrefix + key)"
+        )
+
+        // Exactly ONE row must exist — the linked-session duplicate must be filtered
+        let allRows = app.descendants(matching: .any).matching(pred).allElementsBoundByIndex
+        XCTAssertEqual(
+            allRows.count, 1,
+            "agtmux-linked-* pane must be filtered: expected 1 row, got \(allRows.count). " +
+            "Multi-highlight regression (T-054) or filter regression (T-056)."
+        )
+    }
+
+    /// T-E2E-009: Mixed managed/unmanaged panes — "Managed" filter shows only managed panes.
+    func testManagedFilterShowsOnlyManagedPanes() throws {
+        let managedPaneID   = "%50"
+        let unmanagedPaneID = "%51"
+        let sessionName = "agtmux-e2e-filter"
+
+        let json = """
+        {"version":1,"panes":[
+          {"pane_id":"\(managedPaneID)","session_name":"\(sessionName)","window_id":"@2",
+           "window_index":1,"window_name":"claude","activity_state":"running",
+           "presence":"managed","provider":"claude","evidence_mode":"deterministic",
+           "current_cmd":"node","updated_at":"2026-03-04T00:00:00Z","age_secs":0},
+          {"pane_id":"\(unmanagedPaneID)","session_name":"\(sessionName)","window_id":"@2",
+           "window_index":1,"window_name":"zsh","activity_state":"idle",
+           "presence":"unmanaged","evidence_mode":"none",
+           "current_cmd":"zsh","updated_at":"2026-03-04T00:00:00Z","age_secs":100}
+        ]}
+        """
+
+        app.launchEnvironment["AGTMUX_JSON"] = json
+        app.launchForUITest()
+
+        // Wait for at least one pane to appear (daemon has been polled)
+        let managedKey = AccessibilityID.paneKey(source: "local", paneID: managedPaneID)
+        let managedRow = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier == %@", AccessibilityID.sidebarPanePrefix + managedKey)).firstMatch
+        XCTAssertTrue(managedRow.waitForExistence(timeout: TestConstants.sidebarPopulateTimeout),
+                      "Managed pane must appear in 'All' filter")
+
+        // Switch to "Managed" filter tab
+        let managedTabButton = app.buttons.matching(
+            NSPredicate(format: "label == %@", "Managed")).firstMatch
+        XCTAssertTrue(managedTabButton.waitForExistence(timeout: TestConstants.settleTimeout),
+                      "'Managed' filter tab must exist")
+        managedTabButton.click()
+        Thread.sleep(forTimeInterval: 0.5)
+
+        // Managed pane must still appear
+        XCTAssertTrue(managedRow.exists, "Managed pane must appear under 'Managed' filter")
+
+        // Unmanaged pane must be hidden
+        let unmanagedKey = AccessibilityID.paneKey(source: "local", paneID: unmanagedPaneID)
+        let unmanagedRow = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier == %@", AccessibilityID.sidebarPanePrefix + unmanagedKey)).firstMatch
+        XCTAssertFalse(unmanagedRow.exists,
+                       "Unmanaged pane must NOT appear under 'Managed' filter")
+    }
+
+    /// T-E2E-010: Selecting a mock-daemon pane backed by a real tmux session creates a terminal tile.
+    ///
+    /// Flow:
+    ///   1. Create real tmux session (so LinkedSessionManager can create a linked session)
+    ///   2. Get the real pane ID and window ID from that session
+    ///   3. Mock daemon returns that pane
+    ///   4. Click the sidebar row
+    ///   5. Terminal tile must appear and app must not crash
+    func testPaneSelectionWithMockDaemonAndRealTmux() throws {
+        guard let tmux = resolveTmuxPathBestEffort() else {
+            throw XCTSkip("tmux not available — skipping terminal tile test")
+        }
+
+        // Create a tracked tmux session so tearDown can always cleanup session + agents.
+        let realSession = try createTrackedTmuxSession(prefix: "agtmux-e2e-tile", tmux: tmux)
+
+        // Get real pane ID
+        let paneOut = try shellOutput([tmux, "list-panes", "-t", realSession, "-F", "#{pane_id}"])
+        guard let realPaneID = paneOut.components(separatedBy: "\n").first(where: { !$0.isEmpty }) else {
+            throw XCTSkip("Could not get pane ID from test session")
+        }
+
+        // Get real window ID
+        let winOut = try shellOutput([tmux, "list-windows", "-t", realSession, "-F", "#{window_id}"])
+        let realWindowID = winOut.components(separatedBy: "\n").first(where: { !$0.isEmpty }) ?? "@0"
+
+        // Create mock daemon returning this real pane
+        let json = """
+        {"version":1,"panes":[
+          {"pane_id":"\(realPaneID)","session_name":"\(realSession)","window_id":"\(realWindowID)",
+           "window_index":1,"window_name":"zsh","activity_state":"idle",
+           "presence":"unmanaged","evidence_mode":"none",
+           "current_cmd":"zsh","updated_at":"2026-03-04T00:00:00Z","age_secs":0}
+        ]}
+        """
+
+        app.launchEnvironment["AGTMUX_JSON"] = json
+        app.launchForUITest()
+
+        // Wait for pane to appear in sidebar
+        let key = AccessibilityID.paneKey(source: "local", paneID: realPaneID)
+        let panePred = NSPredicate(format: "identifier == %@", AccessibilityID.sidebarPanePrefix + key)
+        let paneRow = app.descendants(matching: .any).matching(panePred).firstMatch
+        XCTAssertTrue(
+            paneRow.waitForExistence(timeout: TestConstants.sidebarPopulateTimeout),
+            "Pane \(realPaneID) from session '\(realSession)' must appear in sidebar. " +
+            "AX id: \(AccessibilityID.sidebarPanePrefix + key)"
+        )
+
+        // Click the pane — should create a terminal tile
+        assertWorkspaceStartsEmpty()
+        paneRow.click()
+        waitForWorkspaceToLeaveEmptyState()
+
+        let tilePred = NSPredicate(format: "identifier BEGINSWITH %@", AccessibilityID.workspaceTilePrefix)
+        let tile = app.otherElements.matching(tilePred).firstMatch
+        XCTAssertTrue(
+            tile.waitForExistence(timeout: TestConstants.surfaceReadyTimeout),
+            "Terminal tile must appear after pane click. App may have crashed. " +
+            "Tile AX prefix: \(AccessibilityID.workspaceTilePrefix)"
+        )
+
+        XCTAssertEqual(
+            app.state, .runningForeground,
+            "App must still be running after pane selection — crashed? State: \(app.state.rawValue)"
+        )
+
+        // Wait 3 seconds for deferred Metal crashes
+        Thread.sleep(forTimeInterval: 3.0)
+        XCTAssertEqual(
+            app.state, .runningForeground,
+            "App crashed after surface creation (deferred Metal renderer crash)"
+        )
+    }
+
+    // MARK: - Category B: Requires agtmux daemon + pane rows in sidebar (legacy)
+
+    /// T-E2E-003: A pane row appears in the sidebar after the daemon discovers the test session.
+    ///
+    /// NOTE: This test depends on the real agtmux daemon having managed panes.
+    /// Use T-E2E-007 (testSidebarShowsDaemonPanes) for isolated testing with mock daemon.
+    func testPaneAppearsInSidebar() throws {
+        app.launchForUITest()
+        let predicate = NSPredicate(format: "identifier BEGINSWITH %@", AccessibilityID.sidebarPanePrefix)
+        let paneRow = app.otherElements.matching(predicate).firstMatch
+        guard paneRow.waitForExistence(timeout: TestConstants.sidebarPopulateTimeout) else {
+            throw XCTSkip(
+                "No pane rows appeared — requires a running agtmux daemon with managed panes."
+            )
+        }
+    }
+
+    /// T-E2E-004: CRASH REGRESSION TEST.
+    func testPaneSelectionCreatesTerminalTile() throws {
+        app.launchForUITest()
+        let predicate = NSPredicate(format: "identifier BEGINSWITH %@", AccessibilityID.sidebarPanePrefix)
+        let paneRow = app.otherElements.matching(predicate).firstMatch
+        guard paneRow.waitForExistence(timeout: TestConstants.sidebarPopulateTimeout) else {
+            throw XCTSkip("No pane rows appeared — requires a running agtmux daemon.")
+        }
+
+        assertWorkspaceStartsEmpty()
+        paneRow.click()
+        waitForWorkspaceToLeaveEmptyState()
+
+        let tilePredicate = NSPredicate(format: "identifier BEGINSWITH %@", AccessibilityID.workspaceTilePrefix)
+        let tile = app.otherElements.matching(tilePredicate).firstMatch
+        XCTAssertTrue(
+            tile.waitForExistence(timeout: TestConstants.surfaceReadyTimeout),
+            "Terminal tile should appear after pane tap. App may have crashed."
+        )
+
+        XCTAssertEqual(
+            app.state, .runningForeground,
+            "App is no longer running after pane selection — crashed? State: \(app.state.rawValue)"
+        )
+
+        let readyPredicate = NSPredicate(format: "value == %@", "ready")
+        let readyExpectation = expectation(for: readyPredicate, evaluatedWith: tile)
+        wait(for: [readyExpectation], timeout: TestConstants.surfaceReadyTimeout)
+
+        Thread.sleep(forTimeInterval: 3.0)
+        XCTAssertEqual(
+            app.state, .runningForeground,
+            "App crashed after surface creation (deferred Metal renderer crash)"
+        )
+    }
+
+    /// T-E2E-006: SPLIT REGRESSION TEST.
+    func testSecondPaneSelectionReplacesNotSplits() throws {
+        app.launchForUITest()
+        let panePredicate = NSPredicate(format: "identifier BEGINSWITH %@", AccessibilityID.sidebarPanePrefix)
+        let allRows = app.otherElements.matching(panePredicate)
+
+        let twoRowsPredicate = NSPredicate(format: "count >= 2")
+        let twoRowsExp = expectation(for: twoRowsPredicate, evaluatedWith: allRows)
+        let result = XCTWaiter.wait(for: [twoRowsExp], timeout: TestConstants.sidebarPopulateTimeout)
+        guard result == .completed else {
+            throw XCTSkip("Need ≥2 pane rows in sidebar — ensure agtmux daemon is running with ≥2 panes")
+        }
+
+        assertWorkspaceStartsEmpty()
+        allRows.firstMatch.click()
+        waitForWorkspaceToLeaveEmptyState()
+
+        let tilePredicate = NSPredicate(format: "identifier BEGINSWITH %@", AccessibilityID.workspaceTilePrefix)
+        XCTAssertTrue(
+            app.otherElements.matching(tilePredicate).firstMatch.waitForExistence(timeout: TestConstants.surfaceReadyTimeout),
+            "Tile should appear after first pane selection"
+        )
+
+        allRows.element(boundBy: 1).click()
+        Thread.sleep(forTimeInterval: 1.0)
+
+        let tileCount = app.otherElements.matching(tilePredicate).count
+        XCTAssertEqual(
+            tileCount, 1,
+            "Second pane selection must replace the tile (count=1), not add a split (count=\(tileCount))"
+        )
+
+        XCTAssertEqual(
+            app.state, .runningForeground,
+            "App crashed during second pane selection"
+        )
+    }
+
+    // MARK: - Private helpers
+
+    private func waitForWorkspaceToLeaveEmptyState(timeout: TimeInterval = TestConstants.surfaceReadyTimeout) {
+        let emptyPred = NSPredicate(format: "identifier == %@", AccessibilityID.workspaceEmpty)
+        let emptyState = app.descendants(matching: .any).matching(emptyPred).firstMatch
+
+        let gonePredicate = NSPredicate(format: "exists == false")
+        let goneExpectation = expectation(for: gonePredicate, evaluatedWith: emptyState)
+        wait(for: [goneExpectation], timeout: timeout)
+    }
+
+    private func assertWorkspaceStartsEmpty() {
+        let emptyPred = NSPredicate(format: "identifier == %@", AccessibilityID.workspaceEmpty)
+        let emptyState = app.descendants(matching: .any).matching(emptyPred).firstMatch
+        XCTAssertTrue(
+            emptyState.waitForExistence(timeout: TestConstants.settleTimeout),
+            "Workspace should start in empty state before selecting a pane"
+        )
+    }
+
+    private func resolveTmuxPathBestEffort() -> String? {
+        let candidates = ["/opt/homebrew/bin/tmux", "/usr/local/bin/tmux", "/usr/bin/tmux"]
+        return candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) })
+    }
+
+    /// Create a tmux session that is automatically cleaned by tearDown.
+    ///
+    /// New E2E tests must use this helper (never raw `tmux new-session`) so that
+    /// both tmux session cleanup and agent process cleanup are guaranteed.
+    /// Session names are normalized to `agtmux-e2e-*` to keep teardown targeting explicit.
+    private func createTrackedTmuxSession(prefix: String, tmux: String) throws -> String {
+        let normalizedPrefix: String = prefix.hasPrefix("agtmux-e2e-") ? prefix : "agtmux-e2e-\(prefix)"
+        let session = "\(normalizedPrefix)-\(UUID().uuidString.prefix(8))"
+        guard (try? shellRun([tmux, "new-session", "-d", "-s", session])) != nil else {
+            throw XCTSkip("Could not create tmux session — sandbox may be blocking")
+        }
+        ownedSessions.insert(session)
+        return session
+    }
+
+    private func listTmuxSessions(_ tmux: String) throws -> Set<String> {
+        let sessions = try shellOutput([tmux, "list-sessions", "-F", "#{session_name}"])
+        return Set(sessions.components(separatedBy: "\n").filter { !$0.isEmpty })
+    }
+
+    /// Best-effort cleanup for agent sessions (codex/claude) inside a test-owned tmux session.
+    /// Order:
+    /// 1) polite interrupt (`C-c`, `exit`)
+    /// 2) terminate by pane TTY / process-group / process-tree
+    /// 3) hard kill if still alive (`TERM` pass then `KILL` pass)
+    private func terminateSessionProcesses(session: String, tmux: String) {
+        guard let rows = try? shellOutput([tmux, "list-panes", "-t", session, "-F", "#{pane_id}\t#{pane_pid}\t#{pane_tty}"]) else {
+            return
+        }
+
+        struct PaneProcessTarget {
+            var pid: Int32
+            var processGroupID: Int32?
+            var tty: String?
+        }
+
+        var targets: [PaneProcessTarget] = []
+        for line in rows.components(separatedBy: "\n") where !line.isEmpty {
+            let parts = line.components(separatedBy: "\t")
+            guard parts.count >= 2 else { continue }
+            let paneID = parts[0]
+            guard let pid = Int32(parts[1]), pid > 1 else { continue }
+            let tty = parts.count >= 3 ? parts[2] : nil
+
+            _ = try? shellRun([tmux, "send-keys", "-t", paneID, "C-c"])
+            _ = try? shellRun([tmux, "send-keys", "-t", paneID, "C-c"])
+            _ = try? shellRun([tmux, "send-keys", "-t", paneID, "exit", "Enter"])
+
+            targets.append(
+                PaneProcessTarget(
+                    pid: pid,
+                    processGroupID: processGroupID(for: pid),
+                    tty: tty
+                )
+            )
+        }
+
+        Thread.sleep(forTimeInterval: 0.2)
+        for target in targets {
+            if let tty = target.tty, let shortTTY = tty.components(separatedBy: "/").last, !shortTTY.isEmpty {
+                _ = try? shellRun(["/usr/bin/pkill", "-TERM", "-t", shortTTY])
+            }
+            if let pgid = target.processGroupID, pgid > 1 {
+                _ = try? shellRun(["/bin/kill", "-TERM", "--", "-\(pgid)"])
+            }
+            _ = try? shellRun(["/usr/bin/pkill", "-TERM", "-P", "\(target.pid)"])
+            _ = try? shellRun(["/bin/kill", "-TERM", "\(target.pid)"])
+        }
+
+        Thread.sleep(forTimeInterval: 0.2)
+        for target in targets {
+            if let tty = target.tty, let shortTTY = tty.components(separatedBy: "/").last, !shortTTY.isEmpty {
+                _ = try? shellRun(["/usr/bin/pkill", "-KILL", "-t", shortTTY])
+            }
+            if let pgid = target.processGroupID, pgid > 1 {
+                _ = try? shellRun(["/bin/kill", "-KILL", "--", "-\(pgid)"])
+            }
+            _ = try? shellRun(["/usr/bin/pkill", "-KILL", "-P", "\(target.pid)"])
+            _ = try? shellRun(["/bin/kill", "-KILL", "\(target.pid)"])
+        }
+    }
+
+    private func processGroupID(for pid: Int32) -> Int32? {
+        guard let raw = try? shellOutput(["/bin/ps", "-o", "pgid=", "-p", "\(pid)"]) else {
+            return nil
+        }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return Int32(trimmed)
+    }
+
+    @discardableResult
+    private func shellRun(_ args: [String]) throws -> String {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: args[0])
+        process.arguments = Array(args.dropFirst())
+        process.standardInput = FileHandle.nullDevice
+        let out = Pipe(), err = Pipe()
+        process.standardOutput = out
+        process.standardError = err
+        try process.run()
+        process.waitUntilExit()
+        let stdout = String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let stderr = String(data: err.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        guard process.terminationStatus == 0 else {
+            throw NSError(domain: "Shell", code: Int(process.terminationStatus),
+                          userInfo: [NSLocalizedDescriptionKey: "\(args.joined(separator: " ")): \(stderr)"])
+        }
+        return stdout
+    }
+
+    private func shellOutput(_ args: [String]) throws -> String {
+        return try shellRun(args)
+    }
+}

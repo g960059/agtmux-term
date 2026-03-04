@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import AgtmuxTermCore
 
 // MARK: - WorkspaceTab
 
@@ -117,11 +118,14 @@ final class WorkspaceStore {
         let idx = activeTabIndex
         guard tabs.indices.contains(idx) else { return newLeaf.id }
 
+        // Always replace the focused leaf in-place (not split).
+        // "Click pane in sidebar" = navigate to that pane in the current tile,
+        // not add a new split column.
         if let focusedID = tabs[idx].focusedLeafID,
-           let updated = tabs[idx].root.splitLeaf(id: focusedID, axis: axis, newLeaf: newLeaf) {
+           let updated = tabs[idx].root.replacing(leafID: focusedID, with: .leaf(newLeaf)) {
             tabs[idx].root = updated
         } else {
-            // No focused leaf or split failed: replace root with a fresh single leaf.
+            // No focused leaf found (e.g. empty tab): replace root.
             tabs[idx].root = .leaf(newLeaf)
         }
 
@@ -131,19 +135,26 @@ final class WorkspaceStore {
         let leafID      = newLeaf.id
         let sessionName = pane.sessionName
         let windowId    = pane.windowId
+        let paneId      = pane.paneId
         let source      = pane.source
+
+        print("[placePane] Creating linked session for pane \(pane.paneId) session=\(sessionName) window=\(windowId)")
 
         // Create linked session asynchronously so UI isn't blocked.
         // The leaf stays in .creating (shows spinner) until this resolves.
         Task { [weak self] in
+            print("[placePane] Task started: calling LinkedSessionManager.createSession()")
             do {
                 let linkedName = try await LinkedSessionManager.shared.createSession(
                     parentSession: sessionName,
                     windowId:      windowId,
+                    paneId:        paneId,
                     source:        source
                 )
+                print("[placePane] Linked session created: \(linkedName) → updating leaf \(leafID)")
                 await self?.updateLeaf(id: leafID, linkedSession: .ready(linkedName))
             } catch {
+                print("[placePane] Linked session FAILED: \(error)")
                 await self?.updateLeaf(id: leafID,
                                        linkedSession: .failed(error.localizedDescription))
             }
@@ -247,11 +258,13 @@ final class WorkspaceStore {
                 let sessionName = leaf.sessionName
                 let source      = leaf.source
                 let windowId    = window.windowId
+                let paneId      = leaf.tmuxPaneID
                 Task { [weak self] in
                     do {
                         let name = try await LinkedSessionManager.shared.createSession(
                             parentSession: sessionName,
                             windowId:      windowId,
+                            paneId:        paneId,
                             source:        source
                         )
                         await self?.updateLeaf(id: leafID, linkedSession: .ready(name))
@@ -341,11 +354,13 @@ final class WorkspaceStore {
                 let leafID      = leaf.id
                 let sessionName = leaf.sessionName
                 let source      = leaf.source
+                let paneId      = leaf.tmuxPaneID
                 Task { [weak self] in
                     do {
                         let name = try await LinkedSessionManager.shared.createSession(
                             parentSession: sessionName,
                             windowId:      windowId,
+                            paneId:        paneId,
                             source:        source
                         )
                         await self?.updateLeaf(id: leafID, linkedSession: .ready(name))

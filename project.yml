@@ -1,0 +1,155 @@
+name: AgtmuxTerm
+options:
+  createIntermediateGroups: true
+  minimumXcodeGenVersion: 2.39.0
+
+configs:
+  Debug: debug
+  Release: release
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    # CRITICAL: -package-name makes both targets share the 'agtmux_term' Swift package namespace.
+    # This allows 'package' access modifier to work across XcodeGen targets just like SwiftPM.
+    OTHER_SWIFT_FLAGS: "$(inherited) -package-name agtmux_term"
+
+targetTemplates:
+  LocalCodeSign:
+    settings:
+      base:
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
+        DEVELOPMENT_TEAM: ""
+        CODE_SIGNING_REQUIRED: "NO"
+        CODE_SIGNING_ALLOWED: "YES"
+
+targets:
+  AgtmuxTermCore:
+    templates:
+      - LocalCodeSign
+    type: framework
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: Sources/AgtmuxTermCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: local.agtmux.term.core
+        PRODUCT_NAME: AgtmuxTermCore
+        PRODUCT_MODULE_NAME: AgtmuxTermCore
+        DEFINES_MODULE: "YES"
+        GENERATE_INFOPLIST_FILE: "YES"
+        SKIP_INSTALL: "YES"
+
+  AgtmuxTerm:
+    templates:
+      - LocalCodeSign
+    type: application
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: Sources/AgtmuxTerm
+    resources:
+      - path: Sources/AgtmuxTerm/Resources
+    dependencies:
+      - target: AgtmuxTermCore
+      - target: AgtmuxDaemonService
+      - framework: GhosttyKit/GhosttyKit.xcframework
+        embed: false
+        codeSign: false
+      - sdk: Metal.framework
+      - sdk: MetalKit.framework
+      - sdk: QuartzCore.framework
+      - sdk: CoreGraphics.framework
+      - sdk: IOSurface.framework
+      - sdk: CoreText.framework
+      - sdk: CoreFoundation.framework
+      - sdk: CoreVideo.framework
+      - sdk: AppKit.framework
+      - sdk: Foundation.framework
+      - sdk: Carbon.framework
+      - sdk: UserNotifications.framework
+      - sdk: UniformTypeIdentifiers.framework
+      - sdk: libiconv.tbd
+      - sdk: libc++.tbd
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: local.agtmux.term.app
+        PRODUCT_NAME: AgtmuxTerm
+        GENERATE_INFOPLIST_FILE: "YES"
+        INFOPLIST_KEY_CFBundleDisplayName: agtmux-term
+
+  AgtmuxDaemonService:
+    templates:
+      - LocalCodeSign
+    type: xpc-service
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: Sources/AgtmuxDaemonService
+    dependencies:
+      - target: AgtmuxTermCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: local.agtmux.term.daemonservice
+        PRODUCT_NAME: AgtmuxDaemonService
+        GENERATE_INFOPLIST_FILE: "YES"
+
+  AgtmuxTermCoreTests:
+    templates:
+      - LocalCodeSign
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: Tests/AgtmuxTermCoreTests
+    dependencies:
+      - target: AgtmuxTermCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: local.agtmux.term.core-tests
+        GENERATE_INFOPLIST_FILE: "YES"
+
+  AgtmuxTermIntegrationTests:
+    templates:
+      - LocalCodeSign
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: Tests/AgtmuxTermIntegrationTests
+    dependencies: []
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: local.agtmux.term.integration-tests
+        GENERATE_INFOPLIST_FILE: "YES"
+
+  AgtmuxTermUITests:
+    templates:
+      - LocalCodeSign
+    type: bundle.ui-testing
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: Tests/AgtmuxTermUITests
+    dependencies:
+      - target: AgtmuxTerm
+      - target: AgtmuxTermCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: local.agtmux.term.uitests
+        TEST_TARGET_NAME: AgtmuxTerm
+        GENERATE_INFOPLIST_FILE: "YES"
+
+schemes:
+  AgtmuxTerm:
+    build:
+      targets:
+        AgtmuxTerm: all
+        AgtmuxTermUITests: [test]
+    test:
+      config: Debug
+      targets:
+        - name: AgtmuxTermUITests

@@ -38,6 +38,7 @@ actor TmuxCommandRunner {
         let stderrPipe = Pipe()
         process.standardOutput = stdoutPipe
         process.standardError  = stderrPipe
+        process.standardInput  = FileHandle.nullDevice
 
         return try await withCheckedThrowingContinuation { continuation in
             process.terminationHandler = { proc in
@@ -74,11 +75,14 @@ enum TmuxCommandError: Error, Sendable {
 
 // MARK: - LinkedSessionManager
 
-/// Creates and destroys tmux linked sessions ("agtmux-{uuid}") for workspace tiles.
+/// Creates and destroys tmux linked sessions ("agtmux-linked-{uuid}") for workspace tiles.
 ///
 /// Each tile gets its own linked session that shares the parent's session group
 /// but maintains an independent current-window pointer. This allows multiple
 /// tiles to display different windows of the same agent session simultaneously.
+///
+/// The "agtmux-linked-" prefix (vs the old "agtmux-") avoids collision with real
+/// user sessions that the agtmux CLI creates as "agtmux-{UUID}" (T-056).
 ///
 /// Verified in Spike B (T-028):
 ///   - Sessions in the same group maintain independent current-window pointers.
@@ -88,21 +92,23 @@ actor LinkedSessionManager {
 
     private init() {}
 
-    /// Create a linked session and navigate it to the target window.
+    /// Create a linked session and navigate it to the target window and pane.
     ///
     /// - Parameters:
     ///   - parentSession: The parent session name (e.g. `"backend-api"`).
     ///   - windowId: The window ID to display initially (e.g. `"@510"`).
+    ///   - paneId: The pane ID to focus within the window (e.g. `"%601"`).
     ///   - source: `"local"` or SSH hostname.
-    /// - Returns: The linked session name (`"agtmux-{uuid}"`).
+    /// - Returns: The linked session name (`"agtmux-linked-{uuid}"`).
     func createSession(parentSession: String,
                        windowId: String,
+                       paneId: String,
                        source: String) async throws -> String {
-        let name = "agtmux-\(UUID().uuidString)"
+        let name = "agtmux-linked-\(UUID().uuidString)"
 
         // Step 1: Create linked session sharing the parent's session group.
         // -d = detached (no immediate attach), -s = name, -t = parent session.
-        try await TmuxCommandRunner.shared.run(
+        _ = try await TmuxCommandRunner.shared.run(
             ["new-session", "-d", "-s", name, "-t", parentSession],
             source: source
         )
@@ -110,8 +116,15 @@ actor LinkedSessionManager {
         // Step 2: Navigate the linked session's current-window to the target.
         // select-window operates on the session pointer, not on an attached client,
         // so it works even before any surface has attached (confirmed Spike B).
-        try await TmuxCommandRunner.shared.run(
+        _ = try await TmuxCommandRunner.shared.run(
             ["select-window", "-t", "\(name):\(windowId)"],
+            source: source
+        )
+
+        // Step 3: Set the active pane within that window.
+        // paneId is the global tmux pane ID (e.g. "%601"), unique across all sessions.
+        _ = try await TmuxCommandRunner.shared.run(
+            ["select-pane", "-t", paneId],
             source: source
         )
 

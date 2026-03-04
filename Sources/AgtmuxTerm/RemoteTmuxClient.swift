@@ -1,4 +1,5 @@
 import Foundation
+import AgtmuxTermCore
 
 // MARK: - RemoteTmuxClient
 

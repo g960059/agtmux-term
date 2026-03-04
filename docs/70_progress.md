@@ -527,3 +527,127 @@ Round 1 全修正が全員により confirmed。2/4 GO 目標クリア。
 | C: control mode イベント | ✅ PASS | `%layout-change` フォーマット・`list-panes` 形式など全て確認 |
 
 次フェーズ: T-030 (WindowGroup/SessionGroup) から T-032 (通知) まで実装開始。
+
+---
+
+## 2026-03-04 — T-058 着手: daemon 同梱 + 自動起動/自動停止
+
+### 目的
+
+- app 起動時に daemon が未起動でも即座に利用可能にする
+- app 終了時に app 起動 daemon を確実に停止し、孤児プロセスを減らす
+
+### 実装（今回）
+
+- `AgtmuxBinaryResolver` を追加し、`agtmux` 解決順を共通化
+  1. `AGTMUX_BIN`
+  2. bundle `Resources/Tools/agtmux`（SPM flatten fallback: bundle root `agtmux`）
+  3. PATH + fallback
+- `AgtmuxDaemonSupervisor` を追加
+  - daemon 到達不能時のみ `agtmux daemon` を spawn
+  - app 終了時に own child daemon を terminate
+  - SIGTERM（XCUITest terminate）時も child daemon kill 後に即終了
+  - `AGTMUX_AUTOSTART=0` で無効化
+  - `AGTMUX_UITEST=1` では起動抑止
+- `main.swift` で supervisor を初期化・起動・停止フック
+- `AgtmuxDaemonClient` は resolver を利用するように変更
+- `Sources/AgtmuxTerm/Resources/Tools/README.md` を追加（同梱パスを明示）
+- `README.md` に daemon 自動起動仕様・解決順・無効化方法を追記
+
+### 未完了
+
+- bundle 同梱する `agtmux` バイナリの署名/更新を CI に組み込む
+- 配布用アーカイブ（.app）での実機検証
+
+---
+
+## 2026-03-04 — T-059 Kickoff: XPC Service 移行
+
+### Pre-review gate
+
+- Claude review x2 を実施
+- 結果: **GO / GO**
+- 判定: **2/2 GO で採択、実装開始**
+
+### 採択した実装方針
+
+- local daemon 管理を app 直下 subprocess から XPC service へ移譲
+- app は persistent XPC connection を持ち、起動時 start / 終了時 stop を要求
+- service invalidation 時は app 側で lazy reconnect + start-if-needed
+- XPC不可時は既存 in-process client にフォールバック
+- `AGTMUX_UITEST=1` は fallback 固定（テスト安定性維持）
+
+### この後の実装順
+
+1. xcodegen で `xpc-service` target 生成の事前スパイク
+2. shared protocol / wire contract 実装
+3. service target 実装
+4. app 側 client + AppViewModel/main 統合
+5. build/test
+6. post-review gate (Claude x2, 1/2 GO 以上で完了)
+
+## 2026-03-04 — T-059 実装完了 + Post-review gate
+
+### 実装結果
+
+- `AgtmuxTermCore` に shared XPC contract / binary resolver / daemon client を集約
+- `AgtmuxDaemonService` (`type: xpc-service`) を追加し、app bundle `Contents/XPCServices` へ組み込み
+- app 側を `AgtmuxDaemonXPCClient` 優先に切替
+  - `AGTMUX_UITEST=1` または `AGTMUX_XPC_DISABLED=1` では既存 supervisor fallback
+- service 側は `start / fetch / stop` を提供し、connection 0 件時に own daemon 停止
+
+### Post-review gate (Claude x2)
+
+- Round 1: **GO_WITH_CONDITIONS / GO_WITH_CONDITIONS**
+  - 採択修正:
+    1. `startManagedDaemon` の成否返却を true 固定から修正
+    2. interruption + invalidation の二重発火で connection が二重減算される問題を修正
+    3. XPC 実行時に host app bundle の `Resources/Tools/agtmux` を解決できるよう resolver を修正
+- Round 2: **GO / GO_WITH_CONDITIONS**
+  - 判定: **2/2 GO系 verdict → 1/2 gate 通過で採択**
+
+### 追加で反映した軽微修正
+
+- service 停止待ち上限を 2.0s → 0.5s に短縮
+- fallback supervisor 側 `probe` の `stdout/stderr` を `nullDevice` に統一
+- `daemonStartedInSession` が最適化フラグである旨をコメント明記
+
+### 検証
+
+- `swift build` ✅
+- `swift test` ✅
+- `xcodebuild -scheme AgtmuxTerm build` ✅
+- `xcodebuild -scheme AgtmuxTerm build-for-testing` ✅
+- `xcodebuild test -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testAppLaunchShowsSidebar`
+  - 現環境では app activation 失敗 (`Running Background`) が継続。UI test infra 側課題として切り分け。
+
+## 2026-03-04 — T-060 E2E cleanup 強化 (tmux + agent)
+
+### 実装
+
+- `AgtmuxTermUITests` に `ownedSessions` を追加
+- `createTrackedTmuxSession(prefix:tmux:)` helper を追加し、テストが作る tmux session を明示管理
+  - helper 内で session 名を `agtmux-e2e-*` に正規化
+- `tearDownWithError` を以下の順序に強化
+  1. app terminate
+  2. test-owned session の agent process cleanup
+     - `C-c/exit`
+     - `pane_tty` / `pgid` / `pane_pid` の3経路で TERM→KILL
+  3. `sessionsToKill = (current - preExisting) ∪ ownedSessions` を kill-session
+  4. leak 再検査し、残存セッションがあれば fail
+- `testPaneSelectionWithMockDaemonAndRealTmux` を raw `new-session` から tracked helper 利用へ変更
+
+### docs
+
+- `Tests/AgtmuxTermUITests/README.md` を新規作成
+  - 新規 E2E 追加時は raw `tmux new-session` 禁止
+  - `createTrackedTmuxSession` 利用必須
+  - cleanup 対象 (tmux session + agent process) を明示
+
+### 検証
+
+- `swift build` ✅
+- `swift test` ✅
+- `xcodebuild -scheme AgtmuxTerm build` ✅
+- `xcodebuild test -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testPaneSelectionWithMockDaemonAndRealTmux`
+  - 現環境では `Timed out while enabling automation mode` で UI test runner 初期化失敗

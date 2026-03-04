@@ -10,9 +10,14 @@ let package = Package(
             name: "GhosttyKit",
             path: "GhosttyKit/GhosttyKit.xcframework"
         ),
+        // GhosttyKit/AppKit independent core logic.
+        .target(
+            name: "AgtmuxTermCore",
+            path: "Sources/AgtmuxTermCore"
+        ),
         .executableTarget(
             name: "AgtmuxTerm",
-            dependencies: ["GhosttyKit"],
+            dependencies: ["GhosttyKit", "AgtmuxTermCore"],
             path: "Sources/AgtmuxTerm",
             resources: [
                 .process("Resources"),
@@ -43,6 +48,16 @@ let package = Package(
                 // C++ standard library (required by libghostty.a — glslang, spirv-cross, etc.)
                 .linkedLibrary("c++"),
             ]
+        ),
+        .testTarget(
+            name: "AgtmuxTermCoreTests",
+            dependencies: ["AgtmuxTermCore"],
+            path: "Tests/AgtmuxTermCoreTests"
+        ),
+        .testTarget(
+            name: "AgtmuxTermIntegrationTests",
+            dependencies: [],
+            path: "Tests/AgtmuxTermIntegrationTests"
         ),
     ]
 )

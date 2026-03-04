@@ -79,22 +79,25 @@ final class SurfacePool {
     // MARK: - Occlusion
 
     /// Mark leaf as active (visible). Sets ghostty occlusion = visible.
+    /// Idempotent: no-op if already active (avoids @Observable pool mutation → re-render loop).
     func activate(leafID: UUID) {
-        guard pool[leafID] != nil,
-              pool[leafID]?.state != .pendingGC,
-              pool[leafID]?.state != .defunct else { return }
+        guard let managed = pool[leafID],
+              managed.state != .pendingGC,
+              managed.state != .defunct,
+              managed.state != .active else { return }
         pool[leafID]?.state = .active
-        if let surface = pool[leafID]?.view.surface {
+        if let surface = managed.view.surface {
             ghostty_surface_set_occlusion(surface, true)
         }
     }
 
     /// Mark leaf as backgrounded. Sets ghostty occlusion = occluded (stops Metal render).
+    /// Idempotent: no-op if already backgrounded.
     func background(leafID: UUID) {
-        guard pool[leafID] != nil,
-              pool[leafID]?.state == .active else { return }
+        guard let managed = pool[leafID],
+              managed.state == .active else { return }
         pool[leafID]?.state = .backgrounded
-        if let surface = pool[leafID]?.view.surface {
+        if let surface = managed.view.surface {
             ghostty_surface_set_occlusion(surface, false)
         }
     }

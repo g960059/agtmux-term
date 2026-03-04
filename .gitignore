@@ -63,3 +63,7 @@ fastlane/test_output
 
 # Vendor (not committed - use scripts/build-ghosttykit.sh to rebuild)
 vendor/
+
+# XcodeGen generated (regenerate with: xcodegen generate)
+*.xcodeproj
+*.xcworkspace

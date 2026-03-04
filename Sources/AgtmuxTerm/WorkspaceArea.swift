@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import GhosttyKit
+import AgtmuxTermCore
 
 // MARK: - WorkspaceArea
 
@@ -13,7 +14,8 @@ struct WorkspaceArea: View {
         VStack(spacing: 0) {
             TabBarView()
             Divider()
-            if let tab = store.activeTab {
+            if let tab = store.activeTab,
+               tab.root.leaves.contains(where: { !$0.tmuxPaneID.isEmpty }) {
                 @Bindable var bindableStore = store
                 LayoutNodeView(
                     node: tab.root,
@@ -24,6 +26,8 @@ struct WorkspaceArea: View {
                 emptyState
             }
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier(AccessibilityID.workspaceArea)
     }
 
     private var emptyState: some View {
@@ -34,6 +38,8 @@ struct WorkspaceArea: View {
             Text("Select a pane from the sidebar")
                 .foregroundColor(.secondary)
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier(AccessibilityID.workspaceEmpty)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(NSColor.textBackgroundColor))
     }
@@ -72,10 +78,13 @@ struct TabBarView: View {
                     .font(.system(size: 12, weight: .medium))
                     .frame(width: 28, height: 28)
             }
+            .accessibilityLabel("New Tab")
+            .accessibilityIdentifier(AccessibilityID.workspaceNewTab)
             .buttonStyle(.plain)
             .foregroundColor(.secondary)
             .padding(.trailing, 4)
         }
+        .accessibilityIdentifier(AccessibilityID.workspaceTabBar)
         .background(Color(NSColor.windowBackgroundColor))
         // Keyboard shortcuts: Cmd+T, Cmd+W
         .onKeyPress("t", phases: .down) { keyPress in
@@ -126,6 +135,8 @@ private struct TabButton: View {
         .background(isActive ? Color.accentColor.opacity(0.15) : Color.clear)
         .cornerRadius(6)
         .contentShape(Rectangle())
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier(AccessibilityID.workspaceTabPrefix + tab.id.uuidString)
         .onTapGesture(perform: onSelect)
         .onHover { isHovered = $0 }
     }
@@ -317,10 +328,23 @@ struct GhosttyPaneTile: View {
     let isFocused: Bool
     let hostsConfig: HostsConfig
 
+    private var linkedStateLabel: String {
+        switch leaf.linkedSession {
+        case .creating:        return "creating"
+        case .ready:           return "ready"
+        case .failed(let err): return "failed: \(err)"
+        }
+    }
+
     private var attachCommand: String? {
         guard case .ready(let sessionTarget) = leaf.linkedSession else { return nil }
         // sessionTarget is either a pane ID ("%250") or a linked session name ("agtmux-uuid")
-        let base = "tmux attach-session -t \(sessionTarget)"
+        //
+        // Important: the host app may itself run inside tmux (`swift run` from a tmux pane).
+        // If we inherit TMUX/TMUX_PANE into the embedded shell, `tmux attach-session` can
+        // target/switch the parent client instead of creating an independent client in this pty.
+        // We explicitly unset both vars for the command we launch in Ghostty.
+        let base = "env -u TMUX -u TMUX_PANE tmux attach-session -t \(sessionTarget)"
         guard leaf.source != "local",
               let host = hostsConfig.host(for: leaf.source) else { return base }
         switch host.transport {
@@ -344,6 +368,10 @@ struct GhosttyPaneTile: View {
                 ProgressView()
                     .progressViewStyle(.circular)
                     .scaleEffect(0.7)
+                    .accessibilityIdentifier(
+                        AccessibilityID.workspaceLoadingPrefix +
+                        AccessibilityID.paneKey(source: leaf.source, paneID: leaf.tmuxPaneID)
+                    )
 
             case .failed(let err):
                 Color(NSColor.textBackgroundColor)
@@ -362,6 +390,12 @@ struct GhosttyPaneTile: View {
                 EmptyView()
             }
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier(
+            AccessibilityID.workspaceTilePrefix +
+            AccessibilityID.paneKey(source: leaf.source, paneID: leaf.tmuxPaneID)
+        )
+        .accessibilityValue(Text(linkedStateLabel))
     }
 }
 
@@ -387,30 +421,41 @@ private struct _GhosttyNSView: NSViewRepresentable {
 
     func updateNSView(_ nsView: GhosttyTerminalView, context: Context) {
         let cmd = attachCommand
+        let commandChanged = context.coordinator.currentCommand != cmd
 
         // Only recreate surface when the command changes.
-        if context.coordinator.currentCommand != cmd {
+        if commandChanged {
+            // Reset lastAppliedFocus so occlusion is re-applied after surface recreate.
+            context.coordinator.lastAppliedFocus = nil
             if let cmd {
                 // ghostty_surface_new requires the view to be in a window hierarchy.
                 // If window is nil, defer by NOT updating currentCommand — SwiftUI
                 // will call updateNSView again after the next layout pass.
                 guard nsView.window != nil else { return }
                 context.coordinator.currentCommand = cmd
+                print("[updateNSView] Creating surface for leaf \(leafID) cmd=\(cmd)")
                 if let surface = GhosttyApp.shared.newSurface(for: nsView, command: cmd) {
                     nsView.attachSurface(surface)
                     SurfacePool.shared.register(view: nsView,
                                                 leafID: leafID,
                                                 tmuxPaneID: tmuxPaneID)
+                    print("[updateNSView] Surface created: true")
+                } else {
+                    print("[updateNSView] Surface created: false")
                 }
             } else {
                 context.coordinator.currentCommand = nil
             }
         }
 
-        // Delegate occlusion to SurfacePool.
-        // Falls back to direct call if the leaf isn't registered yet.
+        // Only delegate occlusion to SurfacePool when isFocused actually changes.
+        // Calling activate/background unconditionally every render mutates @Observable
+        // SurfacePool.pool, which triggers a SwiftUI re-render → infinite loop.
+        guard context.coordinator.lastAppliedFocus != isFocused else { return }
+        context.coordinator.lastAppliedFocus = isFocused
         if isFocused {
             SurfacePool.shared.activate(leafID: leafID)
+            nsView.window?.makeFirstResponder(nsView)
         } else {
             SurfacePool.shared.background(leafID: leafID)
         }
@@ -431,5 +476,8 @@ private struct _GhosttyNSView: NSViewRepresentable {
     final class Coordinator {
         var currentCommand: String?
         var leafID: UUID?
+        /// Tracks the last occlusion state applied to SurfacePool.
+        /// nil = not yet applied (forces first application).
+        var lastAppliedFocus: Bool? = nil
     }
 }

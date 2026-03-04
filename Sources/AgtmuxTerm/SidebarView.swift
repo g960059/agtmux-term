@@ -1,4 +1,5 @@
 import SwiftUI
+import AgtmuxTermCore
 
 // MARK: - FilterBarView
 
@@ -41,6 +42,7 @@ struct FilterBarView: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
+        .accessibilityIdentifier(AccessibilityID.sidebarFilterBar)
     }
 }
 
@@ -156,7 +158,7 @@ struct SessionBlockView: View {
 /// A collapsible window block: window header + pane rows.
 /// Right-click → New Pane / Kill Window.
 struct WindowBlockView: View {
-    let window: WindowGroup
+    let window: AgtmuxTermCore.WindowGroup
     let selectedPaneId: String?
     let onSelect: (AgtmuxPane) -> Void
 
@@ -226,6 +228,11 @@ struct WindowBlockView: View {
                         isSelected: selectedPaneId == pane.id
                     )
                     .contentShape(Rectangle())
+                    .accessibilityElement(children: .combine)
+                    .accessibilityIdentifier(
+                        AccessibilityID.sidebarPanePrefix +
+                        AccessibilityID.paneKey(source: pane.source, paneID: pane.paneId)
+                    )
                     .onTapGesture { onSelect(pane) }
                 }
             }
@@ -399,7 +406,7 @@ struct SpinnerView: View {
 
 /// Brand-accurate SVG icon for each AI provider.
 struct ProviderIcon: View {
-    let provider: AgtmuxPane.Provider
+    let provider: Provider
     var size: CGFloat = 16
 
     var body: some View {
@@ -413,9 +420,14 @@ struct ProviderIcon: View {
     }
 }
 
-private extension AgtmuxPane.Provider {
+private extension Provider {
     var svgImage: NSImage? {
-        guard let url = Bundle.module.url(forResource: svgResourceName, withExtension: "svg"),
+        #if SWIFT_PACKAGE
+        let bundle = Bundle.module
+        #else
+        let bundle = Bundle.main
+        #endif
+        guard let url = bundle.url(forResource: svgResourceName, withExtension: "svg"),
               let img = NSImage(contentsOf: url) else { return nil }
         if usesTemplateRendering { img.isTemplate = true }
         return img
@@ -471,31 +483,60 @@ struct SidebarView: View {
             FilterBarView()
             Divider()
 
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0, pinnedViews: []) {
-                    ForEach(viewModel.panesBySession, id: \.source) { group in
-                        SourceHeaderView(
-                            source: group.source,
-                            displayName: viewModel.hostsConfig.displayName(for: group.source),
-                            isOffline: viewModel.offlineHosts.contains(group.source)
-                        )
-
-                        ForEach(group.sessions) { session in
-                            SessionBlockView(
-                                session: session,
-                                selectedPaneId: viewModel.selectedPane?.id,
-                                onSelect: { pane in
-                                    viewModel.selectPane(pane)
-                                    Task { await workspaceStore.placePane(pane) }
-                                }
+            if viewModel.panesBySession.isEmpty {
+                sidebarEmptyState
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0, pinnedViews: []) {
+                        ForEach(viewModel.panesBySession, id: \.source) { group in
+                            SourceHeaderView(
+                                source: group.source,
+                                displayName: viewModel.hostsConfig.displayName(for: group.source),
+                                isOffline: viewModel.offlineHosts.contains(group.source)
                             )
+
+                            ForEach(group.sessions) { session in
+                                SessionBlockView(
+                                    session: session,
+                                    selectedPaneId: viewModel.selectedPane?.id,
+                                    onSelect: { pane in
+                                        viewModel.selectPane(pane)
+                                        Task { await workspaceStore.placePane(pane) }
+                                    }
+                                )
+                            }
                         }
                     }
+                    .padding(.vertical, 4)
+                    .padding(.horizontal, 4)
                 }
-                .padding(.vertical, 4)
-                .padding(.horizontal, 4)
             }
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier(AccessibilityID.sidebar)
+    }
+
+    private var sidebarEmptyState: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("No panes loaded")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(.secondary)
+            Text(emptyStateDetail)
+                .font(.system(size: 11))
+                .foregroundColor(.secondary.opacity(0.9))
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .padding(.horizontal, 12)
+        .padding(.top, 12)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier(AccessibilityID.sidebarEmpty)
+    }
+
+    private var emptyStateDetail: String {
+        if viewModel.offlineHosts.contains("local") {
+            return "Local agtmux daemon is unavailable. Check AGTMUX_BIN or daemon startup."
+        }
+        return "No tracked panes are currently available."
     }
 }
 

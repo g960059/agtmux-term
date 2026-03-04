@@ -19,7 +19,7 @@ import Foundation
 /// Multiple children (>2) are folded right into a chain of binary `SplitContainer`s.
 /// Ratios are derived from character-cell dimensions — no pixel conversion is needed
 /// because `SplitContainer.ratio` is dimensionless (firstChild / total).
-struct TmuxLayoutConverter {
+package struct TmuxLayoutConverter {
 
     // MARK: - Intermediate AST
 
@@ -56,9 +56,9 @@ struct TmuxLayoutConverter {
     ///   - source:       `"local"` or SSH hostname applied to every created `LeafPane`.
     /// - Returns: `LayoutNode`, or `nil` if the layout string cannot be parsed or
     ///            if a pane index in the string is not found in `windowPanes`.
-    static func convert(layoutString: String,
-                        windowPanes: [AgtmuxPane],
-                        source: String) -> LayoutNode? {
+    package static func convert(layoutString: String,
+                                windowPanes: [AgtmuxPane],
+                                source: String) -> LayoutNode? {
         // Strip the 5-char checksum + comma (e.g. "c1e7a,")
         guard let commaIdx = layoutString.firstIndex(of: ",") else { return nil }
         let treeStr = layoutString[layoutString.index(after: commaIdx)...]

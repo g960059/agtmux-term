@@ -1,17 +1,5 @@
 import Foundation
-
-// MARK: - WindowGroup
-
-/// A group of panes sharing the same tmux window, within a session.
-struct WindowGroup: Identifiable {
-    var id: String { "\(source):\(sessionName):\(windowId)" }
-    let source: String
-    let sessionName: String
-    let windowId: String        // "@42" format
-    let windowIndex: Int?       // 1-based index, nil if unavailable
-    let windowName: String?
-    let panes: [AgtmuxPane]
-}
+import AgtmuxTermCore
 
 // MARK: - SessionGroup
 
@@ -103,15 +91,18 @@ final class AppViewModel: ObservableObject {
     // MARK: - Filtered panes
 
     var filteredPanes: [AgtmuxPane] {
+        // Exclude internal linked sessions created by LinkedSessionManager (agtmux-linked-*).
+        // These share pane IDs with parent sessions; showing them causes multiple
+        // sidebar rows to highlight simultaneously for the same selected pane.
+        // NOTE: "agtmux-{UUID}" sessions (without "linked-") are real user sessions
+        // created by the agtmux CLI where Claude Code runs — they must remain visible
+        // for status dots to appear (T-056).
+        let visible = panes.filter { !$0.sessionName.hasPrefix("agtmux-linked-") }
         switch statusFilter {
-        case .all:
-            return panes
-        case .managed:
-            return panes.filter { $0.isManaged }
-        case .attention:
-            return panes.filter { $0.needsAttention }
-        case .pinned:
-            return panes.filter { $0.isPinned }
+        case .all:       return visible
+        case .managed:   return visible.filter { $0.isManaged }
+        case .attention: return visible.filter { $0.needsAttention }
+        case .pinned:    return visible.filter { $0.isPinned }
         }
     }
 
@@ -123,13 +114,14 @@ final class AppViewModel: ObservableObject {
 
     // MARK: - Clients
 
-    private let localClient = AgtmuxDaemonClient()
+    private let localClient: any LocalSnapshotClient
     private var remoteClients: [RemoteTmuxClient] = []
     let hostsConfig: HostsConfig
 
     // MARK: - Init
 
-    init() {
+    init(localClient: (any LocalSnapshotClient)? = nil) {
+        self.localClient = localClient ?? AgtmuxDaemonClient()
         let config = HostsConfig.load()
         self.hostsConfig = config
         self.remoteClients = config.hosts.map { RemoteTmuxClient(host: $0) }

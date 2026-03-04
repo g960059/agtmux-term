@@ -1,12 +1,12 @@
 import AppKit
-import QuartzCore
 import GhosttyKit
 
 /// An NSView that hosts a Ghostty terminal surface rendered via Metal.
 ///
 /// Responsibilities:
 /// - Owns a ghostty_surface_t and frees it on deinit.
-/// - Exposes a CAMetalLayer as the backing layer for libghostty GPU rendering.
+/// - Acts as a plain NSView; Ghostty uses layer-hosting (sets view.layer = IOSurfaceLayer
+///   before wantsLayer = true). Do NOT override wantsLayer or makeBackingLayer.
 /// - Routes keyboard, mouse, and scroll input to libghostty.
 /// - Implements NSTextInputClient for IME (Japanese, Chinese, etc.).
 class GhosttyTerminalView: NSView, NSTextInputClient {
@@ -14,6 +14,7 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     // MARK: - State
 
     private(set) var surface: ghostty_surface_t?
+    private var drawCount = 0
 
     // MARK: - IME state
 
@@ -22,18 +23,6 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     private var keyTextAccumulator = ""
     /// True while we are inside keyDown (i.e. interpretKeyEvents is running).
     private var inKeyDown = false
-
-    // MARK: - Layer
-
-    /// Force layer-backed rendering using CAMetalLayer.
-    override var wantsLayer: Bool {
-        get { true }
-        set {}
-    }
-
-    override func makeBackingLayer() -> CALayer {
-        CAMetalLayer()
-    }
 
     // MARK: - Lifecycle
 
@@ -68,8 +57,6 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
             GhosttyApp.shared.releaseSurface(for: self)
         }
         surface = newSurface
-        // libghostty renders directly into the CAMetalLayer that was passed as
-        // nsview in ghostty_surface_config_s; no further setup is needed here.
         needsDisplay = true
     }
 
@@ -84,11 +71,30 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
                                  UInt32(bounds.height * scale))
     }
 
+    // MARK: - Tracking areas (required for mouseMoved / scroll to work)
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach { removeTrackingArea($0) }
+        addTrackingArea(NSTrackingArea(
+            rect:    bounds,
+            options: [.activeInKeyWindow, .mouseEnteredAndExited, .mouseMoved, .inVisibleRect],
+            owner:   self,
+            userInfo: nil
+        ))
+    }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { return true }
+
     // MARK: - Draw
 
     /// Called by GhosttyApp.tick() on every wakeup to trigger Metal rendering.
     func triggerDraw() {
         guard let surface else { return }
+        drawCount += 1
+        if drawCount <= 3 {
+            print("[triggerDraw] #\(drawCount) surface=\(surface)")
+        }
         ghostty_surface_draw(surface)
     }
 
@@ -242,6 +248,10 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
                                      GHOSTTY_MOUSE_RELEASE,
                                      GHOSTTY_MOUSE_MIDDLE,
                                      GhosttyInput.toMods(event.modifierFlags))
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        window?.makeFirstResponder(self)
     }
 
     override func mouseMoved(with event: NSEvent) {
