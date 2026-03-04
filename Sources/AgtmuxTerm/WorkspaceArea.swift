@@ -28,6 +28,21 @@ struct WorkspaceArea: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(AccessibilityID.workspaceArea)
+        .onAppear {
+            syncSelectedPaneToFocusedLeaf()
+        }
+        .onChange(of: store.activeTabIndex) { _, _ in
+            syncSelectedPaneToFocusedLeaf()
+        }
+        .onChange(of: store.activeTab?.focusedLeafID) { _, _ in
+            syncSelectedPaneToFocusedLeaf()
+        }
+        .onChange(of: store.activeTab?.root) { _, _ in
+            syncSelectedPaneToFocusedLeaf()
+        }
+        .onChange(of: viewModel.panes) { _, _ in
+            syncSelectedPaneToFocusedLeaf()
+        }
     }
 
     private var emptyState: some View {
@@ -42,6 +57,31 @@ struct WorkspaceArea: View {
         .accessibilityIdentifier(AccessibilityID.workspaceEmpty)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(NSColor.textBackgroundColor))
+    }
+
+    /// Keep sidebar selection in sync with the focused workspace tile.
+    ///
+    /// This enables reverse sync:
+    /// main panel pane focus change (tile tap or tmux `%window-pane-changed`)
+    ///   -> WorkspaceStore.focusedLeafID update
+    ///   -> AppViewModel.selectedPane update
+    ///   -> Sidebar row highlight update.
+    private func syncSelectedPaneToFocusedLeaf() {
+        guard let tab = store.activeTab,
+              let focusedLeafID = tab.focusedLeafID,
+              let focusedLeaf = tab.root.leaves.first(where: { $0.id == focusedLeafID }),
+              !focusedLeaf.tmuxPaneID.isEmpty else { return }
+
+        let matchedPane = viewModel.panes.first(where: {
+            $0.source == focusedLeaf.source
+                && $0.sessionName == focusedLeaf.sessionName
+                && $0.paneId == focusedLeaf.tmuxPaneID
+        }) ?? viewModel.panes.first(where: {
+            $0.source == focusedLeaf.source && $0.paneId == focusedLeaf.tmuxPaneID
+        })
+
+        guard let matchedPane, viewModel.selectedPane?.id != matchedPane.id else { return }
+        viewModel.selectPane(matchedPane)
     }
 }
 
@@ -135,7 +175,7 @@ private struct TabButton: View {
         .background(isActive ? Color.accentColor.opacity(0.15) : Color.clear)
         .cornerRadius(6)
         .contentShape(Rectangle())
-        .accessibilityElement(children: .contain)
+        .accessibilityElement(children: .combine)
         .accessibilityIdentifier(AccessibilityID.workspaceTabPrefix + tab.id.uuidString)
         .onTapGesture(perform: onSelect)
         .onHover { isHovered = $0 }
@@ -370,7 +410,11 @@ struct GhosttyPaneTile: View {
                     .scaleEffect(0.7)
                     .accessibilityIdentifier(
                         AccessibilityID.workspaceLoadingPrefix +
-                        AccessibilityID.paneKey(source: leaf.source, paneID: leaf.tmuxPaneID)
+                        AccessibilityID.paneKey(
+                            source: leaf.source,
+                            sessionName: leaf.sessionName,
+                            paneID: leaf.tmuxPaneID
+                        )
                     )
 
             case .failed(let err):
@@ -393,7 +437,11 @@ struct GhosttyPaneTile: View {
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(
             AccessibilityID.workspaceTilePrefix +
-            AccessibilityID.paneKey(source: leaf.source, paneID: leaf.tmuxPaneID)
+            AccessibilityID.paneKey(
+                source: leaf.source,
+                sessionName: leaf.sessionName,
+                paneID: leaf.tmuxPaneID
+            )
         )
         .accessibilityValue(Text(linkedStateLabel))
     }

@@ -113,6 +113,15 @@ actor LinkedSessionManager {
             source: source
         )
 
+        // Step 1.5: Make the status-left title show the parent session group name.
+        // Without this, internal linked session names (agtmux-linked-UUID) leak into
+        // the tmux status UI, which is confusing for users expecting the original
+        // session title.
+        _ = try await TmuxCommandRunner.shared.run(
+            ["set-option", "-t", name, "status-left", "#{session_group}"],
+            source: source
+        )
+
         // Step 2: Navigate the linked session's current-window to the target.
         // select-window operates on the session pointer, not on an attached client,
         // so it works even before any surface has attached (confirmed Spike B).

@@ -73,9 +73,9 @@ actor RemoteTmuxClient {
     // MARK: - Private
 
     /// Tab-separated tmux format string.
-    /// Fields: pane_id, session_name, window_id, window_index, window_name, pane_current_path
+    /// Fields: pane_id, session_name, window_id, window_index, window_name, pane_current_path, session_group
     private static let formatString =
-        "#{pane_id}\t#{session_name}\t#{window_id}\t#{window_index}\t#{window_name}\t#{pane_current_path}"
+        "#{pane_id}\t#{session_name}\t#{window_id}\t#{window_index}\t#{window_name}\t#{pane_current_path}\t#{session_group}"
 
     private static func parse(output: String, source: String) -> [AgtmuxPane] {
         output
@@ -89,10 +89,12 @@ actor RemoteTmuxClient {
                 let windowIndex = fields.count >= 4 ? Int(fields[3]) : nil
                 let windowName  = fields.count >= 5 && !fields[4].isEmpty ? fields[4] : nil
                 let currentPath = fields.count >= 6 && !fields[5].isEmpty ? fields[5] : nil
+                let sessionGroup = fields.count >= 7 && !fields[6].isEmpty ? fields[6] : nil
                 guard !paneId.isEmpty, !sessionName.isEmpty, !windowId.isEmpty else { return nil }
                 return AgtmuxPane(source: source,
                                   paneId: paneId,
                                   sessionName: sessionName,
+                                  sessionGroup: sessionGroup,
                                   windowId: windowId,
                                   windowIndex: windowIndex,
                                   windowName: windowName,

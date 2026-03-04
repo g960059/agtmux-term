@@ -989,3 +989,212 @@
   - [x] cleanup 後に session leak を fail-fast で検知
   - [x] 既存 tmux E2E (`testPaneSelectionWithMockDaemonAndRealTmux`) が tracked session helper を使う
   - [x] 新規 E2E 作成時の cleanup 契約が docs に明文化されている
+
+---
+
+### T-061 — linked session title leak 修正 + E2E 追加 (2026-03-04)
+- **Status**: DONE
+- **Priority**: P1
+- **Description**: linked session (`agtmux-linked-*`) に attach した際、tmux status 上の session title が内部名で表示される問題を修正。親 session 名（session group）を表示する。
+- **Root cause**:
+  - 各 terminal tile は独立表示のため linked session に attach する設計。
+  - tmux の既定 status title (`#S`) は linked session 名を表示するため、`agtmux-linked-UUID` が露出していた。
+- **Fix**:
+  - `LinkedSessionManager.createSession` で linked session 作成直後に以下を設定:
+    - `tmux set-option -t <linked> status-left #{session_group}`
+  - `session_group` を使うことで、UI 上は親 session 名を継続表示。
+  - E2E 追加: `testLinkedSessionStatusTitleUsesParentSessionGroup`
+    - pane 選択で生成された linked session の `status-left` が `#{session_group}` であることを検証
+    - tmux socket にアクセスできない runner 環境では `XCTSkip`（環境依存 fail を回避）
+- **Files**:
+  - `Sources/AgtmuxTerm/LinkedSessionManager.swift` (updated)
+  - `Tests/AgtmuxTermUITests/AgtmuxTermUITests.swift` (updated)
+  - `Tests/AgtmuxTermUITests/README.md` (updated)
+- **Acceptance Criteria**:
+  - [x] linked session title が内部名ではなく親 session group 名で表示される設定が入っている
+  - [x] title leak の回帰を検知する E2E が追加されている
+  - [x] tmux socket 非許可環境でも E2E が skip で安定する
+
+---
+
+### T-062 — UI title source-of-truth 統一 (window/title bar + tab) (2026-03-04)
+- **Status**: DONE
+- **Priority**: P1
+- **Description**: sidebar の選択 session と、window title (traffic-light 横) / tab title の不一致を根本解消。内部 linked-session 名を user-facing title に使わない。
+- **Root cause**:
+  - `GhosttyApp` が terminal 側 `SET_TITLE` action をそのまま NSWindow に反映していた。
+  - terminal は linked session (`agtmux-linked-*`) に attach するため、window title が内部名に汚染された。
+  - 初期 tab が固定 `"Main"` だったため、選択 pane/session と tab 表示が同期しなかった。
+- **Fix**:
+  - `GhosttyApp.handleAction`
+    - `GHOSTTY_ACTION_SET_TITLE` を consume し、window title 更新を停止
+  - `main.swift`
+    - NSWindow title は `AppViewModel.selectedPane.sessionName` を source-of-truth として更新
+    - pane 未選択時は `"agtmux-term"`
+    - 初期 tab の固定タイトル `"Main"` を廃止
+  - `WorkspaceStore.WorkspaceTab.displayTitle`
+    - placeholder leaf (`tmuxPaneID == ""`) を除外してタイトル導出
+    - 単一 session はその session 名、複数混在は `Mixed (N)`
+  - `WorkspaceArea.TabButton`
+    - AX を `.contain` から `.combine` に変更（tab title の E2E 観測性を改善）
+  - E2E 追加: `testSelectedPaneSessionNameShownInTabTitle`
+    - pane 選択で tab title が選択 session 名に追従し、`"Main"` 固定が残らないことを検証
+- **Files**:
+  - `Sources/AgtmuxTerm/GhosttyApp.swift` (updated)
+  - `Sources/AgtmuxTerm/main.swift` (updated)
+  - `Sources/AgtmuxTerm/WorkspaceStore.swift` (updated)
+  - `Sources/AgtmuxTerm/WorkspaceArea.swift` (updated)
+  - `Tests/AgtmuxTermUITests/AgtmuxTermUITests.swift` (updated)
+- **Acceptance Criteria**:
+  - [x] window title に `agtmux-linked-*` が出ない設計になっている
+  - [x] tab title が固定 `"Main"` ではなく選択 session 文脈に追従
+  - [x] tab title 同期の E2E が追加されている
+
+---
+
+### T-063 — session-group alias 重複の根本解消 (sidebar selection / naming) (2026-03-04)
+- **Status**: DONE
+- **Priority**: P1
+- **Description**: sidebar で同一 pane が複数 session alias (`agtmux-*`) に重複表示され、複数行同時ハイライト・誤選択になる問題を修正。session-group 基準で canonicalize して 1 行に収束させる。
+- **Root cause**:
+  - daemon snapshot に同一 `pane_id` が複数 session alias として含まれるケースがある。
+  - 旧実装は `AgtmuxPane.id = source:pane` と AX key も `source+pane` だったため、session alias 衝突で同時ハイライト/同一pane選択が発生。
+  - `agtmux-linked-*` prefix だけでは alias 重複（`agtmux-*`）を除去できなかった。
+- **Fix**:
+  - `AgtmuxPane.id` を `source:session:pane` に変更（session 文脈込み）
+  - `AccessibilityID.paneKey` を `source+session+pane` に変更
+  - `AppViewModel.fetchAll` に正規化フェーズ追加:
+    - local `tmux list-sessions -F "#{session_name}\t#{session_group}\t#{session_attached}"` から alias→canonical map を生成
+    - canonical priority: attached > group名一致 > lexical
+    - `session_group` field がある場合は fallback として利用
+    - `agtmux-linked-*` は除外
+    - canonical後に `(source, session, window, pane)` 単位で dedupe
+  - `RemoteTmuxClient` を `session_group` 取得対応
+  - E2E 追加: `testSessionGroupAliasSessionsAreDeduplicated`
+    - alias session 2件 + 同一pane を mock し、canonical key 1件のみ表示されることを検証
+    - raw alias key が残らないことを検証
+- **Files**:
+  - `Sources/AgtmuxTermCore/CoreModels.swift` (updated)
+  - `Sources/AgtmuxTermCore/AccessibilityID.swift` (updated)
+  - `Sources/AgtmuxTerm/AppViewModel.swift` (updated)
+  - `Sources/AgtmuxTerm/RemoteTmuxClient.swift` (updated)
+  - `Sources/AgtmuxTerm/SidebarView.swift` (updated)
+  - `Sources/AgtmuxTerm/WorkspaceArea.swift` (updated)
+  - `Tests/AgtmuxTermCoreTests/PaneFilterTests.swift` (updated)
+  - `Tests/AgtmuxTermUITests/AgtmuxTermUITests.swift` (updated)
+  - `Tests/AgtmuxTermUITests/README.md` (updated)
+- **Acceptance Criteria**:
+  - [x] session alias 重複が sidebar で 1 行に収束する
+  - [x] pane 選択ハイライトが session alias 衝突で多重化しない
+  - [x] canonical化の回帰を検知する E2E が追加されている
+
+---
+
+### T-064 — Sidebar UX安定化と操作面積統一 (2026-03-04)
+- **Status**: DONE
+- **Priority**: P1
+- **Description**:
+  - polling 中に sidebar が一瞬空になるフリッカーを根本解消
+  - 選択 pane を白ハイライトへ統一
+  - session / window / pane の hover 時ハイライトを統一
+  - context menu 発火位置を title 文字列ではなく list item 全体へ拡張
+- **Root cause**:
+  - fetch 失敗タイミングで source の pane 配列が空として反映される設計のため、再取得完了まで空表示が発生
+  - hover/selected 背景仕様が pane のみ部分的で、session/window は未統一
+  - context menu が row 全体ではなく見かけ上 title 近傍に偏る
+- **Fix**:
+  - `AppViewModel.fetchAll`
+    - source 単位 `lastSuccessfulPanesBySource` cache を導入
+    - fetch 成功 source のみ cache 更新、失敗 source は前回成功値を保持
+    - offline source の一時失敗で sidebar 全消去されないように変更
+  - `SidebarView`
+    - `SidebarRowStyle` を追加し、hover / selected 背景を白系で統一
+    - pane 選択背景を `accentColor` 系から白ハイライトへ変更
+    - session / window / pane row を `frame(maxWidth: .infinity)` + `contentShape(Rectangle())` 化
+    - context menu を row container（list item 全体）で発火するよう統一
+- **Files**:
+  - `Sources/AgtmuxTerm/AppViewModel.swift` (updated)
+  - `Sources/AgtmuxTerm/SidebarView.swift` (updated)
+- **Acceptance Criteria**:
+  - [x] 一時的 fetch 失敗で sidebar が空表示へフラッシュしない
+  - [x] 選択 pane が白ハイライトで表示される
+  - [x] session/window/pane row の hover 背景が白系で統一される
+  - [x] session/window/pane の context menu が row 全体の右クリックで開く
+
+---
+
+### T-065 — Sidebar item 出没（消える/戻る）再発の根本解消 (2026-03-04)
+- **Status**: DONE
+- **Priority**: P1
+- **Description**:
+  - polling 中に selected pane / session / window が一瞬消えて再出現する揺れを解消する。
+- **Root cause**:
+  - session canonical化が `session_attached` 優先で動的に変わる設計だったため、pollごとに alias の代表名が揺れる余地があった。
+  - canonical化結果が `agtmux-linked-*` 側へ寄ると、後段 filter で行が消える経路が存在した。
+  - local `tmux list-sessions` の一時失敗時に alias map が空になり、表示名・グルーピングが揺れる余地があった。
+- **Fix**:
+  - local alias map を「`session_group` 固定 canonical」に変更（`attached` 優先ロジックを廃止）
+  - alias map 取得失敗時は `lastSuccessfulLocalSessionAliasMap` を再利用して揺れを抑制
+  - `filteredPanes` の linked-prefix 再フィルタを撤去し、normalize済み `panes` を直接利用
+  - canonical化優先順位を `pane.sessionGroup` > aliasMap > raw sessionName に変更
+- **Files**:
+  - `Sources/AgtmuxTerm/AppViewModel.swift` (updated)
+- **Acceptance Criteria**:
+  - [x] poll中に selected pane/session の行が消える・戻る揺れが再発しない
+  - [x] canonical session 名が poll ごとに不安定に変化しない
+  - [x] local tmux 一時失敗時も前回成功 map で安定表示を維持
+
+---
+
+### T-066 — Main panel pane focus → Sidebar highlight 逆同期 (2026-03-04)
+- **Status**: DONE
+- **Priority**: P1
+- **Description**:
+  - main panel（workspace 内 tmux window）で pane フォーカスが変わったとき、sidebar の selected pane ハイライトを同じ pane へ追従させる。
+- **Root cause**:
+  - 通常の pane クリック経路が `workspaceStore.placePane()` を呼んでおり、window monitor (`startLayoutMonitoring`) が開始されないため `%window-pane-changed` を受け取れなかった。
+  - monitor 管理が `windowId` 単位だったため、`@1` などの共通 window ID が別 session/source/tab と衝突する設計だった。
+  - sidebar 選択状態 (`AppViewModel.selectedPane`) は sidebar click 起点でしか更新されず、workspace 側 focus と片方向同期だった。
+- **Fix**:
+  - pane row クリック経路を `placePane()` から `placeWindow(window, preferredPaneID:)` へ切替。
+    - 選択 pane の `paneId` を preferred として tab 初期フォーカスに反映。
+    - これにより通常操作でも必ず window monitor が有効になる。
+  - window 表示モデルを「BSP で pane ごとに複製表示」から「single-surface で tmux window をそのまま表示」に変更。
+    - 1 workspace tile = 1 tmux window
+    - pane の分割描画は tmux 本体に委譲
+    - 2pane→4pane の重複表示とレイアウト破綻を根本解消
+  - `WorkspaceStore` の tracking を `windowId` キーから `tabID` キーへ刷新:
+    - `trackedWindowsByTab`
+    - `layoutMonitorTasksByTab`
+    - tab 単位で monitor lifecycle を管理し、window ID 衝突を根絶。
+  - `placePane()` 実行時は同 tab の monitor を明示停止し、stale event 混入を防止。
+  - `WorkspaceStore.startLayoutMonitoring` を session-scoped active-pane poll に統一。
+    - `display-message -p -t <monitorSession> "#{pane_id}"` を主経路にして、windowId 依存を除去。
+    - fallback として `list-panes -t <monitorSession>` 解析を保持。
+  - `WorkspaceStore.handleWindowPaneChanged(paneId:tabID:)` で、対象 `tabID` の leaf `tmuxPaneID` を更新し `focusedLeafID` を同期。
+  - `WorkspaceArea` に `syncSelectedPaneToFocusedLeaf()` を追加し、以下イベントで `focusedLeaf` → `selectedPane` を同期:
+    - `onAppear`
+    - `activeTabIndex` 変更
+    - `activeTab.focusedLeafID` 変更
+    - `viewModel.panes` 更新
+  - E2E 検証向けに AX 契約を拡張:
+    - window row ID: `sidebar.window.<source_session_window>`
+    - pane row value: `selected` / `unselected`
+  - E2E 追加: `testMainPanelPaneFocusSyncsSidebarSelection`
+    - sidebar pane row クリック（実ユーザー経路）で window を開いた後、`tmux select-pane` による focus 変更で selected 行が追従することを検証
+    - linked session 生成後に parent session を kill しても同期が継続することを検証（monitor が linked runtime に追従）
+    - tmux 作成不可環境では `XCTSkip` で安全にスキップ
+- **Files**:
+  - `Sources/AgtmuxTerm/WorkspaceStore.swift` (updated)
+  - `Sources/AgtmuxTerm/WorkspaceArea.swift` (updated)
+  - `Sources/AgtmuxTerm/SidebarView.swift` (updated)
+  - `Sources/AgtmuxTermCore/AccessibilityID.swift` (updated)
+  - `Tests/AgtmuxTermUITests/AgtmuxTermUITests.swift` (updated)
+  - `Tests/AgtmuxTermUITests/README.md` (updated)
+- **Acceptance Criteria**:
+  - [x] 1 window を開いたとき workspace tile は常に 1つで、tmux pane は内部描画される
+  - [x] main panel の pane focus 変更で sidebar selected 行が追従する
+  - [x] 通常の pane row クリック経路でも monitor が有効化される
+  - [x] window ID 衝突で monitor が誤配線されない
+  - [x] monitor が `session:windowId` 固定参照に依存せず active pane を取得できる
+  - [x] reverse-sync の E2E が追加されている（環境非対応時は skip）

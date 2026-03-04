@@ -91,13 +91,7 @@ final class AppViewModel: ObservableObject {
     // MARK: - Filtered panes
 
     var filteredPanes: [AgtmuxPane] {
-        // Exclude internal linked sessions created by LinkedSessionManager (agtmux-linked-*).
-        // These share pane IDs with parent sessions; showing them causes multiple
-        // sidebar rows to highlight simultaneously for the same selected pane.
-        // NOTE: "agtmux-{UUID}" sessions (without "linked-") are real user sessions
-        // created by the agtmux CLI where Claude Code runs — they must remain visible
-        // for status dots to appear (T-056).
-        let visible = panes.filter { !$0.sessionName.hasPrefix("agtmux-linked-") }
+        let visible = panes
         switch statusFilter {
         case .all:       return visible
         case .managed:   return visible.filter { $0.isManaged }
@@ -117,6 +111,8 @@ final class AppViewModel: ObservableObject {
     private let localClient: any LocalSnapshotClient
     private var remoteClients: [RemoteTmuxClient] = []
     let hostsConfig: HostsConfig
+    private var lastSuccessfulPanesBySource: [String: [AgtmuxPane]] = [:]
+    private var lastSuccessfulLocalSessionAliasMap: [String: String] = [:]
 
     // MARK: - Init
 
@@ -166,10 +162,101 @@ final class AppViewModel: ObservableObject {
         }
     }
 
+    /// Normalize panes so UI identity and grouping are stable:
+    /// - collapse session-group aliases to a canonical session name
+    /// - hide internal linked sessions
+    /// - dedupe repeated rows that point to the same pane in the same canonical session
+    private func normalizePanes(_ allPanes: [AgtmuxPane]) async -> [AgtmuxPane] {
+        let bySource = Dictionary(grouping: allPanes, by: \.source)
+        var normalized: [AgtmuxPane] = []
+
+        for source in sortedSources(bySource.keys) {
+            let sourcePanes = bySource[source] ?? []
+            let aliasMap = source == "local" ? await localSessionAliasMap() : [:]
+
+            let transformed = sourcePanes.compactMap { pane -> AgtmuxPane? in
+                // Internal linked sessions are implementation details.
+                if pane.sessionName.hasPrefix("agtmux-linked-") { return nil }
+
+                let canonicalSession: String
+                if let group = pane.sessionGroup, !group.isEmpty {
+                    canonicalSession = group
+                } else if let alias = aliasMap[pane.sessionName], !alias.isEmpty {
+                    canonicalSession = alias
+                } else {
+                    canonicalSession = pane.sessionName
+                }
+
+                if canonicalSession == pane.sessionName { return pane }
+                return pane.withSessionName(canonicalSession)
+            }
+
+            normalized.append(contentsOf: dedupePanes(transformed))
+        }
+
+        return normalized
+    }
+
+    /// Map local tmux session_name -> canonical session-group name.
+    ///
+    /// This mapping must stay stable across polls; canonical target is always
+    /// `session_group` when available. On transient command failure, return the
+    /// previous successful map to avoid flicker.
+    private func localSessionAliasMap() async -> [String: String] {
+        let format = "#{session_name}\t#{session_group}"
+        guard let output = try? await TmuxCommandRunner.shared.run(
+            ["list-sessions", "-F", format],
+            source: "local"
+        ) else {
+            return lastSuccessfulLocalSessionAliasMap
+        }
+        var aliases: [String: String] = [:]
+        for line in output.split(separator: "\n") {
+            let fields = line.split(separator: "\t", omittingEmptySubsequences: false)
+            guard let rawName = fields.first else { continue }
+            let name = String(rawName)
+            guard !name.isEmpty else { continue }
+            let group = fields.count >= 2 ? String(fields[1]) : ""
+            aliases[name] = group.isEmpty ? name : group
+        }
+
+        if aliases.isEmpty {
+            return lastSuccessfulLocalSessionAliasMap
+        }
+        lastSuccessfulLocalSessionAliasMap = aliases
+        return aliases
+    }
+
+    private func dedupePanes(_ panes: [AgtmuxPane]) -> [AgtmuxPane] {
+        var deduped: [String: AgtmuxPane] = [:]
+
+        for pane in panes {
+            let key = "\(pane.source):\(pane.sessionName):\(pane.windowId):\(pane.paneId)"
+            if let existing = deduped[key] {
+                deduped[key] = preferredPane(existing, pane)
+            } else {
+                deduped[key] = pane
+            }
+        }
+        return Array(deduped.values)
+    }
+
+    private func preferredPane(_ lhs: AgtmuxPane, _ rhs: AgtmuxPane) -> AgtmuxPane {
+        func score(_ pane: AgtmuxPane) -> (Int, Int, Int, Date) {
+            (
+                pane.isManaged ? 1 : 0,
+                pane.conversationTitle?.isEmpty == false ? 1 : 0,
+                pane.provider != nil ? 1 : 0,
+                pane.updatedAt ?? .distantPast
+            )
+        }
+        return score(rhs) > score(lhs) ? rhs : lhs
+    }
+
     /// Fetch from all sources concurrently, merge results, update state.
     /// Internal access so TmuxManager can trigger an immediate refresh.
     func fetchAll() async {
-        var allPanes: [AgtmuxPane] = []
+        var successfulBySource: [String: [AgtmuxPane]] = [:]
         var newOffline: Set<String> = []
 
         await withTaskGroup(of: (source: String, panes: [AgtmuxPane]?, offline: Bool).self) { group in
@@ -199,12 +286,31 @@ final class AppViewModel: ObservableObject {
                 if result.offline {
                     newOffline.insert(result.source)
                 } else if let panes = result.panes {
-                    allPanes.append(contentsOf: panes)
+                    successfulBySource[result.source] = panes
                 }
             }
         }
 
-        panes = allPanes
+        // Update cache only for successful sources. Failed sources keep the previous
+        // successful snapshot to avoid sidebar flicker/empty flashes.
+        for (source, panes) in successfulBySource {
+            lastSuccessfulPanesBySource[source] = panes
+        }
+
+        let knownSources = Set(["local"] + remoteClients.map(\.host.hostname))
+        lastSuccessfulPanesBySource = lastSuccessfulPanesBySource.filter { knownSources.contains($0.key) }
+
+        let merged = sortedSources(lastSuccessfulPanesBySource.keys)
+            .flatMap { lastSuccessfulPanesBySource[$0] ?? [] }
+        let normalized = await normalizePanes(merged)
+        panes = normalized
+        if let currentSelectedPane = selectedPane {
+            selectedPane = normalized.first {
+                $0.source == currentSelectedPane.source
+                    && $0.paneId == currentSelectedPane.paneId
+                    && $0.windowId == currentSelectedPane.windowId
+            }
+        }
         offlineHosts = newOffline
     }
 }

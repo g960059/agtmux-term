@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import Combine
 import GhosttyKit
 import AgtmuxTermCore
 
@@ -97,7 +98,7 @@ let viewModel: AppViewModel = MainActor.assumeIsolated {
 // 4. Create WorkspaceStore with a default tab.
 let workspaceStore: WorkspaceStore = MainActor.assumeIsolated {
     let store = WorkspaceStore()
-    store.createTab(title: "Main")
+    store.createTab()
     return store
 }
 
@@ -116,13 +117,27 @@ let window = NSWindow(
     backing: .buffered,
     defer: false
 )
-window.title = "agtmux-term"
+let baseWindowTitle = "agtmux-term"
+window.title = baseWindowTitle
 window.contentView = hostingView
 window.makeKeyAndOrderFront(nil)
+
+// Keep NSWindow title in sync with the selected pane session.
+// This is the user-facing title source of truth (not terminal/OSC titles).
+let titleObserver: AnyCancellable = MainActor.assumeIsolated {
+    viewModel.$selectedPane.sink { pane in
+        if let pane {
+            window.title = pane.sessionName
+        } else {
+            window.title = baseWindowTitle
+        }
+    }
+}
 
 // 6. Run the app event loop.
 app.activate(ignoringOtherApps: true)
 app.run()
+_ = titleObserver
 
 if let xpcClient {
     let sema = DispatchSemaphore(value: 0)

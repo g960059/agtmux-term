@@ -41,12 +41,17 @@ package enum EvidenceMode: String, Codable, Equatable, Sendable {
 ///
 /// `source` is NOT decoded from JSON — it is injected by the client after decoding.
 package struct AgtmuxPane: Identifiable, Codable, Equatable, Sendable {
-    /// Unique across all sources: "\(source):\(paneId)", e.g. "local:%42" or "vm1.example.com:%3"
-    package var id: String { "\(source):\(paneId)" }
+    /// Unique across all sources and sessions:
+    /// "\(source):\(sessionName):\(paneId)".
+    ///
+    /// We intentionally include `sessionName` because session-linked topologies can
+    /// expose the same `paneId` in multiple sessions.
+    package var id: String { "\(source):\(sessionName):\(paneId)" }
 
     package let source: String          // "local" or remote hostname
     package let paneId: String          // "%42" format — tmux pane id
     package let sessionName: String
+    package let sessionGroup: String?
     package let windowId: String        // "@42" format
     package let windowIndex: Int?       // tmux window index (1-based), nil when not available
     package let windowName: String?     // tmux window name, nil when not available
@@ -65,6 +70,7 @@ package struct AgtmuxPane: Identifiable, Codable, Equatable, Sendable {
     package init(source: String,
                  paneId: String,
                  sessionName: String,
+                 sessionGroup: String? = nil,
                  windowId: String,
                  windowIndex: Int? = nil,
                  windowName: String? = nil,
@@ -81,6 +87,7 @@ package struct AgtmuxPane: Identifiable, Codable, Equatable, Sendable {
         self.source            = source
         self.paneId            = paneId
         self.sessionName       = sessionName
+        self.sessionGroup      = sessionGroup
         self.windowId          = windowId
         self.windowIndex       = windowIndex
         self.windowName        = windowName
@@ -136,6 +143,28 @@ extension AgtmuxPane {
         AgtmuxPane(source: source,
                    paneId: paneId,
                    sessionName: sessionName,
+                   sessionGroup: sessionGroup,
+                   windowId: windowId,
+                   windowIndex: windowIndex,
+                   windowName: windowName,
+                   activityState: activityState,
+                   presence: presence,
+                   provider: provider,
+                   evidenceMode: evidenceMode,
+                   conversationTitle: conversationTitle,
+                   currentPath: currentPath,
+                   gitBranch: gitBranch,
+                   currentCmd: currentCmd,
+                   updatedAt: updatedAt,
+                   ageSecs: ageSecs)
+    }
+
+    /// Returns a copy with a different session name (UI/session-group normalization).
+    package func withSessionName(_ sessionName: String) -> AgtmuxPane {
+        AgtmuxPane(source: source,
+                   paneId: paneId,
+                   sessionName: sessionName,
+                   sessionGroup: sessionGroup,
                    windowId: windowId,
                    windowIndex: windowIndex,
                    windowName: windowName,
@@ -200,6 +229,7 @@ package struct AgtmuxSnapshot: Codable, Equatable, Sendable {
             AgtmuxPane(source: source,
                        paneId: dto.paneId,
                        sessionName: dto.sessionName,
+                       sessionGroup: dto.sessionGroup,
                        windowId: dto.windowId,
                        windowIndex: dto.windowIndex,
                        windowName: dto.windowName,
@@ -228,6 +258,7 @@ private struct RawSnapshot: Decodable {
 private struct RawPane: Decodable {
     let paneId: String
     let sessionName: String
+    let sessionGroup: String?
     let windowId: String
     let windowIndex: Int?
     let windowName: String?
@@ -245,6 +276,7 @@ private struct RawPane: Decodable {
     enum CodingKeys: String, CodingKey {
         case paneId            = "pane_id"
         case sessionName       = "session_name"
+        case sessionGroup      = "session_group"
         case windowId          = "window_id"
         case windowIndex       = "window_index"
         case windowName        = "window_name"

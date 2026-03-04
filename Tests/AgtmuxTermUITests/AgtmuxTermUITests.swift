@@ -168,6 +168,56 @@ final class AgtmuxTermUITests: XCTestCase {
         )
     }
 
+    /// T-E2E-002b: Selecting a pane updates tab title to the session name.
+    ///
+    /// Regression coverage:
+    ///   - Tab title must not stay on a fixed bootstrap label.
+    func testSelectedPaneSessionNameShownInTabTitle() throws {
+        let paneID = "%44"
+        let sessionName = "agtmux-e2e-title-sync"
+        let json = """
+        {"version":1,"panes":[
+          {"pane_id":"\(paneID)","session_name":"\(sessionName)","window_id":"@1",
+           "window_index":1,"window_name":"zsh","activity_state":"idle",
+           "presence":"unmanaged","evidence_mode":"none",
+           "current_cmd":"zsh","updated_at":"2026-03-04T00:00:00Z","age_secs":0}
+        ]}
+        """
+
+        app.launchEnvironment["AGTMUX_JSON"] = json
+        app.launchForUITest()
+
+        let paneKey = AccessibilityID.paneKey(
+            source: "local",
+            sessionName: sessionName,
+            paneID: paneID
+        )
+        let row = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier == %@", AccessibilityID.sidebarPanePrefix + paneKey)
+        ).firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: TestConstants.sidebarPopulateTimeout))
+
+        row.click()
+
+        let tabBar = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier == %@", AccessibilityID.workspaceTabBar)
+        ).firstMatch
+        XCTAssertTrue(tabBar.waitForExistence(timeout: TestConstants.settleTimeout))
+
+        let tabPredicate = NSPredicate(format: "identifier BEGINSWITH %@", AccessibilityID.workspaceTabPrefix)
+        let firstTab = tabBar.descendants(matching: .any).matching(tabPredicate).firstMatch
+        XCTAssertTrue(firstTab.waitForExistence(timeout: TestConstants.settleTimeout))
+        let tabTitleExpectation = expectation(
+            for: NSPredicate(format: "label CONTAINS %@", sessionName),
+            evaluatedWith: firstTab
+        )
+
+        wait(for: [tabTitleExpectation], timeout: 5.0)
+
+        let legacyMain = tabBar.staticTexts.matching(NSPredicate(format: "label == %@", "Main"))
+        XCTAssertEqual(legacyMain.count, 0, "Tab title should no longer be fixed to 'Main'")
+    }
+
     /// T-E2E-005: New-tab button creates a tab.
     func testTabCreation() {
         app.launchForUITest()
@@ -227,7 +277,11 @@ final class AgtmuxTermUITests: XCTestCase {
                       "Sidebar must appear")
 
         // Pane 1 (running, managed) must appear
-        let key1 = AccessibilityID.paneKey(source: "local", paneID: pane1ID)
+        let key1 = AccessibilityID.paneKey(
+            source: "local",
+            sessionName: sessionName,
+            paneID: pane1ID
+        )
         let row1 = app.descendants(matching: .any).matching(
             NSPredicate(format: "identifier == %@", AccessibilityID.sidebarPanePrefix + key1)).firstMatch
         XCTAssertTrue(
@@ -236,7 +290,11 @@ final class AgtmuxTermUITests: XCTestCase {
         )
 
         // Pane 2 (idle, unmanaged) must also appear
-        let key2 = AccessibilityID.paneKey(source: "local", paneID: pane2ID)
+        let key2 = AccessibilityID.paneKey(
+            source: "local",
+            sessionName: sessionName,
+            paneID: pane2ID
+        )
         let row2 = app.descendants(matching: .any).matching(
             NSPredicate(format: "identifier == %@", AccessibilityID.sidebarPanePrefix + key2)).firstMatch
         XCTAssertTrue(
@@ -280,7 +338,11 @@ final class AgtmuxTermUITests: XCTestCase {
         app.launchEnvironment["AGTMUX_JSON"] = json
         app.launchForUITest()
 
-        let key = AccessibilityID.paneKey(source: "local", paneID: sharedPaneID)
+        let key = AccessibilityID.paneKey(
+            source: "local",
+            sessionName: realSession,
+            paneID: sharedPaneID
+        )
         let pred = NSPredicate(format: "identifier == %@", AccessibilityID.sidebarPanePrefix + key)
 
         // The real session pane must appear
@@ -297,6 +359,68 @@ final class AgtmuxTermUITests: XCTestCase {
             "agtmux-linked-* pane must be filtered: expected 1 row, got \(allRows.count). " +
             "Multi-highlight regression (T-054) or filter regression (T-056)."
         )
+    }
+
+    /// T-E2E-008b: session-group aliases are canonicalized and duplicate pane rows collapse.
+    ///
+    /// Two raw sessions sharing the same pane and session_group must render as one row
+    /// under the canonical group name.
+    func testSessionGroupAliasSessionsAreDeduplicated() throws {
+        let sharedPaneID = "%199"
+        let sessionA = "agtmux-A1111111-1111-1111-1111-111111111111"
+        let sessionB = "agtmux-B2222222-2222-2222-2222-222222222222"
+        let groupName = "vm agtmux-term"
+
+        let json = """
+        {"version":1,"panes":[
+          {"pane_id":"\(sharedPaneID)","session_name":"\(sessionA)","session_group":"\(groupName)","window_id":"@5",
+           "window_index":1,"window_name":"AgtmuxTerm","activity_state":"running",
+           "presence":"managed","provider":"claude","evidence_mode":"deterministic",
+           "current_cmd":"node","updated_at":"2026-03-04T00:00:00Z","age_secs":0},
+          {"pane_id":"\(sharedPaneID)","session_name":"\(sessionB)","session_group":"\(groupName)","window_id":"@5",
+           "window_index":1,"window_name":"AgtmuxTerm","activity_state":"running",
+           "presence":"managed","provider":"claude","evidence_mode":"deterministic",
+           "current_cmd":"node","updated_at":"2026-03-04T00:00:00Z","age_secs":0}
+        ]}
+        """
+
+        app.launchEnvironment["AGTMUX_JSON"] = json
+        app.launchForUITest()
+
+        let canonicalKey = AccessibilityID.paneKey(
+            source: "local",
+            sessionName: groupName,
+            paneID: sharedPaneID
+        )
+        let rowPredicate = NSPredicate(
+            format: "identifier == %@",
+            AccessibilityID.sidebarPanePrefix + canonicalKey
+        )
+        let rows = app.descendants(matching: .any).matching(rowPredicate).allElementsBoundByIndex
+
+        XCTAssertEqual(
+            rows.count, 1,
+            "Aliased sessions in the same group must collapse to one sidebar pane row"
+        )
+
+        let rawKeyA = AccessibilityID.paneKey(
+            source: "local",
+            sessionName: sessionA,
+            paneID: sharedPaneID
+        )
+        let rawKeyB = AccessibilityID.paneKey(
+            source: "local",
+            sessionName: sessionB,
+            paneID: sharedPaneID
+        )
+        let rawRowsA = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier == %@", AccessibilityID.sidebarPanePrefix + rawKeyA)
+        ).allElementsBoundByIndex
+        let rawRowsB = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier == %@", AccessibilityID.sidebarPanePrefix + rawKeyB)
+        ).allElementsBoundByIndex
+        XCTAssertEqual(rawRowsA.count, 0, "Raw alias session A should be hidden after normalization")
+        XCTAssertEqual(rawRowsB.count, 0, "Raw alias session B should be hidden after normalization")
     }
 
     /// T-E2E-009: Mixed managed/unmanaged panes — "Managed" filter shows only managed panes.
@@ -322,7 +446,11 @@ final class AgtmuxTermUITests: XCTestCase {
         app.launchForUITest()
 
         // Wait for at least one pane to appear (daemon has been polled)
-        let managedKey = AccessibilityID.paneKey(source: "local", paneID: managedPaneID)
+        let managedKey = AccessibilityID.paneKey(
+            source: "local",
+            sessionName: sessionName,
+            paneID: managedPaneID
+        )
         let managedRow = app.descendants(matching: .any).matching(
             NSPredicate(format: "identifier == %@", AccessibilityID.sidebarPanePrefix + managedKey)).firstMatch
         XCTAssertTrue(managedRow.waitForExistence(timeout: TestConstants.sidebarPopulateTimeout),
@@ -340,7 +468,11 @@ final class AgtmuxTermUITests: XCTestCase {
         XCTAssertTrue(managedRow.exists, "Managed pane must appear under 'Managed' filter")
 
         // Unmanaged pane must be hidden
-        let unmanagedKey = AccessibilityID.paneKey(source: "local", paneID: unmanagedPaneID)
+        let unmanagedKey = AccessibilityID.paneKey(
+            source: "local",
+            sessionName: sessionName,
+            paneID: unmanagedPaneID
+        )
         let unmanagedRow = app.descendants(matching: .any).matching(
             NSPredicate(format: "identifier == %@", AccessibilityID.sidebarPanePrefix + unmanagedKey)).firstMatch
         XCTAssertFalse(unmanagedRow.exists,
@@ -387,7 +519,11 @@ final class AgtmuxTermUITests: XCTestCase {
         app.launchForUITest()
 
         // Wait for pane to appear in sidebar
-        let key = AccessibilityID.paneKey(source: "local", paneID: realPaneID)
+        let key = AccessibilityID.paneKey(
+            source: "local",
+            sessionName: realSession,
+            paneID: realPaneID
+        )
         let panePred = NSPredicate(format: "identifier == %@", AccessibilityID.sidebarPanePrefix + key)
         let paneRow = app.descendants(matching: .any).matching(panePred).firstMatch
         XCTAssertTrue(
@@ -420,6 +556,203 @@ final class AgtmuxTermUITests: XCTestCase {
             app.state, .runningForeground,
             "App crashed after surface creation (deferred Metal renderer crash)"
         )
+    }
+
+    /// T-E2E-011: Linked session status title should show parent session group name.
+    ///
+    /// Regression coverage:
+    ///   - internal linked session names (`agtmux-linked-UUID`) should not leak into
+    ///     tmux status title for user-facing terminals.
+    ///   - LinkedSessionManager must set `status-left` to `#{session_group}`.
+    func testLinkedSessionStatusTitleUsesParentSessionGroup() throws {
+        guard let tmux = resolveTmuxPathBestEffort() else {
+            throw XCTSkip("tmux not available — skipping linked-session title test")
+        }
+
+        guard let existingSessions = try? listTmuxSessions(tmux) else {
+            throw XCTSkip("tmux socket not accessible from runner — skipping linked-session title test")
+        }
+        let linkedBefore = existingSessions.filter { $0.hasPrefix("agtmux-linked-") }
+        let realSession = try createTrackedTmuxSession(prefix: "agtmux-e2e-title", tmux: tmux)
+
+        let paneOut = try shellOutput([tmux, "list-panes", "-t", realSession, "-F", "#{pane_id}"])
+        guard let realPaneID = paneOut.components(separatedBy: "\n").first(where: { !$0.isEmpty }) else {
+            throw XCTSkip("Could not get pane ID from test session")
+        }
+
+        let winOut = try shellOutput([tmux, "list-windows", "-t", realSession, "-F", "#{window_id}"])
+        let realWindowID = winOut.components(separatedBy: "\n").first(where: { !$0.isEmpty }) ?? "@0"
+
+        let json = """
+        {"version":1,"panes":[
+          {"pane_id":"\(realPaneID)","session_name":"\(realSession)","window_id":"\(realWindowID)",
+           "window_index":1,"window_name":"zsh","activity_state":"idle",
+           "presence":"unmanaged","evidence_mode":"none",
+           "current_cmd":"zsh","updated_at":"2026-03-04T00:00:00Z","age_secs":0}
+        ]}
+        """
+
+        app.launchEnvironment["AGTMUX_JSON"] = json
+        app.launchForUITest()
+
+        let key = AccessibilityID.paneKey(
+            source: "local",
+            sessionName: realSession,
+            paneID: realPaneID
+        )
+        let panePred = NSPredicate(format: "identifier == %@", AccessibilityID.sidebarPanePrefix + key)
+        let paneRow = app.descendants(matching: .any).matching(panePred).firstMatch
+        XCTAssertTrue(
+            paneRow.waitForExistence(timeout: TestConstants.sidebarPopulateTimeout),
+            "Pane \(realPaneID) from session '\(realSession)' must appear in sidebar"
+        )
+
+        assertWorkspaceStartsEmpty()
+        paneRow.click()
+        waitForWorkspaceToLeaveEmptyState()
+
+        let tilePred = NSPredicate(format: "identifier BEGINSWITH %@", AccessibilityID.workspaceTilePrefix)
+        let tile = app.otherElements.matching(tilePred).firstMatch
+        XCTAssertTrue(tile.waitForExistence(timeout: TestConstants.surfaceReadyTimeout))
+
+        let linkedCreated = try waitForNewLinkedSessions(tmux: tmux, existing: linkedBefore, timeout: 5.0)
+        XCTAssertFalse(
+            linkedCreated.isEmpty,
+            "Pane selection should create at least one linked session"
+        )
+
+        for linked in linkedCreated {
+            let statusLeft = try shellOutput([tmux, "show-options", "-v", "-t", linked, "status-left"])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            XCTAssertEqual(
+                statusLeft, "#{session_group}",
+                "Linked session '\(linked)' must use parent session-group title"
+            )
+        }
+    }
+
+    /// T-E2E-012: Main panel pane focus changes sync back to sidebar selection highlight.
+    ///
+    /// Flow:
+    ///   1. Create a real tmux session with two panes in one window.
+    ///   2. Mock daemon exposes both panes in sidebar.
+    ///   3. Click a sidebar pane row to open it in workspace.
+    ///   4. Run `tmux select-pane` to change active pane inside that window.
+    ///   5. Sidebar selected row must follow the new active pane.
+    func testMainPanelPaneFocusSyncsSidebarSelection() throws {
+        guard let tmux = resolveTmuxPathBestEffort() else {
+            throw XCTSkip("tmux not available — skipping pane-focus sync test")
+        }
+        guard let existingSessions = try? listTmuxSessions(tmux) else {
+            throw XCTSkip("tmux socket not accessible from runner — skipping pane-focus sync test")
+        }
+        let linkedBefore = existingSessions.filter { $0.hasPrefix("agtmux-linked-") }
+
+        let session = try createTrackedTmuxSession(prefix: "agtmux-e2e-focus-sync", tmux: tmux)
+
+        _ = try shellRun([tmux, "split-window", "-t", session, "-h"])
+
+        let panesOutput = try shellOutput([tmux, "list-panes", "-t", session, "-F", "#{pane_id}"])
+        let paneIDs = panesOutput.components(separatedBy: "\n").filter { !$0.isEmpty }
+        guard paneIDs.count >= 2 else {
+            throw XCTSkip("Need at least two panes in the test window")
+        }
+        let paneA = paneIDs[0]
+        let paneB = paneIDs[1]
+
+        let winOut = try shellOutput([tmux, "list-windows", "-t", session, "-F", "#{window_id}"])
+        let windowID = winOut.components(separatedBy: "\n").first(where: { !$0.isEmpty }) ?? "@0"
+
+        let json = """
+        {"version":1,"panes":[
+          {"pane_id":"\(paneA)","session_name":"\(session)","window_id":"\(windowID)",
+           "window_index":1,"window_name":"focus-sync","activity_state":"idle",
+           "presence":"unmanaged","evidence_mode":"none",
+           "current_cmd":"zsh","updated_at":"2026-03-04T00:00:00Z","age_secs":0},
+          {"pane_id":"\(paneB)","session_name":"\(session)","window_id":"\(windowID)",
+           "window_index":1,"window_name":"focus-sync","activity_state":"idle",
+           "presence":"unmanaged","evidence_mode":"none",
+           "current_cmd":"zsh","updated_at":"2026-03-04T00:00:00Z","age_secs":0}
+        ]}
+        """
+
+        app.launchEnvironment["AGTMUX_JSON"] = json
+        app.launchForUITest()
+
+        let rowA = app.descendants(matching: .any).matching(
+            NSPredicate(
+                format: "identifier == %@",
+                AccessibilityID.sidebarPanePrefix + AccessibilityID.paneKey(
+                    source: "local",
+                    sessionName: session,
+                    paneID: paneA
+                )
+            )
+        ).firstMatch
+        let rowB = app.descendants(matching: .any).matching(
+            NSPredicate(
+                format: "identifier == %@",
+                AccessibilityID.sidebarPanePrefix + AccessibilityID.paneKey(
+                    source: "local",
+                    sessionName: session,
+                    paneID: paneB
+                )
+            )
+        ).firstMatch
+        XCTAssertTrue(rowA.waitForExistence(timeout: TestConstants.sidebarPopulateTimeout))
+        XCTAssertTrue(rowB.waitForExistence(timeout: TestConstants.sidebarPopulateTimeout))
+
+        rowA.click()
+
+        let tileA = app.descendants(matching: .any).matching(
+            NSPredicate(
+                format: "identifier == %@",
+                AccessibilityID.workspaceTilePrefix + AccessibilityID.paneKey(
+                    source: "local",
+                    sessionName: session,
+                    paneID: paneA
+                )
+            )
+        ).firstMatch
+        XCTAssertTrue(tileA.waitForExistence(timeout: TestConstants.surfaceReadyTimeout))
+
+        // Single-surface contract: only one workspace tile should exist for a window.
+        let anyTile = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier BEGINSWITH %@", AccessibilityID.workspaceTilePrefix)
+        )
+        XCTAssertEqual(anyTile.count, 1, "Window open should render exactly one workspace tile")
+
+        let linkedCreated = try waitForNewLinkedSessions(tmux: tmux, existing: linkedBefore, timeout: 5.0)
+        guard !linkedCreated.isEmpty else {
+            XCTFail("Opening a window must create at least one linked session")
+            return
+        }
+
+        // Ensure focus-sync monitoring is bound to linked session runtime, not parent session.
+        _ = try shellRun([tmux, "kill-session", "-t", session])
+        ownedSessions.remove(session)
+
+        // Trigger pane focus change from tmux side (as if user switched pane in terminal).
+        _ = try shellRun([tmux, "select-pane", "-t", paneB])
+
+        let selectedB = expectation(for: NSPredicate(format: "value == %@", "selected"), evaluatedWith: rowB)
+        wait(for: [selectedB], timeout: 5.0)
+
+        let unselectedA = expectation(for: NSPredicate(format: "value == %@", "unselected"), evaluatedWith: rowA)
+        wait(for: [unselectedA], timeout: 5.0)
+
+        // The single workspace tile should now be keyed by paneB after focus sync.
+        let tileB = app.descendants(matching: .any).matching(
+            NSPredicate(
+                format: "identifier == %@",
+                AccessibilityID.workspaceTilePrefix + AccessibilityID.paneKey(
+                    source: "local",
+                    sessionName: session,
+                    paneID: paneB
+                )
+            )
+        ).firstMatch
+        XCTAssertTrue(tileB.waitForExistence(timeout: TestConstants.surfaceReadyTimeout))
     }
 
     // MARK: - Category B: Requires agtmux daemon + pane rows in sidebar (legacy)
@@ -556,6 +889,24 @@ final class AgtmuxTermUITests: XCTestCase {
     private func listTmuxSessions(_ tmux: String) throws -> Set<String> {
         let sessions = try shellOutput([tmux, "list-sessions", "-F", "#{session_name}"])
         return Set(sessions.components(separatedBy: "\n").filter { !$0.isEmpty })
+    }
+
+    private func waitForNewLinkedSessions(
+        tmux: String,
+        existing: Set<String>,
+        timeout: TimeInterval
+    ) throws -> Set<String> {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            let now = try listTmuxSessions(tmux)
+            let linked = Set(now.filter { $0.hasPrefix("agtmux-linked-") })
+            let created = linked.subtracting(existing)
+            if !created.isEmpty {
+                return created
+            }
+            Thread.sleep(forTimeInterval: 0.2)
+        }
+        return []
     }
 
     /// Best-effort cleanup for agent sessions (codex/claude) inside a test-owned tmux session.

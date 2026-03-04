@@ -1,6 +1,12 @@
 import SwiftUI
 import AgtmuxTermCore
 
+private enum SidebarRowStyle {
+    static let hoverBackground = Color.white.opacity(0.10)
+    static let selectedBackground = Color.white.opacity(0.18)
+    static let cornerRadius: CGFloat = 6
+}
+
 // MARK: - FilterBarView
 
 /// Horizontal tab bar for switching between StatusFilter modes.
@@ -95,9 +101,10 @@ struct SourceHeaderView: View {
 struct SessionBlockView: View {
     let session: SessionGroup
     let selectedPaneId: String?
-    let onSelect: (AgtmuxPane) -> Void
+    let onSelect: (AgtmuxPane, AgtmuxTermCore.WindowGroup) -> Void
 
     @EnvironmentObject private var viewModel: AppViewModel
+    @State private var isHovered = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
@@ -129,6 +136,11 @@ struct SessionBlockView: View {
             .padding(.horizontal, 12)
             .padding(.top, 6)
             .padding(.bottom, 2)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(isHovered ? SidebarRowStyle.hoverBackground : Color.clear)
+            .cornerRadius(SidebarRowStyle.cornerRadius)
+            .contentShape(Rectangle())
+            .onHover { isHovered = $0 }
             .contextMenu {
                 Button("New Window") {
                     TmuxManager.shared.createWindow(
@@ -160,9 +172,10 @@ struct SessionBlockView: View {
 struct WindowBlockView: View {
     let window: AgtmuxTermCore.WindowGroup
     let selectedPaneId: String?
-    let onSelect: (AgtmuxPane) -> Void
+    let onSelect: (AgtmuxPane, AgtmuxTermCore.WindowGroup) -> Void
 
     @State private var isExpanded: Bool = true
+    @State private var isHovered = false
     @EnvironmentObject private var viewModel: AppViewModel
     @Environment(WorkspaceStore.self) private var workspaceStore
 
@@ -199,7 +212,20 @@ struct WindowBlockView: View {
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 3)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier(
+                AccessibilityID.sidebarWindowPrefix +
+                AccessibilityID.windowKey(
+                    source: window.source,
+                    sessionName: window.sessionName,
+                    windowID: window.windowId
+                )
+            )
+            .background(isHovered ? SidebarRowStyle.hoverBackground : Color.clear)
+            .cornerRadius(SidebarRowStyle.cornerRadius)
             .contentShape(Rectangle())
+            .onHover { isHovered = $0 }
             .onTapGesture { isExpanded.toggle() }
             .contextMenu {
                 Button("Open in Workspace") {
@@ -231,9 +257,14 @@ struct WindowBlockView: View {
                     .accessibilityElement(children: .combine)
                     .accessibilityIdentifier(
                         AccessibilityID.sidebarPanePrefix +
-                        AccessibilityID.paneKey(source: pane.source, paneID: pane.paneId)
+                        AccessibilityID.paneKey(
+                            source: pane.source,
+                            sessionName: pane.sessionName,
+                            paneID: pane.paneId
+                        )
                     )
-                    .onTapGesture { onSelect(pane) }
+                    .accessibilityValue(Text(selectedPaneId == pane.id ? "selected" : "unselected"))
+                    .onTapGesture { onSelect(pane, window) }
                 }
             }
         }
@@ -281,8 +312,10 @@ struct PaneRowView: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 5)
         .padding(.leading, 8)   // extra indent inside window block
-        .background(isSelected ? Color.accentColor.opacity(0.12) : Color.clear)
-        .cornerRadius(6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(rowBackground)
+        .cornerRadius(SidebarRowStyle.cornerRadius)
+        .contentShape(Rectangle())
         .help(tooltipText)
         .onHover { isHovered = $0 }
         .contextMenu {
@@ -290,6 +323,12 @@ struct PaneRowView: View {
                 TmuxManager.shared.killPane(pane.paneId, source: pane.source, viewModel: viewModel)
             }
         }
+    }
+
+    private var rowBackground: Color {
+        if isSelected { return SidebarRowStyle.selectedBackground }
+        if isHovered { return SidebarRowStyle.hoverBackground }
+        return .clear
     }
 
     /// State indicator:
@@ -499,9 +538,9 @@ struct SidebarView: View {
                                 SessionBlockView(
                                     session: session,
                                     selectedPaneId: viewModel.selectedPane?.id,
-                                    onSelect: { pane in
+                                    onSelect: { pane, window in
                                         viewModel.selectPane(pane)
-                                        Task { await workspaceStore.placePane(pane) }
+                                        Task { await workspaceStore.placeWindow(window, preferredPaneID: pane.paneId) }
                                     }
                                 )
                             }

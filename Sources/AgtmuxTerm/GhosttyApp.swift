@@ -70,6 +70,7 @@ final class GhosttyApp {
                                      target: ghostty_target_s,
                                      action: ghostty_action_s) -> Bool {
         _ = app
+        _ = target
 
         // These are emitted during surface creation and can be safely ignored
         // in this embedding.
@@ -82,33 +83,21 @@ final class GhosttyApp {
         // QUIT_TIMER fires when libghostty thinks all surfaces have closed and
         // wants to terminate the app. In our embedded design the host app
         // controls lifecycle, so we consume this action and do nothing.
-        // Without this, libghostty falls back to NSApp.terminate() → SIGTERM.
+        // Without this, libghostty falls back to NSApp.terminate() -> SIGTERM.
+        //
+        // SET_TITLE is also consumed. User-facing window title is controlled by
+        // AppViewModel selection (selected pane session), not by terminal OSC/tmux.
+        // This avoids leaking internal linked-session names into the NSWindow title.
         case GHOSTTY_ACTION_QUIT_TIMER:
+            return true
+        case GHOSTTY_ACTION_SET_TITLE:
             return true
 
         default:
             break
         }
 
-        // Keep title updates in sync with the hosting NSWindow if possible.
-        if action.tag == GHOSTTY_ACTION_SET_TITLE,
-           target.tag == GHOSTTY_TARGET_SURFACE,
-           let surface = target.target.surface,
-           let titlePtr = action.action.set_title.title,
-           let view = view(for: surface) {
-            let title = String(cString: titlePtr)
-            DispatchQueue.main.async {
-                view.window?.title = title
-            }
-            return true
-        }
-
         return false
-    }
-
-    private static func view(for surface: ghostty_surface_t) -> GhosttyTerminalView? {
-        guard let userdata = ghostty_surface_userdata(surface) else { return nil }
-        return Unmanaged<GhosttyTerminalView>.fromOpaque(userdata).takeUnretainedValue()
     }
 
     deinit {

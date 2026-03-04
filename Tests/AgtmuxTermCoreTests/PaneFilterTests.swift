@@ -43,24 +43,25 @@ final class PaneFilterTests: XCTestCase {
                       "Managed pane in agtmux-* session must be visible for status dots to show")
     }
 
-    /// Confirm that panes with unique source:paneId IDs remain distinct after filtering.
-    func testNonLinkedPanesHaveUniqueIDs() {
+    /// Confirm that pane identity includes session context.
+    func testPaneIdentityIncludesSessionName() {
         let p1 = makePane(paneId: "%1", sessionName: "main")
-        let p2 = makePane(paneId: "%2", sessionName: "main")
+        let p2 = makePane(paneId: "%1", sessionName: "backend")
         let p3 = makePane(source: "host1", paneId: "%1", sessionName: "remote")
 
         let ids = [p1, p2, p3].map(\.id)
-        XCTAssertEqual(Set(ids).count, 3, "All non-linked panes must have unique IDs")
+        XCTAssertEqual(Set(ids).count, 3, "Pane identity must include source+session+pane")
     }
 
-    /// The linked-session pane has the SAME paneId as the original — this is the
-    /// root cause of the multi-highlight bug if the filter is not applied.
-    func testLinkedPaneSharesPaneIDWithOriginal() {
+    /// Even when paneId is shared (session aliases), identity must stay distinct.
+    func testLinkedPaneHasDistinctIdentityFromOriginal() {
         let original = makePane(paneId: "%42", sessionName: "main")
         let linked   = makePane(paneId: "%42", sessionName: "agtmux-linked-ABCDEF01")
 
-        // Without filtering, both have id = "local:%42" → two rows highlight for one selection.
-        XCTAssertEqual(original.id, linked.id, "Linked pane shares paneId with original (root cause of multi-highlight)")
+        XCTAssertNotEqual(
+            original.id, linked.id,
+            "Pane identity should differ by session even when paneId is the same"
+        )
 
         // With the filter, only the original appears.
         let visible = [original, linked].filter { !$0.sessionName.hasPrefix("agtmux-linked-") }

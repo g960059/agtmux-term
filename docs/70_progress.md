@@ -651,3 +651,181 @@ Round 1 全修正が全員により confirmed。2/4 GO 目標クリア。
 - `xcodebuild -scheme AgtmuxTerm build` ✅
 - `xcodebuild test -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testPaneSelectionWithMockDaemonAndRealTmux`
   - 現環境では `Timed out while enabling automation mode` で UI test runner 初期化失敗
+
+## 2026-03-04 — T-061 linked session title leak 修正
+
+### 実装
+
+- `LinkedSessionManager.createSession` に title 正規化を追加
+  - linked session 作成後に `tmux set-option -t <linked> status-left #{session_group}` を適用
+  - これにより terminal 内の session title が `agtmux-linked-*` ではなく親 session group 名を表示
+- E2E 追加:
+  - `testLinkedSessionStatusTitleUsesParentSessionGroup`
+  - pane 選択後に新規 linked session を検出し、`status-left == #{session_group}` を検証
+  - tmux socket へアクセス不可な runner 環境では `XCTSkip` するように実装
+
+### docs
+
+- `Tests/AgtmuxTermUITests/README.md` に linked-session UX contract 追記
+- `docs/60_tasks.md` に T-061 を追加
+
+### 検証
+
+- `swift test` ✅
+- `xcodebuild -scheme AgtmuxTerm build-for-testing` ✅
+- `xcodebuild test -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testLinkedSessionStatusTitleUsesParentSessionGroup` ✅
+  - この環境では tmux socket 権限により `skip`（想定どおり）
+
+## 2026-03-04 — T-062 UI title source-of-truth 統一
+
+### 実装
+
+- `GhosttyApp` で terminal `SET_TITLE` -> NSWindow 反映を停止
+  - linked-session 名 (`agtmux-linked-*`) が traffic-light 横タイトルに漏れる経路を遮断
+- `main.swift`
+  - window title を `selectedPane.sessionName` で更新（pane 未選択時は `agtmux-term`）
+  - 初期 tab の固定 `"Main"` を廃止
+- `WorkspaceTab.displayTitle`
+  - placeholder leaf を除外してタイトル導出
+  - 単一 session は session 名、複数は `Mixed (N)`
+- `TabButton` の AX を `.combine` に変更し、tab タイトル検証を安定化
+
+### E2E
+
+- `testSelectedPaneSessionNameShownInTabTitle` を追加
+  - pane 選択で tab title が session 名に追従
+  - 固定 `"Main"` が残らないことを検証
+
+### 検証
+
+- `swift test` ✅
+- `xcodebuild -scheme AgtmuxTerm build-for-testing` ✅
+- `xcodebuild test -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testSelectedPaneSessionNameShownInTabTitle` ✅
+
+## 2026-03-04 — T-063 session-group alias 重複の根本解消
+
+### 実装
+
+- `AgtmuxPane` identity を `source:session:pane` に変更
+  - session alias 下で同一 `pane_id` が存在しても選択IDが衝突しないようにした
+- `AccessibilityID.paneKey` を `source+session+pane` へ拡張
+  - sidebar row / workspace tile の AX key 競合を解消
+- `AppViewModel.fetchAll` に正規化フェーズを追加
+  - local `tmux list-sessions` から alias -> canonical map を作成
+  - canonical選択規則: attached > group名一致 > lexical
+  - `session_group` を fallback として利用
+  - `agtmux-linked-*` 除外 + `(source, session, window, pane)` dedupe
+- `RemoteTmuxClient` の tmux format に `session_group` を追加
+
+### E2E / tests
+
+- `testSessionGroupAliasSessionsAreDeduplicated` を追加
+  - 同一paneを共有する alias session 2件を mock
+  - canonical key 1件のみ存在し、raw alias key が残らないことを検証
+- 既存テストを新 pane key 形式 (`source+session+pane`) に更新
+- `PaneFilterTests` を新 identity 仕様に更新
+
+### 検証
+
+- `swift test` ✅
+- `xcodebuild -scheme AgtmuxTerm -configuration Debug -destination 'platform=macOS' build-for-testing` ✅
+- `xcodebuild test -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testSessionGroupAliasSessionsAreDeduplicated` ✅
+- `xcodebuild test -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testSelectedPaneSessionNameShownInTabTitle` ✅
+- `xcodebuild test -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testLinkedSessionsHiddenRealSessionsVisible` ✅
+
+## 2026-03-04 — T-064 Sidebar UX安定化と操作面積統一
+
+### 実装
+
+- `AppViewModel.fetchAll` に source単位 cache を導入
+  - `lastSuccessfulPanesBySource` で前回成功スナップショットを保持
+  - fetch 失敗 source は cache を維持し、成功 source のみ上書き
+  - 一時失敗で sidebar が空になるフリッカーを防止
+- `SidebarView` の row 表示を統一
+  - `SidebarRowStyle` を追加（white hover / selected）
+  - pane 選択背景を白ハイライト化
+  - session/window/pane row を `frame(maxWidth: .infinity)` + `contentShape(Rectangle())` に統一
+  - context menu を title近傍ではなく row 全体右クリックで発火
+
+### 検証
+
+- `swift test` ✅
+- `xcodebuild -scheme AgtmuxTerm -configuration Debug -destination 'platform=macOS' test`
+  - `testSessionGroupAliasSessionsAreDeduplicated` ✅
+  - `testSelectedPaneSessionNameShownInTabTitle` ✅
+  - `testLinkedSessionsHiddenRealSessionsVisible` ✅
+
+## 2026-03-04 — T-065 Sidebar item 出没（消える/戻る）再発の根本解消
+
+### 実装
+
+- `AppViewModel.localSessionAliasMap` を安定化
+  - canonical規則を `session_group` 固定へ変更
+  - 旧 `session_attached` 優先ロジックを廃止
+  - `tmux list-sessions` 一時失敗時は `lastSuccessfulLocalSessionAliasMap` を再利用
+- `normalizePanes` の canonical優先順を変更
+  - `pane.sessionGroup` > `aliasMap` > raw `sessionName`
+- `filteredPanes` の linked-prefix 再フィルタを撤去
+  - normalize済み `panes` をそのまま status filter に流す
+
+### 期待効果
+
+- pollごとに alias代表名が揺れて selected row が消える/戻る現象を抑止
+- local tmux の一時的なメタ取得失敗でも sidebar 表示を安定維持
+
+### 検証
+
+- `swift test` ✅
+- `xcodebuild -scheme AgtmuxTerm -configuration Debug -destination 'platform=macOS' test`
+  - `testSessionGroupAliasSessionsAreDeduplicated` ✅
+  - `testSelectedPaneSessionNameShownInTabTitle` ✅
+  - `testLinkedSessionsHiddenRealSessionsVisible` ✅
+
+## 2026-03-04 — T-066 Main panel pane focus → Sidebar highlight 逆同期
+
+### 実装
+
+- root cause 再分析:
+  - 通常の pane click が `placePane()` 経路で、window monitor 未起動だった
+  - monitor key が `windowId` だったため、別 tab/session と衝突し得た
+- pane click 経路を `placeWindow(window, preferredPaneID:)` へ変更
+  - sidebar で選択した pane ID を preferred として初期 focus に反映
+  - 通常操作で常に window monitor が有効になるよう統一
+- window rendering model を刷新
+  - 旧: BSP leaf ごとに linked session を作って複数 surface 表示
+  - 新: single-surface（1 tab tile）で tmux window をそのまま表示
+  - 2pane→4pane の重複表示、レイアウト崩れ、一部 pane 欠落を根本回避
+- `WorkspaceStore` monitor 管理を `tabID` ベースへ刷新
+  - `trackedWindowsByTab` / `layoutMonitorTasksByTab`
+  - `windowId` 衝突を回避
+  - `placePane()` 実行時は該当 tab monitor を停止して stale event を遮断
+- `WorkspaceStore.startLayoutMonitoring` を再設計
+  - monitor は `display-message -p -t <monitorSession> "#{pane_id}"` で active pane を取得（windowId 非依存）
+  - `display-message` が空の環境向けに `list-panes -t <monitorSession>` fallback を実装
+  - `handleWindowPaneChanged(paneId:tabID:)` で `focusedLeafID` と leaf paneId を更新
+- `WorkspaceArea` に reverse sync を追加
+  - `syncSelectedPaneToFocusedLeaf()` を実装
+  - `onAppear` / `activeTabIndex` / `focusedLeafID` / `viewModel.panes` 変化時に同期
+  - workspace 側の focus 変更が `AppViewModel.selectedPane` に反映されるようにした
+- E2E 観測性を強化
+  - `AccessibilityID.sidebarWindowPrefix` + `windowKey(...)` を追加
+  - pane row AX value を `selected` / `unselected` に統一
+  - window row に AX identifier を付与
+
+### E2E
+
+- `testMainPanelPaneFocusSyncsSidebarSelection` を追加
+  - 2-pane tmux window を作成し、sidebar pane row クリック（通常ユーザー経路）で workspace を開き
+  - workspace tile が 1つであること（single-surface 契約）を検証
+  - linked session 作成を待機し、parent session を kill した状態でも
+    `tmux select-pane` で sidebar 選択が追従することを検証
+  - `tmux select-pane` で main panel 内の active pane を変更
+  - sidebar row の `selected/unselected` が追従することを検証
+  - tmux セッション作成不可環境では `XCTSkip`
+
+### 検証
+
+- `swift build` ✅
+- `swift test` ✅
+- `xcodebuild -scheme AgtmuxTerm -configuration Debug -destination 'platform=macOS' test -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testSelectedPaneSessionNameShownInTabTitle` ✅
+- `xcodebuild -scheme AgtmuxTerm -configuration Debug -destination 'platform=macOS' test -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testMainPanelPaneFocusSyncsSidebarSelection` ✅（この環境では tmux 作成不可のため skip）

@@ -6,6 +6,24 @@ E2E tests must leave **zero residue** after each test:
 
 1. tmux sessions created by tests
 2. agent processes inside those sessions (Codex / Claude / shells started by them)
+3. linked session UX contracts (for example, linked session titles) must be verified via explicit E2E cases when changed
+
+Title consistency contracts:
+
+1. user-facing tab title should track selected pane/session context
+2. internal linked session names (`agtmux-linked-*`) must not leak into user-facing titles
+3. sidebar pane identity must be `source + session + pane` (not only `pane`) to avoid alias collisions
+4. session-group aliases that expose the same pane must collapse to a single sidebar row
+5. main-panel pane focus changes must sync back to sidebar selected-row highlight
+6. sidebar pane-row click path must enable the same focus-sync behavior (not only context-menu window open)
+7. opening one tmux window must produce exactly one workspace tile (single-surface contract)
+8. focus-sync monitoring must continue even if the original parent session is gone (linked-session runtime is authoritative)
+
+Accessibility contracts for E2E:
+
+1. pane row AX identifier: `sidebar.pane.<source_session_pane>`
+2. pane row AX value: `selected` / `unselected`
+3. window row AX identifier: `sidebar.window.<source_session_window>`
 
 ## Required rules for new tests
 

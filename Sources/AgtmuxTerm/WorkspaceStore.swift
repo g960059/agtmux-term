@@ -16,11 +16,18 @@ struct WorkspaceTab: Identifiable {
     /// Displayed title: user-set title, otherwise derived from the layout.
     var displayTitle: String {
         if let t = title { return t }
-        let leaves = root.leaves
+        let leaves = root.leaves.filter { !$0.tmuxPaneID.isEmpty }
         switch leaves.count {
-        case 0:   return "Empty"
-        case 1:   return leaves[0].sessionName
-        default:  return "Mixed (\(leaves.count))"
+        case 0:
+            return "Empty"
+        case 1:
+            return leaves[0].sessionName
+        default:
+            let sessions = Set(leaves.map(\.sessionName))
+            if sessions.count == 1, let only = sessions.first {
+                return only
+            }
+            return "Mixed (\(leaves.count))"
         }
     }
 
@@ -72,6 +79,7 @@ final class WorkspaceStore {
     /// Close the tab with the given ID. Switches to an adjacent tab if needed.
     func closeTab(id: UUID) {
         guard let idx = tabs.firstIndex(where: { $0.id == id }) else { return }
+        stopLayoutMonitoring(tabID: id)
         tabs.remove(at: idx)
         if tabs.isEmpty {
             // Always keep at least one tab
@@ -117,6 +125,11 @@ final class WorkspaceStore {
 
         let idx = activeTabIndex
         guard tabs.indices.contains(idx) else { return newLeaf.id }
+        let tabID = tabs[idx].id
+
+        // Pane-only placement does not track tmux layout events.
+        // Stop any existing window monitor for this tab to avoid stale updates.
+        stopLayoutMonitoring(tabID: tabID)
 
         // Always replace the focused leaf in-place (not split).
         // "Click pane in sidebar" = navigate to that pane in the current tile,
@@ -152,11 +165,11 @@ final class WorkspaceStore {
                     source:        source
                 )
                 print("[placePane] Linked session created: \(linkedName) → updating leaf \(leafID)")
-                await self?.updateLeaf(id: leafID, linkedSession: .ready(linkedName))
+                self?.updateLeaf(id: leafID, linkedSession: .ready(linkedName))
             } catch {
                 print("[placePane] Linked session FAILED: \(error)")
-                await self?.updateLeaf(id: leafID,
-                                       linkedSession: .failed(error.localizedDescription))
+                self?.updateLeaf(id: leafID,
+                                 linkedSession: .failed(error.localizedDescription))
             }
         }
 
@@ -207,169 +220,226 @@ final class WorkspaceStore {
         let windowId: String
         let source: String
         var panes: [AgtmuxPane]
+        var monitorSessionName: String
     }
 
-    /// Windows currently displayed in workspace tabs (windowId → metadata).
-    private var trackedWindows: [String: TrackedWindow] = [:]
+    /// Windows currently displayed in workspace tabs (tabID → metadata).
+    private var trackedWindowsByTab: [UUID: TrackedWindow] = [:]
 
-    /// Long-running tasks that subscribe to TmuxControlMode layout-change events.
-    private var layoutMonitorTasks: [String: Task<Void, Never>] = [:]
+    /// Long-running tasks that subscribe to TmuxControlMode events (tabID → task).
+    private var layoutMonitorTasksByTab: [UUID: Task<Void, Never>] = [:]
+    /// Placement generation per tab (stale async completions are ignored).
+    private var placementGenerationByTab: [UUID: Int] = [:]
 
-    /// Place an entire tmux window into the active tab as a BSP layout.
+    /// Place an entire tmux window into the active tab.
     ///
-    /// Flow:
-    ///   1. Fetch `#{window_layout}` from tmux.
-    ///   2. Parse into `LayoutNode` BSP via `TmuxLayoutConverter`.
-    ///   3. Replace the active tab's root with the new BSP.
-    ///   4. Create linked sessions asynchronously for each leaf.
-    ///   5. Subscribe to `%layout-change` events to keep the BSP in sync.
+    /// Root policy (T-066 rework):
+    /// - one workspace tile == one tmux window surface
+    /// - tmux's native pane layout is rendered inside that single surface
     ///
-    /// On any error, falls back to placing the window's first pane (Mode A).
-    func placeWindow(_ window: WindowGroup) async {
+    /// This avoids duplicated/fragmented rendering caused by creating one
+    /// Ghostty surface per tmux pane.
+    func placeWindow(_ window: WindowGroup, preferredPaneID: String? = nil) async {
         if tabs.isEmpty { createTab() }
         let idx = activeTabIndex
         guard tabs.indices.contains(idx) else { return }
+        let tabID = tabs[idx].id
 
-        do {
-            // 1. Fetch layout string from tmux.
-            let target = "\(window.sessionName):\(window.windowId)"
-            let layoutString = try await TmuxCommandRunner.shared.run(
-                ["display-message", "-p", "-t", target, "#{window_layout}"],
-                source: window.source
-            )
+        let targetPane = window.panes.first(where: { $0.paneId == preferredPaneID })
+            ?? window.panes.first
+        guard let targetPane else { return }
 
-            // 2. Convert to BSP.
-            guard let bspRoot = TmuxLayoutConverter.convert(
-                layoutString: layoutString,
-                windowPanes:  window.panes,
-                source:       window.source
-            ) else {
-                fallbackToFirstPane(window: window, idx: idx)
-                return
+        // Replace any existing monitor/tree in this tab before opening the new window.
+        stopLayoutMonitoring(tabID: tabID)
+        let generation = (placementGenerationByTab[tabID] ?? 0) + 1
+        placementGenerationByTab[tabID] = generation
+
+        // Single leaf per window. tmux draws its own pane layout internally.
+        let leaf = LeafPane(
+            tmuxPaneID: targetPane.paneId,
+            sessionName: window.sessionName,
+            source: window.source,
+            linkedSession: .creating
+        )
+        tabs[idx].root = .leaf(leaf)
+        tabs[idx].focusedLeafID = leaf.id
+
+        let leafID = leaf.id
+        Task { [weak self] in
+            do {
+                let linkedName = try await LinkedSessionManager.shared.createSession(
+                    parentSession: window.sessionName,
+                    windowId:      window.windowId,
+                    paneId:        targetPane.paneId,
+                    source:        window.source
+                )
+                await self?.handleLinkedSessionReady(
+                    tabID: tabID,
+                    generation: generation,
+                    leafID: leafID,
+                    window: window,
+                    linkedSessionName: linkedName
+                )
+            } catch {
+                self?.handleLinkedSessionFailed(
+                    tabID: tabID,
+                    generation: generation,
+                    leafID: leafID,
+                    message: error.localizedDescription
+                )
             }
-
-            // 3. Set as tab root and focus the first leaf.
-            tabs[idx].root = bspRoot
-            tabs[idx].focusedLeafID = bspRoot.leafIDs.first
-
-            // 4. Create a linked session for each leaf asynchronously.
-            for leaf in bspRoot.leaves {
-                let leafID      = leaf.id
-                let sessionName = leaf.sessionName
-                let source      = leaf.source
-                let windowId    = window.windowId
-                let paneId      = leaf.tmuxPaneID
-                Task { [weak self] in
-                    do {
-                        let name = try await LinkedSessionManager.shared.createSession(
-                            parentSession: sessionName,
-                            windowId:      windowId,
-                            paneId:        paneId,
-                            source:        source
-                        )
-                        await self?.updateLeaf(id: leafID, linkedSession: .ready(name))
-                    } catch {
-                        await self?.updateLeaf(id: leafID, linkedSession: .failed(error.localizedDescription))
-                    }
-                }
-            }
-
-            // 5. Track and subscribe to layout-change events.
-            trackedWindows[window.windowId] = TrackedWindow(
-                sessionName: window.sessionName,
-                windowId:    window.windowId,
-                source:      window.source,
-                panes:       window.panes
-            )
-            startLayoutMonitoring(for: window, tabID: tabs[idx].id)
-
-        } catch {
-            fallbackToFirstPane(window: window, idx: idx)
         }
+
+        trackedWindowsByTab[tabID] = TrackedWindow(
+            sessionName: window.sessionName,
+            windowId:    window.windowId,
+            source:      window.source,
+            panes:       window.panes,
+            monitorSessionName: window.sessionName
+        )
+        startLayoutMonitoring(tabID: tabID)
     }
 
     /// Update the pane list stored for a tracked window (called by AppViewModel on poll).
     func updateTrackedWindowPanes(windowId: String, panes: [AgtmuxPane]) {
-        trackedWindows[windowId]?.panes = panes
+        for (tabID, tracked) in trackedWindowsByTab where tracked.windowId == windowId {
+            trackedWindowsByTab[tabID]?.panes = panes
+        }
     }
 
     // MARK: - Layout monitoring (Mode B)
 
-    private func startLayoutMonitoring(for window: WindowGroup, tabID: UUID) {
-        let windowId    = window.windowId
-        let sessionName = window.sessionName
-        let source      = window.source
+    private func startLayoutMonitoring(tabID: UUID) {
+        guard let tracked = trackedWindowsByTab[tabID] else { return }
+        let source = tracked.source
+        let monitorSessionName = tracked.monitorSessionName
 
-        layoutMonitorTasks[windowId]?.cancel()
-        TmuxControlModeRegistry.shared.startMonitoring(sessionName: sessionName, source: source)
-
-        // Capture the TmuxControlMode actor reference before entering the Task.
-        let mode = TmuxControlModeRegistry.shared.mode(for: sessionName, source: source)
-
+        layoutMonitorTasksByTab[tabID]?.cancel()
         let task = Task { [weak self] in
-            for await event in await mode.events {
-                guard !Task.isCancelled else { break }
-                if case .layoutChange(let wid, let layout, _) = event, wid == windowId {
-                    await self?.handleLayoutChange(layout: layout,
-                                                   windowId: windowId,
-                                                   tabID: tabID)
+            var lastPaneID: String?
+            while !Task.isCancelled {
+                do {
+                    let paneID = try await self?.fetchActivePaneID(
+                        sessionName: monitorSessionName,
+                        source: source
+                    )
+                    if let paneID, paneID != lastPaneID {
+                        lastPaneID = paneID
+                        self?.handleWindowPaneChanged(
+                            paneId: paneID,
+                            tabID: tabID
+                        )
+                    }
+                } catch {
+                    // best-effort polling; continue on transient failures
                 }
+                try? await Task.sleep(for: .milliseconds(250))
             }
         }
-        layoutMonitorTasks[windowId] = task
+        layoutMonitorTasksByTab[tabID] = task
+    }
+
+    /// Stop monitoring layout changes for a specific workspace tab.
+    func stopLayoutMonitoring(tabID: UUID) {
+        layoutMonitorTasksByTab[tabID]?.cancel()
+        layoutMonitorTasksByTab.removeValue(forKey: tabID)
+        trackedWindowsByTab.removeValue(forKey: tabID)
+        placementGenerationByTab.removeValue(forKey: tabID)
     }
 
     /// Stop monitoring a window's layout changes.
     func stopLayoutMonitoring(windowId: String) {
-        layoutMonitorTasks[windowId]?.cancel()
-        layoutMonitorTasks.removeValue(forKey: windowId)
-        trackedWindows.removeValue(forKey: windowId)
+        let tabIDs = trackedWindowsByTab.compactMap { (tabID, tracked) in
+            tracked.windowId == windowId ? tabID : nil
+        }
+        for tabID in tabIDs {
+            stopLayoutMonitoring(tabID: tabID)
+        }
     }
 
-    private func handleLayoutChange(layout: String, windowId: String, tabID: UUID) async {
-        // Resolve tabID → tabIdx at the point of use to avoid stale index captures.
+    /// Sync focused leaf when tmux reports `%window-pane-changed`.
+    ///
+    /// This keeps workspace focus aligned with interactive pane changes that happen
+    /// inside Ghostty/tmux (keyboard or mouse), not only sidebar taps.
+    private func handleWindowPaneChanged(paneId: String, tabID: UUID) {
         guard let tabIdx = tabs.firstIndex(where: { $0.id == tabID }),
-              let tracked = trackedWindows[windowId] else { return }
+              let tracked = trackedWindowsByTab[tabID] else { return }
 
-        guard let newRoot = TmuxLayoutConverter.convert(
-            layoutString: layout,
-            windowPanes:  tracked.panes,
-            source:       tracked.source
-        ) else { return }
+        guard let focusedID = tabs[tabIdx].focusedLeafID,
+              let currentLeaf = findLeaf(id: focusedID, in: tabs[tabIdx].root) else { return }
 
-        // Merge: preserve leaf IDs + linked-session state where pane IDs match.
-        let oldLeaves  = tabs[tabIdx].root.leaves
-        let mergedRoot = mergeLayout(newRoot: newRoot, oldLeaves: oldLeaves)
-        tabs[tabIdx].root = mergedRoot
+        let resolvedSessionName = tracked.panes.first(where: { $0.paneId == paneId })?.sessionName
+            ?? currentLeaf.sessionName
 
-        // Keep focused leaf valid.
-        if let focusedID = tabs[tabIdx].focusedLeafID,
-           !mergedRoot.leafIDs.contains(focusedID) {
-            tabs[tabIdx].focusedLeafID = mergedRoot.leafIDs.first
+        let updatedLeaf = LeafPane(
+            id: focusedID,
+            tmuxPaneID: paneId,
+            sessionName: resolvedSessionName,
+            source: currentLeaf.source,
+            linkedSession: currentLeaf.linkedSession
+        )
+        if let newRoot = tabs[tabIdx].root.replacing(leafID: focusedID, with: .leaf(updatedLeaf)) {
+            tabs[tabIdx].root = newRoot
+        }
+        tabs[tabIdx].focusedLeafID = focusedID
+    }
+
+    private func handleLinkedSessionReady(
+        tabID: UUID,
+        generation: Int,
+        leafID: UUID,
+        window: WindowGroup,
+        linkedSessionName: String
+    ) async {
+        guard placementGenerationByTab[tabID] == generation else {
+            await LinkedSessionManager.shared.destroySession(name: linkedSessionName, source: window.source)
+            return
         }
 
-        // Create linked sessions for new leaves (those that are still .creating).
-        for leaf in mergedRoot.leaves {
-            if case .creating = leaf.linkedSession {
-                let leafID      = leaf.id
-                let sessionName = leaf.sessionName
-                let source      = leaf.source
-                let paneId      = leaf.tmuxPaneID
-                Task { [weak self] in
-                    do {
-                        let name = try await LinkedSessionManager.shared.createSession(
-                            parentSession: sessionName,
-                            windowId:      windowId,
-                            paneId:        paneId,
-                            source:        source
-                        )
-                        await self?.updateLeaf(id: leafID, linkedSession: .ready(name))
-                    } catch {
-                        await self?.updateLeaf(id: leafID, linkedSession: .failed(error.localizedDescription))
-                    }
-                }
+        updateLeaf(id: leafID, linkedSession: .ready(linkedSessionName))
+        if var tracked = trackedWindowsByTab[tabID], tracked.windowId == window.windowId {
+            tracked.monitorSessionName = linkedSessionName
+            trackedWindowsByTab[tabID] = tracked
+            startLayoutMonitoring(tabID: tabID)
+        }
+    }
+
+    private func handleLinkedSessionFailed(
+        tabID: UUID,
+        generation: Int,
+        leafID: UUID,
+        message: String
+    ) {
+        guard placementGenerationByTab[tabID] == generation else { return }
+        updateLeaf(id: leafID, linkedSession: .failed(message))
+    }
+
+    private func fetchActivePaneID(sessionName: String, source: String) async throws -> String {
+        let displayOutput = try await TmuxCommandRunner.shared.run(
+            ["display-message", "-p", "-t", sessionName, "#{pane_id}"],
+            source: source
+        )
+        let paneID = displayOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+        if paneID.hasPrefix("%") { return paneID }
+
+        // Fallback for environments where `display-message -p "#{pane_id}"` is empty.
+        let fallbackOutput = try await TmuxCommandRunner.shared.run(
+            ["list-panes", "-t", sessionName, "-F", "#{?pane_active,1,0}\t#{pane_id}"],
+            source: source
+        )
+        for line in fallbackOutput.split(separator: "\n") {
+            let parts = line.split(separator: "\t", omittingEmptySubsequences: false)
+            guard parts.count >= 2 else { continue }
+            if parts[0] == "1" {
+                return String(parts[1])
             }
         }
+
+        throw TmuxCommandError.failed(
+            args: ["display-message", "-p", "-t", sessionName, "#{pane_id}"],
+            code: -1,
+            stderr: "active pane not found"
+        )
     }
 
     /// Merge a freshly-converted BSP with the existing leaves.
