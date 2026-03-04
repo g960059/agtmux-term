@@ -18,6 +18,7 @@ Title consistency contracts:
 6. sidebar pane-row click path must enable the same focus-sync behavior (not only context-menu window open)
 7. opening one tmux window must produce exactly one workspace tile (single-surface contract)
 8. focus-sync monitoring must continue even if the original parent session is gone (linked-session runtime is authoritative)
+9. linked session `status-left` / `set-titles-string` must preserve parent template intent (local or inherited global) and rewrite session-name token to `session_group`
 
 Accessibility contracts for E2E:
 

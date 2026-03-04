@@ -558,12 +558,14 @@ final class AgtmuxTermUITests: XCTestCase {
         )
     }
 
-    /// T-E2E-011: Linked session status title should show parent session group name.
+    /// T-E2E-011: Linked session status-left should preserve parent style/template
+    /// while avoiding internal linked session-name leakage.
     ///
     /// Regression coverage:
     ///   - internal linked session names (`agtmux-linked-UUID`) should not leak into
     ///     tmux status title for user-facing terminals.
-    ///   - LinkedSessionManager must set `status-left` to `#{session_group}`.
+    ///   - LinkedSessionManager must preserve user status-left style, replacing only
+    ///     session-name tokens with `#{session_group}`.
     func testLinkedSessionStatusTitleUsesParentSessionGroup() throws {
         guard let tmux = resolveTmuxPathBestEffort() else {
             throw XCTSkip("tmux not available — skipping linked-session title test")
@@ -574,6 +576,12 @@ final class AgtmuxTermUITests: XCTestCase {
         }
         let linkedBefore = existingSessions.filter { $0.hasPrefix("agtmux-linked-") }
         let realSession = try createTrackedTmuxSession(prefix: "agtmux-e2e-title", tmux: tmux)
+        let parentStatusLeftTemplate = "#[fg=cyan,bg=black]#S #[fg=yellow,bold]tab#[default] ##S"
+        let parentSetTitlesStringTemplate = "#S"
+        _ = try shellRun([tmux, "set-option", "-t", realSession, "status-left", parentStatusLeftTemplate])
+        _ = try shellRun([tmux, "set-option", "-t", realSession, "set-titles-string", parentSetTitlesStringTemplate])
+        let expectedLinkedStatusLeft = "#[fg=cyan,bg=black]#{session_group} #[fg=yellow,bold]tab#[default] ##S"
+        let expectedLinkedSetTitlesString = "#{session_group}"
 
         let paneOut = try shellOutput([tmux, "list-panes", "-t", realSession, "-F", "#{pane_id}"])
         guard let realPaneID = paneOut.components(separatedBy: "\n").first(where: { !$0.isEmpty }) else {
@@ -625,8 +633,115 @@ final class AgtmuxTermUITests: XCTestCase {
             let statusLeft = try shellOutput([tmux, "show-options", "-v", "-t", linked, "status-left"])
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             XCTAssertEqual(
-                statusLeft, "#{session_group}",
-                "Linked session '\(linked)' must use parent session-group title"
+                statusLeft, expectedLinkedStatusLeft,
+                "Linked session '\(linked)' must preserve parent status-left style and rewrite only session token"
+            )
+            XCTAssertFalse(
+                statusLeft.contains("agtmux-linked-"),
+                "Linked session '\(linked)' must not leak internal linked session name in status-left template"
+            )
+            let setTitlesString = try shellOutput([tmux, "show-options", "-v", "-t", linked, "set-titles-string"])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            XCTAssertEqual(
+                setTitlesString, expectedLinkedSetTitlesString,
+                "Linked session '\(linked)' must use session_group for set-titles-string"
+            )
+        }
+    }
+
+    /// T-E2E-011b: Parent session may inherit title templates from global options.
+    /// Linked-session rewrite must use effective value (local or global), not local-only.
+    func testLinkedSessionStatusTitleFallsBackToGlobalTemplate() throws {
+        guard let tmux = resolveTmuxPathBestEffort() else {
+            throw XCTSkip("tmux not available — skipping linked-session global-template test")
+        }
+
+        guard let existingSessions = try? listTmuxSessions(tmux) else {
+            throw XCTSkip("tmux socket not accessible from runner — skipping linked-session global-template test")
+        }
+        let linkedBefore = existingSessions.filter { $0.hasPrefix("agtmux-linked-") }
+        let realSession = try createTrackedTmuxSession(prefix: "agtmux-e2e-title-global", tmux: tmux)
+
+        let previousGlobalStatusLeft = try shellOutput([tmux, "show-options", "-gv", "status-left"])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let previousGlobalSetTitlesString = try shellOutput([tmux, "show-options", "-gv", "set-titles-string"])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        defer {
+            _ = try? shellRun([tmux, "set-option", "-g", "status-left", previousGlobalStatusLeft])
+            _ = try? shellRun([tmux, "set-option", "-g", "set-titles-string", previousGlobalSetTitlesString])
+        }
+
+        let globalStatusLeftTemplate = "#[fg=green,bg=black]#S #[fg=magenta]global#[default]"
+        let globalSetTitlesStringTemplate = "#S"
+        _ = try shellRun([tmux, "set-option", "-g", "status-left", globalStatusLeftTemplate])
+        _ = try shellRun([tmux, "set-option", "-g", "set-titles-string", globalSetTitlesStringTemplate])
+
+        // Ensure parent session does not have local overrides.
+        _ = try shellRun([tmux, "set-option", "-u", "-t", realSession, "status-left"])
+        _ = try shellRun([tmux, "set-option", "-u", "-t", realSession, "set-titles-string"])
+
+        let expectedLinkedStatusLeft = "#[fg=green,bg=black]#{session_group} #[fg=magenta]global#[default]"
+        let expectedLinkedSetTitlesString = "#{session_group}"
+
+        let paneOut = try shellOutput([tmux, "list-panes", "-t", realSession, "-F", "#{pane_id}"])
+        guard let realPaneID = paneOut.components(separatedBy: "\n").first(where: { !$0.isEmpty }) else {
+            throw XCTSkip("Could not get pane ID from test session")
+        }
+
+        let winOut = try shellOutput([tmux, "list-windows", "-t", realSession, "-F", "#{window_id}"])
+        let realWindowID = winOut.components(separatedBy: "\n").first(where: { !$0.isEmpty }) ?? "@0"
+
+        let json = """
+        {"version":1,"panes":[
+          {"pane_id":"\(realPaneID)","session_name":"\(realSession)","window_id":"\(realWindowID)",
+           "window_index":1,"window_name":"zsh","activity_state":"idle",
+           "presence":"unmanaged","evidence_mode":"none",
+           "current_cmd":"zsh","updated_at":"2026-03-04T00:00:00Z","age_secs":0}
+        ]}
+        """
+
+        app.launchEnvironment["AGTMUX_JSON"] = json
+        app.launchForUITest()
+
+        let key = AccessibilityID.paneKey(
+            source: "local",
+            sessionName: realSession,
+            paneID: realPaneID
+        )
+        let panePred = NSPredicate(format: "identifier == %@", AccessibilityID.sidebarPanePrefix + key)
+        let paneRow = app.descendants(matching: .any).matching(panePred).firstMatch
+        XCTAssertTrue(
+            paneRow.waitForExistence(timeout: TestConstants.sidebarPopulateTimeout),
+            "Pane \(realPaneID) from session '\(realSession)' must appear in sidebar"
+        )
+
+        assertWorkspaceStartsEmpty()
+        paneRow.click()
+        waitForWorkspaceToLeaveEmptyState()
+
+        let tilePred = NSPredicate(format: "identifier BEGINSWITH %@", AccessibilityID.workspaceTilePrefix)
+        let tile = app.otherElements.matching(tilePred).firstMatch
+        XCTAssertTrue(tile.waitForExistence(timeout: TestConstants.surfaceReadyTimeout))
+
+        let linkedCreated = try waitForNewLinkedSessions(tmux: tmux, existing: linkedBefore, timeout: 5.0)
+        XCTAssertFalse(linkedCreated.isEmpty, "Pane selection should create at least one linked session")
+
+        for linked in linkedCreated {
+            let statusLeft = try shellOutput([tmux, "show-options", "-v", "-t", linked, "status-left"])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            XCTAssertEqual(
+                statusLeft, expectedLinkedStatusLeft,
+                "Linked session '\(linked)' must use effective(global) status-left template and rewrite session token"
+            )
+            XCTAssertFalse(
+                statusLeft.contains("agtmux-linked-"),
+                "Linked session '\(linked)' must not leak internal linked session name in status-left template"
+            )
+            let setTitlesString = try shellOutput([tmux, "show-options", "-v", "-t", linked, "set-titles-string"])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            XCTAssertEqual(
+                setTitlesString, expectedLinkedSetTitlesString,
+                "Linked session '\(linked)' must use effective(global) set-titles-string template"
             )
         }
     }

@@ -113,14 +113,37 @@ actor LinkedSessionManager {
             source: source
         )
 
-        // Step 1.5: Make the status-left title show the parent session group name.
-        // Without this, internal linked session names (agtmux-linked-UUID) leak into
-        // the tmux status UI, which is confusing for users expecting the original
-        // session title.
-        _ = try await TmuxCommandRunner.shared.run(
-            ["set-option", "-t", name, "status-left", "#{session_group}"],
+        // Step 1.5: Preserve parent status-left formatting and replace only
+        // session-name tokens so linked internal names do not leak to UI.
+        //
+        // This keeps user theme/style (colors, separators, powerline segments)
+        // aligned with their existing tmux/WezTerm configuration.
+        let parentStatusLeft = try await effectiveParentSessionOption(
+            "status-left",
+            parentSession: parentSession,
             source: source
         )
+        let rewrittenStatusLeft = rewriteStatusLeftTemplate(parentStatusLeft)
+        if rewrittenStatusLeft != parentStatusLeft {
+            _ = try await TmuxCommandRunner.shared.run(
+                ["set-option", "-t", name, "status-left", rewrittenStatusLeft],
+                source: source
+            )
+        }
+
+        // Keep outer terminal/tab titles aligned with session-group naming too.
+        let parentTitleTemplate = try await effectiveParentSessionOption(
+            "set-titles-string",
+            parentSession: parentSession,
+            source: source
+        )
+        let rewrittenTitleTemplate = rewriteSessionNameTokens(parentTitleTemplate)
+        if rewrittenTitleTemplate != parentTitleTemplate {
+            _ = try await TmuxCommandRunner.shared.run(
+                ["set-option", "-t", name, "set-titles-string", rewrittenTitleTemplate],
+                source: source
+            )
+        }
 
         // Step 2: Navigate the linked session's current-window to the target.
         // select-window operates on the session pointer, not on an attached client,
@@ -138,6 +161,45 @@ actor LinkedSessionManager {
         )
 
         return name
+    }
+
+    /// Rewrites status-left template so linked session names do not leak.
+    ///
+    /// Rules:
+    /// - Preserve all existing style directives and text.
+    /// - Replace session-name tokens with `#{session_group}`.
+    /// - Keep escaped literal `##S` unchanged.
+    private func rewriteStatusLeftTemplate(_ template: String) -> String {
+        rewriteSessionNameTokens(template)
+    }
+
+    private func rewriteSessionNameTokens(_ template: String) -> String {
+        let escapedShortToken = "__AGTMUX_ESCAPED_SHORT_SESSION_TOKEN__"
+        var rewritten = template.replacingOccurrences(of: "##S", with: escapedShortToken)
+        rewritten = rewritten.replacingOccurrences(of: "#{session_name}", with: "#{session_group}")
+        rewritten = rewritten.replacingOccurrences(of: "#S", with: "#{session_group}")
+        rewritten = rewritten.replacingOccurrences(of: escapedShortToken, with: "##S")
+        return rewritten
+    }
+
+    /// Resolve a session option template from parent session.
+    ///
+    /// tmux returns an empty string for many session options when they are not set
+    /// locally on the target session (even though a global value exists). For linked
+    /// sessions we need the effective template, so fallback to global when local is
+    /// empty.
+    private func effectiveParentSessionOption(_ option: String,
+                                              parentSession: String,
+                                              source: String) async throws -> String {
+        let local = try await TmuxCommandRunner.shared.run(
+            ["show-options", "-v", "-t", parentSession, option],
+            source: source
+        )
+        if !local.isEmpty { return local }
+        return try await TmuxCommandRunner.shared.run(
+            ["show-options", "-gv", option],
+            source: source
+        )
     }
 
     /// Destroy a linked session previously created by this manager.

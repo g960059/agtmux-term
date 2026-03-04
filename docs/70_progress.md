@@ -657,11 +657,15 @@ Round 1 全修正が全員により confirmed。2/4 GO 目標クリア。
 ### 実装
 
 - `LinkedSessionManager.createSession` に title 正規化を追加
-  - linked session 作成後に `tmux set-option -t <linked> status-left #{session_group}` を適用
-  - これにより terminal 内の session title が `agtmux-linked-*` ではなく親 session group 名を表示
+  - linked session 作成後に parent の `status-left` / `set-titles-string` template を取得し、`#S` / `#{session_name}` のみ `#{session_group}` へ置換して適用
+  - parent 側が local 未設定で global 継承の場合に備え、template 取得を `session local -> 空なら global` へ修正
+  - `##S` は literal として維持し、tmux/wezterm 側の背景色・装飾を壊さない
+  - これにより terminal 内の session title が `agtmux-linked-*` ではなく親 session group 名を表示しつつ既存テーマを維持
 - E2E 追加:
   - `testLinkedSessionStatusTitleUsesParentSessionGroup`
-  - pane 選択後に新規 linked session を検出し、`status-left == #{session_group}` を検証
+  - pane 選択後に新規 linked session を検出し、`status-left` / `set-titles-string` が parent template 保持 + session token 置換になっていることを検証
+  - `testLinkedSessionStatusTitleFallsBackToGlobalTemplate`
+  - parent local unset + global template 継承ケースで同契約が成立することを検証
   - tmux socket へアクセス不可な runner 環境では `XCTSkip` するように実装
 
 ### docs

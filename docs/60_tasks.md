@@ -1000,18 +1000,22 @@
   - 各 terminal tile は独立表示のため linked session に attach する設計。
   - tmux の既定 status title (`#S`) は linked session 名を表示するため、`agtmux-linked-UUID` が露出していた。
 - **Fix**:
-  - `LinkedSessionManager.createSession` で linked session 作成直後に以下を設定:
-    - `tmux set-option -t <linked> status-left #{session_group}`
-  - `session_group` を使うことで、UI 上は親 session 名を継続表示。
+  - `LinkedSessionManager.createSession` で parent session の `status-left` / `set-titles-string` template を取得し、session-name token のみを `#{session_group}` に置換して linked session に適用:
+    - 置換対象: `#S`, `#{session_name}`
+    - `##S`（literal token）は保持
+  - parent session に local option が未設定（global 継承）でも漏れないように、template 取得は「session local -> 空なら global」へフォールバック
+  - これにより user の tmux/wezterm 設定由来の背景色・装飾・separator を維持したまま、内部 `agtmux-linked-*` 名の露出だけを防ぐ。
   - E2E 追加: `testLinkedSessionStatusTitleUsesParentSessionGroup`
-    - pane 選択で生成された linked session の `status-left` が `#{session_group}` であることを検証
+    - pane 選択で生成された linked session の `status-left` と `set-titles-string` が「parent template を保持しつつ session token だけ置換」になることを検証
     - tmux socket にアクセスできない runner 環境では `XCTSkip`（環境依存 fail を回避）
+  - E2E 追加: `testLinkedSessionStatusTitleFallsBackToGlobalTemplate`
+    - parent local option を unset し、global template 継承ケースでも linked 側が `session_group` 置換されることを検証
 - **Files**:
   - `Sources/AgtmuxTerm/LinkedSessionManager.swift` (updated)
   - `Tests/AgtmuxTermUITests/AgtmuxTermUITests.swift` (updated)
   - `Tests/AgtmuxTermUITests/README.md` (updated)
 - **Acceptance Criteria**:
-  - [x] linked session title が内部名ではなく親 session group 名で表示される設定が入っている
+  - [x] linked session title が内部名ではなく親 session group 名で表示される（status bar / terminal title の両方）
   - [x] title leak の回帰を検知する E2E が追加されている
   - [x] tmux socket 非許可環境でも E2E が skip で安定する
 
