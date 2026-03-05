@@ -1178,3 +1178,81 @@ Round 1 全修正が全員により confirmed。2/4 GO 目標クリア。
   - `SACSetScreenSaverCanRun returned 22`
 - `/usr/bin/log show` でも、XCUITest launch で `dontMakeFrontmost=1` と Hang Risk が継続。
 - 以上より、このセッション（SSH 実行）では activation-sensitive XCUITest は環境依存で不安定と判定。
+
+## 2026-03-05 — V2最終案確定（A0先行）+ 実装開始
+
+### 最終案（レビュー統合）
+- これまでのレビュー指摘を反映し、Phase A0/A1/A2へ再スコープ。
+- A0を最優先で採択:
+  - inventory canonical existence
+  - metadata non-destructive overlay
+  - metadata非待機の inventory-first render
+
+出力先:
+- `/tmp/agtmux-v2-final-plan-20260305-v3.md`
+
+### docs反映
+- `agtmux` 側
+  - `docs/85_reviews/RP-20260305-agtmux-term-v2-a0-handover.md` を新規作成
+  - `docs/70_progress.md` に採択記録を追加
+  - `docs/90_index.md` に cross-repo handover 参照を追加
+- `agtmux-term` 側
+  - `docs/60_tasks.md` に `T-074a`（A0実装）を追加
+  - 本エントリを追加
+
+### 実装開始方針（T-074a）
+- `AppViewModel.fetchLocalPanes()` を inventory-first 化し、metadata fetch の同期待ちを廃止。
+- local metadata cache を導入し、成功時のみoverlay更新。
+- metadata失敗時は cache 維持 + backoff。
+
+### Status
+- `T-074a`: IN_PROGRESS
+
+## 2026-03-05 — T-074a 完了: inventory-first local fetch + metadata non-blocking overlay
+
+### 実装
+- `AppViewModel` を A0 方針へ更新:
+  - local path は `tmux list-panes` 成功時点で即返却（`agtmux json` 同期待ちを廃止）
+  - metadata は background refresh（single in-flight）へ分離
+  - metadata cache（pane key=`source:paneId`）を導入
+  - metadata失敗時は cache を破壊せず保持し、failure backoff を適用
+  - publish経路を `publishFromSnapshotCache()` に集約
+- `LocalTmuxInventoryClient` を protocol 化し、`AppViewModel` へ依存注入可能に変更
+  - `LocalPaneInventoryClient` 追加
+- `AppViewModelA0Tests` を追加（Red/Green）
+  - `testFetchAllReturnsInventoryWithoutWaitingMetadata`
+  - `testMetadataFailureDoesNotClearPreviousOverlay`
+
+### 検証
+- `swift test -q --filter AppViewModelA0Tests` ✅
+- `swift test -q` ✅（24 tests, 0 failures）
+- `swift build` ✅
+
+### 進捗
+- `T-074a`: DONE
+- 次は agtmux 側 A0（cached snapshot/non-destructive semantics）完了後に cross-repo 実機検証へ進む。
+
+## 2026-03-05 — agtmux A0実装取り込み確認 + cross-repo smoke
+
+### 受領内容（agtmux側）
+- cached snapshot 即時返却パス
+- poll loop inventory-first（metadata非待機）
+- metadata non-destructive + backoff
+- `agtmux json` snapshot-aware化（cache/pane metadata stale）
+
+### agtmux-term 側で実施した追従
+- `AgtmuxSnapshotDecodeCompatibilityTests` を追加し、
+  snapshot-aware JSONの追加フィールド互換を固定。
+- cross-repo isolated smoke を実施:
+  - agtmux binary: `/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/debug/agtmux`
+  - isolated tmux socket + isolated daemon socket（user配下）で起動
+  - `tmux split-window` 後に `agtmux json` の pane count が 1→2 へ更新されることを確認
+
+### 追加検証
+- `swift test -q --filter AgtmuxSnapshotDecodeCompatibilityTests` ✅
+- `swift test -q` ✅（26 tests, 0 failures）
+- `swift build` ✅
+
+### 備考
+- `/tmp/...sock` への daemon bind はこの環境で `Operation not permitted` となったため、
+  smokeは `~/.local/state/agtmux-smoke/*.sock` で実施した。

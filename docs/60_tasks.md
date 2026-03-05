@@ -1446,3 +1446,47 @@
   - [x] isolated socket を app 側で bootstrap/command/cleanup できる
   - [x] focus-sync / same-window fast-switch テストが bridge command で実行可能
   - [x] docs に新しい E2E 契約が反映される
+
+---
+
+### T-074a — Local fetch A0再設計: inventory-first + metadata非ブロッキングoverlay (2026-03-05)
+- **Status**: DONE
+- **Priority**: P0
+- **Description**:
+  - local pane 表示を metadata fetch から分離し、`tmux list-panes` 成功時点で即時描画する。
+  - `agtmux json` は background refresh に移し、成功時のみ metadata cache を更新して overlay を再適用する。
+  - metadata timeout/error は row existence に影響させない（inventory canonical）。
+- **Design constraints**:
+  - 後方互換よりUX優先（no backward compatibility）。
+  - fallback を最小化し、失敗を握りつぶさずログ/状態で明示。
+  - source境界を厳守（local metadata は local pane のみを更新）。
+- **Planned Files**:
+  - `Sources/AgtmuxTerm/AppViewModel.swift`
+  - `Sources/AgtmuxTerm/LocalTmuxInventoryClient.swift`
+  - `Tests/AgtmuxTermIntegrationTests/AppViewModelA0Tests.swift`
+  - `Package.swift`
+  - `docs/60_tasks.md`
+  - `docs/70_progress.md`
+- **Acceptance Criteria**:
+  - [x] metadata timeout時でも local inventory rows が消えない
+  - [x] `fetchLocalPanes()` が metadata完了を待たずに戻る
+  - [x] metadata成功後は次回poll待ちなしでoverlay再適用できる
+  - [x] `swift build` と `swift test -q` が通る
+
+### T-074b — Cross-repo A0 受け入れ確認（agtmux新snapshot契約） (2026-03-05)
+- **Status**: DONE
+- **Priority**: P0
+- **Description**:
+  - agtmux 側の snapshot-aware `json`（top-level cache / pane metadata_stale 等）を受けても agtmux-term が安定動作することを確認する。
+  - inventory-first + metadata non-blocking の term実装が cross-repo 接続で成立することを確認する。
+- **Implemented**:
+  - decode互換テスト追加: `AgtmuxSnapshotDecodeCompatibilityTests`
+    - unknown top-level/pane fields を無視してdecode可能
+    - `activity_state: null` を `.unknown` として取り扱い
+  - isolated smoke:
+    - `agtmux daemon` + isolated tmux socket を user配下 socket path で起動
+    - `tmux split-window` 後に `agtmux json` pane count が 1→2 へ反映されることを確認
+- **Acceptance Criteria**:
+  - [x] snapshot-aware JSONの追加フィールドで decode が壊れない
+  - [x] cross-repo 実機で inventory反映が継続して確認できる
+  - [x] `swift test -q` / `swift build` が通る

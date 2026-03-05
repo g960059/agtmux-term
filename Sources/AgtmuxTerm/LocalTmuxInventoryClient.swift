@@ -1,11 +1,15 @@
 import Foundation
 import AgtmuxTermCore
 
+protocol LocalPaneInventoryClient: Sendable {
+    func fetchPanes() async throws -> [AgtmuxPane]
+}
+
 /// Local tmux inventory client.
 ///
 /// Unlike agtmux metadata (`agtmux json`), this client is authoritative for
 /// local tmux object existence (session/window/pane).
-actor LocalTmuxInventoryClient {
+actor LocalTmuxInventoryClient: LocalPaneInventoryClient {
     /// Tab-separated tmux format string:
     /// pane_id, session_name, window_id, window_index, window_name,
     /// pane_current_path, pane_current_command, session_group

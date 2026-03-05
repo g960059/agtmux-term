@@ -9,6 +9,7 @@ agtmux daemon と連携し、tmux セッション内の AI エージェント状
 
 | File | Tier | Content |
 |------|------|---------|
+| `AGENTS.md` | Stable | 実体エージェント運用ルール（role-play禁止、本体のみ） |
 | `CLAUDE.md` | Stable | プロセスルール、品質ポリシー、Orchestrator ゲート |
 | `docs/00_router.md` | Stable | 非交渉ゲート、Quality Gates、Review プロトコル |
 | `docs/10_foundation.md` | Stable | What / For Whom / Why / User Stories / Goals / Non-Goals |
@@ -111,3 +112,8 @@ swift run AgtmuxTerm
 | Phase 2 | Sidebar UI Port (T-006〜T-008) | TODO |
 | Phase 3 | Daemon Integration (T-009〜T-011) | TODO |
 | Phase 4 | Polish / Post-MVP (T-012〜T-014) | TODO |
+
+## Cross-Repo V2 A0
+- Final plan output: `/tmp/agtmux-v2-final-plan-20260305-v3.md`
+- agtmux handover: `/Users/virtualmachine/ghq/github.com/g960059/agtmux/docs/85_reviews/RP-20260305-agtmux-term-v2-a0-handover.md`
+- term execution task: `docs/60_tasks.md` (`T-074a`)

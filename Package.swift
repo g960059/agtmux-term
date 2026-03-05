@@ -56,7 +56,7 @@ let package = Package(
         ),
         .testTarget(
             name: "AgtmuxTermIntegrationTests",
-            dependencies: [],
+            dependencies: ["AgtmuxTerm", "AgtmuxTermCore"],
             path: "Tests/AgtmuxTermIntegrationTests"
         ),
     ]
