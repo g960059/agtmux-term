@@ -15,7 +15,6 @@ struct TitlebarChromeView: View {
     @Environment(CockpitChromeState.self) private var chromeState
 
     private let sidebarExpandedWidth: CGFloat = 252
-    private let collapsedControlsWidth: CGFloat = 56
 
     var body: some View {
         HStack(spacing: 0) {
@@ -27,29 +26,36 @@ struct TitlebarChromeView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-        .padding(.leading, leadingInset)
+        .padding(.leading, iconLeading)
         .padding(.trailing, 6)
         .offset(y: chromeState.yOffset)
         .animation(.easeInOut(duration: 0.16), value: chromeState.isSidebarCollapsed)
     }
 
-    private var leadingInset: CGFloat {
-        let raw = max(0, chromeState.trafficLightsTrailingX + TitlebarChromeMetrics.trafficLightGap)
-        // Keep icons close to traffic lights, but never push workspace tabs right
-        // beyond the main-panel boundary in sidebar-open mode.
-        let cap = sidebarExpandedWidth - collapsedControlsWidth
-        return min(raw, cap)
+    private var iconLeading: CGFloat {
+        max(
+            0,
+            chromeState.trafficLightsTrailingXInAccessory + TitlebarChromeMetrics.trafficLightGap
+        )
     }
 
     private var controlsSlotWidth: CGFloat {
         if chromeState.isSidebarCollapsed {
-            return collapsedControlsWidth
+            return controlsContentWidth
         }
-        // Keep first workspace tab aligned with the content split boundary.
-        // Since the whole row is shifted right to avoid traffic lights,
-        // subtract that inset from the sidebar slot width.
-        let adjusted = sidebarExpandedWidth - leadingInset
-        return max(collapsedControlsWidth, adjusted)
+
+        let boundaryInAccessory = max(
+            0,
+            sidebarExpandedWidth - chromeState.titlebarAccessoryMinXInWindow
+        )
+        return max(controlsContentWidth, boundaryInAccessory - iconLeading)
+    }
+
+    private var controlsContentWidth: CGFloat {
+        let iconCount = chromeState.isSidebarCollapsed ? 2 : 4
+        let button = TitlebarChromeMetrics.iconButtonSize
+        let spacing = TitlebarChromeMetrics.iconSpacing
+        return (CGFloat(iconCount) * button) + (CGFloat(max(0, iconCount - 1)) * spacing)
     }
 
     private var controls: some View {
@@ -61,7 +67,8 @@ struct TitlebarChromeView: View {
                         chromeState.isSidebarCollapsed.toggle()
                     }
                 },
-                accessibilityLabel: "Toggle Sidebar"
+                accessibilityLabel: "Toggle Sidebar",
+                accessibilityID: AccessibilityID.sidebarFilterToggle
             ) {
                 Image(systemName: "sidebar.leading")
                     .font(.system(size: TitlebarChromeMetrics.iconGlyphSize, weight: .semibold))
@@ -72,7 +79,8 @@ struct TitlebarChromeView: View {
                 TitlebarIconButton(
                     isActive: viewModel.statusFilter == .managed,
                     action: { toggleFilter(.managed) },
-                    accessibilityLabel: "Managed"
+                    accessibilityLabel: "Managed",
+                    accessibilityID: AccessibilityID.sidebarFilterManaged
                 ) {
                     ProviderIcon(provider: .codex, size: TitlebarChromeMetrics.iconGlyphSize)
                         .frame(width: TitlebarChromeMetrics.iconGlyphSize, height: TitlebarChromeMetrics.iconGlyphSize)
@@ -83,7 +91,8 @@ struct TitlebarChromeView: View {
             TitlebarIconButton(
                 isActive: viewModel.statusFilter == .attention,
                 action: { toggleFilter(.attention) },
-                accessibilityLabel: "Attention"
+                accessibilityLabel: "Attention",
+                accessibilityID: AccessibilityID.sidebarFilterAttention
             ) {
                 ZStack(alignment: .topTrailing) {
                     Image(systemName: viewModel.statusFilter == .attention ? "bell.fill" : "bell")
@@ -106,7 +115,8 @@ struct TitlebarChromeView: View {
                 TitlebarIconButton(
                     isActive: viewModel.statusFilter == .pinned,
                     action: { toggleFilter(.pinned) },
-                    accessibilityLabel: "Pinned"
+                    accessibilityLabel: "Pinned",
+                    accessibilityID: AccessibilityID.sidebarFilterPinned
                 ) {
                     Image(systemName: viewModel.statusFilter == .pinned ? "pin.fill" : "pin")
                         .font(.system(size: TitlebarChromeMetrics.iconGlyphSize, weight: .semibold))
@@ -130,6 +140,7 @@ private struct TitlebarIconButton<Label: View>: View {
     let isActive: Bool
     let action: () -> Void
     let accessibilityLabel: String
+    let accessibilityID: String?
     let label: () -> Label
 
     @State private var isHovered = false
@@ -138,11 +149,13 @@ private struct TitlebarIconButton<Label: View>: View {
         isActive: Bool,
         action: @escaping () -> Void,
         accessibilityLabel: String,
+        accessibilityID: String? = nil,
         @ViewBuilder label: @escaping () -> Label
     ) {
         self.isActive = isActive
         self.action = action
         self.accessibilityLabel = accessibilityLabel
+        self.accessibilityID = accessibilityID
         self.label = label
     }
 
@@ -163,6 +176,7 @@ private struct TitlebarIconButton<Label: View>: View {
         .onHover { isHovered = $0 }
         .help(accessibilityLabel)
         .accessibilityLabel(accessibilityLabel)
+        .accessibilityIdentifier(accessibilityID ?? "")
     }
 
     private var background: Color {

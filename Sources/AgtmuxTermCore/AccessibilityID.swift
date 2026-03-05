@@ -8,6 +8,10 @@ public enum AccessibilityID {
     // MARK: - Sidebar
     public static let sidebar             = "sidebar"
     public static let sidebarFilterBar    = "sidebar.filterBar"
+    public static let sidebarFilterToggle = "sidebar.filter.toggle"
+    public static let sidebarFilterManaged = "sidebar.filter.managed"
+    public static let sidebarFilterAttention = "sidebar.filter.attention"
+    public static let sidebarFilterPinned = "sidebar.filter.pinned"
     public static let sidebarEmpty        = "sidebar.emptyState"
     public static let sidebarWindowPrefix = "sidebar.window."    // + source_session_windowID
     public static let sidebarPanePrefix   = "sidebar.pane."      // + source_session_paneID

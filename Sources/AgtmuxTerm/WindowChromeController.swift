@@ -76,18 +76,35 @@ final class WindowChromeController: NSObject {
         chromeState.titlebarHeight = titlebarHeight
         sizeAccessory(width: window.frame.width, height: titlebarHeight)
 
-        guard let trafficLightsRect = trafficLightsRectInWindowCoordinates(window: window) else { return }
+        let accessoryFrameInWindow = accessoryView.convert(accessoryView.bounds, to: nil)
+        chromeState.titlebarAccessoryMinXInWindow = max(0, accessoryFrameInWindow.minX)
 
-        chromeState.trafficLightsTrailingX = max(56, trafficLightsRect.maxX)
+        guard let trafficLightsRectInWindow = trafficLightsRectInWindowCoordinates(window: window) else {
+            chromeState.trafficLightsTrailingXInAccessory = max(
+                0,
+                72 - chromeState.titlebarAccessoryMinXInWindow
+            )
+            accessoryView.trafficLightsExclusionRect = .zero
+            return
+        }
+
+        chromeState.trafficLightsTrailingXInAccessory = max(
+            0,
+            trafficLightsRectInWindow.maxX - chromeState.titlebarAccessoryMinXInWindow
+        )
 
         let titlebarMidY = window.contentLayoutRect.maxY + (titlebarHeight * 0.5)
-        chromeState.yOffset = trafficLightsRect.midY - titlebarMidY
+        chromeState.yOffset = trafficLightsRectInWindow.midY - titlebarMidY
 
-        // Allow native traffic lights to receive clicks through our accessory.
+        // Keep exclusion hit test rect in accessory-local coordinates.
+        let trafficLightsRectInAccessory = accessoryView.convert(
+            trafficLightsRectInWindow,
+            from: nil
+        )
         accessoryView.trafficLightsExclusionRect = NSRect(
-            x: max(0, trafficLightsRect.minX - 6),
+            x: max(0, trafficLightsRectInAccessory.minX - 6),
             y: 0,
-            width: trafficLightsRect.width + 14,
+            width: trafficLightsRectInAccessory.width + 14,
             height: titlebarHeight
         )
     }
