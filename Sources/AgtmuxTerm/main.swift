@@ -105,10 +105,15 @@ let workspaceStore: WorkspaceStore = MainActor.assumeIsolated {
     return store
 }
 
+let chromeState: CockpitChromeState = MainActor.assumeIsolated {
+    CockpitChromeState()
+}
+
 // 5. Build the SwiftUI view hierarchy wrapped in NSHostingView.
 let cockpit = CockpitView()
     .environmentObject(viewModel)
     .environment(workspaceStore)
+    .environment(chromeState)
 
 let hostingView = NonDraggableHostingView(rootView: cockpit)
 hostingView.frame = NSRect(x: 0, y: 0, width: 1080, height: 680)
@@ -128,6 +133,17 @@ window.isOpaque = false
 window.backgroundColor = .clear
 window.contentView = hostingView
 window.makeKeyAndOrderFront(nil)
+
+let windowChromeController: WindowChromeController = MainActor.assumeIsolated {
+    let controller = WindowChromeController(
+        chromeState: chromeState,
+        viewModel: viewModel,
+        workspaceStore: workspaceStore
+    )
+    controller.install(on: window)
+    return controller
+}
+_ = windowChromeController
 
 // 6. Run the app event loop.
 app.activate(ignoringOtherApps: true)
