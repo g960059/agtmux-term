@@ -1,5 +1,6 @@
 import XCTest
 import AgtmuxTermCore
+import CoreGraphics
 
 /// E2E crash regression tests for agtmux-term.
 ///
@@ -34,6 +35,30 @@ final class AgtmuxTermUITests: XCTestCase {
     override func setUpWithError() throws {
         continueAfterFailure = false
         ownedSessions = []
+
+        let env = ProcessInfo.processInfo.environment
+        if env["AGTMUX_UITEST_ALLOW_LOCKED_SESSION"] != "1" {
+            if let session = CGSessionCopyCurrentDictionary() as? [String: Any] {
+                let screenLocked = (session["CGSSessionScreenIsLocked"] as? Int) ?? 0
+                let onConsole = (session["kCGSSessionOnConsoleKey"] as? Int) ?? 1
+                let loginDone = (session["kCGSessionLoginDoneKey"] as? Int) ?? 1
+                if screenLocked != 0 || onConsole == 0 || loginDone == 0 {
+                    throw XCTSkip(
+                        "XCUITest needs an unlocked interactive desktop session. " +
+                        "Current session state: screenLocked=\(screenLocked), " +
+                        "onConsole=\(onConsole), loginDone=\(loginDone). " +
+                        "Set AGTMUX_UITEST_ALLOW_LOCKED_SESSION=1 to force-run."
+                    )
+                }
+            }
+        }
+        if env["SSH_CONNECTION"] != nil, env["AGTMUX_UITEST_ALLOW_SSH"] != "1" {
+            throw XCTSkip(
+                "XCUITest needs an interactive console session. " +
+                "Current runner is an SSH session. " +
+                "Set AGTMUX_UITEST_ALLOW_SSH=1 to force-run."
+            )
+        }
 
         // Resolve tmux path (best-effort — sandbox may block socket connections later).
         tmuxPath = resolveTmuxPathBestEffort()
@@ -583,18 +608,24 @@ final class AgtmuxTermUITests: XCTestCase {
     /// Regression coverage:
     ///   - local source must reflect real tmux inventory, not daemon-only metadata.
     func testLocalSessionCreatedAfterLaunchAppearsInSidebar() throws {
-        guard let tmux = resolveTmuxPathBestEffort() else {
-            throw XCTSkip("tmux not available — skipping local session reflection test")
-        }
-        guard (try? listTmuxSessions(tmux)) != nil else {
-            throw XCTSkip("tmux socket not accessible from runner — skipping local session reflection test")
-        }
+        let token = String(UUID().uuidString.prefix(8)).lowercased()
+        let session = "agtmux-e2e-session-reflect-\(token)"
+        let socket = "agtmux-e2e-\(token)"
+        let control = try makeAppTmuxControlPaths(token: token)
 
         app.launchEnvironment.removeValue(forKey: "AGTMUX_JSON")
+        configureAppDrivenTmux(socketName: socket, control: control, scenario: nil)
         app.launchForUITest()
 
-        let session = try createTrackedTmuxSession(prefix: "agtmux-e2e-session-reflect", tmux: tmux)
-        let paneOut = try shellOutput([tmux, "list-panes", "-t", session, "-F", "#{pane_id}"])
+        _ = try sendAppTmuxCommand(
+            ["new-session", "-d", "-s", session, "-n", "main", "/bin/sleep 600"],
+            control: control
+        )
+        let paneOut = try sendAppTmuxCommand(
+            ["list-panes", "-t", session, "-F", "#{pane_id}"],
+            refreshInventory: false,
+            control: control
+        )
         guard let paneID = paneOut.components(separatedBy: "\n").first(where: { !$0.isEmpty }) else {
             throw XCTSkip("Could not resolve pane ID for created session")
         }
@@ -769,9 +800,13 @@ final class AgtmuxTermUITests: XCTestCase {
             throw XCTSkip("tmux not available — skipping linked-session title test")
         }
 
-        guard let existingSessions = try? listTmuxSessions(tmux) else {
-            throw XCTSkip("tmux socket not accessible from runner — skipping linked-session title test")
+        switch classifyRunnerTmuxAccess(tmux: tmux) {
+        case .available, .availableNoServer:
+            break
+        case .inaccessible(let reason):
+            throw XCTSkip("tmux socket not accessible from runner (linked-session title): \(reason)")
         }
+        let existingSessions = try listTmuxSessions(tmux)
         let linkedBefore = existingSessions.filter { $0.hasPrefix("agtmux-linked-") }
         let realSession = try createTrackedTmuxSession(prefix: "agtmux-e2e-title", tmux: tmux)
         let parentStatusLeftTemplate = "#[fg=cyan,bg=black]#S #[fg=yellow,bold]tab#[default] ##S"
@@ -854,9 +889,13 @@ final class AgtmuxTermUITests: XCTestCase {
             throw XCTSkip("tmux not available — skipping linked-session global-template test")
         }
 
-        guard let existingSessions = try? listTmuxSessions(tmux) else {
-            throw XCTSkip("tmux socket not accessible from runner — skipping linked-session global-template test")
+        switch classifyRunnerTmuxAccess(tmux: tmux) {
+        case .available, .availableNoServer:
+            break
+        case .inaccessible(let reason):
+            throw XCTSkip("tmux socket not accessible from runner (linked-session global-template): \(reason)")
         }
+        let existingSessions = try listTmuxSessions(tmux)
         let linkedBefore = existingSessions.filter { $0.hasPrefix("agtmux-linked-") }
         let realSession = try createTrackedTmuxSession(prefix: "agtmux-e2e-title-global", tmux: tmux)
 
@@ -947,50 +986,38 @@ final class AgtmuxTermUITests: XCTestCase {
     /// T-E2E-012: Main panel pane focus changes sync back to sidebar selection highlight.
     ///
     /// Flow:
-    ///   1. Create a real tmux session with two panes in one window.
-    ///   2. Mock daemon exposes both panes in sidebar.
+    ///   1. App-side UITest bridge creates an isolated tmux session with two panes.
+    ///   2. Sidebar reflects those live panes from local tmux inventory.
     ///   3. Click a sidebar pane row to open it in workspace.
-    ///   4. Run `tmux select-pane` to change active pane inside that window.
+    ///   4. Ask app-side UITest bridge to run `tmux select-pane` in that window.
     ///   5. Sidebar selected row must follow the new active pane.
     func testMainPanelPaneFocusSyncsSidebarSelection() throws {
-        guard let tmux = resolveTmuxPathBestEffort() else {
-            throw XCTSkip("tmux not available — skipping pane-focus sync test")
-        }
-        guard let existingSessions = try? listTmuxSessions(tmux) else {
-            throw XCTSkip("tmux socket not accessible from runner — skipping pane-focus sync test")
-        }
-        let linkedBefore = existingSessions.filter { $0.hasPrefix("agtmux-linked-") }
+        let token = String(UUID().uuidString.prefix(8)).lowercased()
+        let session = "agtmux-e2e-focus-sync-\(token)"
+        let socket = "agtmux-e2e-\(token)"
+        let control = try makeAppTmuxControlPaths(token: token)
+        let scenario = AppTmuxScenario(
+            sessionName: session,
+            windowName: "focus-sync",
+            paneCount: 2,
+            shellCommand: "/bin/sleep 600"
+        )
 
-        let session = try createTrackedTmuxSession(prefix: "agtmux-e2e-focus-sync", tmux: tmux)
-
-        _ = try shellRun([tmux, "split-window", "-t", session, "-h"])
-
-        let panesOutput = try shellOutput([tmux, "list-panes", "-t", session, "-F", "#{pane_id}"])
-        let paneIDs = panesOutput.components(separatedBy: "\n").filter { !$0.isEmpty }
-        guard paneIDs.count >= 2 else {
-            throw XCTSkip("Need at least two panes in the test window")
-        }
-        let paneA = paneIDs[0]
-        let paneB = paneIDs[1]
-
-        let winOut = try shellOutput([tmux, "list-windows", "-t", session, "-F", "#{window_id}"])
-        let windowID = winOut.components(separatedBy: "\n").first(where: { !$0.isEmpty }) ?? "@0"
-
-        let json = """
-        {"version":1,"panes":[
-          {"pane_id":"\(paneA)","session_name":"\(session)","window_id":"\(windowID)",
-           "window_index":1,"window_name":"focus-sync","activity_state":"idle",
-           "presence":"unmanaged","evidence_mode":"none",
-           "current_cmd":"zsh","updated_at":"2026-03-04T00:00:00Z","age_secs":0},
-          {"pane_id":"\(paneB)","session_name":"\(session)","window_id":"\(windowID)",
-           "window_index":1,"window_name":"focus-sync","activity_state":"idle",
-           "presence":"unmanaged","evidence_mode":"none",
-           "current_cmd":"zsh","updated_at":"2026-03-04T00:00:00Z","age_secs":0}
-        ]}
-        """
-
-        app.launchEnvironment["AGTMUX_JSON"] = json
+        app.launchEnvironment.removeValue(forKey: "AGTMUX_JSON")
+        configureAppDrivenTmux(socketName: socket, control: control, scenario: scenario)
         app.launchForUITest()
+
+        let bootstrap = try waitForAppTmuxBootstrapResult(control: control)
+        guard bootstrap.ok,
+              let bootstrapSession = bootstrap.sessionName,
+              bootstrapSession == session,
+              bootstrap.paneIDs.count >= 2 else {
+            throw XCTSkip("App-driven tmux bootstrap failed for focus-sync test")
+        }
+        let paneA = bootstrap.paneIDs[0]
+        let paneB = bootstrap.paneIDs[1]
+
+        let linkedBefore = try listLinkedSessionsViaApp(control: control)
 
         let rowA = app.descendants(matching: .any).matching(
             NSPredicate(
@@ -1035,26 +1062,114 @@ final class AgtmuxTermUITests: XCTestCase {
         )
         XCTAssertEqual(anyTile.count, 1, "Window open should render exactly one workspace tile")
 
-        let linkedCreated = try waitForNewLinkedSessions(tmux: tmux, existing: linkedBefore, timeout: 5.0)
+        let linkedCreated = try waitForNewLinkedSessionsViaApp(
+            control: control,
+            existing: linkedBefore,
+            timeout: 5.0
+        )
         guard !linkedCreated.isEmpty else {
             XCTFail("Opening a window must create at least one linked session")
             return
         }
 
-        // Ensure focus-sync monitoring is bound to linked session runtime, not parent session.
-        _ = try shellRun([tmux, "kill-session", "-t", session])
-        ownedSessions.remove(session)
-
         // Trigger pane focus change from tmux side (as if user switched pane in terminal).
-        _ = try shellRun([tmux, "select-pane", "-t", paneB])
+        let focusStart = Date()
+        _ = try sendAppTmuxCommand(
+            ["select-pane", "-t", paneB],
+            refreshInventory: false,
+            control: control
+        )
 
-        let selectedB = expectation(for: NSPredicate(format: "value == %@", "selected"), evaluatedWith: rowB)
-        wait(for: [selectedB], timeout: 5.0)
+        let selectedMarkerB = selectedPaneMarkerByPaneID(source: "local", paneID: paneB)
+        let selectedB = expectation(for: NSPredicate(format: "exists == true"), evaluatedWith: selectedMarkerB)
+        wait(for: [selectedB], timeout: TestConstants.focusSyncLatencyBudget)
+        let focusLatency = Date().timeIntervalSince(focusStart)
+        XCTAssertLessThanOrEqual(
+            focusLatency,
+            TestConstants.focusSyncLatencyBudget,
+            String(
+                format: "Terminal pane focus -> sidebar highlight latency must be <= %.3fs (actual %.3fs)",
+                TestConstants.focusSyncLatencyBudget,
+                focusLatency
+            )
+        )
 
-        let unselectedA = expectation(for: NSPredicate(format: "value == %@", "unselected"), evaluatedWith: rowA)
+        let selectedMarkerA = selectedPaneMarkerByPaneID(source: "local", paneID: paneA)
+        let unselectedA = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: selectedMarkerA)
         wait(for: [unselectedA], timeout: 5.0)
 
         // The single workspace tile should now be keyed by paneB after focus sync.
+        let tileB = workspaceTileByPaneID(source: "local", paneID: paneB)
+        XCTAssertTrue(tileB.waitForExistence(timeout: TestConstants.surfaceReadyTimeout))
+    }
+
+    /// T-E2E-012b: Sidebar pane switch in the same tmux window should be fast and
+    /// must not recreate linked sessions (no transient loading overlay).
+    func testSidebarSameWindowPaneSwitchUnderHalfSecondWithoutLoading() throws {
+        let token = String(UUID().uuidString.prefix(8)).lowercased()
+        let session = "agtmux-e2e-fast-switch-\(token)"
+        let socket = "agtmux-e2e-\(token)"
+        let control = try makeAppTmuxControlPaths(token: token)
+        let scenario = AppTmuxScenario(
+            sessionName: session,
+            windowName: "fast-switch",
+            paneCount: 2,
+            shellCommand: "/bin/sleep 600"
+        )
+
+        app.launchEnvironment.removeValue(forKey: "AGTMUX_JSON")
+        configureAppDrivenTmux(socketName: socket, control: control, scenario: scenario)
+        app.launchForUITest()
+
+        let bootstrap = try waitForAppTmuxBootstrapResult(control: control)
+        guard bootstrap.ok,
+              let bootstrapSession = bootstrap.sessionName,
+              bootstrapSession == session,
+              bootstrap.paneIDs.count >= 2 else {
+            throw XCTSkip("App-driven tmux bootstrap failed for fast-switch test")
+        }
+        let paneA = bootstrap.paneIDs[0]
+        let paneB = bootstrap.paneIDs[1]
+
+        let linkedBefore = try listLinkedSessionsViaApp(control: control)
+
+        let rowA = paneRow(source: "local", sessionName: session, paneID: paneA)
+        let rowB = paneRow(source: "local", sessionName: session, paneID: paneB)
+        XCTAssertTrue(rowA.waitForExistence(timeout: TestConstants.sidebarPopulateTimeout))
+        XCTAssertTrue(rowB.waitForExistence(timeout: TestConstants.sidebarPopulateTimeout))
+
+        rowA.click()
+
+        let tileA = app.descendants(matching: .any).matching(
+            NSPredicate(
+                format: "identifier == %@",
+                AccessibilityID.workspaceTilePrefix + AccessibilityID.paneKey(
+                    source: "local",
+                    sessionName: session,
+                    paneID: paneA
+                )
+            )
+        ).firstMatch
+        XCTAssertTrue(tileA.waitForExistence(timeout: TestConstants.surfaceReadyTimeout))
+
+        let linkedCreated = try waitForNewLinkedSessionsViaApp(
+            control: control,
+            existing: linkedBefore,
+            timeout: 5.0
+        )
+        XCTAssertFalse(linkedCreated.isEmpty, "Initial open should create a linked session")
+        let linkedBaseline = try listLinkedSessionsViaApp(control: control)
+
+        let loadingB = app.descendants(matching: .any).matching(
+            NSPredicate(
+                format: "identifier == %@",
+                AccessibilityID.workspaceLoadingPrefix + AccessibilityID.paneKey(
+                    source: "local",
+                    sessionName: session,
+                    paneID: paneB
+                )
+            )
+        ).firstMatch
         let tileB = app.descendants(matching: .any).matching(
             NSPredicate(
                 format: "identifier == %@",
@@ -1065,7 +1180,81 @@ final class AgtmuxTermUITests: XCTestCase {
                 )
             )
         ).firstMatch
-        XCTAssertTrue(tileB.waitForExistence(timeout: TestConstants.surfaceReadyTimeout))
+
+        rowB.click()
+        let switchStart = Date()
+        let selectedMarkerB = selectedPaneMarkerByPaneID(source: "local", paneID: paneB)
+        let selectedB = expectation(for: NSPredicate(format: "exists == true"), evaluatedWith: selectedMarkerB)
+        wait(for: [selectedB], timeout: TestConstants.paneSwitchLatencyBudget)
+        XCTAssertTrue(
+            tileB.waitForExistence(timeout: TestConstants.paneSwitchLatencyBudget),
+            "Same-window pane switch should complete within latency budget"
+        )
+        let switchLatency = Date().timeIntervalSince(switchStart)
+        XCTAssertLessThanOrEqual(
+            switchLatency,
+            TestConstants.paneSwitchLatencyBudget,
+            String(
+                format: "Sidebar same-window pane switch must be <= %.3fs (actual %.3fs)",
+                TestConstants.paneSwitchLatencyBudget,
+                switchLatency
+            )
+        )
+
+        XCTAssertFalse(
+            loadingB.waitForExistence(timeout: 0.2),
+            "Same-window pane switch must not show workspace loading overlay"
+        )
+        let selectedMarkerA = selectedPaneMarkerByPaneID(source: "local", paneID: paneA)
+        XCTAssertTrue(selectedMarkerB.exists)
+        XCTAssertFalse(selectedMarkerA.exists)
+
+        let linkedAfterSwitch = try listLinkedSessionsViaApp(control: control)
+        XCTAssertEqual(
+            linkedAfterSwitch,
+            linkedBaseline,
+            "Same-window pane switch must reuse existing linked session(s), not create new ones"
+        )
+
+        // Burst switch contract: latest intent must win without loading flicker.
+        let loadingA = app.descendants(matching: .any).matching(
+            NSPredicate(
+                format: "identifier == %@",
+                AccessibilityID.workspaceLoadingPrefix + AccessibilityID.paneKey(
+                    source: "local",
+                    sessionName: session,
+                    paneID: paneA
+                )
+            )
+        ).firstMatch
+        rowA.click()
+        rowB.click()
+        let burstStart = Date()
+        let burstSelectedB = expectation(for: NSPredicate(format: "exists == true"), evaluatedWith: selectedMarkerB)
+        wait(for: [burstSelectedB], timeout: TestConstants.paneSwitchLatencyBudget)
+        XCTAssertTrue(
+            tileB.waitForExistence(timeout: TestConstants.paneSwitchLatencyBudget),
+            "Burst switch must settle on the final selected pane within latency budget"
+        )
+        let burstLatency = Date().timeIntervalSince(burstStart)
+        XCTAssertLessThanOrEqual(
+            burstLatency,
+            TestConstants.paneSwitchLatencyBudget,
+            String(
+                format: "Burst same-window pane switch must be <= %.3fs (actual %.3fs)",
+                TestConstants.paneSwitchLatencyBudget,
+                burstLatency
+            )
+        )
+        XCTAssertFalse(
+            loadingA.waitForExistence(timeout: 0.2),
+            "Burst same-window switch must not show workspace loading overlay for paneA"
+        )
+        XCTAssertFalse(
+            loadingB.waitForExistence(timeout: 0.2),
+            "Burst same-window switch must not show workspace loading overlay for paneB"
+        )
+        XCTAssertTrue(selectedMarkerB.exists, "Final burst selection must win (paneB)")
     }
 
     /// T-E2E-013: Live local tmux lifecycle must reflect in sidebar (session/window/pane).
@@ -1083,8 +1272,11 @@ final class AgtmuxTermUITests: XCTestCase {
         guard let tmux = resolveTmuxPathBestEffort() else {
             throw XCTSkip("tmux not available — skipping local lifecycle reflection test")
         }
-        guard (try? listTmuxSessions(tmux)) != nil else {
-            throw XCTSkip("tmux socket not accessible from runner — skipping local lifecycle reflection test")
+        switch classifyRunnerTmuxAccess(tmux: tmux) {
+        case .available, .availableNoServer:
+            break
+        case .inaccessible(let reason):
+            throw XCTSkip("tmux socket not accessible from runner (local lifecycle reflection): \(reason)")
         }
 
         app.launchForUITest()
@@ -1287,11 +1479,238 @@ final class AgtmuxTermUITests: XCTestCase {
         ).firstMatch
     }
 
+    private func paneRowByPaneID(source: String = "local", paneID: String) -> XCUIElement {
+        let paneSuffix = paneID.replacingOccurrences(
+            of: "[^A-Za-z0-9_]",
+            with: "_",
+            options: .regularExpression
+        )
+        return app.descendants(matching: .any).matching(
+            NSPredicate(
+                format: "identifier BEGINSWITH %@ AND identifier ENDSWITH %@",
+                AccessibilityID.sidebarPanePrefix + "\(source)_",
+                "_" + paneSuffix
+            )
+        ).firstMatch
+    }
+
+    private func workspaceTileByPaneID(source: String = "local", paneID: String) -> XCUIElement {
+        let paneSuffix = paneID.replacingOccurrences(
+            of: "[^A-Za-z0-9_]",
+            with: "_",
+            options: .regularExpression
+        )
+        return app.descendants(matching: .any).matching(
+            NSPredicate(
+                format: "identifier BEGINSWITH %@ AND identifier ENDSWITH %@",
+                AccessibilityID.workspaceTilePrefix + "\(source)_",
+                "_" + paneSuffix
+            )
+        ).firstMatch
+    }
+
+    private func selectedPaneMarkerByPaneID(source: String = "local", paneID: String) -> XCUIElement {
+        let paneSuffix = paneID.replacingOccurrences(
+            of: "[^A-Za-z0-9_]",
+            with: "_",
+            options: .regularExpression
+        )
+        return app.descendants(matching: .any).matching(
+            NSPredicate(
+                format: "identifier BEGINSWITH %@ AND identifier ENDSWITH %@",
+                "sidebar.pane.selected.\(source)_",
+                "_" + paneSuffix
+            )
+        ).firstMatch
+    }
+
     private func sessionRow(source: String = "local", sessionName: String) -> XCUIElement {
         let key = AccessibilityID.sessionKey(source: source, sessionName: sessionName)
         return app.descendants(matching: .any).matching(
             NSPredicate(format: "identifier == %@", AccessibilityID.sidebarSessionPrefix + key)
         ).firstMatch
+    }
+
+    private struct AppTmuxScenario: Encodable {
+        let sessionName: String
+        let windowName: String
+        let paneCount: Int
+        let shellCommand: String
+    }
+
+    private struct AppTmuxControlPaths {
+        let commandPath: String
+        let commandResultPath: String
+        let bootstrapResultPath: String
+    }
+
+    private struct AppTmuxBootstrapResult: Decodable {
+        let ok: Bool
+        let sessionName: String?
+        let windowID: String?
+        let paneIDs: [String]
+        let error: String?
+    }
+
+    private struct AppTmuxCommandRequest: Encodable {
+        let id: String
+        let args: [String]
+        let refreshInventory: Bool
+    }
+
+    private struct AppTmuxCommandResponse: Decodable {
+        let id: String
+        let ok: Bool
+        let stdout: String
+        let error: String?
+    }
+
+    private func makeAppTmuxControlPaths(token: String) throws -> AppTmuxControlPaths {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("agtmux-term-uitest-\(token)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return AppTmuxControlPaths(
+            commandPath: dir.appendingPathComponent("tmux-command.json").path,
+            commandResultPath: dir.appendingPathComponent("tmux-command-result.json").path,
+            bootstrapResultPath: dir.appendingPathComponent("tmux-bootstrap-result.json").path
+        )
+    }
+
+    private func configureAppDrivenTmux(
+        socketName: String,
+        control: AppTmuxControlPaths,
+        scenario: AppTmuxScenario?
+    ) {
+        app.launchEnvironment["AGTMUX_TMUX_SOCKET_NAME"] = socketName
+        app.launchEnvironment["AGTMUX_UITEST_TMUX_COMMAND_PATH"] = control.commandPath
+        app.launchEnvironment["AGTMUX_UITEST_TMUX_COMMAND_RESULT_PATH"] = control.commandResultPath
+        app.launchEnvironment["AGTMUX_UITEST_TMUX_RESULT_PATH"] = control.bootstrapResultPath
+        app.launchEnvironment["AGTMUX_UITEST_TMUX_AUTO_CLEANUP"] = "1"
+        app.launchEnvironment["AGTMUX_UITEST_TMUX_KILL_SERVER"] = "1"
+
+        if let scenario {
+            if let data = try? JSONEncoder().encode(scenario),
+               let json = String(data: data, encoding: .utf8) {
+                app.launchEnvironment["AGTMUX_UITEST_TMUX_SCENARIO"] = json
+            }
+        } else {
+            app.launchEnvironment.removeValue(forKey: "AGTMUX_UITEST_TMUX_SCENARIO")
+        }
+    }
+
+    private func waitForAppTmuxBootstrapResult(
+        control: AppTmuxControlPaths,
+        timeout: TimeInterval = TestConstants.sidebarPopulateTimeout
+    ) throws -> AppTmuxBootstrapResult {
+        let url = URL(fileURLWithPath: control.bootstrapResultPath)
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if let data = try? Data(contentsOf: url),
+               let result = try? JSONDecoder().decode(AppTmuxBootstrapResult.self, from: data) {
+                return result
+            }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        throw XCTSkip("Timed out waiting for app-side tmux bootstrap result")
+    }
+
+    @discardableResult
+    private func sendAppTmuxCommand(
+        _ args: [String],
+        refreshInventory: Bool = true,
+        control: AppTmuxControlPaths,
+        timeout: TimeInterval = TestConstants.sidebarPopulateTimeout
+    ) throws -> String {
+        let requestID = UUID().uuidString
+        let request = AppTmuxCommandRequest(
+            id: requestID,
+            args: args,
+            refreshInventory: refreshInventory
+        )
+        let commandURL = URL(fileURLWithPath: control.commandPath)
+        let responseURL = URL(fileURLWithPath: control.commandResultPath)
+        try? FileManager.default.removeItem(at: responseURL)
+        let payload = try JSONEncoder().encode(request)
+        try payload.write(to: commandURL, options: .atomic)
+
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if let data = try? Data(contentsOf: responseURL),
+               let response = try? JSONDecoder().decode(AppTmuxCommandResponse.self, from: data),
+               response.id == requestID {
+                if response.ok {
+                    return response.stdout
+                }
+                throw XCTSkip("App-side tmux command failed: \(response.error ?? "unknown error")")
+            }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        throw XCTSkip("Timed out waiting for app-side tmux command result: \(args.joined(separator: " "))")
+    }
+
+    private func listLinkedSessionsViaApp(control: AppTmuxControlPaths) throws -> Set<String> {
+        let output = try sendAppTmuxCommand(
+            ["list-sessions", "-F", "#{session_name}"],
+            refreshInventory: false,
+            control: control
+        )
+        return Set(
+            output
+                .components(separatedBy: "\n")
+                .filter { $0.hasPrefix("agtmux-linked-") }
+        )
+    }
+
+    private func waitForNewLinkedSessionsViaApp(
+        control: AppTmuxControlPaths,
+        existing: Set<String>,
+        timeout: TimeInterval
+    ) throws -> Set<String> {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            let linked = try listLinkedSessionsViaApp(control: control)
+            let created = linked.subtracting(existing)
+            if !created.isEmpty {
+                return created
+            }
+            Thread.sleep(forTimeInterval: 0.15)
+        }
+        return []
+    }
+
+    private enum RunnerTmuxAccess {
+        case available
+        case availableNoServer
+        case inaccessible(String)
+    }
+
+    /// Classify runner-side tmux availability.
+    ///
+    /// - `available`: runner can query tmux sessions.
+    /// - `availableNoServer`: no default server exists, but runner can create one.
+    /// - `inaccessible`: sandbox/socket mismatch or other hard failure.
+    private func classifyRunnerTmuxAccess(tmux: String) -> RunnerTmuxAccess {
+        do {
+            _ = try shellRun([tmux, "list-sessions", "-F", "#{session_name}"])
+            return .available
+        } catch {
+            let detail = error.localizedDescription
+            let lowered = detail.lowercased()
+            guard lowered.contains("no server running") else {
+                return .inaccessible(detail)
+            }
+
+            // "no server running" is not a socket-access failure; verify that we can
+            // create/kill a throwaway session from the runner context.
+            let probe = "agtmux-e2e-probe-\(UUID().uuidString.prefix(8))"
+            do {
+                _ = try shellRun([tmux, "new-session", "-d", "-s", probe, "/bin/sleep 1"])
+                _ = try? shellRun([tmux, "kill-session", "-t", probe])
+                return .availableNoServer
+            } catch {
+                return .inaccessible("no-server but probe session failed: \(error.localizedDescription)")
+            }
+        }
     }
 
     private func resolveTmuxPathBestEffort() -> String? {

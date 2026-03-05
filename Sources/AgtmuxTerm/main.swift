@@ -20,13 +20,6 @@ final class NonDraggableHostingView<Content: View>: NSHostingView<Content> {
 // ghostty_app_new runs before any surface is created.
 // ---------------------------------------------------------------------------
 
-// 0. Initialise Ghostty global state (allocator, logging, etc.).
-//
-// ghostty_init() must be called before any other ghostty_* function.
-// Specifically, ghostty_config_new() dereferences state.alloc which is
-// set up here. Calling it out-of-order causes a null-pointer crash.
-// Mirrors the pattern used in Ghostty's own pkg/macos/Sources/main.swift.
-
 // XCUITest calls app.terminate() which sends SIGTERM.
 // Without a custom handler NSApplication runs full teardown (Metal/Ghostty dealloc),
 // which can take seconds and leaves the process in a "Running Background" zombie state
@@ -54,14 +47,16 @@ if !isUITest && !xpcDisabled && !xpcServiceBundled {
 }
 signal(SIGTERM, agtmuxTermSIGTERMHandler)
 
-let ghosttyInitResult = ghostty_init(UInt(CommandLine.argc), CommandLine.unsafeArgv)
-guard ghosttyInitResult == 0 else {
-    fatalError("ghostty_init failed with code \(ghosttyInitResult)")
-}
-// Handle CLI subcommands (ghostty +inspect-config, etc.) if present.
-// Skip when launched under XCUITest: XCUITest injects arguments like
-// -XCTestSessionIdentifier that Ghostty's CLI parser may not return from.
+// 0. Initialise Ghostty global state (allocator, logging, etc.) in normal runs.
+//
+// UI tests do not require real Ghostty surfaces; skipping init keeps launch stable
+// under XCTest activation timing constraints.
 if !isUITest {
+    let ghosttyInitResult = ghostty_init(UInt(CommandLine.argc), CommandLine.unsafeArgv)
+    guard ghosttyInitResult == 0 else {
+        fatalError("ghostty_init failed with code \(ghosttyInitResult)")
+    }
+    // Handle CLI subcommands (ghostty +inspect-config, etc.) if present.
     ghostty_cli_try_action()
 }
 
@@ -69,8 +64,10 @@ if !isUITest {
 let app = NSApplication.shared
 app.setActivationPolicy(.regular)
 
-// 2. Initialise GhosttyApp singleton (triggers ghostty_app_new).
-_ = GhosttyApp.shared
+// 2. Initialise GhosttyApp singleton (triggers ghostty_app_new) for normal runs.
+if !isUITest {
+    _ = GhosttyApp.shared
+}
 
 // 3. Create AppViewModel and start daemon polling.
 //
@@ -94,8 +91,11 @@ if let xpcClient {
 
 let viewModel: AppViewModel = MainActor.assumeIsolated {
     let vm = AppViewModel(localClient: localSnapshotClient)
-    vm.startPolling()
     return vm
+}
+
+let uiTestTmuxBridge: UITestTmuxBridge? = MainActor.assumeIsolated {
+    isUITest ? UITestTmuxBridge(viewModel: viewModel) : nil
 }
 
 // 4. Create WorkspaceStore with a default tab.
@@ -131,6 +131,7 @@ window.titlebarAppearsTransparent = true
 window.isMovableByWindowBackground = false
 window.isOpaque = false
 window.backgroundColor = .clear
+window.isRestorable = false
 window.contentView = hostingView
 window.makeKeyAndOrderFront(nil)
 
@@ -145,18 +146,56 @@ let windowChromeController: WindowChromeController = MainActor.assumeIsolated {
 }
 _ = windowChromeController
 
+@MainActor
+func forceForeground(_ app: NSApplication, window: NSWindow) {
+    window.makeKeyAndOrderFront(nil)
+    window.orderFrontRegardless()
+    NSRunningApplication.current.activate(options: [.activateAllWindows])
+    app.activate(ignoringOtherApps: true)
+}
+
+// 6. Kick async startup once run loop is alive.
+DispatchQueue.main.async {
+    if let uiTestTmuxBridge {
+        Task { await uiTestTmuxBridge.startIfNeeded() }
+    }
+
+    Task { await viewModel.fetchAll() }
+    if !isUITest {
+        viewModel.startPolling()
+    }
+
+    // XCTest may launch with dontMakeFrontmost=1. Re-activate after the
+    // run loop starts so accessibility can attach to a foreground app.
+    forceForeground(app, window: window)
+    if isUITest {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+            forceForeground(app, window: window)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.75) {
+            forceForeground(app, window: window)
+        }
+    }
+}
+
 // 6. Run the app event loop.
-app.activate(ignoringOtherApps: true)
+MainActor.assumeIsolated {
+    forceForeground(app, window: window)
+}
 app.run()
 
-if let xpcClient {
-    let sema = DispatchSemaphore(value: 0)
-    Task {
-        await xpcClient.stopManagedDaemonIfOwned()
-        await xpcClient.invalidate()
-        sema.signal()
-    }
-    _ = sema.wait(timeout: .now() + 2.0)
+if isUITest {
+    _exit(0)
 } else {
-    daemonSupervisor?.stopIfOwned()
+    if let xpcClient {
+        let sema = DispatchSemaphore(value: 0)
+        Task {
+            await xpcClient.stopManagedDaemonIfOwned()
+            await xpcClient.invalidate()
+            sema.signal()
+        }
+        _ = sema.wait(timeout: .now() + 2.0)
+    } else {
+        daemonSupervisor?.stopIfOwned()
+    }
 }

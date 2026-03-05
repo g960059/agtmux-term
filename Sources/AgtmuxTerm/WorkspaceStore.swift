@@ -230,6 +230,8 @@ final class WorkspaceStore {
     private var layoutMonitorTasksByTab: [UUID: Task<Void, Never>] = [:]
     /// Placement generation per tab (stale async completions are ignored).
     private var placementGenerationByTab: [UUID: Int] = [:]
+    /// Fast same-window pane-switch generation per tab (latest intent wins).
+    private var paneSwitchGenerationByTab: [UUID: Int] = [:]
 
     /// Place an entire tmux window into the active tab.
     ///
@@ -248,6 +250,14 @@ final class WorkspaceStore {
         let targetPane = window.panes.first(where: { $0.paneId == preferredPaneID })
             ?? window.panes.first
         guard let targetPane else { return }
+
+        // Fast path: if this tab already shows the same window on a ready linked
+        // session, just retarget the existing linked runtime to the new pane.
+        // This avoids `.creating` transitions and loading flicker on same-window
+        // sidebar pane switches.
+        if await switchPaneInTrackedWindow(tabID: tabID, window: window, targetPane: targetPane) {
+            return
+        }
 
         // Replace any existing monitor/tree in this tab before opening the new window.
         stopLayoutMonitoring(tabID: tabID)
@@ -299,10 +309,85 @@ final class WorkspaceStore {
         )
     }
 
+    /// Attempt an in-place pane switch for the current tab if it is already
+    /// tracking the same tmux window.
+    ///
+    /// Returns true when fast-path retarget succeeded.
+    private func switchPaneInTrackedWindow(
+        tabID: UUID,
+        window: WindowGroup,
+        targetPane: AgtmuxPane
+    ) async -> Bool {
+        guard let tracked = trackedWindowsByTab[tabID],
+              tracked.source == window.source,
+              tracked.windowId == window.windowId,
+              let tabIdx = tabs.firstIndex(where: { $0.id == tabID }),
+              let focusedLeafID = tabs[tabIdx].focusedLeafID,
+              let currentLeaf = findLeaf(id: focusedLeafID, in: tabs[tabIdx].root),
+              case .ready = currentLeaf.linkedSession else {
+            return false
+        }
+
+        if currentLeaf.tmuxPaneID == targetPane.paneId,
+           currentLeaf.sessionName == targetPane.sessionName {
+            return true
+        }
+
+        let switchGeneration = (paneSwitchGenerationByTab[tabID] ?? 0) + 1
+        paneSwitchGenerationByTab[tabID] = switchGeneration
+
+        do {
+            try await LinkedSessionManager.shared.retargetPaneInCurrentWindow(
+                paneId: targetPane.paneId,
+                source: window.source
+            )
+        } catch {
+            if paneSwitchGenerationByTab[tabID] != switchGeneration {
+                // A newer click is already in-flight/completed.
+                return true
+            }
+            return false
+        }
+
+        guard paneSwitchGenerationByTab[tabID] == switchGeneration else {
+            // Stale completion; keep latest switch result.
+            return true
+        }
+
+        let updatedLeaf = LeafPane(
+            id: focusedLeafID,
+            tmuxPaneID: targetPane.paneId,
+            sessionName: targetPane.sessionName,
+            source: currentLeaf.source,
+            linkedSession: currentLeaf.linkedSession
+        )
+        if let newRoot = tabs[tabIdx].root.replacing(leafID: focusedLeafID, with: .leaf(updatedLeaf)) {
+            tabs[tabIdx].root = newRoot
+        }
+        tabs[tabIdx].focusedLeafID = focusedLeafID
+
+        if var trackedWindow = trackedWindowsByTab[tabID] {
+            trackedWindow.panes = window.panes
+            trackedWindowsByTab[tabID] = trackedWindow
+        }
+        return true
+    }
+
     /// Update the pane list stored for a tracked window (called by AppViewModel on poll).
     func updateTrackedWindowPanes(windowId: String, panes: [AgtmuxPane]) {
         for (tabID, tracked) in trackedWindowsByTab where tracked.windowId == windowId {
             trackedWindowsByTab[tabID]?.panes = panes
+        }
+    }
+
+    /// Refresh pane snapshots for all tracked windows from the latest inventory.
+    func refreshTrackedWindowPanes(from panes: [AgtmuxPane]) {
+        let grouped = Dictionary(grouping: panes) { "\($0.source):\($0.windowId)" }
+        for (tabID, tracked) in trackedWindowsByTab {
+            let key = "\(tracked.source):\(tracked.windowId)"
+            if let matched = grouped[key] {
+                trackedWindowsByTab[tabID]?.panes = matched
+            }
         }
     }
 
@@ -332,7 +417,7 @@ final class WorkspaceStore {
                 } catch {
                     // best-effort polling; continue on transient failures
                 }
-                try? await Task.sleep(for: .milliseconds(250))
+                try? await Task.sleep(for: .milliseconds(100))
             }
         }
         layoutMonitorTasksByTab[tabID] = task
@@ -344,6 +429,7 @@ final class WorkspaceStore {
         layoutMonitorTasksByTab.removeValue(forKey: tabID)
         trackedWindowsByTab.removeValue(forKey: tabID)
         placementGenerationByTab.removeValue(forKey: tabID)
+        paneSwitchGenerationByTab.removeValue(forKey: tabID)
     }
 
     /// Stop monitoring a window's layout changes.

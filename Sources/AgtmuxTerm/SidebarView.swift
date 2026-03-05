@@ -159,6 +159,10 @@ struct DraggedSession: Equatable {
     let sessionName: String
 }
 
+private func paneScrollRowID(_ pane: AgtmuxPane) -> String {
+    "pane:\(pane.id)"
+}
+
 /// A session block: session header + window sub-blocks.
 /// Right-click → New Window / Kill Session.
 struct SessionBlockView: View {
@@ -462,29 +466,89 @@ struct WindowBlockView: View {
             // Pane rows (collapsible)
             if isExpanded {
                 ForEach(window.panes) { pane in
-                    PaneRowView(
-                        pane: pane,
-                        isSelected: selectedPaneId == pane.id,
-                        highlightedRowID: $highlightedRowID
-                    )
-                    .contentShape(Rectangle())
-                    .accessibilityElement(children: .combine)
-                    .accessibilityIdentifier(
-                        AccessibilityID.sidebarPanePrefix +
-                        AccessibilityID.paneKey(
-                            source: pane.source,
-                            sessionName: pane.sessionName,
-                            paneID: pane.paneId
-                        )
-                    )
-                    .accessibilityValue(Text(selectedPaneId == pane.id ? "selected" : "unselected"))
-                    .onTapGesture {
-                        highlightedRowID = "pane:\(pane.id)"
-                        onSelect(pane, window)
-                    }
+                    paneRow(pane)
                 }
             }
         }
+        .onAppear {
+            if containsSelectedPane(selectedPaneId) {
+                isExpanded = true
+            }
+        }
+        .onChange(of: selectedPaneId) { _, newValue in
+            if containsSelectedPane(newValue) {
+                isExpanded = true
+            }
+        }
+    }
+
+    private func containsSelectedPane(_ paneID: String?) -> Bool {
+        if window.panes.contains(where: isPaneSelected) {
+            return true
+        }
+        guard let paneID else { return false }
+        return window.panes.contains(where: { $0.id == paneID })
+    }
+
+    @ViewBuilder
+    private func paneRow(_ pane: AgtmuxPane) -> some View {
+        let isSelected = isPaneSelected(pane)
+        Button(action: { selectPaneRow(pane) }) {
+            PaneRowView(
+                pane: pane,
+                isSelected: isSelected,
+                highlightedRowID: $highlightedRowID
+            )
+        }
+        .buttonStyle(.plain)
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier(
+            AccessibilityID.sidebarPanePrefix +
+            AccessibilityID.paneKey(
+                source: pane.source,
+                sessionName: pane.sessionName,
+                paneID: pane.paneId
+            )
+        )
+        .accessibilityValue(Text(isSelected ? "selected" : "unselected"))
+        .accessibilityAddTraits(.isButton)
+        .id(paneScrollRowID(pane))
+        .overlay(alignment: .trailing) {
+            if isSelected {
+                Color.clear
+                    .frame(width: 1, height: 1)
+                    .allowsHitTesting(false)
+                    .accessibilityElement()
+                    .accessibilityIdentifier(selectedMarkerID(for: pane))
+            }
+        }
+    }
+
+    private func selectPaneRow(_ pane: AgtmuxPane) {
+        highlightedRowID = "pane:\(pane.id)"
+        onSelect(pane, window)
+    }
+
+    private func selectedMarkerID(for pane: AgtmuxPane) -> String {
+        "sidebar.pane.selected." +
+        AccessibilityID.paneKey(
+            source: pane.source,
+            sessionName: pane.sessionName,
+            paneID: pane.paneId
+        )
+    }
+
+    private func isPaneSelected(_ pane: AgtmuxPane) -> Bool {
+        if selectedPaneId == pane.id {
+            return true
+        }
+        guard let selected = viewModel.selectedPane else {
+            return false
+        }
+        return selected.source == pane.source
+            && selected.windowId == pane.windowId
+            && selected.paneId == pane.paneId
     }
 }
 
@@ -816,31 +880,39 @@ struct SidebarView: View {
             if viewModel.panesBySession.isEmpty {
                 sidebarEmptyState
             } else {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 0, pinnedViews: []) {
-                        ForEach(viewModel.panesBySession, id: \.source) { group in
-                            SourceHeaderView(
-                                source: group.source,
-                                displayName: viewModel.hostsConfig.displayName(for: group.source),
-                                isOffline: viewModel.offlineHosts.contains(group.source)
-                            )
-
-                            ForEach(group.sessions) { session in
-                                SessionBlockView(
-                                    session: session,
-                                    selectedPaneId: viewModel.selectedPane?.id,
-                                    highlightedRowID: $highlightedRowID,
-                                    draggedSession: $draggedSession,
-                                    onSelect: { pane, window in
-                                        viewModel.selectPane(pane)
-                                        Task { await workspaceStore.placeWindow(window, preferredPaneID: pane.paneId) }
-                                    }
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 0, pinnedViews: []) {
+                            ForEach(viewModel.panesBySession, id: \.source) { group in
+                                SourceHeaderView(
+                                    source: group.source,
+                                    displayName: viewModel.hostsConfig.displayName(for: group.source),
+                                    isOffline: viewModel.offlineHosts.contains(group.source)
                                 )
+
+                                ForEach(group.sessions) { session in
+                                    SessionBlockView(
+                                        session: session,
+                                        selectedPaneId: viewModel.selectedPane?.id,
+                                        highlightedRowID: $highlightedRowID,
+                                        draggedSession: $draggedSession,
+                                        onSelect: { pane, window in
+                                            viewModel.selectPane(pane)
+                                            Task { await workspaceStore.placeWindow(window, preferredPaneID: pane.paneId) }
+                                        }
+                                    )
+                                }
                             }
                         }
+                        .padding(.vertical, 6)
+                        .padding(.horizontal, 8)
                     }
-                    .padding(.vertical, 6)
-                    .padding(.horizontal, 8)
+                    .onAppear {
+                        scrollToSelectedPane(with: proxy, animated: false)
+                    }
+                    .onChange(of: viewModel.selectedPane?.id) { _, _ in
+                        scrollToSelectedPane(with: proxy, animated: true)
+                    }
                 }
             }
         }
@@ -848,6 +920,20 @@ struct SidebarView: View {
         .background(Color.clear)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(AccessibilityID.sidebar)
+    }
+
+    private func scrollToSelectedPane(with proxy: ScrollViewProxy, animated: Bool) {
+        guard let selectedPane = viewModel.selectedPane else { return }
+        let targetID = paneScrollRowID(selectedPane)
+        DispatchQueue.main.async {
+            if animated {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    proxy.scrollTo(targetID, anchor: .center)
+                }
+            } else {
+                proxy.scrollTo(targetID, anchor: .center)
+            }
+        }
     }
 
     private var sidebarEmptyState: some View {

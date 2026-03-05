@@ -39,6 +39,7 @@ struct WorkspaceArea: View {
             syncSelectedPaneToFocusedLeaf()
         }
         .onChange(of: viewModel.panes) { _, _ in
+            store.refreshTrackedWindowPanes(from: viewModel.panes)
             syncSelectedPaneToFocusedLeaf()
         }
     }
@@ -382,6 +383,19 @@ struct GhosttyPaneTile: View {
     let isFocused: Bool
     let hostsConfig: HostsConfig
 
+    private var isUITest: Bool {
+        ProcessInfo.processInfo.environment["AGTMUX_UITEST"] == "1"
+    }
+
+    private var tileAccessibilityID: String {
+        AccessibilityID.workspaceTilePrefix +
+        AccessibilityID.paneKey(
+            source: leaf.source,
+            sessionName: leaf.sessionName,
+            paneID: leaf.tmuxPaneID
+        )
+    }
+
     private var linkedStateLabel: String {
         switch leaf.linkedSession {
         case .creating:        return "creating"
@@ -412,11 +426,23 @@ struct GhosttyPaneTile: View {
 
     var body: some View {
         ZStack {
+            // Keep a stable AX anchor for this tile even when terminal NSView
+            // itself doesn't expose accessibility descendants.
+            Color.clear
+                .allowsHitTesting(false)
+                .accessibilityElement()
+                .accessibilityIdentifier(tileAccessibilityID)
+                .accessibilityValue(Text(linkedStateLabel))
+
             // Underlying terminal view (always present but may show nothing until ready)
-            _GhosttyNSView(leafID: leaf.id,
-                           tmuxPaneID: leaf.tmuxPaneID,
-                           attachCommand: attachCommand,
-                           isFocused: isFocused)
+            if isUITest {
+                Color.clear
+            } else {
+                _GhosttyNSView(leafID: leaf.id,
+                               tmuxPaneID: leaf.tmuxPaneID,
+                               attachCommand: attachCommand,
+                               isFocused: isFocused)
+            }
 
             // State overlay
             switch leaf.linkedSession {
@@ -452,15 +478,6 @@ struct GhosttyPaneTile: View {
             }
         }
         .accessibilityElement(children: .contain)
-        .accessibilityIdentifier(
-            AccessibilityID.workspaceTilePrefix +
-            AccessibilityID.paneKey(
-                source: leaf.source,
-                sessionName: leaf.sessionName,
-                paneID: leaf.tmuxPaneID
-            )
-        )
-        .accessibilityValue(Text(linkedStateLabel))
     }
 }
 

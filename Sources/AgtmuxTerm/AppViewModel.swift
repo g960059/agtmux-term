@@ -413,10 +413,19 @@ final class AppViewModel: ObservableObject {
     }
 
     private func fetchLocalPanes() async throws -> [AgtmuxPane] {
+        let env = ProcessInfo.processInfo.environment
+
         // Fixture mode for deterministic UI tests. Keep the current AGTMUX_JSON-only behavior.
-        if ProcessInfo.processInfo.environment["AGTMUX_JSON"] != nil {
+        if env["AGTMUX_JSON"] != nil {
             let snapshot = try await localClient.fetchSnapshot()
             return snapshot.panes
+        }
+
+        // Live UI tests exercise tmux inventory lifecycle/selection behavior.
+        // Running `agtmux json` here can block app responsiveness under XCUITest
+        // (metadata collection may require host capabilities not available to tests).
+        if env["AGTMUX_UITEST"] == "1", env["AGTMUX_UITEST_INVENTORY_ONLY"] == "1" {
+            return try await localInventoryClient.fetchPanes()
         }
 
         async let inventoryResult: Result<[AgtmuxPane], Error> = {

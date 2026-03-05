@@ -6,6 +6,7 @@ private enum CockpitChrome {
     static let workspaceTintTop = Color(red: 0.05, green: 0.09, blue: 0.14).opacity(0.18)
     static let workspaceTintBottom = Color(red: 0.02, green: 0.03, blue: 0.06).opacity(0.12)
     static let workspaceShade = Color.black.opacity(0.14)
+    static let floatingOcclusionOpacity: CGFloat = 0.82
 }
 
 // MARK: - CockpitView
@@ -45,6 +46,13 @@ struct CockpitView: View {
                 }
                 .padding(.top, max(0, chromeState.titlebarHeight))
                 .animation(.easeInOut(duration: 0.16), value: chromeState.isSidebarCollapsed)
+            }
+            .overlay(alignment: .top) {
+                Rectangle()
+                    .fill(.ultraThinMaterial)
+                    .opacity(CockpitChrome.floatingOcclusionOpacity)
+                    .frame(height: max(0, chromeState.titlebarHeight))
+                    .allowsHitTesting(false)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .ignoresSafeArea(.container, edges: .all)

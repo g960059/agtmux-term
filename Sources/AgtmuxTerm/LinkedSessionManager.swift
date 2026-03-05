@@ -330,6 +330,32 @@ actor LinkedSessionManager {
         return name
     }
 
+    /// Retarget an existing linked session to another pane/window.
+    ///
+    /// Used for fast same-window/same-session sidebar navigation to avoid
+    /// recreating a linked session and showing loading UI.
+    func retargetSession(name: String,
+                         windowId: String,
+                         paneId: String,
+                         source: String) async throws {
+        _ = try await TmuxCommandRunner.shared.run(
+            ["select-window", "-t", "\(name):\(windowId)", ";", "select-pane", "-t", paneId],
+            source: source
+        )
+    }
+
+    /// Retarget active pane inside the current linked window.
+    ///
+    /// Same-window switches do not need `select-window`, so this is the lowest
+    /// latency path for sidebar pane clicks within one tmux window.
+    func retargetPaneInCurrentWindow(paneId: String,
+                                     source: String) async throws {
+        _ = try await TmuxCommandRunner.shared.run(
+            ["select-pane", "-t", paneId],
+            source: source
+        )
+    }
+
     /// Rewrites status-left template so linked session names do not leak.
     ///
     /// Rules:

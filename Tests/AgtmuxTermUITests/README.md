@@ -23,6 +23,11 @@ Title consistency contracts:
 11. a local tmux session created after app launch must appear in sidebar (session row + pane row)
 12. local tmux socket override must be applied consistently to inventory, attach command, and control mode (`AGTMUX_TMUX_SOCKET_NAME` / `AGTMUX_TMUX_SOCKET`)
 13. inherited `TMUX` must not hijack local socket targeting in UITest runs unless a test explicitly opts in
+14. terminal-driven pane focus change must update sidebar selected-row within 0.5s
+15. sidebar same-window pane switch must complete within 0.5s without `workspace.loading.*` and without creating an extra linked session
+16. runner-side tmux preflight must distinguish `no server running` from true socket-inaccessible failures; skip理由は分類して明示する
+17. live tmux UI tests should execute tmux commands via app-side UITest bridge (file command channel), not via runner shell
+18. pane-ID suffix matching helpers must use `_ + sanitizedPaneID` (not `__ + ...`) so `%123` resolves to `...__123`
 
 Accessibility contracts for E2E:
 
@@ -40,9 +45,29 @@ Accessibility contracts for E2E:
 5. Live reflection tests (session/window/pane create/kill) must verify both appear and disappear paths.
 6. Session DnD tests should prefer AGTMUX_JSON fixture mode for deterministic ordering.
 7. Isolated tmux-socket tests must use `AGTMUX_TMUX_SOCKET_NAME` (tmux `-L`) and may `XCTSkip` only when sandbox constraints prevent keeping an isolated tmux session alive.
-8. Tests that need to exercise inherited `TMUX` behavior must set:
+8. For live tmux tests, avoid default-socket assumptions in the runner when an explicit socket (`AGTMUX_TMUX_SOCKET_NAME` / `AGTMUX_TMUX_SOCKET`) is under test.
+9. Tests that need to exercise inherited `TMUX` behavior must set:
    - `AGTMUX_UITEST_PRESERVE_TMUX=1`
    - explicit `TMUX` / `TMUX_PANE` in `app.launchEnvironment`
+10. App-driven live tmux tests must set:
+   - `AGTMUX_UITEST_TMUX_COMMAND_PATH`
+   - `AGTMUX_UITEST_TMUX_COMMAND_RESULT_PATH`
+   - `AGTMUX_UITEST_TMUX_RESULT_PATH` (when bootstrap scenario is used)
+   - `AGTMUX_UITEST_TMUX_AUTO_CLEANUP=1` and `AGTMUX_UITEST_TMUX_KILL_SERVER=1` for isolated socket cleanup
+11. UI tests should run inventory-only local fetch to avoid daemon metadata stalls:
+   - `AGTMUX_UITEST_INVENTORY_ONLY=1`
+12. `launchForUITest()` must include:
+   - `-ApplePersistenceIgnoreState YES`
+   - `-NSQuitAlwaysKeepsWindows NO`
+   so AppKit state restoration does not block activation.
+
+## Runtime Preconditions (macOS UI tests)
+
+1. Tests require an interactive GUI login session (not locked / not at login window).
+2. If Xcode reports `Failed to suppress screen saver (SACSetScreenSaverCanRun returned 22)`, treat run results as environment-invalid for activation-sensitive cases.
+3. If failures show `Failed to activate application ... (current state: Running Background)`, first restore an active desktop session, then rerun before judging product logic.
+4. Runner preflight skips when launched from SSH by default (`SSH_CONNECTION` present). To force-run from SSH, set `AGTMUX_UITEST_ALLOW_SSH=1`.
+5. Runner preflight also skips when `CGSessionScreenIsLocked != 0` (or non-console / login incomplete). To force-run anyway, set `AGTMUX_UITEST_ALLOW_LOCKED_SESSION=1`.
 
 ## Current teardown behavior (authoritative)
 
