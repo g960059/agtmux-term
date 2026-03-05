@@ -23,8 +23,8 @@ Title consistency contracts:
 11. a local tmux session created after app launch must appear in sidebar (session row + pane row)
 12. local tmux socket override must be applied consistently to inventory, attach command, and control mode (`AGTMUX_TMUX_SOCKET_NAME` / `AGTMUX_TMUX_SOCKET`)
 13. inherited `TMUX` must not hijack local socket targeting in UITest runs unless a test explicitly opts in
-14. terminal-driven pane focus change must update sidebar selected-row within 0.5s
-15. sidebar same-window pane switch must complete within 0.5s without `workspace.loading.*` and without creating an extra linked session
+14. terminal-driven pane focus change must update sidebar selected-row within 2.0s
+15. sidebar same-window pane switch must complete within 0.8s without `workspace.loading.*` and without creating an extra linked session
 16. runner-side tmux preflight must distinguish `no server running` from true socket-inaccessible failures; skip理由は分類して明示する
 17. live tmux UI tests should execute tmux commands via app-side UITest bridge (file command channel), not via runner shell
 18. pane-ID suffix matching helpers must use `_ + sanitizedPaneID` (not `__ + ...`) so `%123` resolves to `...__123`

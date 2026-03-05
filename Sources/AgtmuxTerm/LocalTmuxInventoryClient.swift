@@ -10,11 +10,24 @@ protocol LocalPaneInventoryClient: Sendable {
 /// Unlike agtmux metadata (`agtmux json`), this client is authoritative for
 /// local tmux object existence (session/window/pane).
 actor LocalTmuxInventoryClient: LocalPaneInventoryClient {
-    /// Tab-separated tmux format string:
+    /// tmux format string using a stable printable separator token:
     /// pane_id, session_name, window_id, window_index, window_name,
     /// pane_current_path, pane_current_command, session_group
+    ///
+    /// Some environments sanitize control-character delimiters (e.g. `\t`) to `_`
+    /// in `list-panes -F` output. A long alphanumeric token avoids that mutation.
+    private static let fieldSeparator = "AGTMUXFIELDSEP9F6F2D4D"
     private static let formatString =
-        "#{pane_id}\t#{session_name}\t#{window_id}\t#{window_index}\t#{window_name}\t#{pane_current_path}\t#{pane_current_command}\t#{session_group}"
+        [
+            "#{pane_id}",
+            "#{session_name}",
+            "#{window_id}",
+            "#{window_index}",
+            "#{window_name}",
+            "#{pane_current_path}",
+            "#{pane_current_command}",
+            "#{session_group}"
+        ].joined(separator: fieldSeparator)
 
     func fetchPanes() async throws -> [AgtmuxPane] {
         do {
@@ -22,7 +35,8 @@ actor LocalTmuxInventoryClient: LocalPaneInventoryClient {
                 ["list-panes", "-a", "-F", Self.formatString],
                 source: "local"
             )
-            return Self.parse(output: output, source: "local")
+            let panes = try Self.parse(output: output, source: "local")
+            return panes
         } catch let TmuxCommandError.failed(_, _, stderr) {
             // "no server running" means local tmux has no sessions.
             // Treat as empty inventory, not a hard fetch failure.
@@ -30,8 +44,6 @@ actor LocalTmuxInventoryClient: LocalPaneInventoryClient {
                 return []
             }
             throw DaemonError.processError(exitCode: 1, stderr: stderr)
-        } catch {
-            throw error
         }
     }
 
@@ -40,25 +52,47 @@ actor LocalTmuxInventoryClient: LocalPaneInventoryClient {
         return lowered.contains("no server running")
     }
 
-    private static func parse(output: String, source: String) -> [AgtmuxPane] {
-        output
-            .components(separatedBy: "\n")
-            .compactMap { line -> AgtmuxPane? in
-                let fields = line.components(separatedBy: "\t")
-                guard fields.count >= 3 else { return nil }
+    static func parse(output: String, source: String) throws -> [AgtmuxPane] {
+        var panes: [AgtmuxPane] = []
+        let lines = output.components(separatedBy: "\n")
 
-                let paneId = fields[0]
-                let sessionName = fields[1]
-                let windowId = fields[2]
-                let windowIndex = fields.count >= 4 ? Int(fields[3]) : nil
-                let windowName = fields.count >= 5 && !fields[4].isEmpty ? fields[4] : nil
-                let currentPath = fields.count >= 6 && !fields[5].isEmpty ? fields[5] : nil
-                let currentCmd = fields.count >= 7 && !fields[6].isEmpty ? fields[6] : nil
-                let sessionGroup = fields.count >= 8 && !fields[7].isEmpty ? fields[7] : nil
+        for line in lines where !line.isEmpty {
+            let fields = line.components(separatedBy: fieldSeparator)
+            guard fields.count == 8 else {
+                throw DaemonError.parseError(
+                    "local tmux inventory malformed: expected 8 fields " +
+                    "separator=\(fieldSeparator) line='\(line)'"
+                )
+            }
 
-                guard !paneId.isEmpty, !sessionName.isEmpty, !windowId.isEmpty else { return nil }
+            let paneId = fields[0]
+            let sessionName = fields[1]
+            let windowId = fields[2]
+            let rawWindowIndex = fields[3]
+            let windowName = fields[4].isEmpty ? nil : fields[4]
+            let currentPath = fields[5].isEmpty ? nil : fields[5]
+            let currentCmd = fields[6].isEmpty ? nil : fields[6]
+            let sessionGroup = fields[7].isEmpty ? nil : fields[7]
 
-                return AgtmuxPane(
+            guard !paneId.isEmpty, !sessionName.isEmpty, !windowId.isEmpty else {
+                throw DaemonError.parseError(
+                    "local tmux inventory malformed: required field empty line='\(line)'"
+                )
+            }
+
+            let windowIndex: Int?
+            if rawWindowIndex.isEmpty {
+                windowIndex = nil
+            } else if let parsedIndex = Int(rawWindowIndex) {
+                windowIndex = parsedIndex
+            } else {
+                throw DaemonError.parseError(
+                    "local tmux inventory malformed: invalid window_index '\(rawWindowIndex)' line='\(line)'"
+                )
+            }
+
+            panes.append(
+                AgtmuxPane(
                     source: source,
                     paneId: paneId,
                     sessionName: sessionName,
@@ -72,6 +106,9 @@ actor LocalTmuxInventoryClient: LocalPaneInventoryClient {
                     currentPath: currentPath,
                     currentCmd: currentCmd
                 )
-            }
+            )
+        }
+
+        return panes
     }
 }
