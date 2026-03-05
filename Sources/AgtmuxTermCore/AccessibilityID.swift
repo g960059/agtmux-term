@@ -13,6 +13,7 @@ public enum AccessibilityID {
     public static let sidebarFilterAttention = "sidebar.filter.attention"
     public static let sidebarFilterPinned = "sidebar.filter.pinned"
     public static let sidebarEmpty        = "sidebar.emptyState"
+    public static let sidebarSessionPrefix = "sidebar.session." // + source_session
     public static let sidebarWindowPrefix = "sidebar.window."    // + source_session_windowID
     public static let sidebarPanePrefix   = "sidebar.pane."      // + source_session_paneID
 
@@ -39,5 +40,12 @@ public enum AccessibilityID {
         let n = sessionName.replacingOccurrences(of: "[^A-Za-z0-9_]", with: "_", options: .regularExpression)
         let w = windowID.replacingOccurrences(of: "[^A-Za-z0-9_]", with: "_", options: .regularExpression)
         return "\(s)_\(n)_\(w)"
+    }
+
+    /// Sanitised key combining source/session — safe for use as an identifier.
+    public static func sessionKey(source: String, sessionName: String) -> String {
+        let s = source.replacingOccurrences(of: "[^A-Za-z0-9_]", with: "_", options: .regularExpression)
+        let n = sessionName.replacingOccurrences(of: "[^A-Za-z0-9_]", with: "_", options: .regularExpression)
+        return "\(s)_\(n)"
     }
 }

@@ -398,7 +398,10 @@ struct GhosttyPaneTile: View {
         // If we inherit TMUX/TMUX_PANE into the embedded shell, `tmux attach-session` can
         // target/switch the parent client instead of creating an independent client in this pty.
         // We explicitly unset both vars for the command we launch in Ghostty.
-        let base = "env -u TMUX -u TMUX_PANE tmux attach-session -t \(sessionTarget)"
+        let socketSegment = LocalTmuxTarget.shellEscapedSocketArguments()
+        let socketArgs = socketSegment.isEmpty ? "" : " " + socketSegment
+        let escapedTarget = LocalTmuxTarget.shellEscaped(sessionTarget)
+        let base = "env -u TMUX -u TMUX_PANE tmux\(socketArgs) attach-session -t \(escapedTarget)"
         guard leaf.source != "local",
               let host = hostsConfig.host(for: leaf.source) else { return base }
         switch host.transport {

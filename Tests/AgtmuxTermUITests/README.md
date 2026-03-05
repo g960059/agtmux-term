@@ -19,12 +19,17 @@ Title consistency contracts:
 7. opening one tmux window must produce exactly one workspace tile (single-surface contract)
 8. focus-sync monitoring must continue even if the original parent session is gone (linked-session runtime is authoritative)
 9. linked session `status-left` / `set-titles-string` must preserve parent template intent (local or inherited global) and rewrite session-name token to `session_group`
+10. titlebar sidebar-toggle icon (`sidebar.filter.toggle`) must always collapse/expand sidebar
+11. a local tmux session created after app launch must appear in sidebar (session row + pane row)
+12. local tmux socket override must be applied consistently to inventory, attach command, and control mode (`AGTMUX_TMUX_SOCKET_NAME` / `AGTMUX_TMUX_SOCKET`)
+13. inherited `TMUX` must not hijack local socket targeting in UITest runs unless a test explicitly opts in
 
 Accessibility contracts for E2E:
 
 1. pane row AX identifier: `sidebar.pane.<source_session_pane>`
 2. pane row AX value: `selected` / `unselected`
 3. window row AX identifier: `sidebar.window.<source_session_window>`
+4. session row AX identifier: `sidebar.session.<source_session>`
 
 ## Required rules for new tests
 
@@ -32,6 +37,12 @@ Accessibility contracts for E2E:
 2. Always create sessions via `createTrackedTmuxSession(prefix:tmux:)`.
 3. Use an `agtmux-e2e-...` prefix for test-created sessions.
 4. Do not add custom teardown logic that bypasses `tearDownWithError`.
+5. Live reflection tests (session/window/pane create/kill) must verify both appear and disappear paths.
+6. Session DnD tests should prefer AGTMUX_JSON fixture mode for deterministic ordering.
+7. Isolated tmux-socket tests must use `AGTMUX_TMUX_SOCKET_NAME` (tmux `-L`) and may `XCTSkip` only when sandbox constraints prevent keeping an isolated tmux session alive.
+8. Tests that need to exercise inherited `TMUX` behavior must set:
+   - `AGTMUX_UITEST_PRESERVE_TMUX=1`
+   - explicit `TMUX` / `TMUX_PANE` in `app.launchEnvironment`
 
 ## Current teardown behavior (authoritative)
 

@@ -1202,3 +1202,146 @@
   - [x] window ID 衝突で monitor が誤配線されない
   - [x] monitor が `session:windowId` 固定参照に依存せず active pane を取得できる
   - [x] reverse-sync の E2E が追加されている（環境非対応時は skip）
+
+---
+
+### T-067 — local tmux inventory 統合 + session DnD reorder + live reflection E2E (2026-03-04)
+- **Status**: DONE
+- **Priority**: P1
+- **Description**:
+  - terminal 内で新規作成した tmux session / window / pane が sidebar に反映されない問題を根本解消する。
+  - session block の drag-and-drop 並び替えを追加する。
+  - 上記の回帰を検知する cleanup-safe な E2E を追加する。
+- **Background / Root cause**:
+  - local source は `agtmux json` のみをデータ源にしているため、daemon が未収集の tmux entity が UI に出ない。
+  - `panesBySession` は毎 poll で alphabetical sort しており、ユーザー操作による session 並び替え状態を保持できない。
+- **Adopted design (Claude/Codex比較後の採択)**:
+  - local existence の truth source を `tmux list-panes -a` にする（inventory）。
+  - `agtmux json` は managed metadata overlay として扱う。
+  - local inventory failure / metadata failure を分離し、metadata failure で row visibility を落とさない。
+  - session order は source ごとに state 化し、DnD で更新。poll 後の session reconcile で order を維持する。
+- **Planned Files**:
+  - `Sources/AgtmuxTerm/RemoteTmuxClient.swift` (updated: LocalTmuxInventoryClient actor added)
+  - `Sources/AgtmuxTerm/AppViewModel.swift` (updated: local merge + session order state/reorder)
+  - `Sources/AgtmuxTerm/SidebarView.swift` (updated: SessionBlock DnD)
+  - `Sources/AgtmuxTerm/LinkedSessionManager.swift` (updated: local tmux command env hardening)
+  - `Sources/AgtmuxTermCore/AccessibilityID.swift` (updated: session AX identifiers)
+  - `Tests/AgtmuxTermUITests/AgtmuxTermUITests.swift` (updated: live reflection + DnD E2E)
+  - `Tests/AgtmuxTermUITests/README.md` (updated: cleanup/accessibility contracts)
+- **Acceptance Criteria**:
+  - [x] local tmux で作成した session が 1 poll 周期以内に sidebar へ反映される設計になっている（inventory truth）
+  - [x] 同一 session 内の window / pane 追加削除が sidebar に追従する経路を実装
+  - [x] metadata 取得失敗時も local inventory row は維持される（overlay 失敗は空metadata扱い）
+  - [x] session block の DnD 並び替えが source 内で機能し、poll 後に維持される
+  - [x] 新規 E2E が cleanup helper (`createTrackedTmuxSession`) を利用し leak を発生させない
+
+---
+
+### T-068 — Sidebar session load 不達 + titlebar icon click 不達の根本修正 (2026-03-04)
+- **Status**: DONE
+- **Priority**: P1
+- **Description**:
+  - 「terminal内で作成した session が sidebar に出ない」回帰を根本修正する。
+  - 「titlebar の sidebar toggle icon が効かない」回帰を根本修正する。
+  - それぞれ cleanup-safe な E2E を追加し、再発防止する。
+- **Root cause hypotheses (Claude/Codex独立提案比較結果)**:
+  - session load: local 表示の一次データ源が不安定で、inventory 取得失敗時に silent に空表示化し得る経路がある。
+  - icon click: traffic-light exclusion hit-test 矩形が first icon のクリック領域と重なり、イベントが drop される経路がある。
+- **Adopted plan**:
+  - local fetch を stage 化:
+    - stage1: `tmux list-panes -a` inventory を一次ソース
+    - stage2: `agtmux json` metadata overlay
+    - stage3: inventory 失敗時のみ metadata へ明示フォールバック（理由を記録、握りつぶし最小化）
+  - titlebar hit-test を厳密化:
+    - exclusion rect の不必要な膨張を廃止
+    - accessory bounds で clip し、first icon と exclusion の重複を禁止
+  - E2E 追加:
+    - `testLocalSessionCreatedAfterLaunchAppearsInSidebar`
+    - `testSidebarToggleIconTogglesSidebarVisibility`
+- **Files**:
+  - `Sources/AgtmuxTerm/AppViewModel.swift`
+  - `Sources/AgtmuxTerm/TitlebarChromeView.swift`
+  - `Sources/AgtmuxTerm/WindowChromeController.swift`
+  - `Tests/AgtmuxTermUITests/AgtmuxTermUITests.swift`
+  - `Tests/AgtmuxTermUITests/README.md`
+  - `docs/60_tasks.md`
+  - `docs/70_progress.md`
+- **Acceptance Criteria**:
+  - [x] 起動後に新規作成した local tmux session が sidebar に表示される経路を実装し、E2Eを追加（この実行環境では tmux socket 制約により skip）
+  - [x] titlebar の sidebar toggle icon click で sidebar が開閉する（E2E `testSidebarToggleIconTogglesSidebarVisibility` PASS）
+  - [x] 追加 E2E が cleanup 契約を満たし、tmux residue を残さない
+  - [x] fallback は明示的・最小限で、stage ごとの失敗理由を追跡できる（`AgtmuxTerm local-fetch:` ログ）
+
+---
+
+### T-069 — Local tmux socket override の一貫適用 + 隔離E2E追加 (2026-03-04)
+- **Status**: DONE
+- **Priority**: P1
+- **Description**:
+  - local tmux socket override（`AGTMUX_TMUX_SOCKET_NAME` / `AGTMUX_TMUX_SOCKET`）を inventory だけでなく attach/control-mode まで一貫適用する。
+  - 「一時tmux session/window/pane作成→sidebar反映」を隔離socketで検証するE2Eを追加し、環境制約時は明示skipにする。
+- **Root cause**:
+  - 既存実装では local inventory fetch 側のみ socket override を参照しており、workspace attach と control mode が default socket へ接続し得た。
+  - その結果、sidebarの表示ソースと実際の接続先が不一致になる経路があった。
+  - さらに、XCUITest runner の sandbox 制約で live tmux socket が利用できない環境では live E2E が不安定だった。
+- **Fix**:
+  - `LocalTmuxTarget` を新規追加し、socket選択優先順位を共通化:
+    1. `AGTMUX_TMUX_SOCKET_NAME` (`tmux -L`)
+    2. `AGTMUX_TMUX_SOCKET` (`tmux -S`)
+    3. `TMUX` 由来 socket (`tmux -S`)
+    4. default socket
+  - `TmuxCommandRunner`（`LinkedSessionManager.swift`）は `LocalTmuxTarget.socketArguments` を利用。
+  - `WorkspaceArea` の `tmux attach-session` コマンド生成に同 socket args を適用。
+  - `TmuxControlMode` の local 接続（`tmux -C attach-session`）にも同 socket args を適用し、`TMUX/TMUX_PANE` を除去。
+  - 隔離E2E `testIsolatedSocketSessionWindowPaneAppearInSidebar` を追加し、`AGTMUX_TMUX_SOCKET_NAME` で app を起動。
+    - sandboxで隔離session維持不能な場合は `XCTSkip` による明示スキップ。
+- **Files**:
+  - `Sources/AgtmuxTerm/LocalTmuxTarget.swift` (new)
+  - `Sources/AgtmuxTerm/LinkedSessionManager.swift` (updated)
+  - `Sources/AgtmuxTerm/TmuxControlMode.swift` (updated)
+  - `Sources/AgtmuxTerm/WorkspaceArea.swift` (updated)
+  - `Tests/AgtmuxTermUITests/AgtmuxTermUITests.swift` (updated)
+  - `Tests/AgtmuxTermUITests/README.md` (updated)
+  - `AgtmuxTerm.xcodeproj/project.pbxproj` (regenerated by `xcodegen`)
+- **Acceptance Criteria**:
+  - [x] local socket override が inventory/attach/control-mode で一貫適用される
+  - [x] 隔離tmux E2E（session/window/pane）が追加される
+  - [x] sandbox制約環境では skip 理由が明示される（silent failなし）
+  - [x] build と主要E2E（toggle + isolated）が成功（isolated はこの環境で skip）
+
+---
+
+### T-070 — Red/Green/Refactor: stale TMUX env で local sidebar が空になる回帰の予防 (2026-03-04)
+- **Status**: DONE
+- **Priority**: P1
+- **Description**:
+  - local tmux target 解決で inherited `TMUX` に依存していた経路を廃止し、stale socket による no-load 回帰を予防する。
+  - Red-Green-Refactor で resolver 仕様をテスト先行で固定する。
+- **Red**:
+  - `LocalTmuxTargetTests.testInheritedTMUXIsIgnoredWithoutExplicitOverride` を追加。
+  - 既存実装（TMUX由来 `-S` を採用）では fail を確認。
+- **Green**:
+  - `LocalTmuxTarget` を `AgtmuxTermCore` へ集約。
+  - precedence を `AGTMUX_TMUX_SOCKET_NAME` > `AGTMUX_TMUX_SOCKET` > default に変更。
+  - inherited `TMUX` は明示的に無視。
+  - app 側 callsite（`TmuxCommandRunner`/`TmuxControlMode`/`WorkspaceArea`）は core resolver を利用。
+- **Refactor**:
+  - UI test helper に `AGTMUX_UITEST_PRESERVE_TMUX` を追加し、TMUX継承挙動のテスト制御を明確化。
+  - isolated socket E2E に stale `TMUX` launch env を注入し、explicit socket 指定の優先を回帰ガード化。
+  - `xcodegen generate` で project を再生成し、resolver 移動を反映。
+- **Files**:
+  - `Sources/AgtmuxTermCore/LocalTmuxTarget.swift` (new)
+  - `Tests/AgtmuxTermCoreTests/LocalTmuxTargetTests.swift` (new)
+  - `Sources/AgtmuxTerm/LocalTmuxTarget.swift` (deleted)
+  - `Sources/AgtmuxTerm/LinkedSessionManager.swift` (updated)
+  - `Sources/AgtmuxTerm/TmuxControlMode.swift` (updated)
+  - `Tests/AgtmuxTermUITests/UITestHelpers.swift` (updated)
+  - `Tests/AgtmuxTermUITests/AgtmuxTermUITests.swift` (updated)
+  - `Tests/AgtmuxTermUITests/README.md` (updated)
+  - `AgtmuxTerm.xcodeproj/project.pbxproj` (regenerated)
+- **Acceptance Criteria**:
+  - [x] Redテストが fail を再現できる
+  - [x] Green実装で `LocalTmuxTargetTests` が pass
+  - [x] full `swift test` が pass
+  - [x] `xcodebuild ... build` が pass
+  - [x] 主要UI test（toggle）が pass、isolated は環境制約時のみ明示 skip

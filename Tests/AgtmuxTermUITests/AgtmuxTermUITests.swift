@@ -479,6 +479,204 @@ final class AgtmuxTermUITests: XCTestCase {
                        "Unmanaged pane must NOT appear under 'Managed' filter")
     }
 
+    /// T-E2E-009b: Session block drag-and-drop reorders sessions within a source.
+    ///
+    /// Uses AGTMUX_JSON fixtures so ordering can be asserted deterministically.
+    func testSessionBlockDragAndDropReordersWithinSource() throws {
+        let sessionA = "agtmux-e2e-dnd-a"
+        let sessionB = "agtmux-e2e-dnd-b"
+        let json = """
+        {"version":1,"panes":[
+          {"pane_id":"%90","session_name":"\(sessionA)","window_id":"@9",
+           "window_index":1,"window_name":"zsh","activity_state":"idle",
+           "presence":"unmanaged","evidence_mode":"none",
+           "current_cmd":"zsh","updated_at":"2026-03-04T00:00:00Z","age_secs":0},
+          {"pane_id":"%91","session_name":"\(sessionB)","window_id":"@10",
+           "window_index":1,"window_name":"zsh","activity_state":"idle",
+           "presence":"unmanaged","evidence_mode":"none",
+           "current_cmd":"zsh","updated_at":"2026-03-04T00:00:00Z","age_secs":0}
+        ]}
+        """
+
+        app.launchEnvironment["AGTMUX_JSON"] = json
+        app.launchForUITest()
+
+        let sessionAID = AccessibilityID.sidebarSessionPrefix + AccessibilityID.sessionKey(
+            source: "local",
+            sessionName: sessionA
+        )
+        let sessionBID = AccessibilityID.sidebarSessionPrefix + AccessibilityID.sessionKey(
+            source: "local",
+            sessionName: sessionB
+        )
+
+        let rowA = sessionRow(source: "local", sessionName: sessionA)
+        let rowB = sessionRow(source: "local", sessionName: sessionB)
+        XCTAssertTrue(rowA.waitForExistence(timeout: TestConstants.sidebarPopulateTimeout))
+        XCTAssertTrue(rowB.waitForExistence(timeout: TestConstants.sidebarPopulateTimeout))
+
+        func currentOrder() -> [String] {
+            let query = app.descendants(matching: .any).matching(
+                NSPredicate(format: "identifier BEGINSWITH %@", AccessibilityID.sidebarSessionPrefix)
+            )
+            return query.allElementsBoundByIndex
+                .map(\.identifier)
+                .filter { $0 == sessionAID || $0 == sessionBID }
+        }
+
+        let before = currentOrder()
+        XCTAssertTrue(
+            before.first == sessionAID && before.last == sessionBID,
+            "Fixture order should start as [A, B]. Actual: \(before)"
+        )
+
+        rowB.press(forDuration: 0.3, thenDragTo: rowA)
+
+        let deadline = Date().addingTimeInterval(TestConstants.sidebarPopulateTimeout)
+        var after = currentOrder()
+        while Date() < deadline && !(after.first == sessionBID && after.last == sessionAID) {
+            Thread.sleep(forTimeInterval: 0.1)
+            after = currentOrder()
+        }
+        XCTAssertTrue(
+            after.first == sessionBID && after.last == sessionAID,
+            "Session DnD must reorder to [B, A]. Actual: \(after)"
+        )
+    }
+
+    /// T-E2E-009c: Sidebar toggle icon in titlebar must collapse/expand sidebar reliably.
+    func testSidebarToggleIconTogglesSidebarVisibility() throws {
+        app.launchForUITest()
+
+        let toggleButton = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier == %@", AccessibilityID.sidebarFilterToggle)
+        ).firstMatch
+        XCTAssertTrue(
+            toggleButton.waitForExistence(timeout: TestConstants.settleTimeout),
+            "Sidebar toggle icon should exist in titlebar chrome"
+        )
+
+        let sidebar = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier == %@", AccessibilityID.sidebar)
+        ).firstMatch
+        XCTAssertTrue(
+            sidebar.waitForExistence(timeout: TestConstants.settleTimeout),
+            "Sidebar should be visible before collapsing"
+        )
+
+        toggleButton.click()
+        let sidebarGone = expectation(
+            for: NSPredicate(format: "exists == false"),
+            evaluatedWith: sidebar
+        )
+        wait(for: [sidebarGone], timeout: TestConstants.settleTimeout)
+
+        toggleButton.click()
+        XCTAssertTrue(
+            sidebar.waitForExistence(timeout: TestConstants.settleTimeout),
+            "Sidebar should become visible again after second toggle"
+        )
+    }
+
+    /// T-E2E-009d: A local tmux session created after launch must appear in sidebar.
+    ///
+    /// Regression coverage:
+    ///   - local source must reflect real tmux inventory, not daemon-only metadata.
+    func testLocalSessionCreatedAfterLaunchAppearsInSidebar() throws {
+        guard let tmux = resolveTmuxPathBestEffort() else {
+            throw XCTSkip("tmux not available — skipping local session reflection test")
+        }
+        guard (try? listTmuxSessions(tmux)) != nil else {
+            throw XCTSkip("tmux socket not accessible from runner — skipping local session reflection test")
+        }
+
+        app.launchEnvironment.removeValue(forKey: "AGTMUX_JSON")
+        app.launchForUITest()
+
+        let session = try createTrackedTmuxSession(prefix: "agtmux-e2e-session-reflect", tmux: tmux)
+        let paneOut = try shellOutput([tmux, "list-panes", "-t", session, "-F", "#{pane_id}"])
+        guard let paneID = paneOut.components(separatedBy: "\n").first(where: { !$0.isEmpty }) else {
+            throw XCTSkip("Could not resolve pane ID for created session")
+        }
+
+        let sessionRow = sessionRow(source: "local", sessionName: session)
+        XCTAssertTrue(
+            sessionRow.waitForExistence(timeout: TestConstants.sidebarPopulateTimeout),
+            "Created local session must appear in sidebar session blocks"
+        )
+
+        let paneRow = paneRow(source: "local", sessionName: session, paneID: paneID)
+        XCTAssertTrue(
+            paneRow.waitForExistence(timeout: TestConstants.sidebarPopulateTimeout),
+            "Created local session pane must appear in sidebar pane rows"
+        )
+    }
+
+    /// T-E2E-009e: Create a real tmux session/window/pane on an isolated socket and
+    /// verify sidebar reflects it.
+    ///
+    /// This avoids depending on the host default tmux socket accessibility from the
+    /// sandboxed UITest runner.
+    ///
+    /// Regression coverage:
+    ///   - stale inherited `TMUX` in launch environment must not break
+    ///     explicit `AGTMUX_TMUX_SOCKET_NAME` targeting.
+    func testIsolatedSocketSessionWindowPaneAppearInSidebar() throws {
+        guard let tmux = resolveTmuxPathBestEffort() else {
+            throw XCTSkip("tmux not available — skipping isolated-socket sidebar reflection test")
+        }
+
+        let token = String(UUID().uuidString.prefix(8)).lowercased()
+        let session = "agtmux-e2e-iso-\(token)"
+        let socketName = "agtmux-e2e-\(token)"
+        let tmuxSocketBase = [tmux, "-f", "/dev/null", "-L", socketName]
+
+        defer {
+            shellRunIgnoringFailure(tmuxSocketBase + ["kill-server"])
+        }
+
+        _ = try shellRun(tmuxSocketBase + ["new-session", "-d", "-s", session, "-n", "main", "/bin/sleep 600"])
+        let readyDeadline = Date().addingTimeInterval(2.0)
+        var sessionReady = false
+        while Date() < readyDeadline {
+            if (try? shellRun(tmuxSocketBase + ["has-session", "-t", session])) != nil {
+                sessionReady = true
+                break
+            }
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+        guard sessionReady else {
+            throw XCTSkip("Sandboxed UITest runner could not keep isolated tmux session alive")
+        }
+
+        _ = try shellRun(tmuxSocketBase + ["new-window", "-t", session, "-n", "extra", "/bin/sleep 600"])
+        _ = try shellRun(tmuxSocketBase + ["split-window", "-t", "\(session):main", "-h", "/bin/sleep 600"])
+
+        let paneOut = try shellOutput(tmuxSocketBase + ["list-panes", "-t", "\(session):main", "-F", "#{pane_id}"])
+        guard let paneID = paneOut.components(separatedBy: "\n").first(where: { !$0.isEmpty }) else {
+            throw XCTSkip("Could not resolve pane ID for isolated socket session")
+        }
+
+        app.launchEnvironment.removeValue(forKey: "AGTMUX_JSON")
+        app.launchEnvironment["AGTMUX_TMUX_SOCKET_NAME"] = socketName
+        app.launchEnvironment["AGTMUX_UITEST_PRESERVE_TMUX"] = "1"
+        app.launchEnvironment["TMUX"] = "/tmp/agtmux-stale-\(token).sock,99999,1"
+        app.launchEnvironment["TMUX_PANE"] = "%999"
+        app.launchForUITest()
+
+        let sessionRow = sessionRow(source: "local", sessionName: session)
+        XCTAssertTrue(
+            sessionRow.waitForExistence(timeout: TestConstants.sidebarPopulateTimeout),
+            "Isolated socket session must appear in sidebar session blocks"
+        )
+
+        let paneRow = paneRow(source: "local", sessionName: session, paneID: paneID)
+        XCTAssertTrue(
+            paneRow.waitForExistence(timeout: TestConstants.sidebarPopulateTimeout),
+            "Isolated socket pane must appear in sidebar pane rows"
+        )
+    }
+
     /// T-E2E-010: Selecting a mock-daemon pane backed by a real tmux session creates a terminal tile.
     ///
     /// Flow:
@@ -870,6 +1068,107 @@ final class AgtmuxTermUITests: XCTestCase {
         XCTAssertTrue(tileB.waitForExistence(timeout: TestConstants.surfaceReadyTimeout))
     }
 
+    /// T-E2E-013: Live local tmux lifecycle must reflect in sidebar (session/window/pane).
+    ///
+    /// Flow:
+    ///   1. Launch app without AGTMUX_JSON fixture mode.
+    ///   2. Create a tracked tmux session after launch -> sidebar row must appear.
+    ///   3. Create a new window -> new window pane row must appear.
+    ///   4. Split that window pane -> second pane row must appear.
+    ///   5. Kill the split pane -> row must disappear.
+    ///   6. Kill the session -> all rows for that session must disappear.
+    ///
+    /// This is the regression guard for "session created in terminal is not reflected".
+    func testLocalTmuxLifecycleReflectsSessionWindowPaneChanges() throws {
+        guard let tmux = resolveTmuxPathBestEffort() else {
+            throw XCTSkip("tmux not available — skipping local lifecycle reflection test")
+        }
+        guard (try? listTmuxSessions(tmux)) != nil else {
+            throw XCTSkip("tmux socket not accessible from runner — skipping local lifecycle reflection test")
+        }
+
+        app.launchForUITest()
+
+        let session = try createTrackedTmuxSession(prefix: "agtmux-e2e-live-reflect", tmux: tmux)
+
+        func paneDescriptors() throws -> [(paneID: String, windowID: String, windowName: String)] {
+            let output = try shellOutput([tmux, "list-panes", "-t", session, "-F", "#{pane_id}\t#{window_id}\t#{window_name}"])
+            return output
+                .components(separatedBy: "\n")
+                .compactMap { line in
+                    guard !line.isEmpty else { return nil }
+                    let parts = line.components(separatedBy: "\t")
+                    guard parts.count >= 2 else { return nil }
+                    let paneID = parts[0]
+                    let windowID = parts[1]
+                    let windowName = parts.count >= 3 ? parts[2] : ""
+                    return (paneID, windowID, windowName)
+                }
+        }
+
+        guard let initialPane = try paneDescriptors().first else {
+            throw XCTSkip("Could not resolve initial pane for tracked session")
+        }
+        let initialRow = paneRow(source: "local", sessionName: session, paneID: initialPane.paneID)
+        XCTAssertTrue(
+            initialRow.waitForExistence(timeout: TestConstants.sidebarPopulateTimeout),
+            "Newly created tmux session pane must appear in sidebar"
+        )
+
+        let newWindowName = "e2e-live-window"
+        _ = try shellRun([tmux, "new-window", "-t", session, "-n", newWindowName])
+
+        let afterWindowCreate = try paneDescriptors()
+        guard let newWindowPane = afterWindowCreate.first(where: { $0.windowName == newWindowName }) else {
+            throw XCTSkip("Could not resolve pane for new window '\(newWindowName)'")
+        }
+        let newWindowPaneRow = paneRow(source: "local", sessionName: session, paneID: newWindowPane.paneID)
+        XCTAssertTrue(
+            newWindowPaneRow.waitForExistence(timeout: TestConstants.sidebarPopulateTimeout),
+            "Pane from newly created window must appear in sidebar"
+        )
+
+        let beforeSplitPaneIDs = Set(
+            afterWindowCreate
+                .filter { $0.windowID == newWindowPane.windowID }
+                .map(\.paneID)
+        )
+
+        _ = try shellRun([tmux, "split-window", "-h", "-t", newWindowPane.paneID])
+
+        let splitPaneID: String = {
+            let deadline = Date().addingTimeInterval(TestConstants.sidebarPopulateTimeout)
+            while Date() < deadline {
+                if let descriptors = try? paneDescriptors() {
+                    let nowIDs = Set(descriptors.filter { $0.windowID == newWindowPane.windowID }.map(\.paneID))
+                    if let created = nowIDs.subtracting(beforeSplitPaneIDs).first {
+                        return created
+                    }
+                }
+                Thread.sleep(forTimeInterval: 0.1)
+            }
+            return ""
+        }()
+        XCTAssertFalse(splitPaneID.isEmpty, "Split pane ID must be discoverable")
+
+        let splitPaneRow = paneRow(source: "local", sessionName: session, paneID: splitPaneID)
+        XCTAssertTrue(
+            splitPaneRow.waitForExistence(timeout: TestConstants.sidebarPopulateTimeout),
+            "Split pane must appear in sidebar"
+        )
+
+        _ = try shellRun([tmux, "kill-pane", "-t", splitPaneID])
+        let splitGone = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: splitPaneRow)
+        wait(for: [splitGone], timeout: TestConstants.sidebarPopulateTimeout)
+
+        _ = try shellRun([tmux, "kill-session", "-t", session])
+        ownedSessions.remove(session)
+
+        let initialGone = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: initialRow)
+        let newWindowGone = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: newWindowPaneRow)
+        wait(for: [initialGone, newWindowGone], timeout: TestConstants.sidebarPopulateTimeout)
+    }
+
     // MARK: - Category B: Requires agtmux daemon + pane rows in sidebar (legacy)
 
     /// T-E2E-003: A pane row appears in the sidebar after the daemon discovers the test session.
@@ -979,6 +1278,20 @@ final class AgtmuxTermUITests: XCTestCase {
             emptyState.waitForExistence(timeout: TestConstants.settleTimeout),
             "Workspace should start in empty state before selecting a pane"
         )
+    }
+
+    private func paneRow(source: String = "local", sessionName: String, paneID: String) -> XCUIElement {
+        let key = AccessibilityID.paneKey(source: source, sessionName: sessionName, paneID: paneID)
+        return app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier == %@", AccessibilityID.sidebarPanePrefix + key)
+        ).firstMatch
+    }
+
+    private func sessionRow(source: String = "local", sessionName: String) -> XCUIElement {
+        let key = AccessibilityID.sessionKey(source: source, sessionName: sessionName)
+        return app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier == %@", AccessibilityID.sidebarSessionPrefix + key)
+        ).firstMatch
     }
 
     private func resolveTmuxPathBestEffort() -> String? {
@@ -1099,6 +1412,13 @@ final class AgtmuxTermUITests: XCTestCase {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: args[0])
         process.arguments = Array(args.dropFirst())
+        var env = ProcessInfo.processInfo.environment
+        // Never inherit current tmux client context from the runner shell.
+        // A stale/inaccessible TMUX socket makes `tmux list-sessions` fail and
+        // causes false "socket not accessible" skips.
+        env["TMUX"] = nil
+        env["TMUX_PANE"] = nil
+        process.environment = env
         process.standardInput = FileHandle.nullDevice
         let out = Pipe(), err = Pipe()
         process.standardOutput = out
@@ -1116,5 +1436,24 @@ final class AgtmuxTermUITests: XCTestCase {
 
     private func shellOutput(_ args: [String]) throws -> String {
         return try shellRun(args)
+    }
+
+    private func shellRunIgnoringFailure(_ args: [String]) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: args[0])
+        process.arguments = Array(args.dropFirst())
+        var env = ProcessInfo.processInfo.environment
+        env["TMUX"] = nil
+        env["TMUX_PANE"] = nil
+        process.environment = env
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = Pipe()
+        process.standardError = Pipe()
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            // Best-effort cleanup must never fail the test body.
+        }
     }
 }

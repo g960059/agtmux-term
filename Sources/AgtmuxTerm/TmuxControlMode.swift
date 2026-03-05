@@ -1,4 +1,5 @@
 import Foundation
+import AgtmuxTermCore
 
 // MARK: - ControlModeEvent
 
@@ -123,7 +124,13 @@ actor TmuxControlMode {
 
         if source == "local" {
             process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-            process.arguments = ["tmux", "-C", "attach-session", "-t", sessionName]
+            let env = ProcessInfo.processInfo.environment
+            let socketArgs = LocalTmuxTarget.socketArguments(from: env)
+            process.arguments = ["tmux"] + socketArgs + ["-C", "attach-session", "-t", sessionName]
+            var finalEnv = env
+            finalEnv["TMUX"] = nil
+            finalEnv["TMUX_PANE"] = nil
+            process.environment = finalEnv
         } else {
             process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
             process.arguments = [

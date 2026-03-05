@@ -1,6 +1,11 @@
 import Foundation
 import AgtmuxTermCore
 
+private enum LocalFetchError: Error {
+    case inventoryFailed(Error)
+    case inventoryAndMetadataFailed(inventory: Error, metadata: Error)
+}
+
 // MARK: - SessionGroup
 
 /// A group of windows sharing the same tmux session, within a single source.
@@ -37,6 +42,7 @@ final class AppViewModel: ObservableObject {
     @Published var statusFilter: StatusFilter = .all
     @Published private(set) var pinnedPaneKeys: Set<String> = []
     @Published private(set) var paneDisplayTitleOverrides: [String: String] = [:]
+    @Published private(set) var sessionOrderBySource: [String: [String]] = [:]
 
     /// True if any source is offline.
     var isOffline: Bool { !offlineHosts.isEmpty }
@@ -53,7 +59,8 @@ final class AppViewModel: ObservableObject {
 
     /// Panes grouped by source → session → window. Used by the sidebar 4-level layout.
     ///
-    /// Within each source, sessions are sorted alphabetically.
+    /// Within each source, sessions follow user-managed order (DnD) when present,
+    /// then append unknown sessions alphabetically.
     /// Within each session, windows are sorted by windowIndex (if available), else by windowId.
     /// Within each window, panes are sorted by paneId.
     var panesBySession: [(source: String, sessions: [SessionGroup])] {
@@ -61,7 +68,11 @@ final class AppViewModel: ObservableObject {
         return sortedSources(bySource.keys).map { source in
             let sourcePanes = bySource[source] ?? []
             let bySession = Dictionary(grouping: sourcePanes, by: \.sessionName)
-            let sessions = bySession.keys.sorted().map { sessionName -> SessionGroup in
+            let orderedNames = orderedSessionNames(
+                source: source,
+                currentNames: Set(bySession.keys)
+            )
+            let sessions = orderedNames.map { sessionName -> SessionGroup in
                 let sessionPanes = bySession[sessionName] ?? []
                 let byWindow = Dictionary(grouping: sessionPanes, by: \.windowId)
                 let windows = byWindow.keys
@@ -169,13 +180,41 @@ final class AppViewModel: ObservableObject {
         selectedPane = pane
     }
 
+    // MARK: - Session order (DnD)
+
+    func moveSession(source: String, draggedSessionName: String, targetSessionName: String) {
+        guard draggedSessionName != targetSessionName else { return }
+
+        let currentNames = Set(
+            panes
+                .filter { $0.source == source }
+                .map(\.sessionName)
+        )
+        var ordered = orderedSessionNames(source: source, currentNames: currentNames)
+        guard
+            let from = ordered.firstIndex(of: draggedSessionName),
+            let to = ordered.firstIndex(of: targetSessionName),
+            from != to
+        else { return }
+
+        let moving = ordered.remove(at: from)
+        ordered.insert(moving, at: to)
+        sessionOrderBySource[source] = ordered
+    }
+
     // MARK: - Clients
 
     private let localClient: any LocalSnapshotClient
+    private let localInventoryClient = LocalTmuxInventoryClient()
     private var remoteClients: [RemoteTmuxClient] = []
     let hostsConfig: HostsConfig
     private var lastSuccessfulPanesBySource: [String: [AgtmuxPane]] = [:]
     private var lastSuccessfulLocalSessionAliasMap: [String: String] = [:]
+
+    private func logLocalFetch(_ message: String) {
+        guard let data = "AgtmuxTerm local-fetch: \(message)\n".data(using: .utf8) else { return }
+        FileHandle.standardError.write(data)
+    }
 
     // MARK: - Init
 
@@ -223,6 +262,24 @@ final class AppViewModel: ObservableObject {
             if b == "local" { return false }
             return a < b
         }
+    }
+
+    private func orderedSessionNames(source: String, currentNames: Set<String>) -> [String] {
+        let existing = sessionOrderBySource[source] ?? []
+        let kept = existing.filter { currentNames.contains($0) }
+        let unknown = currentNames.subtracting(kept).sorted()
+        return kept + unknown
+    }
+
+    private func reconcileSessionOrder(with panes: [AgtmuxPane]) {
+        let bySource = Dictionary(grouping: panes, by: \.source)
+        var updated: [String: [String]] = [:]
+
+        for source in sortedSources(bySource.keys) {
+            let names = Set((bySource[source] ?? []).map(\.sessionName))
+            updated[source] = orderedSessionNames(source: source, currentNames: names)
+        }
+        sessionOrderBySource = updated
     }
 
     /// Normalize panes so UI identity and grouping are stable:
@@ -316,6 +373,89 @@ final class AppViewModel: ObservableObject {
         return score(rhs) > score(lhs) ? rhs : lhs
     }
 
+    /// Merge local tmux inventory with daemon metadata.
+    ///
+    /// Inventory (tmux list-panes) is authoritative for pane existence.
+    /// Metadata (agtmux json) enriches rows (managed status/activity/provider/etc.)
+    /// but does not create new rows if the pane is absent from inventory.
+    private func mergeLocalInventory(
+        inventory: [AgtmuxPane],
+        metadata: [AgtmuxPane]
+    ) -> [AgtmuxPane] {
+        let byPaneID = Dictionary(grouping: metadata, by: { "\($0.source):\($0.paneId)" })
+            .mapValues { panes in
+                panes.reduce(panes[0]) { preferredPane($0, $1) }
+            }
+
+        return inventory.map { inventoryPane in
+            let key = "\(inventoryPane.source):\(inventoryPane.paneId)"
+            guard let metadataPane = byPaneID[key] else { return inventoryPane }
+            return AgtmuxPane(
+                source: inventoryPane.source,
+                paneId: inventoryPane.paneId,
+                sessionName: inventoryPane.sessionName,
+                sessionGroup: inventoryPane.sessionGroup ?? metadataPane.sessionGroup,
+                windowId: inventoryPane.windowId,
+                windowIndex: inventoryPane.windowIndex ?? metadataPane.windowIndex,
+                windowName: inventoryPane.windowName ?? metadataPane.windowName,
+                activityState: metadataPane.activityState,
+                presence: metadataPane.presence,
+                provider: metadataPane.provider,
+                evidenceMode: metadataPane.evidenceMode,
+                conversationTitle: metadataPane.conversationTitle,
+                currentPath: metadataPane.currentPath ?? inventoryPane.currentPath,
+                gitBranch: metadataPane.gitBranch,
+                currentCmd: metadataPane.currentCmd ?? inventoryPane.currentCmd,
+                updatedAt: metadataPane.updatedAt,
+                ageSecs: metadataPane.ageSecs
+            )
+        }
+    }
+
+    private func fetchLocalPanes() async throws -> [AgtmuxPane] {
+        // Fixture mode for deterministic UI tests. Keep the current AGTMUX_JSON-only behavior.
+        if ProcessInfo.processInfo.environment["AGTMUX_JSON"] != nil {
+            let snapshot = try await localClient.fetchSnapshot()
+            return snapshot.panes
+        }
+
+        async let inventoryResult: Result<[AgtmuxPane], Error> = {
+            do {
+                let panes = try await localInventoryClient.fetchPanes()
+                return .success(panes)
+            } catch {
+                return .failure(error)
+            }
+        }()
+        async let metadataResult: Result<[AgtmuxPane], Error> = {
+            do {
+                let snapshot = try await localClient.fetchSnapshot()
+                return .success(snapshot.panes)
+            } catch {
+                return .failure(error)
+            }
+        }()
+
+        let inventory = await inventoryResult
+        let metadata = await metadataResult
+
+        switch (inventory, metadata) {
+        case let (.success(inv), .success(meta)):
+            return mergeLocalInventory(inventory: inv, metadata: meta)
+        case let (.success(inv), .failure(metaErr)):
+            logLocalFetch("metadata unavailable; using inventory-only: \(metaErr)")
+            return inv
+        case let (.failure(invErr), .success(meta)):
+            if !meta.isEmpty {
+                logLocalFetch("inventory unavailable; explicit fallback to metadata: \(invErr)")
+                return meta
+            }
+            throw LocalFetchError.inventoryFailed(invErr)
+        case let (.failure(invErr), .failure(metaErr)):
+            throw LocalFetchError.inventoryAndMetadataFailed(inventory: invErr, metadata: metaErr)
+        }
+    }
+
     /// Fetch from all sources concurrently, merge results, update state.
     /// Internal access so TmuxManager can trigger an immediate refresh.
     func fetchAll() async {
@@ -326,8 +466,8 @@ final class AppViewModel: ObservableObject {
             // Local
             group.addTask {
                 do {
-                    let snapshot = try await self.localClient.fetchSnapshot()
-                    return ("local", snapshot.panes, false)
+                    let panes = try await self.fetchLocalPanes()
+                    return ("local", panes, false)
                 } catch {
                     return ("local", nil, true)
                 }
@@ -366,6 +506,7 @@ final class AppViewModel: ObservableObject {
         let merged = sortedSources(lastSuccessfulPanesBySource.keys)
             .flatMap { lastSuccessfulPanesBySource[$0] ?? [] }
         let normalized = await normalizePanes(merged)
+        reconcileSessionOrder(with: normalized)
         panes = normalized
         let livePaneKeys = Set(normalized.map(paneIdentityKey(for:)))
         pinnedPaneKeys = pinnedPaneKeys.intersection(livePaneKeys)

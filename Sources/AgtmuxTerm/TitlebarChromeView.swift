@@ -20,7 +20,6 @@ struct TitlebarChromeView: View {
         HStack(spacing: 0) {
             controls
                 .frame(width: controlsSlotWidth, alignment: .leading)
-                .accessibilityIdentifier(AccessibilityID.sidebarFilterBar)
 
             TabBarView()
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -125,6 +124,8 @@ struct TitlebarChromeView: View {
                 .transition(.opacity.combined(with: .scale(scale: 0.96)))
             }
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier(AccessibilityID.sidebarFilterBar)
     }
 
     private func toggleFilter(_ filter: StatusFilter) {
@@ -160,7 +161,7 @@ private struct TitlebarIconButton<Label: View>: View {
     }
 
     var body: some View {
-        Button(action: action) {
+        let button = Button(action: action) {
             ZStack {
                 RoundedRectangle(cornerRadius: 4, style: .continuous)
                     .fill(background)
@@ -175,8 +176,14 @@ private struct TitlebarIconButton<Label: View>: View {
         .buttonStyle(.plain)
         .onHover { isHovered = $0 }
         .help(accessibilityLabel)
+        .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityLabel)
-        .accessibilityIdentifier(accessibilityID ?? "")
+
+        if let accessibilityID {
+            button.accessibilityIdentifier(accessibilityID)
+        } else {
+            button
+        }
     }
 
     private var background: Color {

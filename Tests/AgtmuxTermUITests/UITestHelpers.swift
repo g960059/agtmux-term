@@ -22,8 +22,18 @@ extension XCUIApplication {
     /// should be gone within milliseconds of terminate(). The NSRunningApplication poll below
     /// is a safety net for any residual OS state.
     func launchForUITest() {
-        launchEnvironment["TMUX"] = ""
-        launchEnvironment["TMUX_PANE"] = ""
+        let preserveTmux = launchEnvironment["AGTMUX_UITEST_PRESERVE_TMUX"] == "1"
+        if !preserveTmux {
+            launchEnvironment["TMUX"] = ""
+            launchEnvironment["TMUX_PANE"] = ""
+        } else {
+            if launchEnvironment["TMUX"] == nil {
+                launchEnvironment["TMUX"] = ""
+            }
+            if launchEnvironment["TMUX_PANE"] == nil {
+                launchEnvironment["TMUX_PANE"] = ""
+            }
+        }
         launchEnvironment["AGTMUX_UITEST"] = "1"
 
         // 1. Ask XCUITest to terminate any instance it knows about.

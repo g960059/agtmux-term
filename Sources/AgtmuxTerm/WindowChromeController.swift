@@ -101,12 +101,24 @@ final class WindowChromeController: NSObject {
             trafficLightsRectInWindow,
             from: nil
         )
-        accessoryView.trafficLightsExclusionRect = NSRect(
-            x: max(0, trafficLightsRectInAccessory.minX - 6),
-            y: 0,
-            width: trafficLightsRectInAccessory.width + 14,
-            height: titlebarHeight
-        )
+        let accessoryBounds = NSRect(x: 0, y: 0, width: accessoryView.bounds.width, height: titlebarHeight)
+        var exclusionRect = trafficLightsRectInAccessory
+            .insetBy(dx: -1, dy: -1)
+            .intersection(accessoryBounds)
+
+        // Guardrail: exclusion rect must never overlap the first icon hit area.
+        let iconGap: CGFloat = 6
+        let firstIconMinX = chromeState.trafficLightsTrailingXInAccessory + iconGap
+        let maxAllowedExclusionX = max(0, firstIconMinX - 1)
+        if !exclusionRect.isNull, exclusionRect.maxX > maxAllowedExclusionX {
+            exclusionRect.size.width = max(0, maxAllowedExclusionX - exclusionRect.minX)
+        }
+
+        if exclusionRect.isNull || exclusionRect.width <= 0 {
+            accessoryView.trafficLightsExclusionRect = .zero
+        } else {
+            accessoryView.trafficLightsExclusionRect = exclusionRect
+        }
     }
 
     private func sizeAccessory(width: CGFloat, height: CGFloat) {

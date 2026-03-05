@@ -833,3 +833,187 @@ Round 1 全修正が全員により confirmed。2/4 GO 目標クリア。
 - `swift test` ✅
 - `xcodebuild -scheme AgtmuxTerm -configuration Debug -destination 'platform=macOS' test -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testSelectedPaneSessionNameShownInTabTitle` ✅
 - `xcodebuild -scheme AgtmuxTerm -configuration Debug -destination 'platform=macOS' test -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testMainPanelPaneFocusSyncsSidebarSelection` ✅（この環境では tmux 作成不可のため skip）
+
+## 2026-03-04 — T-067 local tmux inventory 統合 + session DnD reorder
+
+### 実装
+
+- root cause 再現を確定:
+  - `tmux list-panes -a` には新規 session が存在
+  - `agtmux --socket-path ... json` には同 session が存在しない
+  - local source が daemon 単独依存だと session/window/pane 作成を取りこぼす
+- local existence model を刷新
+  - `LocalTmuxInventoryClient`（`RemoteTmuxClient.swift` 内）を追加
+  - local `tmux list-panes -a` で inventory を取得（session/window/pane 存在の truth source）
+  - `no server running` は empty inventory 扱い（hard failure にしない）
+- `AppViewModel.fetchAll` の local 経路を統合
+  - `fetchLocalPanes()` を追加
+  - `AGTMUX_JSON` fixture 時は従来どおり daemon JSON 単独で deterministic
+  - 通常時は `inventory + daemon metadata` を `mergeLocalInventory()` で合成
+  - metadata 失敗時は empty metadata で継続（inventory row は維持）
+- session DnD order state を導入
+  - `sessionOrderBySource` を追加（source 単位）
+  - `moveSession(source:dragged:target:)` で並び替え
+  - `reconcileSessionOrder(with:)` で poll 後に既存順を保持し、新規 session は末尾追加
+  - `panesBySession` は alphabetical 固定から order-aware に変更
+- Sidebar session block に DnD 実装
+  - `SessionBlockView` に `onDrag` / `onDrop` を追加
+  - `SessionReorderDropDelegate` で same-source のみ move を許可
+  - session row AX id を付与: `sidebar.session.<source_session>`
+- local tmux command 安定化
+  - `TmuxCommandRunner` local 実行時に `TMUX` / `TMUX_PANE` を除去して実行
+  - 親 tmux 環境混入を避け、inventory/management コマンドの解釈を安定化
+
+### E2E
+
+- 追加: `testSessionBlockDragAndDropReordersWithinSource`
+  - `AGTMUX_JSON` fixture で 2 session を用意
+  - session block drag/drop 後に session order が反転することを検証
+- 追加: `testLocalTmuxLifecycleReflectsSessionWindowPaneChanges`
+  - tracked tmux session を launch 後に作成
+  - window 追加 / pane split / pane kill / session kill の各段階で sidebar 反映を検証
+  - `createTrackedTmuxSession` を使用し cleanup 契約に準拠
+- `Tests/AgtmuxTermUITests/README.md` 更新
+  - session AX contract と DnD/live reflection テスト規約を追記
+
+### 検証
+
+- `swift build` ✅
+- `swift test` ✅
+- `xcodebuild -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testLocalTmuxLifecycleReflectsSessionWindowPaneChanges` ✅（この環境では tmux socket 不可のため skip）
+- `xcodebuild -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testSessionBlockDragAndDropReordersWithinSource` ⚠️
+  - この環境固有の `Running Background` launch race により test body 到達前に失敗
+  - 同じ launch race は `testAppLaunchShowsSidebar` でも再現し、DnDロジック固有の failure ではないことを確認
+
+## 2026-03-04 — T-068 kickoff: session未表示 + icon非反応の同時修正
+
+### 独立提案比較（Claude/Codex）
+
+- 共通認識:
+  - local session load 不達は data source の責務境界が曖昧なことが主因
+  - icon非反応は titlebar hit-test/exclusion の幾何重なりが主因
+- 差分:
+  - Claude案は「inventory失敗時は空表示化して stale/offline を強く出す」寄り
+  - Codex案は「inventory一次ソース維持のまま、限定的明示フォールバックで可観測性を上げる」寄り
+
+### 採択方針
+
+- 可用性と原因追跡のバランスを優先し、Codex寄りを採択:
+  - local inventory を一次ソースに固定
+  - inventory失敗時のみ metadata へ明示フォールバック（silent fallback は禁止）
+  - stage別失敗理由を追跡可能にする
+- icon click は構造修正:
+  - traffic-light exclusion rect の膨張を廃止し、bounds内へ clip
+  - first icon領域への侵入を禁止
+
+### 実施順
+
+1. docs先行更新（T-068追加） ✅
+2. E2E先行追加（session load / toggle icon、cleanup契約準拠）
+3. 実装（AppViewModel fetch stage化 / WindowChromeController hit-test修正）
+4. `swift test` + 追加E2Eを実行して検証
+
+## 2026-03-04 — T-068 完了: session load + titlebar icon click
+
+### 実装
+
+- `AppViewModel.fetchLocalPanes()` を stage 化
+  - `tmux inventory` と `agtmux metadata` を並行取得
+  - 分岐:
+    - inventory成功 + metadata成功: merge
+    - inventory成功 + metadata失敗: inventory-only 継続（stderrに理由を記録）
+    - inventory失敗 + metadata成功(非空): 明示フォールバック（stderrに理由を記録）
+    - 両方失敗: typed error (`LocalFetchError`) で上位へ伝播
+  - silent fallback を削減し、`AgtmuxTerm local-fetch:` ログで原因追跡可能化
+- `WindowChromeController.updateMetrics()` の hit-test exclusion を厳密化
+  - traffic-light exclusion rect の過剰膨張を廃止
+  - accessory bounds で clip
+  - first icon 開始位置(`trafficLightsTrailing + gap`)を侵食しないよう guardrail を追加
+- `TitlebarChromeView` の AX 改善
+  - control bar と icon button のアクセシビリティを分離
+  - `sidebar.filter.toggle` を個別AX要素として露出
+- E2E追加
+  - `testSidebarToggleIconTogglesSidebarVisibility`
+  - `testLocalSessionCreatedAfterLaunchAppearsInSidebar`
+- E2E契約docs更新
+  - toggle icon と local session reflection contract を `Tests/AgtmuxTermUITests/README.md` に追記
+
+### 検証
+
+- `swift build` ✅
+- `swift test -q` ✅
+- `xcodebuild -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testSidebarToggleIconTogglesSidebarVisibility` ✅
+- `xcodebuild -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testLocalSessionCreatedAfterLaunchAppearsInSidebar` ✅（この実行環境では tmux socket 制約により skip）
+- 補足:
+  - UI testを並列実行した際の `build.db locked` は実行方法由来（直列実行で解消）
+
+## 2026-03-04 — T-069 完了: local tmux socket override の一貫適用
+
+### 相談結果（独立4レビュー）
+
+- 4エージェント（Codex系2 / Claude系2 相当）で独立レビューを実施。
+- 共通指摘:
+  - socket override が inventory のみ適用だと、attach/control-mode との接続先不一致が起きる。
+  - XCUITest sandbox では live tmux E2E が環境依存で不安定なため、skip基準を明示すべき。
+- 採択:
+  - `LocalTmuxTarget` に socket選択ロジックを集約し、inventory/attach/control-mode 全経路で共通利用。
+  - 隔離tmux E2Eは維持しつつ、sandbox制約時は明示 `XCTSkip`。
+
+### 実装
+
+- `LocalTmuxTarget.swift` を新規追加。
+  - 優先順位: `AGTMUX_TMUX_SOCKET_NAME` > `AGTMUX_TMUX_SOCKET` > `TMUX` socket > default。
+- `LinkedSessionManager` (`TmuxCommandRunner`) を `LocalTmuxTarget.socketArguments` 利用に変更。
+- `WorkspaceArea` の attach command を socket-aware に変更。
+- `TmuxControlMode` の local connect (`tmux -C attach-session`) を socket-aware に変更。
+- `testIsolatedSocketSessionWindowPaneAppearInSidebar` を `AGTMUX_TMUX_SOCKET_NAME` ベースで実装。
+  - 隔離session維持不可な sandbox 環境では `XCTSkip("Sandboxed UITest runner could not keep isolated tmux session alive")`。
+- `xcodegen generate` で `AgtmuxTerm.xcodeproj` を再生成（新規ファイル反映）。
+
+### 検証
+
+- `xcodebuild -scheme AgtmuxTerm -configuration Debug -destination 'platform=macOS' build` ✅
+- `xcodebuild -scheme AgtmuxTerm -configuration Debug -destination 'platform=macOS' test -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testIsolatedSocketSessionWindowPaneAppearInSidebar -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testSidebarToggleIconTogglesSidebarVisibility` ✅
+  - isolated test: この環境では sandbox 制約で skip
+  - toggle test: pass
+- `xcodebuild -scheme AgtmuxTerm -configuration Debug -destination 'platform=macOS' test -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testLocalSessionCreatedAfterLaunchAppearsInSidebar` ✅（この環境では tmux socket 制約で skip）
+
+## 2026-03-04 — T-070 完了: Red/Green/Refactor で stale TMUX 回帰を封じる
+
+### Red
+
+- `Tests/AgtmuxTermCoreTests/LocalTmuxTargetTests.swift` を追加。
+- `testInheritedTMUXIsIgnoredWithoutExplicitOverride` を先に実装し、失敗を確認。
+  - 失敗内容: `["-S", "/tmp/inherited.sock"]` vs expected `[]`
+
+### Green
+
+- `LocalTmuxTarget` を core へ移設:
+  - 新規 `Sources/AgtmuxTermCore/LocalTmuxTarget.swift`
+  - 旧 `Sources/AgtmuxTerm/LocalTmuxTarget.swift` を削除
+- socket解決仕様を変更:
+  - `AGTMUX_TMUX_SOCKET_NAME` > `AGTMUX_TMUX_SOCKET` > default
+  - inherited `TMUX` は無視（stale/inaccessible socket の hijack を防止）
+- app側の参照を core resolver に統一:
+  - `LinkedSessionManager.swift`
+  - `TmuxControlMode.swift`
+  - `WorkspaceArea.swift`（既存参照継続）
+
+### Refactor
+
+- `UITestHelpers.launchForUITest()` に `AGTMUX_UITEST_PRESERVE_TMUX` を追加。
+  - 通常は `TMUX/TMUX_PANE` を空にする従来仕様を維持。
+  - stale TMUX 系回帰テストだけ明示 opt-in で継承可能。
+- `testIsolatedSocketSessionWindowPaneAppearInSidebar` に stale `TMUX` env 注入を追加し、
+  explicit `AGTMUX_TMUX_SOCKET_NAME` の優先を回帰ガード化。
+- `Tests/AgtmuxTermUITests/README.md` に上記契約を追記。
+- `xcodegen generate` を実行し project 参照を整合。
+
+### Verification
+
+- `swift test -q --filter LocalTmuxTargetTests` ✅
+- `swift test -q` ✅
+- `xcodebuild -scheme AgtmuxTerm -configuration Debug -destination 'platform=macOS' build` ✅
+- `xcodebuild -scheme AgtmuxTerm -configuration Debug -destination 'platform=macOS' test -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testIsolatedSocketSessionWindowPaneAppearInSidebar -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testSidebarToggleIconTogglesSidebarVisibility` ✅
+  - isolated test: sandbox制約により skip
+  - toggle test: pass

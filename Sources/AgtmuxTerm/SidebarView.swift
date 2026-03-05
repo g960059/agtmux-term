@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 import AgtmuxTermCore
 
 private enum SidebarRowStyle {
@@ -153,12 +154,18 @@ struct SourceHeaderView: View {
 
 // MARK: - SessionBlockView
 
+struct DraggedSession: Equatable {
+    let source: String
+    let sessionName: String
+}
+
 /// A session block: session header + window sub-blocks.
 /// Right-click → New Window / Kill Session.
 struct SessionBlockView: View {
     let session: SessionGroup
     let selectedPaneId: String?
     @Binding var highlightedRowID: String?
+    @Binding var draggedSession: DraggedSession?
     let onSelect: (AgtmuxPane, AgtmuxTermCore.WindowGroup) -> Void
 
     @EnvironmentObject private var viewModel: AppViewModel
@@ -218,6 +225,24 @@ struct SessionBlockView: View {
                       let pane = window.panes.first else { return }
                 onSelect(pane, window)
             }
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier(
+                AccessibilityID.sidebarSessionPrefix +
+                AccessibilityID.sessionKey(source: session.source, sessionName: session.sessionName)
+            )
+            .onDrag {
+                highlightedRowID = rowID
+                draggedSession = DraggedSession(source: session.source, sessionName: session.sessionName)
+                return NSItemProvider(object: session.id as NSString)
+            }
+            .onDrop(
+                of: [UTType.text],
+                delegate: SessionReorderDropDelegate(
+                    targetSession: session,
+                    draggedSession: $draggedSession,
+                    viewModel: viewModel
+                )
+            )
             .contextMenu {
                 let allPinned = viewModel.areAllPanesPinned(in: session)
                 Button {
@@ -267,6 +292,40 @@ struct SessionBlockView: View {
                 )
             }
         }
+    }
+}
+
+private struct SessionReorderDropDelegate: DropDelegate {
+    let targetSession: SessionGroup
+    @Binding var draggedSession: DraggedSession?
+    let viewModel: AppViewModel
+
+    func validateDrop(info: DropInfo) -> Bool {
+        guard let draggedSession else { return false }
+        return draggedSession.source == targetSession.source
+    }
+
+    func dropEntered(info: DropInfo) {
+        guard let draggedSession else { return }
+        guard draggedSession.source == targetSession.source else { return }
+        viewModel.moveSession(
+            source: targetSession.source,
+            draggedSessionName: draggedSession.sessionName,
+            targetSessionName: targetSession.sessionName
+        )
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        draggedSession = nil
+        return true
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
+
+    func dropExited(info: DropInfo) {
+        // Keep drag state alive until performDrop so hover transitions stay smooth.
     }
 }
 
@@ -750,6 +809,7 @@ struct SidebarView: View {
     @EnvironmentObject var viewModel: AppViewModel
     @Environment(WorkspaceStore.self) private var workspaceStore
     @State private var highlightedRowID: String?
+    @State private var draggedSession: DraggedSession?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -770,6 +830,7 @@ struct SidebarView: View {
                                     session: session,
                                     selectedPaneId: viewModel.selectedPane?.id,
                                     highlightedRowID: $highlightedRowID,
+                                    draggedSession: $draggedSession,
                                     onSelect: { pane, window in
                                         viewModel.selectPane(pane)
                                         Task { await workspaceStore.placeWindow(window, preferredPaneID: pane.paneId) }
