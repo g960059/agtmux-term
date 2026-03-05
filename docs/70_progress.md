@@ -1256,3 +1256,21 @@ Round 1 全修正が全員により confirmed。2/4 GO 目標クリア。
 ### 備考
 - `/tmp/...sock` への daemon bind はこの環境で `Operation not permitted` となったため、
   smokeは `~/.local/state/agtmux-smoke/*.sock` で実施した。
+
+## 2026-03-05 — Cross-repo A0 baseline fixed (agtmux commit 09722b7)
+
+### baseline
+- agtmux A0 commit: `09722b7` (`feat: add A0 inventory-first cached snapshot and metadata backoff`)
+- agtmux-term A0 commit: `5c5ea10` (`feat: implement A0 inventory-first local fetch and snapshot compatibility`)
+
+### verification
+- `cargo test -p agtmux` ✅（154 passed / 0 failed）
+- isolated cross-repo smoke ✅
+  - isolated tmux + daemon socket で `tmux split-window` 後に `agtmux json` pane_count `1 -> 2` を確認
+- `xcodebuild -only-testing:testLocalSessionCreatedAfterLaunchAppearsInSidebar` ✅ (skip)
+  - skip reason: locked interactive desktop session
+  - message: `screenLocked=1`（`AGTMUX_UITEST_ALLOW_LOCKED_SESSION=1` で強制実行可能）
+
+### note
+- このセッションでは live UI E2E の実行条件（unlocked interactive desktop）が不足。
+- headless/locked 状態でも unit/integration/cross-smoke は継続実行可能。
