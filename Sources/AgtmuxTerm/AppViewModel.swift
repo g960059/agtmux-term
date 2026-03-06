@@ -21,6 +21,47 @@ struct SessionGroup: Identifiable {
     }
 }
 
+enum LocalDaemonIssue: Equatable {
+    case localDaemonUnavailable(detail: String)
+    case incompatibleSyncV2(detail: String)
+
+    var bannerTitle: String {
+        switch self {
+        case .localDaemonUnavailable:
+            return "Local daemon unavailable"
+        case .incompatibleSyncV2:
+            return "Local daemon incompatible"
+        }
+    }
+
+    var bannerMessage: String {
+        switch self {
+        case .localDaemonUnavailable:
+            return "No local agtmux daemon runtime is configured. Pane rows below are from local tmux inventory only. Use the bundled app runtime or set AGTMUX_BIN."
+        case .incompatibleSyncV2:
+            return "This agtmux daemon is too old for sync-v2 metadata. Pane rows below are from local tmux inventory only. Restart with a newer daemon."
+        }
+    }
+
+    var emptyStateMessage: String {
+        switch self {
+        case .localDaemonUnavailable:
+            return "Local agtmux daemon runtime is unavailable. Use the bundled app runtime or set AGTMUX_BIN."
+        case .incompatibleSyncV2:
+            return "This agtmux daemon is too old for sync-v2 metadata. Restart with a newer daemon."
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case let .localDaemonUnavailable(detail):
+            return detail
+        case let .incompatibleSyncV2(detail):
+            return detail
+        }
+    }
+}
+
 // MARK: - AppViewModel
 
 /// Central state holder for the agtmux-term UI.
@@ -38,6 +79,8 @@ final class AppViewModel: ObservableObject {
     @Published private(set) var pinnedPaneKeys: Set<String> = []
     @Published private(set) var paneDisplayTitleOverrides: [String: String] = [:]
     @Published private(set) var sessionOrderBySource: [String: [String]] = [:]
+    @Published private(set) var localDaemonIssue: LocalDaemonIssue?
+    @Published private(set) var localDaemonHealth: AgtmuxUIHealthV1?
 
     /// True if any source is offline.
     var isOffline: Bool { !offlineHosts.isEmpty }
@@ -199,7 +242,8 @@ final class AppViewModel: ObservableObject {
 
     // MARK: - Clients
 
-    private let localClient: any LocalSnapshotClient
+    private let localClient: any LocalMetadataClient
+    private let localHealthClient: (any LocalHealthClient)?
     private let localInventoryClient: any LocalPaneInventoryClient
     private var remoteClients: [RemoteTmuxClient] = []
     let hostsConfig: HostsConfig
@@ -207,21 +251,184 @@ final class AppViewModel: ObservableObject {
     private var lastSuccessfulLocalSessionAliasMap: [String: String] = [:]
     private var cachedLocalMetadataByPaneKey: [String: AgtmuxPane] = [:]
     private var localMetadataRefreshTask: Task<Void, Never>?
+    private var localHealthRefreshTask: Task<Void, Never>?
+    private var localMetadataSyncPrimed = false
     private var nextLocalMetadataRefreshAt: Date = .distantPast
+    private var nextLocalHealthRefreshAt: Date = .distantPast
     private let localMetadataSuccessInterval: TimeInterval = 1.0
     private let localMetadataFailureBackoff: TimeInterval = 3.0
+    private let localMetadataChangeLimit = 256
+    private let localHealthSuccessInterval: TimeInterval = 1.0
+    private let localHealthFailureBackoff: TimeInterval = 3.0
+    private let localHealthUnsupportedBackoff: TimeInterval = 60.0
+
+    private enum LocalHealthRefreshDisposition {
+        case unsupportedMethod
+        case transientFailure
+    }
 
     private func logLocalFetch(_ message: String) {
         guard let data = "AgtmuxTerm local-fetch: \(message)\n".data(using: .utf8) else { return }
         FileHandle.standardError.write(data)
     }
 
+    private func classifyLocalDaemonIssue(from error: any Error) -> LocalDaemonIssue? {
+        if let daemonError = error as? DaemonError {
+            switch daemonError {
+            case .daemonUnavailable:
+                return makeLocalDaemonUnavailableIssue()
+            case let .processError(_, stderr):
+                return classifyLocalDaemonIssue(fromDescription: stderr)
+            case let .parseError(message):
+                return classifyLocalDaemonIssue(fromDescription: message)
+            }
+        }
+
+        if let xpcError = error as? XPCClientError {
+            switch xpcError {
+            case .unavailable, .proxyUnavailable, .timeout(_):
+                return nil
+            case let .remote(message), let .decode(message):
+                return classifyLocalDaemonIssue(fromDescription: message)
+            }
+        }
+
+        return classifyLocalDaemonIssue(fromDescription: String(describing: error))
+    }
+
+    private func classifyLocalDaemonIssue(fromDescription description: String) -> LocalDaemonIssue? {
+        let normalized = description.lowercased()
+        if normalized.contains("agtmux daemon unavailable") {
+            return makeLocalDaemonUnavailableIssue(detail: description)
+        }
+
+        let referencesSyncV2Method =
+            normalized.contains("ui.bootstrap.v2") ||
+            normalized.contains("ui.changes.v2")
+        let indicatesMissingMethod =
+            normalized.contains("-32601") ||
+            normalized.contains("method not found")
+
+        guard referencesSyncV2Method, indicatesMissingMethod else { return nil }
+        return .incompatibleSyncV2(detail: description)
+    }
+
+    private func makeLocalDaemonUnavailableIssue(detail: String? = nil) -> LocalDaemonIssue {
+        let env = ProcessInfo.processInfo.environment
+        let explicitBinary = env["AGTMUX_BIN"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let fallbackDetail: String
+        if explicitBinary.isEmpty {
+            fallbackDetail = """
+            Local agtmux daemon runtime is unavailable: no bundled daemon was found and AGTMUX_BIN is not set. The managed socket is \(AgtmuxBinaryResolver.defaultSocketPath).
+            """
+        } else {
+            fallbackDetail = """
+            Local agtmux daemon runtime is unavailable: AGTMUX_BIN is set to \(explicitBinary), but no executable daemon runtime could be resolved for the managed socket \(AgtmuxBinaryResolver.defaultSocketPath).
+            """
+        }
+
+        let resolvedDetail = detail?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if let resolvedDetail, !resolvedDetail.isEmpty,
+           resolvedDetail.lowercased() != "agtmux daemon unavailable" {
+            return .localDaemonUnavailable(detail: resolvedDetail)
+        }
+        return .localDaemonUnavailable(detail: fallbackDetail)
+    }
+
+    private func localHealthErrorDescription(from error: any Error) -> String {
+        if let healthError = error as? LocalHealthClientError {
+            switch healthError {
+            case let .unsupportedMethod(method):
+                return "\(method) unsupported"
+            }
+        }
+
+        if let daemonError = error as? DaemonError {
+            switch daemonError {
+            case .daemonUnavailable:
+                return daemonError.localizedDescription
+            case let .processError(_, stderr):
+                return stderr
+            case let .parseError(message):
+                return message
+            }
+        }
+
+        if let xpcError = error as? XPCClientError {
+            switch xpcError {
+            case .unavailable:
+                return "xpc unavailable"
+            case .proxyUnavailable:
+                return "xpc proxy unavailable"
+            case let .remote(message), let .decode(message), let .timeout(message):
+                return message
+            }
+        }
+
+        return String(describing: error)
+    }
+
+    private func localHealthUIErrorEnvelope(from error: any Error) -> DaemonUIErrorEnvelope? {
+        if let daemonError = error as? DaemonError {
+            switch daemonError {
+            case .daemonUnavailable:
+                return nil
+            case let .processError(_, stderr):
+                return DaemonError.decodeUIErrorEnvelope(from: stderr)
+            case let .parseError(message):
+                return DaemonError.decodeUIErrorEnvelope(from: message)
+            }
+        }
+
+        if let xpcError = error as? XPCClientError {
+            switch xpcError {
+            case .unavailable, .proxyUnavailable:
+                return nil
+            case let .remote(message), let .decode(message), let .timeout(message):
+                return DaemonError.decodeUIErrorEnvelope(from: message)
+            }
+        }
+
+        return DaemonError.decodeUIErrorEnvelope(from: String(describing: error))
+    }
+
+    private func classifyLocalHealthRefreshFailure(from error: any Error) -> LocalHealthRefreshDisposition {
+        if let healthError = error as? LocalHealthClientError {
+            switch healthError {
+            case .unsupportedMethod:
+                return .unsupportedMethod
+            }
+        }
+
+        if let envelope = localHealthUIErrorEnvelope(from: error) {
+            if envelope.code == DaemonUIErrorCode.uiHealthMethodNotFound.rawValue {
+                return .unsupportedMethod
+            }
+            return .transientFailure
+        }
+
+        let normalized = localHealthErrorDescription(from: error).lowercased()
+        let referencesHealthMethod = normalized.contains("ui.health.v1")
+        let indicatesMissingMethod =
+            normalized.contains("-32601") ||
+            normalized.contains("method not found") ||
+            normalized.contains("unsupported")
+
+        if referencesHealthMethod && indicatesMissingMethod {
+            return .unsupportedMethod
+        }
+        return .transientFailure
+    }
+
     // MARK: - Init
 
-    init(localClient: any LocalSnapshotClient = AgtmuxDaemonClient(),
+    init(localClient: any LocalMetadataClient = AgtmuxDaemonClient(),
          localInventoryClient: any LocalPaneInventoryClient = LocalTmuxInventoryClient(),
          hostsConfig: HostsConfig? = nil) {
         self.localClient = localClient
+        self.localHealthClient = localClient as? any LocalHealthClient
         self.localInventoryClient = localInventoryClient
         let config = hostsConfig ?? HostsConfig.load()
         self.hostsConfig = config
@@ -256,6 +463,11 @@ final class AppViewModel: ObservableObject {
         pollingTask = nil
         localMetadataRefreshTask?.cancel()
         localMetadataRefreshTask = nil
+        localHealthRefreshTask?.cancel()
+        localHealthRefreshTask = nil
+        localMetadataSyncPrimed = false
+        nextLocalHealthRefreshAt = .distantPast
+        Task { await localClient.resetUIChangesV2() }
     }
 
     // MARK: - Private
@@ -391,10 +603,10 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    /// Merge local tmux inventory with daemon metadata.
+    /// Merge local tmux inventory with daemon metadata overlay.
     ///
     /// Inventory (tmux list-panes) is authoritative for pane existence.
-    /// Metadata (agtmux json) enriches rows (managed status/activity/provider/etc.)
+    /// Daemon metadata enriches rows (managed status/activity/provider/etc.)
     /// but does not create new rows if the pane is absent from inventory.
     private func mergeLocalInventory(
         inventory: [AgtmuxPane],
@@ -425,6 +637,100 @@ final class AppViewModel: ObservableObject {
         }
     }
 
+    private func overlayLocalMetadata(_ paneState: AgtmuxSyncV2PaneState, onto basePane: AgtmuxPane) -> AgtmuxPane {
+        AgtmuxPane(
+            source: basePane.source,
+            paneId: basePane.paneId,
+            sessionName: basePane.sessionName,
+            sessionGroup: basePane.sessionGroup,
+            windowId: basePane.windowId,
+            windowIndex: basePane.windowIndex,
+            windowName: basePane.windowName,
+            activityState: paneState.activityState,
+            presence: paneState.presence,
+            provider: paneState.provider,
+            evidenceMode: paneState.evidenceMode,
+            conversationTitle: basePane.conversationTitle,
+            currentPath: basePane.currentPath,
+            gitBranch: basePane.gitBranch,
+            currentCmd: basePane.currentCmd,
+            updatedAt: paneState.updatedAt,
+            ageSecs: basePane.ageSecs
+        )
+    }
+
+    private func metadataBasePane(for paneId: String) -> AgtmuxPane? {
+        let key = paneMetadataKey(source: "local", paneId: paneId)
+        if let cached = cachedLocalMetadataByPaneKey[key] {
+            return cached
+        }
+
+        return lastSuccessfulPanesBySource["local"]?.first { pane in
+            pane.source == "local" && pane.paneId == paneId
+        }
+    }
+
+    private func applyLocalMetadataChanges(_ payload: AgtmuxSyncV2Changes) -> [String: AgtmuxPane] {
+        var metadataByPaneKey = cachedLocalMetadataByPaneKey
+
+        for change in payload.changes {
+            guard let paneState = change.pane else { continue }
+            let key = paneMetadataKey(source: "local", paneId: paneState.paneId)
+            guard let basePane = metadataBasePane(for: paneState.paneId) else {
+                logLocalFetch("sync-v2 pane change dropped for unknown pane_id \(paneState.paneId)")
+                continue
+            }
+            metadataByPaneKey[key] = overlayLocalMetadata(paneState, onto: basePane)
+        }
+
+        return metadataByPaneKey
+    }
+
+    private func publishLocalMetadataCache(_ metadataByPaneKey: [String: AgtmuxPane]) async {
+        cachedLocalMetadataByPaneKey = metadataByPaneKey
+        nextLocalMetadataRefreshAt = Date().addingTimeInterval(localMetadataSuccessInterval)
+
+        if let localPanes = lastSuccessfulPanesBySource["local"] {
+            lastSuccessfulPanesBySource["local"] = mergeLocalInventory(
+                inventory: localPanes,
+                metadataByPaneKey: metadataByPaneKey
+            )
+            await publishFromSnapshotCache()
+        }
+    }
+
+    private func scheduleLocalHealthRefreshIfNeeded() {
+        guard let localHealthClient else { return }
+        guard localHealthRefreshTask == nil else { return }
+        let now = Date()
+        guard now >= nextLocalHealthRefreshAt else { return }
+
+        localHealthRefreshTask = Task { [weak self] in
+            guard let self else { return }
+            defer { self.localHealthRefreshTask = nil }
+
+            do {
+                let health = try await localHealthClient.fetchUIHealthV1()
+                try Task.checkCancellation()
+                self.localDaemonHealth = health
+                self.nextLocalHealthRefreshAt = Date().addingTimeInterval(self.localHealthSuccessInterval)
+            } catch is CancellationError {
+                return
+            } catch {
+                if Task.isCancelled {
+                    return
+                }
+                switch self.classifyLocalHealthRefreshFailure(from: error) {
+                case .unsupportedMethod:
+                    self.localDaemonHealth = nil
+                    self.nextLocalHealthRefreshAt = Date().addingTimeInterval(self.localHealthUnsupportedBackoff)
+                case .transientFailure:
+                    self.nextLocalHealthRefreshAt = Date().addingTimeInterval(self.localHealthFailureBackoff)
+                }
+            }
+        }
+    }
+
     private func scheduleLocalMetadataRefreshIfNeeded() {
         guard localMetadataRefreshTask == nil else { return }
         let now = Date()
@@ -435,21 +741,49 @@ final class AppViewModel: ObservableObject {
             defer { self.localMetadataRefreshTask = nil }
 
             do {
-                let snapshot = try await self.localClient.fetchSnapshot()
-                let metadataByPaneKey = self.localMetadataMap(from: snapshot.panes)
-                self.cachedLocalMetadataByPaneKey = metadataByPaneKey
-                self.nextLocalMetadataRefreshAt = Date().addingTimeInterval(self.localMetadataSuccessInterval)
-
-                if let localPanes = self.lastSuccessfulPanesBySource["local"] {
-                    self.lastSuccessfulPanesBySource["local"] = self.mergeLocalInventory(
-                        inventory: localPanes,
-                        metadataByPaneKey: metadataByPaneKey
-                    )
-                    await self.publishFromSnapshotCache()
+                if !self.localMetadataSyncPrimed {
+                    let bootstrap = try await self.localClient.fetchUIBootstrapV2()
+                    try Task.checkCancellation()
+                    let metadataByPaneKey = self.localMetadataMap(from: bootstrap.panes)
+                    self.localMetadataSyncPrimed = true
+                    self.localDaemonIssue = nil
+                    await self.publishLocalMetadataCache(metadataByPaneKey)
+                    return
                 }
+
+                let response = try await self.localClient.fetchUIChangesV2(limit: self.localMetadataChangeLimit)
+                try Task.checkCancellation()
+                switch response {
+                case let .changes(payload):
+                    let metadataByPaneKey = self.applyLocalMetadataChanges(payload)
+                    self.localDaemonIssue = nil
+                    await self.publishLocalMetadataCache(metadataByPaneKey)
+                case let .resyncRequired(payload):
+                    self.logLocalFetch(
+                        "sync-v2 resync required; reason=\(payload.reason) epoch=\(payload.currentEpoch) snapshot_seq=\(payload.latestSnapshotSeq)"
+                    )
+                    await self.localClient.resetUIChangesV2()
+                    let bootstrap = try await self.localClient.fetchUIBootstrapV2()
+                    try Task.checkCancellation()
+                    let metadataByPaneKey = self.localMetadataMap(from: bootstrap.panes)
+                    self.localMetadataSyncPrimed = true
+                    self.localDaemonIssue = nil
+                    await self.publishLocalMetadataCache(metadataByPaneKey)
+                }
+            } catch is CancellationError {
+                return
             } catch {
+                if Task.isCancelled {
+                    return
+                }
+                await self.localClient.resetUIChangesV2()
+                if Task.isCancelled {
+                    return
+                }
+                self.localMetadataSyncPrimed = false
                 self.nextLocalMetadataRefreshAt = Date().addingTimeInterval(self.localMetadataFailureBackoff)
-                self.logLocalFetch("metadata unavailable; keeping cached overlay: \(error)")
+                self.localDaemonIssue = self.classifyLocalDaemonIssue(from: error)
+                self.logLocalFetch("sync-v2 metadata unavailable; keeping cached overlay: \(error)")
             }
         }
     }
@@ -470,6 +804,7 @@ final class AppViewModel: ObservableObject {
             return try await localInventoryClient.fetchPanes()
         }
 
+        scheduleLocalHealthRefreshIfNeeded()
         let inventory = try await localInventoryClient.fetchPanes()
         scheduleLocalMetadataRefreshIfNeeded()
         return mergeLocalInventory(inventory: inventory, metadataByPaneKey: cachedLocalMetadataByPaneKey)
@@ -551,6 +886,13 @@ final class AppViewModel: ObservableObject {
         // successful snapshot to avoid sidebar flicker/empty flashes.
         for (source, panes) in successfulBySource {
             lastSuccessfulPanesBySource[source] = panes
+        }
+        if newOffline.contains("local") {
+            localMetadataRefreshTask?.cancel()
+            localMetadataRefreshTask = nil
+            localMetadataSyncPrimed = false
+            localDaemonIssue = nil
+            await localClient.resetUIChangesV2()
         }
         await publishFromSnapshotCache(offlineHosts: newOffline)
     }

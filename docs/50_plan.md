@@ -2,287 +2,182 @@
 
 ## Overview
 
-4フェーズで段階的に実装する。各フェーズに明確な Exit Criteria を設定し、動作確認してから次フェーズに進む。
+V2 should be implemented as a **new mainline path inside the same repository**, not as incremental patches on top of the linked-session workspace model.
+
+The key planning principle is:
+
+- same repo
+- separate V2 path
+- replace old path only after V2 is stable
+
+## Plan Shape
 
 ```
-Phase 0: Build Infrastructure
-  └── T-001: GhosttyKit.xcframework ビルド環境構築
-
-Phase 1: Terminal Core
-  ├── T-002: GhosttyApp.swift (app lifecycle)
-  ├── T-003: GhosttyTerminalView.swift (NSView + Metal + Resize + HiDPI)
-  ├── T-004: GhosttyInput.swift (NSEvent mapping + NSTextInputClient IME)
-  └── T-005: HelloWorld 統合確認
-
-Phase 2: Sidebar UI Port
-  ├── T-006a: DaemonModels.swift (AgtmuxSnapshot / AgtmuxPane / StatusFilter)
-  ├── T-006b: AgtmuxDaemonClient.swift (async subprocess + PATH 解決)
-  ├── T-006c: AppViewModel.swift (polling + state management)
-  ├── T-007: Sidebar UI port (SidebarView + SessionRowView + FilterBarView)
-  └── T-008: CockpitView.swift (HSplitView 統合)
-
-Phase 3: Daemon Integration
-  ├── T-009: AgtmuxDaemonClient.swift (agtmux CLI wrapper)
-  ├── T-010: pane 選択 → tmux attach surface 切り替え
-  └── T-011: agent state リアルタイム表示
-
-Phase 4: Polish [Post-MVP]
-  ├── T-012: マルチサーフェス（タブ切り替え）
-  ├── T-013: キーボードショートカット
-  └── T-014: libghostty-full public API リリース後の移行
+Phase A: Docs realignment
+Phase B: Workbench V2 foundation
+Phase C: Real-session terminal tile
+Phase D: CLI bridge + companion surfaces
+Phase E: Persistence + restore states
+Phase F: Sidebar integration + old path removal
+Phase G: Tests + polish
 ```
 
----
+## Phase A: Docs realignment
 
-## Phase 0: Build Infrastructure
+Goal:
 
-### T-001: GhosttyKit.xcframework ビルド環境構築
+- make `docs/10_foundation.md` through `docs/50_plan.md` internally consistent with the V2 direction before code changes proceed
 
-**目標**: `swift build` が GhosttyKit.xcframework を参照してコンパイルできる状態にする
+Exit criteria:
 
-**手順:**
-1. Git LFS のセットアップ（ADR-20260228b で決定済み。submodule は不採用）
-   ```bash
-   git lfs install
-   git lfs track "GhosttyKit/**/*.a"
-   git lfs track "GhosttyKit/**/*.framework/**"
-   git add .gitattributes
-   ```
-2. Ghostty ソースを git clone で取得（vendor/ は .gitignore 済み、コミットしない）
-   ```bash
-   git clone https://github.com/ghostty-org/ghostty vendor/ghostty
-   ```
-3. `zig build xcframework` を実行して `GhosttyKit.xcframework` を生成
-   ```bash
-   cd vendor/ghostty
-   zig build xcframework
-   # 生成物: zig-out/lib/GhosttyKit.xcframework
-   ```
-4. xcframework を `GhosttyKit/` にコピーし Git LFS でコミット
-   ```bash
-   cp -r zig-out/lib/GhosttyKit.xcframework ../../GhosttyKit/
-   cd ../..
-   git add GhosttyKit/
-   git commit -m "build: add GhosttyKit.xcframework via Git LFS"
-   ```
-5. `build.zig` を参照して必要な linker flags をリスト化し `Package.swift` に追加
-6. `scripts/build-ghosttykit.sh` を作成（バージョン更新時の再生成手順）
+- Foundation, Spec, Architecture, Design, and Plan all describe the same V2 product
+- linked-session path is no longer described as mainline truth
 
-**Exit Criteria**: `swift build` が GhosttyKit をリンクしてコンパイルできる（`ghostty_app_new` が解決される）
+## Phase B: Workbench V2 foundation
 
-**Risks:**
-- R-001: Zig バージョン不一致 → `zig version` が 0.14.x であること確認
-- R-002: Git LFS 未設定で clone した場合、xcframework がポインタファイルになる → README に警告必須
+Goal:
 
----
+- introduce the new Workbench model and view path without mixing it into the old linked-session store
 
-## Phase 1: Terminal Core
+Deliverables:
 
-### T-002: GhosttyApp.swift — ghostty_app_t lifecycle
+- `Workbench`
+- `WorkbenchNode`
+- `WorkbenchTile`
+- `TileKind.terminal / .browser / .document`
+- V2 store and top-level Workbench UI entry path
 
-**目標**: `ghostty_app_t` のシングルトン管理と wakeup_cb のセットアップ
+Exit criteria:
 
-**実装内容:**
-- `GhosttyApp` クラス（`final class`、`static let shared`）
-- `ghostty_runtime_config_s` に `wakeup_cb` を設定
-- `wakeup_cb` 内で `DispatchQueue.main.async { ghostty_app_tick(app) }`
-- `ghostty_config_new()` / `ghostty_app_new()` / `ghostty_app_free()` ライフサイクル管理
+- app can render placeholder terminal/browser/document tiles from saved layout state
+- old linked-session path still exists but is isolated
 
-**Exit Criteria**: アプリ起動時に `ghostty_app_t` が生成され、deinit 時に解放される（クラッシュなし）
+## Phase C: Real-session terminal tile
 
-### T-003: GhosttyTerminalView.swift — NSView + Metal + Resize + HiDPI
+Goal:
 
-**目標**: libghostty surface を Metal で描画する NSView
+- replace linked-session terminal semantics with direct attach to real sessions in the V2 path
 
-**実装内容:**
-- `GhosttyTerminalView: NSView` クラス
-- `wantsLayer = true`、`makeBackingLayer()` で `CAMetalLayer` を返す
-- `layout()` で `ghostty_surface_set_size()` に HiDPI スケール適用
-- `ghostty_surface_draw()` を呼ぶ `triggerDraw()` メソッド
-- `ghostty_surface_new()` / `ghostty_surface_free()` の surface lifecycle
+Deliverables:
 
-**Exit Criteria**: NSView 上に黒いターミナル画面が表示される（文字はまだ出なくてよい）
+- direct attach command path
+- terminal tile header state
+- duplicate-session prevention
+- reveal/focus existing tile behavior
 
-### T-004: GhosttyInput.swift — NSEvent → ghostty_input_key_s + NSTextInputClient IME
+Exit criteria:
 
-**目標**: キーボード入力と IME をターミナルに渡す
+- selecting a session creates a terminal tile backed by a real tmux session
+- one real session cannot appear in two visible terminal tiles in MVP
 
-**実装内容:**
-- `GhosttyInput` 構造体（namespace）
-  - `toGhosttyKey(_:NSEvent) -> ghostty_input_key_s`（キーコード変換テーブル）
-  - `toMods(_:NSEvent.ModifierFlags) -> ghostty_input_mods_s`
-  - `toScrollMods(_:NSEvent) -> ghostty_input_scroll_mods_s`
-- `NSTextInputClient` 実装（`setMarkedText`, `insertText`, `firstRect` など）
-- `keyDown(with:)` のオーバーライド
+## Phase D: CLI bridge + companion surfaces
 
-**Exit Criteria**: `a`, `Enter`, `Ctrl+C`, 日本語入力（ひらがな変換）が正常動作する
+Goal:
 
-### T-005: HelloWorld 統合確認
+- make browser/document views explicit companion surfaces opened from the terminal
 
-**目標**: `$SHELL` が GPU レンダリングされ、基本操作ができることを確認
+Deliverables:
 
-**確認事項:**
-- シェルプロンプトが表示される
-- 文字入力・Enter・Ctrl+C が動作する
-- ウィンドウリサイズに追随する
-- HiDPI（Retina）で鮮明に描画される
-- 日本語 IME で候補ウィンドウが正しい位置に出る
+- `agt open <url-or-file>`
+- terminal-scoped OSC bridge
+- browser tile
+- document tile
+- explicit MVP rejection path for directory inputs
 
-**Exit Criteria**: 上記全項目を手動確認
+Exit criteria:
 
----
+- browser/document tiles can be opened from local or remote shells inside agtmux-hosted terminals
+- bridge failures surface explicitly
 
-## Phase 2: Sidebar UI Port
+## Phase E: Persistence + restore states
 
-### T-006: AppViewModel.swift port from POC
+Goal:
 
-**目標**: POC の AppViewModel を agtmux daemon 対応に移植
+- make Workbench a reliable saved layout, not just an in-memory composition
 
-**POC 参照**: `exp/go-codex-implementation-poc/macapp/Sources/AppViewModel.swift`
+Deliverables:
 
-**変更点:**
-- Go 製 daemon への接続 → `AgtmuxDaemonClient` (agtmux CLI) に変更
-- データモデルを `DaemonModels.swift` の型に合わせる
-- `isOffline` 状態の追加
+- autosave
+- restore of terminal `SessionRef`s
+- restore of pinned browser/document tiles
+- placeholder states for broken refs
+- `Retry` / `Rebind` / `Remove Tile`
 
-**Exit Criteria**: `@Published var panes` がダミーデータで populated される
+Exit criteria:
 
-### T-007: Sidebar UI port
+- app restart restores Workbench state
+- broken refs remain visible and actionable
 
-**目標**: サイドバー UI を POC から移植
+## Phase F: Sidebar integration + old path removal
 
-**POC 参照**:
-- `exp/go-codex-implementation-poc/macapp/Sources/AGTMUXDesktopApp.swift`（SidebarView 部分）
+Goal:
 
-**コンポーネント:**
-- `SidebarView.swift`: pane 一覧のスクロールリスト
-- `SessionRowView.swift`: 各行（pane_id、activity_state アイコン、conversation_title）
-- `FilterBarView.swift`: All / Managed / Attention / Pinned タブ
+- fully reconnect the new Workbench path to sidebar workflows and remove linked-session mainline code
 
-**Exit Criteria**: サイドバーにダミーデータの pane 一覧が表示される
+Deliverables:
 
-### T-008: CockpitView.swift — HSplitView 統合
+- sidebar jump-to-existing-session behavior
+- sidebar entry points for companion surfaces as needed
+- linked-session path deletion
+- obsolete filtering/title rewrite removal
 
-**目標**: サイドバー + ターミナルを横並びで表示する root view
+Exit criteria:
 
-**実装内容:**
-- `CockpitView: View` (SwiftUI)
-- `HSplitView { SidebarView() + TerminalPanel() }`
-- `TerminalPanel: NSViewRepresentable` で `GhosttyTerminalView` をラップ
+- normal product path contains no linked-session creation
+- `tmux ls` and app session view remain aligned
 
-**Exit Criteria**: ウィンドウにサイドバーとターミナルが並んで表示される
+## Phase G: Tests + polish
 
----
+Goal:
 
-## Phase 3: Daemon Integration
+- rewrite product truth in tests and finish the V2 transition cleanly
 
-### T-009: daemon 統合テスト（実機接続確認）
+Deliverables:
 
-**目標**: T-006b で実装した `AgtmuxDaemonClient` を実際の agtmux daemon に接続して動作確認する
+- Workbench V2 tests
+- duplicate-session tests
+- CLI bridge tests
+- restore placeholder tests
+- browser/document persistence tests
+- UI polish consistent with `terminal stays terminal`
 
-**実施内容:**
-- 実際に動作している agtmux daemon に `fetchSnapshot()` を呼んで正常データを確認
-- daemon 未起動時の `DaemonError.processError` 発生を確認（UI が isOffline = true になる）
-- 実際の `agtmux json` 出力と `AgtmuxSnapshot` / `AgtmuxPane` のデコード結果を照合
-- daemon の socket path デフォルト値を agtmux-v5 実装と突き合わせて確認
+Exit criteria:
 
-**Exit Criteria**: 実際の agtmux daemon との接続で正常データを取得できる。未起動時は `DaemonError.processError` が発生し UI がオフラインモードになる
+- tests no longer assert linked-session V1 behavior as mainline truth
+- V2 path is stable enough to retire V1
 
-### T-010: pane 選択 → tmux attach surface 切り替え
+## Delivery Strategy
 
-**目標**: サイドバーで pane を選択するとターミナルがその pane を表示する
+### Recommended implementation strategy
 
-**実装内容:**
-- `AppViewModel.selectPane(_:)` で `GhosttyApp.shared.newSurface(command: ["tmux", "attach-session", "-t", sessionName])`
-- 既存 surface の解放と新 surface のアタッチ
+1. Keep V1 and V2 isolated.
+2. Do not interleave linked-session and Workbench semantics in one shared model.
+3. Prefer replacing top-level composition paths over deeply branching existing linked-session code.
 
-**Exit Criteria**: サイドバーで別の session を選ぶとターミナルが切り替わる
+### Feature flag guidance
 
-### T-011: agent state リアルタイム表示
+If rollout risk is high, a temporary flag is acceptable:
 
-**目標**: activity_state が1秒ごとに更新され、サイドバーの色・アイコンに反映される
+- `cockpit_workbench_v2=0`
+  current linked-session path
+- `cockpit_workbench_v2=1`
+  new Workbench V2 path
 
-**確認事項:**
-- `running` → 緑のインジケーター
-- `waiting_approval` → 黄/オレンジのインジケーター
-- `idle` → グレー
-- `conversation_title` がサイドバーに表示される
+This is acceptable only if the models remain isolated.
 
-**Exit Criteria**: Claude Code を動かしている pane の状態変化がリアルタイムにサイドバーに反映される
-
----
-
-## Phase 4: Polish [Post-MVP]
-
-### T-012: マルチサーフェス（タブ切り替え）
-複数 pane を同時に表示するタブ UI。
-
-### T-013: キーボードショートカット
-`Cmd+1`〜`Cmd+9` で pane 切り替えなど。
-
-### T-014: libghostty-full public API リリース後の移行
-現在 internal API を使っているため、Ghostty が public API を提供した際に移行する。
-
----
-
-## Risks & Mitigations
+## Main Risks
 
 | ID | Risk | Mitigation |
 |----|------|------------|
-| R-001 | libghostty API breaking changes | Ghostty upstream に追従。xcframework を再ビルド。`build-ghosttykit.sh` でバージョンを固定管理 |
-| R-002 | xcframework の配布 | **Git LFS 採用**（ADR-20260228b）。`git lfs install` が必要。LFS 未設定の clone はポインタファイルが残る点を README に記載 |
-| R-003 | ghostty_surface_config_s の command 設定方法 | T-000 で確認済み（`const char*`）。Ghostty 本体 `src/apprt/swift/SurfaceView_AppKit.swift` が常にリファレンス |
-| R-004 | POC の AppViewModel が古い agtmux API を使っている | DaemonModels.swift（T-006a）に新 API スキーマを定義し、AppViewModel を適応させる |
-| R-005 | `tmux attach-session` が既存クライアントを共有セッションにする | 複数 agtmux-term ウィンドウを同一セッションに attach すると detach 時に両方切れる。Phase 4 で `tmux new-session -t` 方式に移行。MVP では既知の制限として許容 |
-| R-006 | surface lifecycle: `ghostty_surface_free()` 後の同一 NSView への再 attach | T-003 で `SurfaceView_AppKit.swift` の deinit パターンを確認し、CAMetalLayer の再利用可否を検証する |
+| R-001 | old linked-session model and V2 model get interleaved | isolate the V2 store/view path completely |
+| R-002 | terminal behavior is accidentally turned into custom IDE behavior | keep terminal tile plain Ghostty/tmux, no shortcut/right-click override |
+| R-003 | Workbench persistence becomes underspecified | lock `SessionRef`, pinning, restore error states first |
+| R-004 | remote bridge behavior becomes magical and confusing | keep OSC bridge explicit, no silent tunnel or rewrite |
+| R-005 | directory-tile future work distorts MVP scope | keep directory tile post-MVP and additive only |
 
----
+## Current Planning Status
 
-# Phase 3 Implementation Plan
-
-> 設計確定: 2026-03-02
-
-## Overview
-
-```
-Step 0: Spikes（早期検証 — 全スパイク通過後に Step 1 へ）
-Step 1: ドメインモデル拡張（WindowGroup + SessionGroup 拡張）
-Step 2: サイドバー 4 階層化 + 管理 UI（T-031 + T-041）
-Step 3: macOS 通知 + Needs Attention（T-032 + T-033）
-Step 4: BSP LayoutNode + WorkspaceStore（T-034）
-Step 5: WorkspaceArea + TabBarView + LayoutNodeView（T-035）
-Step 6: SurfacePool + LinkedSessionManager（T-036 + T-037）
-Step 7: Mode A — Cross-session Compose（T-038）
-Step 8: TmuxControlMode + TmuxControlModeRegistry（T-039 + T-042）
-Step 9: Mode B — Within-window Sync（T-040）
-```
-
-## Step 0: Spikes
-
-### Spike A: 複数 surface 同時表示（30分）
-- 2つの GhosttyTerminalView を HSplitView に並べて crash しないか確認
-- **追加確認**: `ghostty_surface_set_occlusion(surface, true)` がレンダリングを止めるか（SurfacePool.backgrounded の実現可能性）
-
-### Spike B: linked session 独立表示（2時間）
-```bash
-tmux new-session -d -s "agtmux-test" -t backend-api
-tmux select-window -t "agtmux-test:0"
-tmux select-pane -t "agtmux-test:%250"
-tmux attach-session -t "agtmux-test"
-```
-確認: 2つのターミナルが同じ session の異なる pane を独立表示できるか（**Phase 3 最高リスク**）
-
-### Spike C: tmux control mode イベント（1時間）
-```bash
-tmux -C attach-session -t backend-api
-```
-確認: %layout-change のフォーマット、list-panes との組み合わせ
-
-**全スパイク成功 → Step 1 へ。Spike B 失敗 → 設計全体を再検討。**
-
-## Step 4 補足: WorkspaceStore.updateContainer()
-
-SplitContainerView は `@Binding var container: SplitContainer` を受け取るが、
-`LayoutNode` は enum のため SwiftUI 標準パスで Binding を取り出せない。
-WorkspaceStore に `updateContainer(id: UUID, to: SplitContainer)` を追加し、
-カスタム Binding 経由でツリーを更新する。
+- Docs realignment is complete
+- V2 product baseline is locked
+- reserved future directory-surface work stays out of the MVP schedule
+- implementation should proceed only against the V2 docs, not the old linked-session mainline

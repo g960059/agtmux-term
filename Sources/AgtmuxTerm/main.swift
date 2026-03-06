@@ -82,15 +82,15 @@ if let xpcClient {
     daemonSupervisor?.startIfNeededAsync()
 }
 
-let localSnapshotClient: any LocalSnapshotClient
+let localMetadataClient: any LocalMetadataClient
 if let xpcClient {
-    localSnapshotClient = xpcClient
+    localMetadataClient = xpcClient
 } else {
-    localSnapshotClient = AgtmuxDaemonClient()
+    localMetadataClient = AgtmuxDaemonClient()
 }
 
 let viewModel: AppViewModel = MainActor.assumeIsolated {
-    let vm = AppViewModel(localClient: localSnapshotClient)
+    let vm = AppViewModel(localClient: localMetadataClient)
     return vm
 }
 

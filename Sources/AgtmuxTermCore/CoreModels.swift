@@ -11,11 +11,65 @@ package enum ActivityState: String, Codable, Equatable, Sendable {
     case unknown          = "unknown"
 }
 
+extension ActivityState {
+    package init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let value = try container.decode(String.self)
+        switch value.lowercased() {
+        case "running":
+            self = .running
+        case "idle":
+            self = .idle
+        case "waitingapproval", "waiting_approval":
+            self = .waitingApproval
+        case "waitinginput", "waiting_input":
+            self = .waitingInput
+        case "error":
+            self = .error
+        case "unknown":
+            self = .unknown
+        default:
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "Unsupported ActivityState: \(value)"
+            )
+        }
+    }
+
+    package func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+}
+
 // MARK: - PanePresence
 
 package enum PanePresence: String, Codable, Equatable, Sendable {
     case managed   = "managed"
     case unmanaged = "unmanaged"
+}
+
+extension PanePresence {
+    package init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let value = try container.decode(String.self)
+        switch value.lowercased() {
+        case "managed":
+            self = .managed
+        case "unmanaged":
+            self = .unmanaged
+        default:
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "Unsupported PanePresence: \(value)"
+            )
+        }
+    }
+
+    package func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
 }
 
 // MARK: - Provider
@@ -27,12 +81,64 @@ package enum Provider: String, Codable, Equatable, Sendable {
     case copilot = "copilot"
 }
 
+extension Provider {
+    package init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let value = try container.decode(String.self)
+        switch value.lowercased() {
+        case "claude":
+            self = .claude
+        case "codex":
+            self = .codex
+        case "gemini":
+            self = .gemini
+        case "copilot":
+            self = .copilot
+        default:
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "Unsupported Provider: \(value)"
+            )
+        }
+    }
+
+    package func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+}
+
 // MARK: - EvidenceMode
 
 package enum EvidenceMode: String, Codable, Equatable, Sendable {
     case deterministic = "deterministic"
     case heuristic     = "heuristic"
     case none          = "none"
+}
+
+extension EvidenceMode {
+    package init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let value = try container.decode(String.self)
+        switch value.lowercased() {
+        case "deterministic":
+            self = .deterministic
+        case "heuristic":
+            self = .heuristic
+        case "none":
+            self = .none
+        default:
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "Unsupported EvidenceMode: \(value)"
+            )
+        }
+    }
+
+    package func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
 }
 
 // MARK: - AgtmuxPane

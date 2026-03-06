@@ -2,246 +2,337 @@
 
 ## System Context
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                     macOS Developer                      │
-└────────────────────────────┬────────────────────────────┘
-                             │ uses
-                             ▼
-┌─────────────────────────────────────────────────────────┐
-│                     agtmux-term                          │
-│          (Swift macOS App, this repository)              │
-│                                                          │
-│  ┌──────────────┐    ┌────────────────────────────────┐  │
-│  │   Sidebar    │    │    GhosttyTerminalView          │  │
-│  │  (SwiftUI)   │    │    (NSView + Metal GPU)        │  │
-│  └──────┬───────┘    └──────────────┬─────────────────┘  │
-│         │                           │                     │
-└─────────┼───────────────────────────┼─────────────────────┘
-          │                           │
-          │ UDS JSON-RPC / CLI        │ PTY (via tmux)
-          ▼                           ▼
-┌─────────────────────┐   ┌──────────────────────────────┐
-│   agtmux daemon     │   │   GhosttyKit.xcframework     │
-│   (Rust process)    │   │   (libghostty C API)         │
-│   agtmux-v5 repo    │   │   Built from Ghostty source  │
-└─────────────────────┘   └──────────────────────────────┘
-          │                           │
-          ▼                           ▼
-┌─────────────────────┐   ┌──────────────────────────────┐
-│   tmux sessions     │   │   Metal GPU                  │
-│   (AI agent panes)  │   │   (GPU-accelerated render)   │
-└─────────────────────┘   └──────────────────────────────┘
-```
-
-**External Systems:**
-- **agtmux daemon**: エージェント状態推定エンジン（別リポジトリ `agtmux-v5-architecture-blueprint`）。UDS JSON-RPC または CLI (`agtmux json`) で状態を提供
-- **tmux**: ターミナルマルチプレクサ。pane の PTY を提供
-- **GhosttyKit.xcframework**: Ghostty リポジトリから `zig build xcframework` で生成する xcframework。libghostty C API を提供
-
-## Component Tree
+`agtmux-term` is a tmux-first macOS cockpit.
+Its job is not to replace tmux, but to compose real tmux sessions with lightweight companion surfaces while preserving normal terminal behavior.
 
 ```
-agtmux-term (Swift macOS App)
-├── GhosttyKit.xcframework          ← Ghostty repo から zig build で生成
-│   └── ghostty.h                   ← C API ヘッダー
-└── Sources/
-    ├── App/
-    │   ├── AgtmuxTermApp.swift     (@main, WindowGroup, AppDelegate)
-    │   └── AppViewModel.swift      (ObservableObject — POC から流用・調整)
-    ├── Terminal/
-    │   ├── GhosttyApp.swift        (ghostty_app_t lifecycle + wakeup_cb)
-    │   ├── GhosttyTerminalView.swift (NSView + Metal + NSTextInputClient)
-    │   └── GhosttyInput.swift      (NSEvent → ghostty_input_key_s mapping)
-    ├── Sidebar/
-    │   ├── SidebarView.swift       (POC から流用)
-    │   ├── SessionRowView.swift    (pane 行 UI)
-    │   └── FilterBarView.swift     (StatusFilter タブバー)
-    ├── DaemonClient/
-    │   ├── AgtmuxDaemonClient.swift (agtmux CLI wrapper / UDS client)
-    │   └── DaemonModels.swift      (JSON decode 用の型定義)
-    └── CockpitView.swift           (HSplitView: sidebar + terminal panel)
+┌──────────────────────────────────────────────────────────┐
+│                     macOS Developer                     │
+└─────────────────────────────┬────────────────────────────┘
+                              │ uses
+                              ▼
+┌──────────────────────────────────────────────────────────┐
+│                      agtmux-term                         │
+│  ┌──────────────────┐  ┌──────────────────────────────┐ │
+│  │ Sidebar / Status │  │ Workbench Area               │ │
+│  │ session browser  │  │ terminal/browser/document    │ │
+│  │ agent metadata   │  │ saved layout                 │ │
+│  └────────┬─────────┘  └──────────────┬───────────────┘ │
+└───────────┼────────────────────────────┼─────────────────┘
+            │                            │
+            │ inventory / metadata       │ terminal surface
+            ▼                            ▼
+┌──────────────────────┐      ┌──────────────────────────┐
+│ tmux / SSH           │      │ GhosttyKit.xcframework   │
+│ real sessions        │      │ libghostty C API         │
+└──────────┬───────────┘      └──────────────────────────┘
+           │
+           ▼
+┌──────────────────────┐
+│ agtmux daemon        │
+│ local metadata       │
+│ health overlay       │
+└──────────────────────┘
 ```
+
+## Architectural Intent
+
+The architecture follows these rules:
+
+- tmux / SSH remain the source of truth for real session existence
+- agtmux daemon provides metadata and observability, not session truth
+- terminal tiles are plain Ghostty/tmux views attached to real sessions
+- Workbench is app-owned saved layout state
+- browser / document surfaces are explicit companion views
+- hidden linked-session creation is not part of the normal product path
+
+## Main Components
+
+### 1. Session Inventory and Observability
+
+Responsible for:
+
+- local tmux inventory
+- remote tmux inventory
+- local daemon metadata overlay
+- sidebar grouping and filtering
+- agent status surfacing
+
+Primary modules:
+
+- `LocalTmuxInventoryClient`
+- `RemoteTmuxClient`
+- `LocalMetadataClient` / XPC-backed daemon client
+- `AppViewModel`
+- `SidebarView`
+
+### 2. Terminal Runtime
+
+Responsible for:
+
+- Ghostty app lifecycle
+- Ghostty surface lifecycle
+- IME and terminal rendering
+- command-based attach to real tmux sessions
+
+Primary modules:
+
+- `GhosttyApp`
+- `GhosttyTerminalView`
+- `GhosttyInput`
+- terminal-tile hosting layer
+
+### 3. Workbench Runtime
+
+Responsible for:
+
+- split tree layout
+- tile identity and persistence
+- terminal tile placement
+- companion surface placement
+- duplicate-session prevention
+- restore / placeholder states
+
+Primary modules:
+
+- `WorkbenchStore` or equivalent V2 store
+- Workbench view hierarchy
+- tile renderers
+
+### 4. Companion Surface Runtime
+
+Responsible for:
+
+- browser tile state
+- document tile state
+- explicit open from UI or CLI bridge
+- pinning / restore behavior
+
+Primary modules:
+
+- browser tile host
+- document tile host
+- future additive extension point for directory tile
+
+### 5. CLI Bridge
+
+Responsible for:
+
+- receiving explicit open requests from terminals
+- preserving source / cwd context
+- opening browser/document tiles in the active Workbench
+
+Primary modules:
+
+- `agt open`
+- terminal-scoped OSC transport
+- bridge decoder / dispatch layer
+
+## Domain Model
+
+### Source of Truth Split
+
+Two kinds of truth intentionally coexist:
+
+1. **tmux truth**
+   - real sessions
+   - real windows
+   - real panes
+   - session existence
+
+2. **app truth**
+   - Workbench layout
+   - tile placement
+   - pinned companion surfaces
+   - restore placeholders
+
+This separation is the core of the V2 architecture.
+
+### Core Entities
+
+```swift
+struct Workbench {
+    let id: UUID
+    var title: String
+    var root: WorkbenchNode
+    var focusedTileID: UUID?
+}
+
+indirect enum WorkbenchNode {
+    case tile(WorkbenchTile)
+    case split(SplitContainer)
+}
+
+struct WorkbenchTile {
+    let id: UUID
+    var kind: TileKind
+    var pinned: Bool
+}
+
+enum TileKind {
+    case terminal(sessionRef: SessionRef)
+    case browser(url: URL, sourceContext: String?)
+    case document(ref: DocumentRef)
+}
+
+enum TargetRef {
+    case local
+    case remote(hostKey: String)
+}
+
+struct SessionRef {
+    var target: TargetRef
+    var sessionName: String
+    var lastSeenSessionID: String?
+    var lastSeenRepoRoot: String?
+}
+```
+
+Key semantics:
+
+- `SessionRef = target + exact session name`
+- `TargetRef` is app-owned identity (`local` or configured remote host key)
+- `TargetRef` is not guessed from prompt text, `user@host`, or ad-hoc hostname parsing
+- `lastSeenSessionID` is a hint only
+- one `SessionRef` may appear in only one visible terminal tile in MVP
+- future directory tile must be additive to this model, not a redesign trigger
 
 ## Data Flows
 
-### Flow-001: エージェント状態取得
+### Flow-001: Local Inventory + Metadata Overlay
 
 ```
-AgtmuxDaemonClient
-  → Process("agtmux", ["--socket-path", path, "json"])
-  → stdout: JSON { version, panes: [...] }
-  → DaemonModels.AgtmuxSnapshot (Codable decode)
-  → AppViewModel.panes (Published)
-  → SidebarView (SwiftUI bindings)
+LocalTmuxInventoryClient
+  → tmux list-panes
+  → inventory rows (session / window / pane existence)
+  → AppViewModel inventory merge
+
+LocalMetadataClient
+  → app-owned daemon socket
+  → ui.bootstrap.v2 / ui.changes.v2
+  → pane metadata overlay
+  → AppViewModel merged sidebar model
 ```
 
-**更新間隔**: 1秒ポーリング（Task.sleep ループ）。将来的に UDS push 通知へ移行可能。
+Role split:
 
-### Flow-002: ターミナル表示
+- inventory decides what exists
+- metadata enriches what exists
+- failure in metadata must not invent or delete tmux objects
 
-```
-User selects pane in SidebarView
-  → AppViewModel.selectPane(pane) → selectedPane = pane のみ更新
-  → TerminalPanel.Coordinator の $selectedPane sink が発火
-  → shellEscaped(sessionName):windowIndex でコマンド文字列を構築
-  → GhosttyApp.newSurface(command: "tmux attach-session -t <session>:<window>")
-  → ghostty_surface_new(app, &cfg) where cfg.command = const char*（単一文字列）
-  → GhosttyTerminalView.attachSurface(surface)  ← 旧 surface を ghostty_surface_free() + releaseSurface()
-  → ghostty_surface_draw(surface) [Metal GPU render loop]
-```
-
-### Flow-003: キーボード入力
+### Flow-002: Health Observability
 
 ```
-NSEvent (keyDown)
-  → GhosttyTerminalView.keyDown(_:)
-  → ghostty_surface_key(surface, key)    ← 先に試す（consumed: Bool を返す）
-    ↓ consumed = true（通常キー）
-    → PTY へ送信完了（interpretKeyEvents は呼ばない）
-    ↓ consumed = false（IME 入力中など）
-  → interpretKeyEvents([event])          ← NSTextInputClient プロトコル
-    ↓ (IME プリエディット中)
-  → setMarkedText(_:selectedRange:replacementRange:)
-  → ghostty_surface_preedit(surface, text, len)
-    ↓ (IME 確定 or 直接入力)
-  → insertText(_:replacementRange:) → keyTextAccumulator に蓄積
-  → sendText() → ghostty_surface_text(surface, text, len)
+LocalHealthClient
+  → app-owned daemon socket
+  → ui.health.v1
+  → runtime / replay / overlay / focus health
+  → sidebar health strip / banner / empty-state annotation
 ```
 
-### Flow-004: IME 候補ウィンドウ位置
+Health is annotation only.
+It does not alter tmux object existence.
+
+### Flow-003: Real Session Attach
 
 ```
-IME system calls firstRect(forCharacterRange:actualRange:)
-  → ghostty_surface_ime_point(surface, &x, &y, &w, &h)
-  → Convert ghostty coords → NSScreen coords
-  → return NSRect (IME candidate window position)
+User selects session
+  → WorkbenchStore places SessionRef in terminal tile
+  → terminal host builds attach command
+  → GhosttyApp.newSurface(command: "tmux attach-session -t <exact-session>")
+  → GhosttyTerminalView attaches surface
 ```
 
-## Key Design Decisions
+Important behavior:
+
+- terminal tile attaches to the real tmux session directly
+- no hidden linked session is created in the normal path
+- the terminal tile must preserve normal terminal interaction
+
+### Flow-004: CLI Open Bridge
+
+```
+User or agent runs `agt open <url-or-file>` inside terminal tile
+  → command resolves cwd + source context
+  → command emits custom OSC payload
+  → app bridge receives payload
+  → active Workbench opens browser/document tile
+```
+
+Why this architecture:
+
+- works for local and remote shells
+- does not require remote shells to reach a local Unix socket
+- stays explicit and terminal-native
+
+### Flow-005: Restore
+
+```
+App launch
+  → load autosaved Workbenches
+  → restore split tree + focused tile
+  → terminal tiles restore by SessionRef
+  → browser/document restore only if pinned
+  → unpinned browser/document context is dropped
+  → broken refs surface placeholder states
+```
+
+Broken refs are not auto-rebound.
+
+## Runtime Boundaries
+
+### Boundary A: tmux / SSH
+
+- source of truth for session existence
+- remote execution boundary
+- explicit exact session targeting
+
+### Boundary B: agtmux daemon
+
+- local metadata overlay
+- local health observability
+- not the owner of tmux session truth
+
+### Boundary C: app-owned Workbench state
+
+- persistent app state
+- autosave
+- split layout
+- companion surface pinning
+
+### Boundary D: terminal-scoped bridge
+
+- receives explicit open requests
+- carries source/cwd context
+- bridges shell actions to app-level Workbench composition
+- is driven by explicit terminal-originated OSC payloads, not by remote shells calling a local app socket directly
+
+## Key Architectural Decisions
 
 | ID | Decision | Rationale |
 |----|----------|-----------|
-| ADR-001 | libghostty を SwiftTerm の代替として採用 | GPU/IME/精度。詳細: `docs/80_decisions/ADR-20260228-libghostty-over-swiftterm.md` |
-| ADR-002 | Phase 1 は CLI (`agtmux json`) 経由でデータ取得 | 実装シンプル。UDS JSON-RPC は Phase 3 で移行 |
-| ADR-003 | POC の AppViewModel・Sidebar UI を流用 | ロジックは完成している。ターミナルバックエンドのみ置き換え |
+| ADR-001 | libghostty を SwiftTerm の代替として採用 | GPU/IME/precision |
+| ADR-002 | local state は inventory-first + sync-v2 metadata overlay で取得 | existence と metadata を分離するため |
+| ADR-003 | tmux / SSH を real session truth とする | app-local synthetic tmux reality を作らないため |
+| ADR-004 | Workbench は app-owned saved layout とする | tmux state と layout state を分離するため |
+| ADR-005 | CLI bridge は terminal-scoped custom OSC を第一経路にする | local/remote をまたいで explicit に扱えるため |
+| ADR-006 | hidden linked-session を normal product path から外す | tmux power user の mental model と整合させるため |
 
-## libghostty C API 概要
+## Deprecated Mainline Direction
 
-参照: `ghostty.h` (GhosttyKit.xcframework/Headers/)
-参照: Ghostty 本体 `src/apprt/swift/` (SurfaceView_AppKit.swift がリファレンス実装)
+The following is no longer the mainline architecture:
 
-```c
-// App lifecycle
-ghostty_app_t ghostty_app_new(const ghostty_runtime_config_s*, ghostty_config_t);
-void ghostty_app_free(ghostty_app_t);
-void ghostty_app_tick(ghostty_app_t);           // wakeup_cb から呼ぶ
+- linked-session-backed same-session multi-view
+- app-local tmux window switching model
+- Phase 3 BSP workspace as the primary product truth
 
-// Surface (terminal view instance)
-ghostty_surface_t ghostty_surface_new(ghostty_app_t, const ghostty_surface_config_s*);
-void ghostty_surface_free(ghostty_surface_t);
-void ghostty_surface_draw(ghostty_surface_t);   // Metal GPU render
+That work remains useful as implementation history, but not as current architecture truth.
 
-// Resize
-void ghostty_surface_set_size(ghostty_surface_t, uint32_t w, uint32_t h);
+## Post-MVP Reserved Surface
 
-// Input
-bool ghostty_surface_key(ghostty_surface_t, ghostty_input_key_s);
-void ghostty_surface_mouse_button(ghostty_surface_t, ghostty_input_mouse_button_e,
-                                  ghostty_input_action_e, ghostty_input_mods_s);
-void ghostty_surface_mouse_pos(ghostty_surface_t, double x, double y);
-void ghostty_surface_mouse_scroll(ghostty_surface_t, double x, double y,
-                                  ghostty_input_scroll_mods_s);
-void ghostty_surface_text(ghostty_surface_t, const char*, uintptr_t);
+The architecture intentionally leaves room for a future lightweight directory surface.
 
-// IME
-void ghostty_surface_preedit(ghostty_surface_t, const char*, uintptr_t);
-void ghostty_surface_ime_point(ghostty_surface_t, double* x, double* y,
-                               double* w, double* h);
-```
-
-**フレームレート**: libghostty 内部 8ms タイマー自律駆動（≈125fps）。Swift 側は `wakeup_cb` を受け取り `ghostty_app_tick()` を呼ぶだけ。
-
----
-
-# Phase 3 Architecture
-
-> 設計確定: 2026-03-02
-
-## Phase 3 System Overview
-
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│  NSWindow                                                               │
-│  ┌──────────────┐  ┌──────────────────────────────────────────────────┐ │
-│  │  SidebarView │  │  WorkspaceArea                                   │ │
-│  │  4階層ツリー  │  │  TabBar + LayoutNodeView (BSP recursive)         │ │
-│  │  right-click │  │  ┌──────────────┬────────────────────────────┐   │ │
-│  │  管理メニュー  │  │  │ Tile %250    │ SplitContainer (.h)        │   │ │
-│  └──────────────┘  │  │ backend-api  │ ┌──────────┬───────────┐   │   │ │
-│                    │  │             │ │ Tile %303│ Tile %412 │   │   │ │
-│                    │  └──────────────┴─┴──────────┴───────────┴───┘   │ │
-│                    └──────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────────────┘
-
-Data flow:
-  AgtmuxDaemonClient  ──poll──► AppViewModel ──► SidebarView
-  RemoteTmuxClient    ──poll──►
-  TmuxControlMode     ──AsyncStream──► WorkspaceController ──► LayoutNode mutation
-  WorkspaceController ────────────────────────────────────► SurfacePool
-  SurfacePool ─────────────────────────────────────────────► GhosttyTerminalView
-```
-
-## Phase 3 Layer Structure
-
-### Layer 1: tmux 状態取得（拡張）
-```
-AgtmuxDaemonClient   → [AgtmuxPane]  (agtmux JSON)
-RemoteTmuxClient     → [AgtmuxPane]  (SSH)
-TmuxControlMode      → AsyncStream<ControlModeEvent>  [NEW]
-```
-
-### Layer 2: ドメインモデル（拡張）
-```
-WindowGroup          - windowId, windowIndex, windowName, panes: [AgtmuxPane]  [NEW]
-SessionGroup         - sessionName, windows: [WindowGroup]  [拡張: windows 追加]
-SourceGroup          - source, sessions: [SessionGroup]  (既存)
-```
-
-### Layer 3: レイアウトモデル（全て新規）
-```
-LayoutNode           - BSP tree (value type, indirect enum)
-WorkspaceTab         - id, root: LayoutNode, focusedLeafID: UUID?
-WorkspaceStore       - tabs: [WorkspaceTab], activeTabIndex: Int  (@Observable)
-```
-
-### Layer 4: Surface 管理（新規）
-```
-SurfacePool          - LeafPane.id → ManagedSurface  (active/backgrounded/pendingGC/defunct)
-LinkedSessionManager - linked session 作成・破棄
-TmuxCommandRunner    - 共有 tmux コマンド実行 actor
-TmuxManager          - session/window/pane 作成・削除
-TmuxControlModeRegistry - TmuxControlMode のライフサイクル管理
-```
-
-### Layer 5: UI（拡張）
-```
-SidebarView          - 4階層ツリー + 右クリック管理メニュー  [拡張]
-TabBarView           - WorkspaceTab 一覧  [NEW]
-LayoutNodeView       - BSP を再帰的にレンダリング  [NEW]
-GhosttyPaneTile      - NSViewRepresentable bridge (1 tile = 1 surface)  [NEW]
-NotificationManager  - UNUserNotificationCenter  [NEW]
-WorkspaceController  - TmuxControlMode events → LayoutNode mutation  [NEW]
-```
-
-## Key Design Decisions (Phase 3)
-
-| 判断 | 選択 | 理由 |
-|------|------|------|
-| BSP エンジン | value type (indirect enum) | SwiftUI diffing・Codable・undo が trivial |
-| linked session | 使う | 各 surface が独立した tmux client として任意 pane を表示 |
-| TmuxControlMode events | AsyncStream | コールバックより型安全、backpressure あり |
-| SurfacePool gc | タイマー駆動 | タブ切り替え時に同期削除しない（5秒 grace period） |
-| 管理 UI | 右クリックのみ | keyboard-first ユーザーに [+] ボタンは不要 |
-| kill-session 順序 | stop TmuxControlMode → kill | SIGPIPE 防止 |
-| Phase 3 sync 方向 | tmux → Ghostty のみ | bidirectional sync は Phase 4 以降 |
+- it must reuse `TargetRef` and source-aware path semantics
+- it must stay additive to `WorkbenchTile`
+- a future CLI such as `agt reveal <dir>` may target this surface
+- it is not part of the V2 MVP implementation plan

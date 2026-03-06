@@ -5,7 +5,7 @@ import Darwin
 
 /// Errors surfaced by AgtmuxDaemonClient.
 package enum DaemonError: Error {
-    /// agtmux binary not found in AGTMUX_BIN or PATH.
+    /// agtmux binary not found in AGTMUX_BIN or bundled app resources.
     case daemonUnavailable
     /// Binary ran but exited with a non-zero status.
     case processError(exitCode: Int32, stderr: String)
@@ -15,12 +15,17 @@ package enum DaemonError: Error {
 
 // MARK: - AgtmuxDaemonClient
 
-/// Fetches pane snapshots by running `agtmux --socket-path <path> json` as a subprocess.
+/// Local daemon client for snapshot, sync-v2 metadata, and health APIs.
 package actor AgtmuxDaemonClient {
-    private let socketPath: String
+    package let socketPath: String
+    private var syncV2Session: AgtmuxSyncV2Session?
 
     package init(socketPath: String = AgtmuxBinaryResolver.defaultSocketPath) {
         self.socketPath = socketPath
+    }
+
+    package var usesManagedDefaultSocket: Bool {
+        socketPath == AgtmuxBinaryResolver.defaultSocketPath
     }
 
     /// Run `agtmux --socket-path <socketPath> json` and decode the result.
@@ -52,6 +57,22 @@ package actor AgtmuxDaemonClient {
         throw lastError ?? DaemonError.daemonUnavailable
     }
 
+    package func fetchUIBootstrapV2() async throws -> AgtmuxSyncV2Bootstrap {
+        try ensureManagedRuntimeConfigured(forInlineOverrideKeys: ["AGTMUX_UI_BOOTSTRAP_V2_JSON"])
+        let session = syncV2SessionInstance()
+        return try await session.bootstrap()
+    }
+
+    package func fetchUIChangesV2(limit: Int = 256) async throws -> AgtmuxSyncV2ChangesResponse {
+        try ensureManagedRuntimeConfigured(forInlineOverrideKeys: ["AGTMUX_UI_CHANGES_V2_JSON"])
+        let session = syncV2SessionInstance()
+        return try await session.pollChanges(limit: limit)
+    }
+
+    package func resetUIChangesV2() async {
+        syncV2Session = nil
+    }
+
     private func runJSON(binaryURL agtmuxURL: URL) throws -> AgtmuxSnapshot {
         let result = try Self.runProcess(
             executableURL: agtmuxURL,
@@ -67,6 +88,31 @@ package actor AgtmuxDaemonClient {
             return try AgtmuxSnapshot.decode(from: result.stdout, source: "local")
         } catch {
             throw DaemonError.parseError(error.localizedDescription)
+        }
+    }
+
+    private func syncV2SessionInstance() -> AgtmuxSyncV2Session {
+        if let syncV2Session {
+            return syncV2Session
+        }
+
+        let created = AgtmuxSyncV2Session(transport: self)
+        syncV2Session = created
+        return created
+    }
+
+    func ensureManagedRuntimeConfigured(forInlineOverrideKeys keys: [String]) throws {
+        guard usesManagedDefaultSocket else { return }
+
+        let env = ProcessInfo.processInfo.environment
+        if keys.contains(where: { env[$0] != nil }) {
+            return
+        }
+
+        let candidates = AgtmuxBinaryResolver.candidateBinaryURLs()
+            .filter { FileManager.default.isExecutableFile(atPath: $0.path) }
+        guard !candidates.isEmpty else {
+            throw DaemonError.daemonUnavailable
         }
     }
 
@@ -130,5 +176,113 @@ package actor AgtmuxDaemonClient {
 
         let stderr = String(data: stderrData, encoding: .utf8) ?? ""
         return ProcessResult(exitCode: process.terminationStatus, stdout: stdoutData, stderr: stderr)
+    }
+}
+
+package enum DaemonUIErrorCode: String, Sendable {
+    case syncV2MethodNotFound = "sync_v2_method_not_found"
+    case uiHealthMethodNotFound = "ui_health_v1_method_not_found"
+}
+
+package struct DaemonUIErrorEnvelope: Codable, Sendable {
+    package let code: String
+    package let message: String
+    package let method: String?
+    package let rpcCode: Int?
+
+    package init(code: String, message: String, method: String?, rpcCode: Int?) {
+        self.code = code
+        self.message = message
+        self.method = method
+        self.rpcCode = rpcCode
+    }
+}
+
+extension DaemonError: LocalizedError, CustomStringConvertible {
+    public var errorDescription: String? {
+        switch self {
+        case .daemonUnavailable:
+            return "agtmux daemon unavailable"
+        case let .processError(exitCode, stderr):
+            if let payload = Self.decodeUIErrorEnvelope(from: stderr) {
+                return payload.message
+            }
+            let detail = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            if detail.isEmpty {
+                return "agtmux process failed with exit code \(exitCode)"
+            }
+            return "agtmux process failed with exit code \(exitCode): \(detail)"
+        case let .parseError(message):
+            return message
+        }
+    }
+
+    public var description: String {
+        errorDescription ?? "agtmux daemon error"
+    }
+}
+
+package extension DaemonError {
+    static let uiErrorPrefix = "AGTMUX_UI_ERROR="
+
+    var uiSurfaceText: String {
+        switch self {
+        case let .processError(_, stderr) where stderr.hasPrefix(Self.uiErrorPrefix):
+            return stderr
+        default:
+            return errorDescription ?? "agtmux daemon error"
+        }
+    }
+
+    static func makeSyncV2MethodNotFoundError(method: String, rpcCode: Int?, message: String) -> DaemonError {
+        let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        let codeText = rpcCode.map(String.init) ?? "unknown"
+        let humanMessage = "agtmux daemon is too old for sync-v2: missing RPC method \(method) (code \(codeText)): \(trimmed)"
+        return makeStructuredMethodNotFoundError(
+            code: .syncV2MethodNotFound,
+            method: method,
+            rpcCode: rpcCode,
+            message: humanMessage
+        )
+    }
+
+    static func makeUIHealthMethodNotFoundError(method: String, rpcCode: Int?, message: String) -> DaemonError {
+        let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        let codeText = rpcCode.map(String.init) ?? "unknown"
+        let humanMessage = "agtmux daemon does not expose ui.health.v1 observability: missing RPC method \(method) (code \(codeText)): \(trimmed)"
+        return makeStructuredMethodNotFoundError(
+            code: .uiHealthMethodNotFound,
+            method: method,
+            rpcCode: rpcCode,
+            message: humanMessage
+        )
+    }
+
+    private static func makeStructuredMethodNotFoundError(
+        code: DaemonUIErrorCode,
+        method: String,
+        rpcCode: Int?,
+        message: String
+    ) -> DaemonError {
+        let payload = DaemonUIErrorEnvelope(
+            code: code.rawValue,
+            message: message,
+            method: method,
+            rpcCode: rpcCode
+        )
+        guard
+            let data = try? JSONEncoder().encode(payload),
+            let json = String(data: data, encoding: .utf8)
+        else {
+            return .processError(exitCode: Int32(rpcCode ?? -32601), stderr: message)
+        }
+        return .processError(exitCode: Int32(rpcCode ?? -32601), stderr: "\(Self.uiErrorPrefix)\(json)")
+    }
+
+    static func decodeUIErrorEnvelope(from text: String) -> DaemonUIErrorEnvelope? {
+        guard text.hasPrefix(Self.uiErrorPrefix) else { return nil }
+        let payloadText = String(text.dropFirst(Self.uiErrorPrefix.count))
+        guard let data = payloadText.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode(DaemonUIErrorEnvelope.self, from: data)
     }
 }

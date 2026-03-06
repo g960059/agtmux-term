@@ -21,13 +21,15 @@
   - escalate only when it changes `docs/10_foundation.md` or public behavior
 
 ## L2: Progressive Disclosure (What to read, in order)
-1) `docs/70_progress.md` (latest learnings, constraints, open points)
-2) `docs/60_tasks.md` (`MVP Track` first)
+1) `docs/65_current.md` (current phase, locked decisions, next steps)
+2) `docs/60_tasks.md` (active and next tasks only)
 3) `docs/10_foundation.md` (stable intent)
 4) `docs/20_spec.md` (`[MVP]` first, `[Post-MVP]` only as needed)
-5) `docs/40_design.md` (`Main (MVP Slice)` first, `Appendix` only if blocked)
-6) `docs/30_architecture.md` -> `docs/50_plan.md` (as needed)
-7) `docs/90_index.md` (only if structure changed / cannot navigate)
+5) `docs/40_design.md` (compact MVP design summary)
+6) `docs/41_design-workbench.md` / `docs/42_design-cli-bridge.md` / `docs/43_design-companion-surfaces.md` (only for the area being changed)
+7) `docs/30_architecture.md` -> `docs/50_plan.md` (as needed)
+8) `docs/70_progress.md` (recent context only)
+9) `docs/archive/` (history only when needed)
 
 ## Plan mode policy (Docs-first)
 - Built-in plan/task outputs are scratch.
@@ -53,6 +55,7 @@ C) Open questions ONLY if Escalation triggers.
   - Include: phase name, what was changed, files touched, live verification result.
   - Rationale: context compaction mid-task loses unreported phase details; next session resumes from docs, not memory.
 - **`docs/60_tasks.md` DONE entry**: reflect all phases on task close (not just Phase 1).
+- Historical detail should be moved into `docs/archive/` rather than re-expanding the active files indefinitely.
 
 ## Quality Gates (project-specific)
 - Build: `swift build` must PASS (zero errors)

@@ -259,6 +259,116 @@ final class AgtmuxTermUITests: XCTestCase {
         XCTAssertEqual(legacyMain.count, 0, "Tab title should no longer be fixed to 'Main'")
     }
 
+    /// T-E2E-002c: metadata-enabled launch should surface local daemon health badges
+    /// with stable accessibility identifiers and values.
+    func testSidebarHealthStripShowsMixedHealthStates() throws {
+        let token = String(UUID().uuidString.prefix(8)).lowercased()
+        let session = "agtmux-e2e-health-\(token)"
+        let socket = "agtmux-e2e-\(token)"
+        let control = try makeAppTmuxControlPaths(token: token)
+        let scenario = AppTmuxScenario(
+            sessionName: session,
+            windowName: "health",
+            paneCount: 1,
+            shellCommand: "/bin/sleep 600"
+        )
+
+        app.launchEnvironment.removeValue(forKey: "AGTMUX_JSON")
+        configureAppDrivenTmux(socketName: socket, control: control, scenario: scenario)
+        app.launchEnvironment["AGTMUX_UI_HEALTH_V1_JSON"] = """
+        {
+          "generated_at":"2026-03-06T19:00:00Z",
+          "runtime":{"status":"unavailable","detail":"bundled runtime missing","last_updated_at":"2026-03-06T18:59:58Z"},
+          "replay":{"status":"degraded","lag":12,"last_resync_reason":"trimmed_cursor","last_resync_at":"2026-03-06T18:59:57Z","detail":"replay lagging behind head"},
+          "overlay":{"status":"degraded","detail":"metadata stale","last_updated_at":"2026-03-06T18:59:56Z"},
+          "focus":{"status":"unavailable","focused_pane_id":"%1","mismatch_count":3,"last_sync_at":"2026-03-06T18:59:55Z","detail":"focus sync offline"}
+        }
+        """
+        app.launchForMetadataUITest()
+
+        let bootstrap = try waitForAppTmuxBootstrapResult(control: control)
+        guard bootstrap.ok,
+              let bootstrapSession = bootstrap.sessionName,
+              bootstrapSession == session,
+              let paneID = bootstrap.paneIDs.first else {
+            throw XCTSkip("App-driven tmux bootstrap failed for health-strip test")
+        }
+
+        let paneRow = paneRow(source: "local", sessionName: session, paneID: paneID)
+        XCTAssertTrue(
+            paneRow.waitForExistence(timeout: TestConstants.sidebarPopulateTimeout),
+            "Metadata-enabled UI test still needs local inventory to populate"
+        )
+
+        let strip = sidebarHealthStrip()
+        XCTAssertTrue(
+            strip.waitForExistence(timeout: TestConstants.sidebarPopulateTimeout),
+            "Health strip should appear when AGTMUX_UI_HEALTH_V1_JSON is provided"
+        )
+        XCTAssertEqual(strip.label, "Local daemon health")
+        // macOS exposes the stable AX contract for this container through the strip
+        // identifier/label and the child badge values, not a reliable parent value.
+
+        let runtimeBadge = sidebarHealthBadge("runtime")
+        XCTAssertTrue(runtimeBadge.exists)
+        XCTAssertEqual(runtimeBadge.label, "Runtime health")
+        XCTAssertEqual(runtimeBadge.value as? String, "unavailable, down")
+
+        let replayBadge = sidebarHealthBadge("replay")
+        XCTAssertTrue(replayBadge.exists)
+        XCTAssertEqual(replayBadge.label, "Replay health")
+        XCTAssertEqual(replayBadge.value as? String, "degraded, +12")
+
+        let overlayBadge = sidebarHealthBadge("overlay")
+        XCTAssertTrue(overlayBadge.exists)
+        XCTAssertEqual(overlayBadge.label, "Overlay health")
+        XCTAssertEqual(overlayBadge.value as? String, "degraded, warn")
+
+        let focusBadge = sidebarHealthBadge("focus")
+        XCTAssertTrue(focusBadge.exists)
+        XCTAssertEqual(focusBadge.label, "Focus health")
+        XCTAssertEqual(focusBadge.value as? String, "unavailable, x3")
+    }
+
+    /// T-E2E-002d: metadata-enabled launch without any available health snapshot should
+    /// keep the health strip absent instead of surfacing stale UI.
+    func testSidebarHealthStripStaysAbsentWithoutHealthSnapshot() throws {
+        let token = String(UUID().uuidString.prefix(8)).lowercased()
+        let session = "agtmux-e2e-health-clear-\(token)"
+        let socket = "agtmux-e2e-\(token)"
+        let control = try makeAppTmuxControlPaths(token: token)
+        let scenario = AppTmuxScenario(
+            sessionName: session,
+            windowName: "health-clear",
+            paneCount: 1,
+            shellCommand: "/bin/sleep 600"
+        )
+
+        app.launchEnvironment.removeValue(forKey: "AGTMUX_JSON")
+        app.launchEnvironment.removeValue(forKey: "AGTMUX_UI_HEALTH_V1_JSON")
+        configureAppDrivenTmux(socketName: socket, control: control, scenario: scenario)
+        app.launchForMetadataUITest()
+
+        let bootstrap = try waitForAppTmuxBootstrapResult(control: control)
+        guard bootstrap.ok,
+              let bootstrapSession = bootstrap.sessionName,
+              bootstrapSession == session,
+              let paneID = bootstrap.paneIDs.first else {
+            throw XCTSkip("App-driven tmux bootstrap failed for absent-health test")
+        }
+
+        let paneRow = paneRow(source: "local", sessionName: session, paneID: paneID)
+        XCTAssertTrue(
+            paneRow.waitForExistence(timeout: TestConstants.sidebarPopulateTimeout),
+            "Inventory must still populate while health remains absent"
+        )
+
+        XCTAssertFalse(
+            sidebarHealthStrip().waitForExistence(timeout: 1.0),
+            "Health strip should stay absent when no ui.health.v1 snapshot is available"
+        )
+    }
+
     /// T-E2E-005: New-tab button creates a tab.
     func testTabCreation() throws {
         app.launchForUITest()
@@ -1606,6 +1716,21 @@ final class AgtmuxTermUITests: XCTestCase {
         let key = AccessibilityID.sessionKey(source: source, sessionName: sessionName)
         return app.descendants(matching: .any).matching(
             NSPredicate(format: "identifier == %@", AccessibilityID.sidebarSessionPrefix + key)
+        ).firstMatch
+    }
+
+    private func sidebarHealthStrip() -> XCUIElement {
+        app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier == %@", AccessibilityID.sidebarHealthStrip)
+        ).firstMatch
+    }
+
+    private func sidebarHealthBadge(_ componentID: String) -> XCUIElement {
+        app.descendants(matching: .any).matching(
+            NSPredicate(
+                format: "identifier == %@",
+                AccessibilityID.sidebarHealthBadgePrefix + componentID
+            )
         ).firstMatch
     }
 

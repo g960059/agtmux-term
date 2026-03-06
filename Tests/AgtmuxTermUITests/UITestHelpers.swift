@@ -30,6 +30,19 @@ extension XCUIApplication {
     /// should be gone within milliseconds of terminate(). The NSRunningApplication poll below
     /// is a safety net for any residual OS state.
     func launchForUITest() {
+        launchForUITest(inventoryOnly: true)
+    }
+
+    /// Launch with UITest environment but keep metadata/health polling enabled.
+    ///
+    /// This is intended for focused UI coverage that needs inline metadata or
+    /// `ui.health.v1` surfacing. Existing tests should keep using
+    /// `launchForUITest()` unless they explicitly need metadata-enabled behavior.
+    func launchForMetadataUITest() {
+        launchForUITest(inventoryOnly: false)
+    }
+
+    private func launchForUITest(inventoryOnly: Bool) {
         let preserveTmux = launchEnvironment["AGTMUX_UITEST_PRESERVE_TMUX"] == "1"
         if !preserveTmux {
             launchEnvironment["TMUX"] = ""
@@ -43,9 +56,13 @@ extension XCUIApplication {
             }
         }
         launchEnvironment["AGTMUX_UITEST"] = "1"
-        // Avoid `agtmux json` metadata subprocess during UI tests: inventory-only is
-        // enough for sidebar/session/window/pane contracts and keeps launch responsive.
-        launchEnvironment["AGTMUX_UITEST_INVENTORY_ONLY"] = "1"
+        if inventoryOnly {
+            // Avoid `agtmux json` metadata subprocess during UI tests: inventory-only is
+            // enough for sidebar/session/window/pane contracts and keeps launch responsive.
+            launchEnvironment["AGTMUX_UITEST_INVENTORY_ONLY"] = "1"
+        } else {
+            launchEnvironment.removeValue(forKey: "AGTMUX_UITEST_INVENTORY_ONLY")
+        }
         if !launchArguments.contains("-ApplePersistenceIgnoreState") {
             launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
         }

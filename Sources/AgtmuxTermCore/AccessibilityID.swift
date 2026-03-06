@@ -13,6 +13,8 @@ public enum AccessibilityID {
     public static let sidebarFilterAttention = "sidebar.filter.attention"
     public static let sidebarFilterPinned = "sidebar.filter.pinned"
     public static let sidebarEmpty        = "sidebar.emptyState"
+    public static let sidebarHealthStrip  = "sidebar.health.strip"
+    public static let sidebarHealthBadgePrefix = "sidebar.health.badge."
     public static let sidebarSessionPrefix = "sidebar.session." // + source_session
     public static let sidebarWindowPrefix = "sidebar.window."    // + source_session_windowID
     public static let sidebarPanePrefix   = "sidebar.pane."      // + source_session_paneID

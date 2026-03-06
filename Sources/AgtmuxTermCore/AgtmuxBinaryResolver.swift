@@ -5,9 +5,14 @@ import Foundation
 /// Resolution order:
 /// 1. `AGTMUX_BIN` environment variable (explicit override)
 /// 2. Bundled binary in app resources (`Resources/Tools/agtmux`)
-/// 3. PATH + common fallback directories
 public enum AgtmuxBinaryResolver {
-    public static let defaultSocketPath = "/tmp/agtmux-\(ProcessInfo.processInfo.userName)/agtmuxd.sock"
+    private static let runtimeDirectoryName = "AGTMUXDesktop"
+    public static let defaultSocketURL = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library", isDirectory: true)
+        .appendingPathComponent("Application Support", isDirectory: true)
+        .appendingPathComponent(runtimeDirectoryName, isDirectory: true)
+        .appendingPathComponent("agtmuxd.sock", isDirectory: false)
+    public static let defaultSocketPath = defaultSocketURL.path
 
     public static func resolveBinaryURL() -> URL? {
         candidateBinaryURLs().first(where: { FileManager.default.isExecutableFile(atPath: $0.path) })
@@ -21,26 +26,10 @@ public enum AgtmuxBinaryResolver {
             return [URL(fileURLWithPath: envPath)]
         }
 
-        var urls: [URL] = []
         if let bundled = bundledBinaryURL() {
-            urls.append(bundled)
+            return [bundled]
         }
-
-        let home = NSHomeDirectory()
-        let searchPaths: [String] = (env["PATH"] ?? "").split(separator: ":").map(String.init) + [
-            "\(home)/go/bin",
-            "\(home)/.cargo/bin",
-            "/usr/local/bin",
-            "/opt/homebrew/bin",
-        ]
-
-        for dir in searchPaths {
-            urls.append(URL(fileURLWithPath: dir).appendingPathComponent("agtmux"))
-        }
-
-        // Keep order stable while removing duplicate paths.
-        var seen = Set<String>()
-        return urls.filter { seen.insert($0.path).inserted }
+        return []
     }
 
     public static func bundledBinaryURL() -> URL? {
@@ -71,6 +60,15 @@ public enum AgtmuxBinaryResolver {
             }
         }
         return nil
+    }
+
+    public static func ensureSocketParentDirectoryExists(for socketPath: String) throws {
+        let directoryURL = URL(fileURLWithPath: socketPath).deletingLastPathComponent()
+        try FileManager.default.createDirectory(
+            at: directoryURL,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
     }
 
     private static func containingAppBundleURL(for bundleURL: URL) -> URL? {

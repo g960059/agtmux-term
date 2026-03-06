@@ -2,118 +2,87 @@
 
 ## Repository: agtmux-term
 
-AI エージェント対応ターミナルエミュレーター（macOS）。
-agtmux daemon と連携し、tmux セッション内の AI エージェント状態を監視・操作する。
+tmux-first macOS cockpit for AI-agent-driven development.
+The product centers on real tmux sessions, strong sidebar observability, and lightweight companion surfaces.
+
+## Read Order
+
+When rebuilding context, read in this order:
+
+1. `docs/00_router.md`
+2. `docs/65_current.md`
+3. `docs/60_tasks.md`
+4. `docs/10_foundation.md`
+5. `docs/20_spec.md`
+6. `docs/40_design.md`
+7. `docs/41_design-workbench.md`
+8. `docs/42_design-cli-bridge.md`
+9. `docs/43_design-companion-surfaces.md`
+10. `docs/30_architecture.md`
+11. `docs/50_plan.md`
+12. `docs/70_progress.md`
+13. `docs/archive/README.md`
 
 ## Documents
 
 | File | Tier | Content |
 |------|------|---------|
-| `AGENTS.md` | Stable | 実体エージェント運用ルール（role-play禁止、本体のみ） |
-| `CLAUDE.md` | Stable | プロセスルール、品質ポリシー、Orchestrator ゲート |
-| `docs/00_router.md` | Stable | 非交渉ゲート、Quality Gates、Review プロトコル |
-| `docs/10_foundation.md` | Stable | What / For Whom / Why / User Stories / Goals / Non-Goals |
-| `docs/20_spec.md` | Design | 機能要件 (FR)、非機能要件 (NFR)、制約 |
-| `docs/30_architecture.md` | Design | システムコンテキスト、コンポーネントツリー、データフロー |
-| `docs/40_design.md` | Design | 実装設計（GhosttyTerminalView, AgtmuxDaemonClient, pane アタッチ） |
-| `docs/50_plan.md` | Design | 4フェーズ実装計画、リスク |
-| `docs/60_tasks.md` | Tracking | タスクボード（T-001〜T-014） |
-| `docs/70_progress.md` | Tracking | 進捗ログ、フェーズ完了記録 |
-| `docs/80_decisions/` | Tracking | ADR 一覧 |
-| `docs/85_reviews/` | Tracking | Review Pack（コミット前レビュー） |
-| `docs/lessons.md` | Tracking | 修正パターンの記録（後から作成） |
+| `AGENTS.md` | Stable | repository-specific execution rules |
+| `CLAUDE.md` | Stable | project process and quality policy |
+| `docs/00_router.md` | Stable | hard gates, review protocol, docs-first contract |
+| `docs/65_current.md` | Tracking | active summary, locked decisions, next read path |
+| `docs/10_foundation.md` | Stable | product intent, audience, goals, non-goals |
+| `docs/20_spec.md` | Design | V2 MVP functional/non-functional spec |
+| `docs/30_architecture.md` | Design | V2 system context, components, data flows, boundaries |
+| `docs/40_design.md` | Design | compact V2 MVP design summary |
+| `docs/41_design-workbench.md` | Design | Workbench / terminal tile / duplicate / restore details |
+| `docs/42_design-cli-bridge.md` | Design | `agt open`, OSC bridge, remote semantics |
+| `docs/43_design-companion-surfaces.md` | Design | browser/document surfaces and future directory extension |
+| `docs/50_plan.md` | Design | V2 implementation phases and risks |
+| `docs/60_tasks.md` | Tracking | active and next tasks |
+| `docs/70_progress.md` | Tracking | recent progress summary |
+| `docs/80_decisions/` | Tracking | ADRs |
+| `docs/85_reviews/` | Tracking | review packs |
+| `docs/archive/` | Archive | historical tasks/progress and superseded context |
+| `docs/lessons.md` | Tracking | lessons learned |
 
-## ADR 一覧
+## Current Product Direction
+
+Mainline product truth is now:
+
+- real tmux sessions are the visible source of truth
+- terminal tiles stay normal Ghostty/tmux views
+- Workbench is app-owned saved layout state
+- browser/document surfaces are explicit companion views
+- hidden linked-session is not the normal product path
+
+## ADRs
 
 | File | Title | Status |
 |------|-------|--------|
 | `docs/80_decisions/ADR-20260228-libghostty-over-swiftterm.md` | libghostty を SwiftTerm の代替として採用 | Accepted |
 | `docs/80_decisions/ADR-20260228-ghosttykit-distribution.md` | GhosttyKit.xcframework 配布戦略（Git LFS 採用） | Accepted |
-
-## Source Structure
-
-```
-agtmux-term/
-├── CLAUDE.md
-├── README.md
-├── Package.swift                        ← Swift Package Manager
-├── GhosttyKit/
-│   └── GhosttyKit.xcframework           ← zig build xcframework で生成
-├── Sources/
-│   └── AgtmuxTerm/
-│       ├── App/
-│       │   ├── AgtmuxTermApp.swift
-│       │   └── AppViewModel.swift
-│       ├── Terminal/
-│       │   ├── GhosttyApp.swift
-│       │   ├── GhosttyTerminalView.swift
-│       │   └── GhosttyInput.swift
-│       ├── Sidebar/
-│       │   ├── SidebarView.swift
-│       │   ├── SessionRowView.swift
-│       │   └── FilterBarView.swift
-│       ├── DaemonClient/
-│       │   ├── AgtmuxDaemonClient.swift
-│       │   └── DaemonModels.swift
-│       └── CockpitView.swift
-├── vendor/
-│   └── ghostty/                         ← Ghostty ソース (git clone、.gitignore 除外)
-└── docs/
-    ├── 00_router.md
-    ├── 10_foundation.md
-    ├── 20_spec.md
-    ├── 30_architecture.md
-    ├── 40_design.md
-    ├── 50_plan.md
-    ├── 60_tasks.md
-    ├── 70_progress.md
-    ├── 80_decisions/
-    │   └── ADR-20260228-libghostty-over-swiftterm.md
-    ├── 85_reviews/
-    │   └── _review-pack-template.md
-    └── 90_index.md
-```
-
-## Quick Start
-
-```bash
-# Prerequisites
-brew install zig  # Zig 0.14.x
-git lfs install   # Git LFS（xcframework 取得に必要）
-
-# Clone（LFS 対応 clone で xcframework も自動取得）
-git clone https://github.com/g960059/agtmux-term
-cd agtmux-term
-
-# GhosttyKit を再ビルドする場合（通常は LFS から自動取得）
-# bash scripts/build-ghosttykit.sh
-
-# Build Swift app
-swift build
-
-# Run
-swift run AgtmuxTerm
-```
+| `docs/80_decisions/ADR-20260306-tmux-first-cockpit-v2.md` | tmux-first cockpit への mainline pivot | Accepted |
 
 ## Key External Dependencies
 
 | Dependency | Source | Purpose |
 |------------|--------|---------|
-| GhosttyKit.xcframework | `vendor/ghostty` (zig build) | libghostty C API — GPU ターミナルレンダリング |
-| agtmux daemon | `agtmux-v5-architecture-blueprint` repo | エージェント状態推定エンジン |
-| tmux | システム PATH | pane の PTY 提供 |
+| GhosttyKit.xcframework | `vendor/ghostty` build output | libghostty terminal runtime |
+| agtmux daemon | `agtmux-v5-architecture-blueprint` repo | local metadata overlay and health |
+| tmux | system PATH / remote hosts | real session runtime |
 
-## Phase Status
+## Current Tracking Focus
 
-| Phase | Description | Status |
-|-------|-------------|--------|
-| Phase 0 | Build Infrastructure (T-001) | TODO |
-| Phase 1 | Terminal Core (T-002〜T-005) | TODO |
-| Phase 2 | Sidebar UI Port (T-006〜T-008) | TODO |
-| Phase 3 | Daemon Integration (T-009〜T-011) | TODO |
-| Phase 4 | Polish / Post-MVP (T-012〜T-014) | TODO |
+- `T-090` through `T-094`
+  Workbench V2 implementation kickoff track
+- `T-087`
+  docs compaction and active-context redesign complete
+- `T-076` through `T-084`
+  local daemon runtime hardening and health observability complete
 
-## Cross-Repo V2 A0
-- Final plan output: `/tmp/agtmux-v2-final-plan-20260305-v3.md`
-- agtmux handover: `/Users/virtualmachine/ghq/github.com/g960059/agtmux/docs/85_reviews/RP-20260305-agtmux-term-v2-a0-handover.md`
-- term execution task: `docs/60_tasks.md` (`T-074a`)
+## Notes
+
+- Older linked-session workspace work remains part of implementation history.
+- It is no longer the mainline product truth described by `docs/10`〜`docs/50`.
+- Historical task/progress detail is preserved under `docs/archive/`.

@@ -5,17 +5,27 @@
 | ID | Requirement | Priority |
 |----|-------------|----------|
 | FR-001 | libghostty surface を NSView として SwiftUI 内に埋め込む | [MVP] |
-| FR-002 | サイドバーで tmux pane を選択 → その pane を surface でアタッチ | [MVP] |
-| FR-003 | agtmux daemon から `agtmux json` 相当のデータを定期取得（1秒間隔） | [MVP] |
-| FR-004 | pane の activity_state を色・アイコンで表示（running/idle/waiting_approval/waiting_input/error） | [MVP] |
-| FR-005 | 会話タイトル（conversation_title）をサイドバーに表示 | [MVP] |
-| FR-006 | StatusFilter: All / Managed / Attention (waiting/error) / Pinned | [MVP] |
+| FR-002 | サイドバーに local / remote の **real tmux sessions** を表示し、pane/window 由来の metadata を重ねて表示する | [MVP] |
+| FR-003 | local tmux inventory を1秒間隔で取得し、agtmux daemon の `ui.bootstrap.v2` / `ui.changes.v2` で local metadata overlay を同期する | [MVP] |
+| FR-004 | pane の activity_state を色・アイコンで表示する（running / idle / waiting_approval / waiting_input / error / unknown） | [MVP] |
+| FR-005 | 会話タイトル（conversation_title）をサイドバーに表示する | [MVP] |
+| FR-006 | StatusFilter: All / Managed / Attention / Pinned を提供する（Pinned は UI 準備のみでも可） | [MVP] |
 | FR-007 | IME（日本語・CJK）がネイティブ動作する（NSTextInputClient 準拠） | [MVP] |
-| FR-008 | `tmux attach-session -t <session>` を surface 内で起動してペイン表示 | [MVP] |
-| FR-009 | daemon 未起動時はオフラインモードで graceful degradation（クラッシュしない） | [MVP] |
-| FR-010 | マルチサーフェス：複数 pane をタブ or 分割で同時表示 | [Post-MVP] |
-| FR-011 | キーボードショートカットで pane 切り替え | [Post-MVP] |
-| FR-012 | Pinned pane 機能（特定 pane を常に上位表示） | [Post-MVP] |
+| FR-008 | terminal tile は 1つの **real tmux session** に直接アタッチし、close と kill を分離する | [MVP] |
+| FR-009 | daemon unavailable / daemon incompatible / remote offline / session missing / path missing を fail-loudly に surfacing する | [MVP] |
+| FR-010 | Workbench は terminal / browser / document companion surfaces を split layout として保存・復元できる | [MVP] |
+| FR-011 | 1つの real tmux session は app 全体で1つの visible terminal tile にのみ存在できる | [MVP] |
+| FR-012 | terminal からの explicit CLI bridge (`agt open <url-or-file>`) で browser / document companion surfaces を開ける | [MVP] |
+| FR-013 | packaged app は bundle 同梱の release `agtmux` binary を app-owned daemon として起動し、local metadata は app-owned UDS socket を使う | [MVP] |
+| FR-014 | 開発時の daemon binary 切替は `AGTMUX_BIN` explicit override のみを正式サポートし、PATH 上 `agtmux` への暗黙 fallback は行わない | [MVP] |
+| FR-015 | `ui.bootstrap.v2` / `ui.changes.v2` を持たない古い daemon は非互換として明示 surfacing し、silent compatibility mode は持たない | [MVP] |
+| FR-016 | local daemon runtime / replay / overlay / focus の health を pane inventory と独立してサイドバーへ surfacing する | [A2] |
+| FR-017 | term は daemon の `ui.health.v1` を受け取り、health status / lag / resync reason / freshness を UI に表示できる | [A2] |
+| FR-018 | browser / document companion surfaces は pin されたものだけ Workbench 復元対象とし、unpinned は transient とする | [MVP] |
+| FR-019 | restore 時の broken reference に対し、`Retry` / `Rebind` / `Remove Tile` を提供する | [MVP] |
+| FR-020 | directory tile は MVP では実装しないが、将来 additive extension として追加できる tile model を保つ | [Post-MVP] |
+| FR-021 | terminal tile は right click・主要 shortcut・tmux 操作感を app が上書きしない | [MVP] |
+| FR-022 | remote URL は指定どおりに開き、implicit localhost rewrite や implicit SSH tunnel は行わない | [MVP] |
 
 ## Non-functional Requirements
 
@@ -25,7 +35,8 @@
 | NFR-Latency | エージェント状態更新遅延 | ≤3秒 |
 | NFR-Compatibility | 対応 macOS バージョン | macOS 14 (Sonoma) 以上 |
 | NFR-Build | ビルド手順の完結性 | `swift build` + Zig 事前ビルド xcframework で完結 |
-| NFR-Memory | メモリ使用量（idle 時） | ≤200MB（目安） |
+| NFR-Memory | メモリ使用量（idle 時） | ≤250MB（目安。companion surfaces を含む） |
+| NFR-Lightweight | IDE-like background load を持たない | no project indexer / no heavyweight explorer / lazy companion loading |
 
 ## Constraints
 
@@ -33,9 +44,57 @@
 |----|------------|
 | CON-001 | libghostty API は unstable (internal API)。Ghostty 本体の Swift コードが常にリファレンス。破壊的変更に追従する責任がある |
 | CON-002 | Zig 0.14.x が開発環境に必要（GhosttyKit.xcframework のビルドに使用） |
-| CON-003 | agtmux daemon が起動していることが前提。daemon 未起動時はオフラインモード（UI は表示するが状態は空） |
+| CON-003 | tmux / SSH が real session existence の source of truth。agtmux daemon は metadata / observability overlay として扱う |
 | CON-004 | macOS 専用。Catalyst / iPad 対応は Non-goal |
-| CON-005 | tmux が PATH で利用可能であること（pane アタッチに必要） |
+| CON-005 | tmux が PATH で利用可能であること（real session attach に必要） |
+| CON-006 | terminal tile は normal Ghostty/tmux view として振る舞い、独自 terminal UX を持ち込まない |
+| CON-007 | hidden linked-session を normal product path の前提にしない |
+
+## MVP Semantics
+
+### Terminal Tile
+
+- `1 terminal tile = 1 real tmux session`
+- terminal tile close は Workbench から外すだけで、tmux session を kill しない
+- kill session は explicit action
+- duplicate session open は existing tile を reveal / focus する
+- same-session multi-view は MVP では不採用
+
+### Workbench
+
+- Workbench は app-level saved layout であり、tmux tab / tmux window ではない
+- Workbench は split tree、focused tile、terminal session refs、pinned companion surfaces を保存する
+- Workbench は autosave を前提とする
+
+### Companion Surfaces
+
+- MVP の first-class companion surface は browser と document
+- browser / document は explicit action でのみ開く
+- browser / document は duplicate 可
+- pin された browser / document のみ restore 対象
+- directory tile は Post-MVP extension
+
+### Restore / Error Semantics
+
+- restore は missing target を silent fallback しない
+- missing target は placeholder error state として残す
+- `Rebind` は manual exact-target reassignment のみを意味する
+
+Visible error states:
+
+- `daemon unavailable`
+- `daemon incompatible`
+- `Host offline`
+- `tmux unavailable`
+- `Session missing`
+- `Path missing`
+- `Access failed`
+
+### Remote URL Semantics
+
+- URL は指定どおりに開く
+- remote `http://localhost:3000` を local reachable URL に rewrite しない
+- implicit SSH tunnel を張らない
 
 ## Activity State 定義
 
@@ -46,7 +105,7 @@
 | `waiting_approval` | 黄/オレンジ | ユーザーの承認を待っている（要注意） |
 | `waiting_input` | 黄 | ユーザーの入力を待っている |
 | `error` | 赤 | エラー発生 |
-| `unknown` | グレー | 状態不明（daemon から情報なし） |
+| `unknown` | グレー | 状態不明（metadata なし） |
 
 ## StatusFilter 定義
 
@@ -55,7 +114,38 @@
 | `All` | 全 pane |
 | `Managed` | agtmux が追跡している pane のみ（shell 除く） |
 | `Attention` | `waiting_approval` / `waiting_input` / `error` のいずれか |
-| `Pinned` | ユーザーがピン留めした pane [Post-MVP] |
+| `Pinned` | ユーザーが pin した項目 [Post-MVP UI拡張可] |
+
+## Workbench Acceptance Criteria [MVP]
+
+### AC-001: Real Session Sidebar
+- [ ] local / remote real tmux sessions が表示される
+- [ ] pane/window 由来 metadata が session browser として surfacing される
+- [ ] hidden linked-session を normal path で作らないため、`tmux ls` と app の session view が矛盾しない
+
+### AC-002: Terminal Tile
+- [ ] session 選択で real tmux session が terminal tile に表示される
+- [ ] terminal は Ghostty/tmux の通常操作感を保つ
+- [ ] close tile と kill session が分離される
+
+### AC-003: Workbench Layout
+- [ ] terminal / browser / document を同一 Workbench に配置できる
+- [ ] Workbench は split layout と focused tile を保存できる
+- [ ] app 再起動後に Workbench が復元される
+
+### AC-004: Duplicate Session Prevention
+- [ ] 同じ real tmux session を 2つの visible terminal tile として同時に開けない
+- [ ] duplicate open は existing tile を reveal / focus する
+
+### AC-005: CLI Bridge
+- [ ] `agt open <url-or-file>` で browser / document tile を開ける
+- [ ] bridge unavailable 時は明示エラーになる
+- [ ] remote shell からでも terminal-scoped bridge で同じ操作モデルを使える
+
+### AC-006: Restore / Failure Handling
+- [ ] missing session / missing path / host offline を placeholder state として表示する
+- [ ] `Retry` / `Rebind` / `Remove Tile` を提供する
+- [ ] restore 時に silent retarget / silent downgrade をしない
 
 ## agtmux daemon JSON スキーマ（参考）
 
@@ -78,76 +168,25 @@
 }
 ```
 
----
+## agtmux daemon local metadata contract（A1）
 
-# Phase 3: Ghostty + tmux Native Sync
-
-> 設計確定: 2026-03-02 (4-agent parallel review 経由)
-
-## Goals (Phase 3)
-
-| ID | Goal | Priority |
-|----|------|----------|
-| G-001 | サイドバーを source → session → window → pane の4階層に変更 | 必須 |
-| G-002 | macOS ネイティブ通知（waiting_approval / waiting_input / error 遷移時） | 必須 |
-| G-003 | 複数 ghostty_surface_t を BSP レイアウトで同時表示する WorkspaceTab | 必須 |
-| G-004 | WorkspaceTab 内で session をまたいで pane を配置できる | 必須 |
-| G-005 | tmux window クリック → その window 内の pane 構成を Ghostty native splits で表示 | 必須 |
-| G-006 | tmux control mode (`tmux -C`) で layout 変更をリアルタイムに Ghostty に反映 | 必須 |
-| G-007 | サイドバーから tmux session/window/pane を作成・削除（右クリックメニュー） | 必須 |
-
-## Non-Goals (Phase 3)
-
-| ID | Non-Goal |
-|----|----------|
-| NG-001 | tmux window を隠蔽してアプリ独自の抽象だけを見せること |
-| NG-002 | Ghostty ネイティブ tab/split API の使用（アプリが独自レイアウトエンジンを持つ） |
-| NG-004 | Ghostty → tmux への resize 書き戻し（Phase 3 は tmux→Ghostty 一方向のみ） |
-| NG-005 | DnD による BSP ツリー編集（Phase 4 以降） |
-| NG-006 | 一般ユーザーへの公開 |
-| NG-007 | 固定4プリセット（tmux の実際の layout を dynamic に反映するため不要） |
-
-## Acceptance Criteria (Phase 3)
-
-### AC-001: サイドバー 4 階層
-- [ ] source → session → window → pane の4階層表示
-- [ ] window block に running 数・attention 数バッジ
-- [ ] window が1つのみの session では window block を省略可能
-
-### AC-002: macOS 通知
-- [ ] waiting_approval / waiting_input / error 遷移時に UNUserNotificationCenter 通知
-- [ ] 通知クリック → 対象 pane を前面表示
-- [ ] 30秒以内の重複通知は抑制
-- [ ] アプリがフォアグラウンド（NSApplication.shared.isActive）のとき通知しない
-
-### AC-003: WorkspaceTab
-- [ ] タブバー表示（Cmd+T 新規, Cmd+W 閉じる, Cmd+1~9 切り替え）
-- [ ] BSP レイアウトで複数 surface を配置
-- [ ] 異なる session の pane を同じタブ内に配置可能
-
-### AC-004: BSP レイアウト
-- [ ] `LayoutNode: indirect enum { .leaf(LeafPane), .split(SplitContainer) }` で実装
-- [ ] Divider ドラッグで ratio を 10%〜90% で調整（clamp はモデル側）
-- [ ] Opt+Cmd+Arrow でキーボードリサイズ（5% 刻み）
-- [ ] leaf を閉じると sibling が parent に promote
-
-### AC-005: Ghostty + tmux Sync
-- [ ] linked session (`tmux new-session -s agtmux-{uuid} -t {session}`) 経由で独立表示
-- [ ] tmux control mode でレイアウト変更をリアルタイム受信
-- [ ] pane 追加・終了が Ghostty side に反映
-
-### AC-006: リサイズ整合
-- [ ] Ghostty surface resize → `tmux resize-pane -t %paneId -x cols -y rows`（16ms debounce）
-- [ ] Phase 3 は tmux→Ghostty 一方向のみ
-
-### AC-007: tmux 管理
-- [ ] 右クリック: pane → Kill Pane（即実行）
-- [ ] 右クリック: window → New Pane / Kill Window（Kill は確認あり）
-- [ ] 右クリック: session → New Window / Kill Session（Kill は確認あり）
-- [ ] 右クリック: source ヘッダー → New Session（名前入力シート）
-- [ ] kill-session 前に TmuxControlMode.stop() を呼ぶ（SIGPIPE 防止）
-
-### AC-008: クロスセッション配置
-- [ ] WorkspaceTab BSP 内で異なる session の window/pane を並べられる
-- [ ] sidebar pane クリック → 現在の focused leaf に表示
-- [ ] sidebar window クリック → その window 全 pane を BSP で表示
+- bootstrap:
+  - `ui.bootstrap.v2` は `epoch` / `snapshot_seq` / `panes` / `sessions` / `generated_at` / `replay_cursor` を返す
+- changes:
+  - `ui.changes.v2` は `epoch` / `changes` / `from_seq` / `to_seq` / `next_cursor` を返す
+  - continuity を維持できない場合は `resync_required: { current_epoch, latest_snapshot_seq, reason }` を返す
+- cursor ownership:
+  - app process は raw cursor を保持しない
+  - bundled XPC service もしくは in-process `AgtmuxSyncV2Session` が cursor owner になる
+- daemon ownership:
+  - packaged app は app bundle `Contents/Resources/Tools/agtmux` を正とする
+  - local daemon socket は `~/Library/Application Support/AGTMUXDesktop/agtmuxd.sock` を使い、global `/tmp/agtmux-$USER/agtmuxd.sock` は共有しない
+  - 開発時は `AGTMUX_BIN=/abs/path/to/source/build/agtmux` で source build override を行う
+- incompatibility handling:
+  - bundled daemon が存在せず、かつ `AGTMUX_BIN` override も無い場合、term は managed local daemon runtime unavailable として明示 surfacing する
+  - daemon が `ui.bootstrap.v2` / `ui.changes.v2` を実装していない場合、term はその daemon を互換対象とみなさない
+  - 表示は fail-loudly とし、missing runtime は `daemon unavailable`、old protocol は `daemon incompatible` として区別して surfacing する
+- A2 observability:
+  - daemon は additive RPC `ui.health.v1` を提供し、`runtime` / `replay` / `overlay` / `focus` health を返す
+  - health payload は pane inventory や `ui.bootstrap.v2` / `ui.changes.v2` の成功有無と独立に取得できる
+  - term は health を UI annotation として扱い、pane row の existence contract は変えない

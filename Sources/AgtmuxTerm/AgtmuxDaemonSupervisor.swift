@@ -84,12 +84,23 @@ final class AgtmuxDaemonSupervisor {
         if candidates.contains(where: { isDaemonReachable(via: $0) }) {
             return
         }
+        guard ensureSocketParentDirectoryExists() else { return }
 
         for binary in candidates where FileManager.default.isExecutableFile(atPath: binary.path) {
             if launchDaemon(using: binary), isDaemonReachable(via: binary, retries: 20) {
                 return
             }
             stopIfOwnedLocked()
+        }
+    }
+
+    private func ensureSocketParentDirectoryExists() -> Bool {
+        do {
+            try AgtmuxBinaryResolver.ensureSocketParentDirectoryExists(for: socketPath)
+            return true
+        } catch {
+            fputs("Failed to create agtmux socket directory for \(socketPath): \(error)\n", stderr)
+            return false
         }
     }
 

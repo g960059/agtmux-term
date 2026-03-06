@@ -10,4 +10,7 @@ XPC mode note:
 Resolution order used by the app:
 1. `AGTMUX_BIN` (explicit override)
 2. Bundled `Resources/Tools/agtmux`
-3. PATH/common install locations
+
+Notes:
+- If `AGTMUX_BIN` is set, runtime resolution does not guess or fall back to other locations.
+- PATH lookup and common install locations are not part of the runtime resolution order.

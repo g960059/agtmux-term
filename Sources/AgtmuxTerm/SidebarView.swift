@@ -866,6 +866,358 @@ struct FreshnessLabel: View {
     }
 }
 
+private struct LocalDaemonIssueBanner: View {
+    let issue: LocalDaemonIssue
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 9) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Color.orange.opacity(0.92))
+                .padding(.top, 1)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(issue.bannerTitle)
+                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                    .foregroundStyle(Color.white.opacity(0.92))
+                Text(issue.bannerMessage)
+                    .font(.system(size: 11, weight: .regular, design: .rounded))
+                    .foregroundStyle(Color.white.opacity(0.72))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 9)
+        .background(
+            RoundedRectangle(cornerRadius: SidebarRowStyle.cornerRadius, style: .continuous)
+                .fill(Color.orange.opacity(0.10))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: SidebarRowStyle.cornerRadius, style: .continuous)
+                .stroke(Color.orange.opacity(0.24), lineWidth: 1)
+        )
+        .padding(.horizontal, 8)
+        .padding(.top, 8)
+        .padding(.bottom, 4)
+        .help(issue.detail)
+        .accessibilityElement(children: .combine)
+    }
+}
+
+private struct LocalDaemonHealthBadgeModel: Identifiable {
+    let id: String
+    let title: String
+    let value: String?
+    let status: AgtmuxUIHealthStatus
+    let helpText: String
+
+    var accessibilityValue: String {
+        if let value, !value.isEmpty {
+            return "\(status.displayName), \(value)"
+        }
+        return status.displayName
+    }
+}
+
+private struct LocalDaemonHealthStrip: View {
+    let health: AgtmuxUIHealthV1
+    let topPadding: CGFloat
+
+    private let columns = [
+        GridItem(.flexible(minimum: 0), spacing: 6),
+        GridItem(.flexible(minimum: 0), spacing: 6),
+    ]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Text("HEALTH")
+                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                    .foregroundStyle(Color.white.opacity(0.56))
+
+                Spacer(minLength: 0)
+
+                Text(health.generatedAtLabel)
+                    .font(.system(size: 10, weight: .regular, design: .monospaced).monospacedDigit())
+                    .foregroundStyle(Color.white.opacity(0.48))
+            }
+
+            LazyVGrid(columns: columns, alignment: .leading, spacing: 6) {
+                ForEach(health.badgeModels) { badge in
+                    LocalDaemonHealthBadge(badge: badge)
+                }
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 9)
+        .background(
+            RoundedRectangle(cornerRadius: SidebarRowStyle.cornerRadius, style: .continuous)
+                .fill(SidebarRowStyle.rowFill)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: SidebarRowStyle.cornerRadius, style: .continuous)
+                .stroke(SidebarRowStyle.sidebarDivider, lineWidth: 1)
+        )
+        .padding(.horizontal, 8)
+        .padding(.top, topPadding)
+        .padding(.bottom, 4)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier(AccessibilityID.sidebarHealthStrip)
+        .accessibilityLabel("Local daemon health")
+        .accessibilityValue(health.accessibilitySummary)
+    }
+}
+
+private struct LocalDaemonHealthBadge: View {
+    let badge: LocalDaemonHealthBadgeModel
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: badge.status.symbolName)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(badge.status.tint)
+
+            Text(badge.title)
+                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                .foregroundStyle(Color.white.opacity(0.86))
+                .lineLimit(1)
+
+            Spacer(minLength: 0)
+
+            if let value = badge.value {
+                Text(value)
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced).monospacedDigit())
+                    .foregroundStyle(badge.status.tint)
+                    .lineLimit(1)
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: SidebarRowStyle.cornerRadius, style: .continuous)
+                .fill(badge.status.tint.opacity(0.12))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: SidebarRowStyle.cornerRadius, style: .continuous)
+                .stroke(badge.status.tint.opacity(0.24), lineWidth: 1)
+        )
+        .help(badge.helpText)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier(AccessibilityID.sidebarHealthBadgePrefix + badge.id)
+        .accessibilityLabel("\(badge.title) health")
+        .accessibilityValue(badge.accessibilityValue)
+        .accessibilityHint(badge.helpText)
+    }
+}
+
+private extension AgtmuxUIHealthStatus {
+    var displayName: String {
+        switch self {
+        case .ok:
+            return "ok"
+        case .degraded:
+            return "degraded"
+        case .unavailable:
+            return "unavailable"
+        }
+    }
+
+    var symbolName: String {
+        switch self {
+        case .ok:
+            return "checkmark.circle.fill"
+        case .degraded:
+            return "exclamationmark.circle.fill"
+        case .unavailable:
+            return "xmark.octagon.fill"
+        }
+    }
+
+    var tint: Color {
+        switch self {
+        case .ok:
+            return Color.green.opacity(0.88)
+        case .degraded:
+            return Color.orange.opacity(0.92)
+        case .unavailable:
+            return Color.red.opacity(0.92)
+        }
+    }
+}
+
+private extension AgtmuxUIHealthV1 {
+    var generatedAtLabel: String {
+        "Updated \(generatedAt.sidebarHealthTimestamp)"
+    }
+
+    var badgeModels: [LocalDaemonHealthBadgeModel] {
+        [
+            LocalDaemonHealthBadgeModel(
+                id: "runtime",
+                title: "Runtime",
+                value: runtime.sidebarValue,
+                status: runtime.status,
+                helpText: componentHelpText(
+                    title: "Runtime",
+                    status: runtime.status,
+                    detail: runtime.detail,
+                    lastEventLabel: "Last updated",
+                    lastEventDate: runtime.lastUpdatedAt
+                )
+            ),
+            LocalDaemonHealthBadgeModel(
+                id: "replay",
+                title: "Replay",
+                value: replay.sidebarValue,
+                status: replay.status,
+                helpText: replayHelpText
+            ),
+            LocalDaemonHealthBadgeModel(
+                id: "overlay",
+                title: "Overlay",
+                value: overlay.sidebarValue,
+                status: overlay.status,
+                helpText: componentHelpText(
+                    title: "Overlay",
+                    status: overlay.status,
+                    detail: overlay.detail,
+                    lastEventLabel: "Last updated",
+                    lastEventDate: overlay.lastUpdatedAt
+                )
+            ),
+            LocalDaemonHealthBadgeModel(
+                id: "focus",
+                title: "Focus",
+                value: focus.sidebarValue,
+                status: focus.status,
+                helpText: focusHelpText
+            ),
+        ]
+    }
+
+    var accessibilitySummary: String {
+        badgeModels
+            .map { "\($0.title.lowercased()) \($0.status.displayName)" }
+            .joined(separator: ", ")
+    }
+
+    private func componentHelpText(
+        title: String,
+        status: AgtmuxUIHealthStatus,
+        detail: String?,
+        lastEventLabel: String,
+        lastEventDate: Date?
+    ) -> String {
+        var lines = ["\(title): \(status.displayName)"]
+        if let lastEventDate {
+            lines.append("\(lastEventLabel): \(lastEventDate.sidebarHealthTimestamp)")
+        }
+        if let detail, !detail.isEmpty {
+            lines.append(detail)
+        }
+        lines.append("Snapshot generated: \(generatedAt.sidebarHealthTimestamp)")
+        return lines.joined(separator: "\n")
+    }
+
+    var replayHelpText: String {
+        var lines = ["Replay: \(replay.status.displayName)"]
+        if let lag = replay.lag {
+            lines.append("Lag: \(lag)")
+        }
+        if let currentEpoch = replay.currentEpoch {
+            lines.append("Epoch: \(currentEpoch)")
+        }
+        if let cursorSeq = replay.cursorSeq {
+            lines.append("Cursor seq: \(cursorSeq)")
+        }
+        if let headSeq = replay.headSeq {
+            lines.append("Head seq: \(headSeq)")
+        }
+        if let reason = replay.lastResyncReason, !reason.isEmpty {
+            lines.append("Last resync reason: \(reason)")
+        }
+        if let lastResyncAt = replay.lastResyncAt {
+            lines.append("Last resync at: \(lastResyncAt.sidebarHealthTimestamp)")
+        }
+        if let detail = replay.detail, !detail.isEmpty {
+            lines.append(detail)
+        }
+        lines.append("Snapshot generated: \(generatedAt.sidebarHealthTimestamp)")
+        return lines.joined(separator: "\n")
+    }
+
+    var focusHelpText: String {
+        var lines = ["Focus: \(focus.status.displayName)"]
+        if let focusedPaneID = focus.focusedPaneID, !focusedPaneID.isEmpty {
+            lines.append("Focused pane: \(focusedPaneID)")
+        }
+        if let mismatchCount = focus.mismatchCount {
+            lines.append("Mismatch count: \(mismatchCount)")
+        }
+        if let lastSyncAt = focus.lastSyncAt {
+            lines.append("Last sync at: \(lastSyncAt.sidebarHealthTimestamp)")
+        }
+        if let detail = focus.detail, !detail.isEmpty {
+            lines.append(detail)
+        }
+        lines.append("Snapshot generated: \(generatedAt.sidebarHealthTimestamp)")
+        return lines.joined(separator: "\n")
+    }
+}
+
+private extension AgtmuxUIComponentHealth {
+    var sidebarValue: String? {
+        switch status {
+        case .ok:
+            return nil
+        case .degraded:
+            return "warn"
+        case .unavailable:
+            return "down"
+        }
+    }
+}
+
+private extension AgtmuxUIReplayHealth {
+    var sidebarValue: String? {
+        if let lag, lag > 0 {
+            return "+\(lag)"
+        }
+        switch status {
+        case .ok:
+            return nil
+        case .degraded:
+            return "lag"
+        case .unavailable:
+            return "down"
+        }
+    }
+}
+
+private extension AgtmuxUIFocusHealth {
+    var sidebarValue: String? {
+        if let mismatchCount, mismatchCount > 0 {
+            return "x\(mismatchCount)"
+        }
+        switch status {
+        case .ok:
+            return nil
+        case .degraded:
+            return "sync"
+        case .unavailable:
+            return "down"
+        }
+    }
+}
+
+private extension Date {
+    var sidebarHealthTimestamp: String {
+        formatted(date: .omitted, time: .standard)
+    }
+}
+
 // MARK: - SidebarView
 
 /// Scrollable pane list, grouped by source → session → window → pane.
@@ -877,6 +1229,18 @@ struct SidebarView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            if let issue = viewModel.localDaemonIssue,
+               !viewModel.panesBySession.isEmpty {
+                LocalDaemonIssueBanner(issue: issue)
+            }
+
+            if let health = viewModel.localDaemonHealth {
+                LocalDaemonHealthStrip(
+                    health: health,
+                    topPadding: viewModel.localDaemonIssue == nil || viewModel.panesBySession.isEmpty ? 8 : 4
+                )
+            }
+
             if viewModel.panesBySession.isEmpty {
                 sidebarEmptyState
             } else {
@@ -953,6 +1317,9 @@ struct SidebarView: View {
     }
 
     private var emptyStateDetail: String {
+        if let issue = viewModel.localDaemonIssue {
+            return issue.emptyStateMessage
+        }
         if viewModel.offlineHosts.contains("local") {
             return "Local agtmux daemon is unavailable. Check AGTMUX_BIN or daemon startup."
         }
