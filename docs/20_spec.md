@@ -5,8 +5,8 @@
 | ID | Requirement | Priority |
 |----|-------------|----------|
 | FR-001 | libghostty surface を NSView として SwiftUI 内に埋め込む | [MVP] |
-| FR-002 | サイドバーに local / remote の **real tmux sessions** を表示し、pane/window 由来の metadata を重ねて表示する | [MVP] |
-| FR-003 | local tmux inventory を1秒間隔で取得し、agtmux daemon の `ui.bootstrap.v2` / `ui.changes.v2` で local metadata overlay を同期する | [MVP] |
+| FR-002 | サイドバーに local / remote の **real tmux sessions** を表示し、pane/window 由来の metadata を exact pane row 単位で重ねて表示する | [MVP] |
+| FR-003 | local tmux inventory を1秒間隔で取得し、agtmux daemon の `ui.bootstrap.v2` / `ui.changes.v2` で local metadata overlay を同期する。local metadata の exact identity は `session_key` + `pane_instance_id` を round-trip し、provider / activity の overlay は current inventory 上の exact pane row にだけ適用する。`session_key` は overlay/session identity 用の opaque key であり、visible tmux `session_name` と同一とは仮定しない。bootstrap correlation は `session_name + window_id + pane_id` を使い、change correlation は bootstrap で学習した exact identity を使う。overlay cache は pane location ではなく exact identity で保持し、current daemon epoch が incompatible になった時点で stale cache を残さず即座に inventory-only publish へ切り替える。`session_key` / `pane_instance_id` / `session_name` / `window_id` のいずれかが欠ける local managed row、または legacy identity field `session_id` を含む local sync-v2 pane payload は invalid とみなし、app はその row を採用せず local metadata path 全体を inventory-only に degrade して `daemon incompatible` を surfacing する | [MVP] |
 | FR-004 | pane の activity_state を色・アイコンで表示する（running / idle / waiting_approval / waiting_input / error / unknown） | [MVP] |
 | FR-005 | 会話タイトル（conversation_title）をサイドバーに表示する | [MVP] |
 | FR-006 | StatusFilter: All / Managed / Attention / Pinned を提供する（Pinned は UI 準備のみでも可） | [MVP] |
@@ -26,6 +26,7 @@
 | FR-020 | directory tile は MVP では実装しないが、将来 additive extension として追加できる tile model を保つ | [Post-MVP] |
 | FR-021 | terminal tile は right click・主要 shortcut・tmux 操作感を app が上書きしない | [MVP] |
 | FR-022 | remote URL は指定どおりに開き、implicit localhost rewrite や implicit SSH tunnel は行わない | [MVP] |
+| FR-023 | active pane selection は runtime-only の canonical reducer state を single source of truth とし、`desired ActivePaneRef`、`observed ActivePaneRef`、rendered client binding (`client_tty`) を一体で扱う。sidebar click・duplicate reveal は desired 側、terminal-originated pane change・focused tile observation は observed 側を更新し、両者の解決は同じ reducer を通す。pane sync は local metadata overlay の有無に依存してはならず、inventory-only rows しか無いときでも same-session pane retarget と sidebar highlight は current inventory から解決されなければならない。copied pane snapshot、local view state、persisted layout hint を source of truth にしない | [MVP] |
 
 ## Non-functional Requirements
 
@@ -58,6 +59,11 @@
 - terminal tile close は Workbench から外すだけで、tmux session を kill しない
 - kill session は explicit action
 - duplicate session open は existing tile を reveal / focus する
+- same-session の別 pane row を選んだ場合は、existing tile を再利用したまま runtime active-pane intent を更新し、exact window / pane へ navigate する
+- active pane selection は copied pane snapshot ではなく canonical active-pane state として保持する
+- reducer は `desired` と `observed` の pane state を分離し、古い observed state が新しい desired selection を上書きしない
+- terminal 内で pane が変わった場合も、sidebar highlight は同じ active-pane state に追従する
+- Workbench persistence は terminal session identity を保存するが、live pane focus は autosave しない
 - same-session multi-view は MVP では不採用
 
 ### Workbench
@@ -127,6 +133,8 @@ Visible error states:
 - [ ] session 選択で real tmux session が terminal tile に表示される
 - [ ] terminal は Ghostty/tmux の通常操作感を保つ
 - [ ] close tile と kill session が分離される
+- [ ] 同じ session 内の別 pane row を選ぶと、visible terminal tile は増えずに exact pane へ切り替わる
+- [ ] main terminal 内で pane が変わると、sidebar highlight も exact pane row に追従する
 
 ### AC-003: Workbench Layout
 - [ ] terminal / browser / document を同一 Workbench に配置できる
@@ -136,6 +144,7 @@ Visible error states:
 ### AC-004: Duplicate Session Prevention
 - [ ] 同じ real tmux session を 2つの visible terminal tile として同時に開けない
 - [ ] duplicate open は existing tile を reveal / focus する
+- [ ] duplicate open に exact pane intent がある場合は、その intent を existing tile に適用する
 
 ### AC-005: CLI Bridge
 - [ ] `agt open <url-or-file>` で browser / document tile を開ける
@@ -175,6 +184,12 @@ Visible error states:
 - changes:
   - `ui.changes.v2` は `epoch` / `changes` / `from_seq` / `to_seq` / `next_cursor` を返す
   - continuity を維持できない場合は `resync_required: { current_epoch, latest_snapshot_seq, reason }` を返す
+- exact identity:
+  - local sync-v2 pane payload は `session_key` と `pane_instance_id` を bootstrap / changes / XPC transport で round-trip する
+  - app は missing exact-identity fields を silent fallback しない
+  - exact-identity field が欠ける row は managed/provider/activity overlay 対象にしない
+  - local sync-v2 pane payload に legacy identity field `session_id` が混ざる場合、app は additive compatibility とみなさず payload 全体を incompatible として reject する
+  - bootstrap / changes payload に exact-identity field 欠落がある場合、app は stale overlay cache を保持せず inventory-only に degrade し、`daemon incompatible` として surfacing する
 - cursor ownership:
   - app process は raw cursor を保持しない
   - bundled XPC service もしくは in-process `AgtmuxSyncV2Session` が cursor owner になる
@@ -186,6 +201,13 @@ Visible error states:
   - bundled daemon が存在せず、かつ `AGTMUX_BIN` override も無い場合、term は managed local daemon runtime unavailable として明示 surfacing する
   - daemon が `ui.bootstrap.v2` / `ui.changes.v2` を実装していない場合、term はその daemon を互換対象とみなさない
   - 表示は fail-loudly とし、missing runtime は `daemon unavailable`、old protocol は `daemon incompatible` として区別して surfacing する
+
+## Local health-strip contract
+
+- `ui.health.v1` is observability only; it never invents or removes tmux panes/sessions
+- if local tmux inventory goes offline after a health snapshot was published, the sidebar keeps showing the last known health strip instead of clearing it
+- while local inventory is offline, the app continues refreshing `ui.health.v1`; newer health snapshots replace the strip even if pane inventory is still stale/offline
+- if no health snapshot is available, the app keeps the health strip absent rather than rendering guessed or stale placeholder health UI
 - A2 observability:
   - daemon は additive RPC `ui.health.v1` を提供し、`runtime` / `replay` / `overlay` / `focus` health を返す
   - health payload は pane inventory や `ui.bootstrap.v2` / `ui.changes.v2` の成功有無と独立に取得できる

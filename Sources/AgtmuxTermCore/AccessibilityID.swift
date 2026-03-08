@@ -27,6 +27,11 @@ public enum AccessibilityID {
     public static let workspaceEmpty      = "workspace.emptyState"
     public static let workspaceTilePrefix = "workspace.tile."    // + source_session_paneID
     public static let workspaceLoadingPrefix = "workspace.loading." // + source_session_paneID
+    public static let workspaceTerminalRebindTarget = "workspace.terminalRebind.target"
+    public static let workspaceTerminalRebindApply = "workspace.terminalRebind.apply"
+    public static let workspaceDocumentRebindTarget = "workspace.documentRebind.target"
+    public static let workspaceDocumentRebindPath = "workspace.documentRebind.path"
+    public static let workspaceDocumentRebindApply = "workspace.documentRebind.apply"
 
     /// Sanitised key combining source/session/pane — safe for use as an identifier.
     public static func paneKey(source: String, sessionName: String, paneID: String) -> String {

@@ -43,6 +43,8 @@ let package = Package(
                 .linkedFramework("UserNotifications"),
                 // Uniform Type Identifiers
                 .linkedFramework("UniformTypeIdentifiers"),
+                // Web content companion surfaces
+                .linkedFramework("WebKit"),
                 // i18n (libintl bundled in xcframework)
                 .linkedLibrary("iconv"),
                 // C++ standard library (required by libghostty.a — glslang, spirv-cross, etc.)

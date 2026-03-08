@@ -346,6 +346,8 @@ swift test --filter AgtmuxTermCoreTests
 
 ## 2. Integration Tests (tmux subprocess)
 
+Note: the linked-session examples below are historical analysis of the older workspace path, not current product direction. The active product path is `WorkbenchStoreV2` direct attach to exact sessions, so new integration/E2E work should prefer V2 direct-attach proofs and should not add fresh `LinkedSessionManager` coverage.
+
 ### Approach
 
 `TmuxCommandRunner` and `LinkedSessionManager` both spawn real `tmux` subprocesses via `Process`. These are testable with a real local tmux session (tmux 3.6a is installed at `/opt/homebrew/bin/tmux`).

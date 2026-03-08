@@ -6,11 +6,1664 @@ Historical progress detail lives in `docs/archive/progress/2026-02-28_to_2026-03
 ## Current Summary
 
 - V2 mainline docs are aligned and design-locked for MVP
-- active implementation has not started yet on the V2 Workbench path
+- V2 Workbench sidebar/mainline integration is closed on code, focused verification, and dual Codex review
 - local daemon runtime hardening and A2 health observability are complete
-- next execution milestone is `T-090` through `T-094`
+- `T-108` is now closed on app-side code, focused verification, and executed real-surface UI proof
+- current follow-up boundary is explicit: if a fresh live disagreement appears, validate daemon payload truth before reopening the term consumer
 
 ## Recent Entries
+
+## 2026-03-07 — T-108 tracking reconciliation: final green is now the active source of truth
+
+### 事象
+- `T-108` itself was green, but tracking docs still mixed final-green state with older reopened blocker text:
+  - `docs/65_current.md` still described the term consumer as open
+  - `docs/70_progress.md` summary still said the active board was reopened on `T-108`
+
+### 実施内容
+- reconciled tracking to the final verified state:
+  - kept the long reopen/repair history in the ledger
+  - updated current-state docs so the active source of truth matches the final TDD closeout
+  - recorded the explicit ownership boundary that any new live status disagreement should first be checked against `ui.bootstrap.v2` / `ui.changes.v2` daemon truth
+- reran the central T-108 regression bundle after the tracking edit:
+  - `swift test -q --filter WorkbenchStoreV2Tests`
+  - `swift test -q --filter AppViewModelA0Tests`
+  - targeted arm64 `xcodebuild` for:
+    - `testPaneSelectionWithMockDaemonAndRealTmux`
+    - `testTerminalPaneChangeUpdatesSidebarSelectionWithRealTmux`
+    - `testMetadataEnabledPaneSelectionAndReverseSyncWithRealTmux`
+
+### 結果
+- there is no open app-side blocker currently tracked for pane retarget / reverse sync
+- the final green evidence for `T-108` is now the active current-state baseline
+
+## 2026-03-07 — T-108 root cause narrowed to rendered-client tty binding failure
+
+### 事象
+- targeted UI reruns now show the remaining pane-sync failure is lower than the reducer/store layer:
+  - sidebar pane click updates the selected-row AX marker
+  - the workbench creates a visible terminal tile for the selected session
+  - `UITestTmuxBridge` still cannot resolve the active rendered terminal target because the rendered tmux client tty never binds
+- vendor Ghostty source inspection then made the bind failure structural rather than heuristic:
+  - embedded custom-OSC delivery is hard-wired to `OSC 9911`
+  - the current `OSC 9912` surface-telemetry path can therefore never reach `GhosttyApp.handleAction(...)`
+
+### 実施内容
+- invalidated the previous assumption that the remaining gap was only “selection state dropped before open”.
+- design-locked a clean break before code:
+  - fold rendered-client tty bind into the existing structured `OSC 9911` bridge instead of relying on a second private OSC number
+  - keep exact-client `switch-client -c <tty> -t <pane>` navigation, but make tty acquisition use the only supported host action seam
+  - add failing coverage for missing tty binding and rerun same-session rendered-surface UI proofs on the unified bridge path
+
+### 現状
+- `T-108` remains open.
+- same-session pane sync is still blocked on product work, not environment.
+
+## 2026-03-07 — T-108 product slice landed: bootstrap fail-close and exact-client retry
+
+### 事象
+- live user evidence was still reproducible in code review terms:
+  - local bootstrap collisions could fail open
+  - same-session pane retarget relied on a one-shot `switch-client`
+  - sidebar clicks could leave AppKit first responder on the sidebar instead of the visible terminal host
+
+### 実施内容
+- landed the metadata-side clean break:
+  - bootstrap location collisions now throw an explicit sync-v2 incompatibility instead of silently choosing a preferred managed row
+  - `AppViewModel` now surfaces that collision as `daemon incompatible` and clears stale overlay before the next publish
+- landed the pane-sync runtime fix:
+  - added `WorkbenchV2NavigationSyncResolver` and changed the terminal sync loop to retry exact-client navigation until rendered tmux client truth matches the requested pane/window
+  - added `focusRequestNonce` to reducer-owned runtime pane state so same-session sidebar retargets re-focus the already visible Ghostty terminal host without recreating the tile
+- added focused regression coverage:
+  - `testBootstrapLocationCollisionFailsClosedForWholeLocalMetadataEpoch`
+  - `WorkbenchV2NavigationSyncResolverTests`
+  - `testSameSessionRetargetIncrementsFocusRestoreNonce`
+  - `testObservedPaneSyncDoesNotBumpFocusRestoreNonce`
+- verification:
+  - `swift test -q --filter AppViewModelA0Tests`
+  - `swift test -q --filter WorkbenchStoreV2Tests`
+  - `swift test -q --filter WorkbenchV2NavigationSyncResolverTests`
+  - `swift test -q --filter WorkbenchV2TerminalAttachTests`
+  - `swift build`
+  - `xcodegen generate`
+
+### 結果
+- code-level fail-close and retry semantics are now aligned with the updated design.
+- targeted pane-sync UI proof could not be re-executed yet because XCTest again failed before test execution with `Timed out while enabling automation mode.`
+- remaining work is now narrowed to executed UI proof / review closeout, not another round of product redesign.
+
+## 2026-03-07 — T-108 root cause narrowed again after live socket inspection and code re-read
+
+### 事象
+- the live local daemon still returns invalid `ui.bootstrap.v2` payloads, and the current product code still leaves two concrete gaps:
+  - bootstrap/local overlay is still published by visible pane location, which can fail-open on stale or duplicate managed rows
+  - same-session pane retarget still hinges on a one-shot `switch-client` attempt and does not explicitly restore terminal first responder after a sidebar click
+- live daemon output on Saturday, March 7, 2026 also still reports a plain local `zsh` pane as managed `codex/running`, so “the daemon is wrong” is not an excuse for app-side fail-open behavior
+
+### 実施内容
+- compared the latest live socket output against current `AppViewModel`, `WorkbenchStoreV2`, `WorkbenchAreaV2`, and `GhosttySurfaceHostView`
+- locked the next implementation slice before code:
+  - bootstrap collisions or invalid rows must fail closed for the whole current local metadata epoch
+  - exact-client navigation must retry until the rendered tmux client reports the requested pane/window
+  - same-session sidebar retarget must explicitly restore first responder to the terminal host
+- updated design/tracking docs to reflect those narrower root causes and TDD order
+
+### 結果
+- `T-108` is now constrained to two specific product fixes instead of a vague “pane sync is flaky” bucket
+- next code slice is:
+  - red tests for bootstrap collision fail-closed behavior
+  - red tests for retryable exact-client navigation convergence
+  - product code to clear stale overlay and un-wedge same-session pane retarget / reverse-sync
+
+## 2026-03-07 — T-108 proposal comparison locked the clean-break plan before code
+
+### 事象
+- the user requested a plan-first reset with strong regression coverage after reporting live failures that the current tests did not prevent.
+- four independent proposals were collected (`Codex x2`, real `Claude Code` x2).
+- live daemon inspection also tightened the upstream failure shape:
+  - `ui.bootstrap.v2` currently emits 50 pane rows
+  - 44 of those are orphan managed rows with null `session_name` / `window_id`
+  - live payloads still carry legacy `session_id`
+  - current local metadata cannot be treated as trustworthy overlay input
+
+### 実施内容
+- compared the four proposals against current code/docs and locked the common clean-break direction:
+  - invalid local managed rows are rejected at ingress instead of heuristically normalized
+  - local overlay becomes exact-identity keyed and epoch-gated; incompatible bootstrap clears stale overlay before the next publish
+  - persisted terminal identity stays `SessionRef = target + sessionName`
+  - live pane focus becomes reducer-owned runtime state split into rendered-client binding, desired `ActivePaneRef`, and observed `ActivePaneRef`
+  - sidebar click, duplicate reveal, terminal-originated pane change, and focus observation all dispatch through that same reducer
+  - pane-sync UI/E2E proof must require four agreeing oracles:
+    - exact rendered tmux client pane/window truth
+    - reducer-resolved active pane state
+    - sidebar selected-row marker
+    - stable rendered-surface identity
+  - reverse-sync proof must stimulate pane changes on that same rendered client tty; a generic tmux control client is no longer accepted as product evidence
+- updated spec / architecture / workbench design / tracking docs before code changes.
+
+### 結果
+- the implementation plan is now re-locked on a narrower, cleaner model rather than more guards on the split state machine.
+- next step is TDD-first implementation for:
+  - stale-overlay eviction after incompatible bootstrap following previously valid metadata
+  - reducer-owned desired-vs-observed pane state
+  - stronger exact-client live tmux regression oracles
+
+## 2026-03-07 — T-108 fix shape narrowed again: reject legacy payloads and prove rendered surface state
+
+### 事象
+- fresh live daemon inspection on Saturday, March 7, 2026 confirmed `ui.bootstrap.v2` is still returning legacy `session_id` on local pane rows, not just missing exact-identity fields.
+- current pane-selection proofs can show store/sidebar/tmux agreement, but they still do not prove that the visible Ghostty surface was rebound to the same target.
+
+### 実施内容
+- tightened the app-side contract again before code:
+  - local sync-v2 payloads that still carry `session_id` are now treated as incompatible whole-payload input, not as partially acceptable additive metadata
+  - pane-selection UI/E2E proof now requires a fourth oracle:
+    - rendered Ghostty surface attach state for the visible tile
+- updated spec / architecture / workbench design / tracking docs to reflect that narrower implementation target.
+
+### 結果
+- the next implementation slice is now explicit and TDD-shaped:
+  - add raw sync-v2 rejection for legacy `session_id` local payloads
+  - add a rendered-surface registry/snapshot oracle for UI/E2E
+  - rerun same-session retarget and reverse-sync proofs against all four agreeing signals
+
+## 2026-03-07 — T-108 review returned dual NO_GO; current gap is contract drift, not environment
+
+### 事象
+- after the green verification pass, two independent Codex reviews both returned `NO_GO`.
+- the findings align on two contract drifts:
+  - bootstrap overlay still deduplicates by visible pane location and can fail-open if multiple `pane_instance_id` values land on the same slot
+  - the documented `ActivePaneRef` reducer is still not present in product code; current sidebar selection derives from focused terminal tile context only
+
+### 実施内容
+- compared the review findings against code and docs:
+  - `docs/30_architecture.md` and `docs/41_design-workbench.md` still require `paneInstanceID`-first matching plus a separate active-pane reducer
+  - `AppViewModel` bootstrap merge still groups by `source/session/window/pane`
+  - `WorkbenchStoreV2` / `SidebarView` still expose focused terminal context instead of a standalone `ActivePaneRef`
+- reopened `T-108` and moved the next slice back to TDD-first implementation.
+
+### 結果
+- current status is no longer “review-ready”.
+- next implementation slice is narrowly defined:
+  - fail loudly on bootstrap exact-identity collisions
+  - implement the documented `ActivePaneRef` reducer and cover non-terminal focus / explicit remote edge cases
+
+## 2026-03-07 — T-108 verification closed green; initial UI red was an oracle mismatch, not a product regression
+
+### 事象
+- after landing the exact-identity gate plus active-pane reducer path, the first targeted UI rerun still failed.
+- the failure was narrower than the original user bug:
+  - session/window/pane targeting already matched live tmux truth
+  - only the `selectedPaneInventoryID` assertion failed
+  - the UI oracle was still expecting the accessibility key form while the app snapshot was already returning canonical `pane.id`
+
+### 実施内容
+- aligned the app-driven tmux snapshot and UI oracle to the same canonical selection contract:
+  - `UITestTmuxBridge` exports the focused V2 terminal selection from `WorkbenchStoreV2`
+  - the UI test now compares `selectedPaneInventoryID` against canonical pane inventory identity (`source:session:pane`)
+- kept the product-side reducer on one path:
+  - exact-identity decode/XPC coverage stays strict
+  - local metadata without `session_key` / `pane_instance_id` still degrades to inventory-only
+  - same-session pane retarget and terminal-originated focus changes continue to flow through the focused terminal tile navigation state
+- reran fresh focused verification:
+  - `swift build`
+  - `swift test -q --filter AgtmuxSyncV2DecodingTests`
+  - `swift test -q --filter AgtmuxDaemonXPCClientTests`
+  - `swift test -q --filter AgtmuxDaemonXPCServiceBoundaryTests`
+  - `swift test -q --filter AppViewModelA0Tests`
+  - `swift test -q --filter WorkbenchStoreV2Tests`
+  - `swift test -q --filter WorkbenchV2TerminalAttachTests`
+  - targeted arm64 `xcodebuild` for:
+    - `testPaneSelectionWithMockDaemonAndRealTmux`
+    - `testTerminalPaneChangeUpdatesSidebarSelectionWithRealTmux`
+
+### 結果
+- `T-108` acceptance is green on code and verification.
+- the live tmux proofs now execute pass for both directions:
+  - sidebar pane click -> visible terminal retarget
+  - terminal-originated pane change -> sidebar highlight update
+- current next step is review/closeout, not more product debugging.
+
+## 2026-03-07 — T-108 root cause tightened: current daemon omits exact identity, so app must clean-break to inventory-only
+
+### 事象
+- direct inspection of the live local daemon on March 7, 2026 shows `ui.bootstrap.v2` is still returning managed/provider/activity rows without `session_key` or `pane_instance_id`.
+- this means the earlier app-side assumption that exact pane location alone was enough to trust overlay is false in the current environment.
+- live symptoms line up with that gap:
+  - plain `zsh` panes are surfaced as managed Codex/Claude rows
+  - idle panes are surfaced as `running`
+  - orphan metadata rows with `session_name = null` / `window_id = null` still exist upstream
+
+### 実施内容
+- queried the live daemon socket directly and compared both `agtmux json` and `ui.bootstrap.v2`.
+- confirmed the payload gap is not limited to fixtures or the XPC boundary; the in-process local daemon path also omits exact identity today.
+- updated spec / architecture / workbench design / plan / tracking docs so the app-side fix is now explicit:
+  - managed/provider/activity overlay is exact-identity gated
+  - missing `session_key` / `pane_instance_id` is treated as incompatible metadata, not as a normalization path
+  - the app must clear stale overlay and publish inventory-only rows instead of surfacing guessed managed state
+
+### 結果
+- T-108 now has a concrete product root cause for the metadata half of the bug, not just a generic “instance-first” direction.
+- next implementation step is to make the red tests execute, add inventory-only degrade coverage for missing exact identity, and then land the metadata gate with the canonical active-pane reducer.
+
+## 2026-03-07 — T-108 started: T-107 closeout is invalidated by live user evidence
+
+### 事象
+- the earlier `T-107` closeout was a false green:
+  - plain `zsh` panes are still surfaced as `codex`
+  - idle Codex panes are still surfaced as `running`
+  - sidebar pane clicks do not reliably retarget the visible terminal
+  - terminal-originated pane changes do not update sidebar highlight
+- current passing UI/E2E proof is not sufficient because its main oracle reads app/workbench target state, not live tmux truth.
+
+### 実施内容
+- collected four independent remediation proposals (`Codex x2`, `Claude x2`) before changing code.
+- compared the proposals against the current codebase and selected the common clean-break direction:
+  - sync-v2 / XPC exact identity must preserve `session_key` and `pane_instance_id`
+  - metadata merge must be instance-first and fail loudly on ambiguous or missing identity
+  - active pane selection must be a canonical key, not `AppViewModel.selectedPane` as a copied pane snapshot
+  - sidebar clicks and terminal-originated focus changes must update the same reducer
+  - UI/E2E proof must assert live tmux active pane/window rather than only stored workbench target
+- updated spec / architecture / workbench design / tracking docs before implementation.
+
+### 結果
+- `T-108` is now the active implementation task.
+- next step is TDD-first: add failing regression and live E2E coverage for exact identity, same-session retarget, and terminal-to-sidebar reverse sync before product code changes.
+
+## 2026-03-07 — T-107 closed: metadata isolation and same-session pane retarget are verified end-to-end
+
+### 事象
+- user-reported regressions were real:
+  - a plain `zsh` pane could be surfaced as `codex`
+  - idle Codex panes could be surfaced as `running`
+  - selecting another pane row in the same real session did not retarget the visible terminal tile
+- the first UI diagnosis also drifted into a stale desktop-lock explanation, while the real remaining gap moved into the app-driven tmux harness.
+
+### 実施内容
+- closed the metadata-isolation product slice already landed in `AppViewModel` / core pane identity types with focused `AppViewModelA0Tests` proof.
+- closed the same-session pane-retarget product slice already landed in `SidebarView`, `WorkbenchStoreV2`, and `WorkbenchV2TerminalAttach` with focused `WorkbenchStoreV2Tests` and `WorkbenchV2TerminalAttachTests` proof.
+- tightened the app-driven UI harness:
+  - tmux multi-field observation now uses `|`, which tmux emits literally in `-F` output
+  - pane/window discovery now polls app-side `list-panes` after `split-window` / `new-window`
+  - file-bridge tmux commands retry instead of treating the first startup race as final
+  - the UI oracle now reads active terminal target state from app-side `UITestTmuxBridge` snapshot output rather than AX `value`
+  - same-session tile-count proof now scopes to the target session label
+- simplified the terminal tile AX tree so the visible status path is the only `.status` contract.
+- verification:
+  - `swift build`
+  - `swift test -q --filter AppViewModelA0Tests`
+  - `swift test -q --filter WorkbenchStoreV2Tests`
+  - `swift test -q --filter WorkbenchV2TerminalAttachTests`
+  - `xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -destination 'platform=macOS,arch=arm64' test -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testPaneSelectionWithMockDaemonAndRealTmux`
+  - `xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -destination 'platform=macOS,arch=arm64' test -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testDefaultDuplicateSessionOpenRevealsExistingWorkbenchV2Tile -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testPaneSelectionWithMockDaemonAndRealTmux`
+
+### 結果
+- exact-pane metadata and activity/provider state no longer bleed across unrelated rows.
+- same-session pane selection now reuses the single visible terminal tile and retargets it to the requested window/pane without linked-session behavior.
+- the rewritten pane-retarget UI proof is now executed green instead of depending on the old runner-created tmux path.
+
+## 2026-03-07 — T-107 UI blocker corrected: current gap is pane discovery timing, not a locked desktop
+
+### 事象
+- the earlier `screenLocked=1` explanation was stale for the latest rerun.
+- current session-state inspection shows an interactive console session, but the rewritten app-driven proof still skips while waiting for the `secondary` window pane descriptor.
+
+### 実施内容
+- corrected the active tracking/docs surface so `T-107` no longer treats a locked desktop as the current blocker.
+- narrowed the remaining gap to the rewritten harness seam:
+  - `testPaneSelectionWithMockDaemonAndRealTmux`
+  - `waitForPaneDescriptor(...)`
+  - app-driven tmux command/observation through `UITestTmuxBridge`
+
+### 結果
+- the outstanding work is now accurately scoped to app-driven tmux pane discovery timing.
+- next step is to tighten the harness/observation path and rerun the targeted UI proof.
+
+## 2026-03-07 — T-107 pane-retarget slice landed; initial UI rerun later proved to be blocked by harness timing, not lock state
+
+### 事象
+- same-session sidebar pane selection was still reusing the existing V2 session tile without carrying the requested pane/window intent, so the visible terminal stayed on the old pane.
+- the remaining smoke `testPaneSelectionWithMockDaemonAndRealTmux` still used runner-created tmux state, which was the wrong seam for proving the new V2 behavior.
+
+### 実施内容
+- landed the same-session pane-retarget product slice:
+  - `SessionRef` now carries `preferredWindowID` / `preferredPaneID` as explicit navigation hints while equality/hash stay `target + sessionName`
+  - `WorkbenchStoreV2.openTerminal(...)` now merges pane/window intent into the existing session tile on duplicate-open reveal instead of dropping it
+  - `WorkbenchV2TerminalAttach` now preselects the requested window/pane before `attach-session`
+  - `SidebarView` pane-row open now passes exact pane/window hints into the V2 workbench path
+- added focused integration coverage:
+  - duplicate-open with different pane/window intent updates the stored tile in place
+  - local/remote attach command generation preserves exact pane/window retarget intent
+- rewrote `testPaneSelectionWithMockDaemonAndRealTmux` to an app-driven proof:
+  - the app bootstraps the isolated tmux session
+  - the test creates an additional window through the app-side tmux bridge
+  - the oracle checks that the active tmux window/pane moves while the workbench still shows exactly one session tile and zero linked sessions
+- verification:
+  - `swift build`
+  - `swift test -q --filter WorkbenchStoreV2Tests`
+  - `swift test -q --filter WorkbenchV2TerminalAttachTests`
+  - `xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -destination 'platform=macOS' test -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testPaneSelectionWithMockDaemonAndRealTmux`
+
+### 結果
+- same-session pane selection now has a product-code path to retarget the single visible session tile instead of silently doing nothing.
+- focused SPM verification is green.
+- the first interpretation of the UI rerun was `screenLocked=1`, but later reruns and session-state inspection showed the current remaining gap is the app-driven `secondary` pane discovery timeout instead.
+
+## 2026-03-07 — T-107 metadata-isolation slice landed green
+
+### 事象
+- local metadata overlay was correlating by `source + pane_id` only, so stale managed/provider/activity metadata could bleed onto unrelated exact rows.
+
+### 実施内容
+- extended pane metadata carrying types so exact local metadata identity survives decode/merge:
+  - `Sources/AgtmuxTermCore/CoreModels.swift`
+  - `Sources/AgtmuxTermCore/AgtmuxSyncV2Models.swift`
+- rewrote local metadata merge/apply in `Sources/AgtmuxTerm/AppViewModel.swift` to:
+  - key cached bootstrap metadata by exact row identity
+  - resolve change payloads by `sessionKey` + exact pane row instead of raw `pane_id`
+  - drop ambiguous or mismatched metadata instead of mislabeling panes
+- added regression coverage in `Tests/AgtmuxTermIntegrationTests/AppViewModelA0Tests.swift` for:
+  - stale managed metadata not turning plain `zsh` into `codex`
+  - exact session alias rows not inheriting each other's provider/activity state
+  - idle sibling rows staying idle when another alias row is `running`
+- verification:
+  - `swift build`
+  - `swift test -q --filter AppViewModelA0Tests`
+
+### 結果
+- provider/activity metadata is now correlated by exact pane row rather than coarse pane ID.
+- focused build and integration coverage are green for the metadata-isolation slice.
+- same-session pane-retarget code and focused SPM verification are green.
+- the rewritten UI proof builds and launches successfully, but final executed evidence still depends on tightening the app-driven pane discovery path and rerunning the targeted UI test.
+
+## 2026-03-07 — T-107 started: exact pane navigation and metadata isolation regressions
+
+### 事象
+- user reported live regressions after the linked-session cleanup:
+  - a plain `zsh` pane in `utm-main` is shown as `codex`
+  - idle Codex panes are shown as `running`
+  - selecting different pane rows within the same session does not move the main-panel terminal/cursor
+- the remaining UI smoke `testPaneSelectionWithMockDaemonAndRealTmux` also still skips in this environment when the XCUITest runner cannot keep a runner-created tmux session alive.
+
+### 実施内容
+- captured the first-pass root-cause areas before implementation:
+  - local metadata overlay currently keys by `source + paneId`, which is too coarse for exact-row isolation and stale-pane reuse
+  - same-session sidebar pane selection currently calls `openTerminal(SessionRef)` with only session identity, so duplicate-open reveal drops pane/window intent
+  - the skip-prone UI smoke still relies on runner-side `Process` launching `tmux new-session`, which is fragile under the sandboxed XCUITest bundle
+- updated spec / architecture / workbench design / tracking docs to state the intended contract:
+  - exact-pane metadata isolation
+  - same-session pane selection reuses the existing session tile but navigates it to the requested pane/window
+
+### 結果
+- `T-107` is now the active implementation task.
+- next step is delegated test-first implementation for metadata isolation, idle/running correctness, and same-session pane navigation.
+
+## 2026-03-07 — T-106 closed: linked-session runtime and stale contracts are physically removed
+
+### 事象
+- even after V2 mainline landed, the repo still physically compiled the old linked-session workspace runtime and still carried linked-session-positive tests/docs.
+- the test audit also exposed two UI contracts (`focus sync`, `same-window pane switch`) that belonged to the old pane-retarget workspace model rather than the current session-level V2 path.
+
+### 実施内容
+- removed dead linked-session runtime from shipped targets:
+  - `Sources/AgtmuxTerm/WorkspaceArea.swift`
+  - `Sources/AgtmuxTerm/WorkspaceStore.swift`
+  - `Sources/AgtmuxTerm/LinkedSessionManager.swift`
+- extracted the still-live shared pieces and removed legacy-only core helpers/tests:
+  - added `Sources/AgtmuxTerm/TmuxCommandRunner.swift`
+  - added `Sources/AgtmuxTermCore/SplitAxis.swift`
+  - removed `Sources/AgtmuxTermCore/LayoutNode.swift`
+  - removed `Sources/AgtmuxTermCore/TmuxLayoutConverter.swift`
+  - removed `Tests/AgtmuxTermCoreTests/LayoutNodeTests.swift`
+  - removed `Tests/AgtmuxTermCoreTests/TmuxLayoutConverterTests.swift`
+- trimmed the remaining shipped runtime so no linked-session registration/indexing remains in `SurfacePool` / `GhosttySurfaceHostView`.
+- deleted stale positive coverage and narrowed UI docs/tests to V2 truths:
+  - removed `Tests/AgtmuxTermIntegrationTests/LinkedSessionIntegrationTests.swift`
+  - removed linked-session title/runtime UI proofs
+  - removed pane-level focus-sync / same-window fast-switch UI proofs because V2 is session-level direct attach and those were stale linked-session workspace contracts
+  - updated `Tests/AgtmuxTermUITests/README.md` and `docs/41_design-workbench.md`
+- verification:
+  - `xcodegen generate`
+  - `swift build`
+  - `swift test -q --filter WorkbenchV2ModelsTests`
+  - `swift test -q --filter WorkbenchV2BridgeDispatchTests`
+  - `swift test -q --filter PaneFilterTests`
+  - `swift test -q --filter AppViewModelA0Tests`
+  - `xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -destination 'platform=macOS' test -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testDefaultSidebarOpenUsesWorkbenchV2RealSessionTerminalTile -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testDefaultDuplicateSessionOpenRevealsExistingWorkbenchV2Tile`
+  - `xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -destination 'platform=macOS' test -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testPaneSelectionWithMockDaemonAndRealTmux -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testDefaultSidebarOpenUsesWorkbenchV2RealSessionTerminalTile -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testDefaultDuplicateSessionOpenRevealsExistingWorkbenchV2Tile`
+- delegation note:
+  - one UI/test cleanup worker was interrupted before returning a usable final report, but a second delegated verifier completed the final focused evidence on the current worktree.
+
+### 結果
+- the shipped code path no longer contains a compilable linked-session workspace implementation.
+- linked-session creation/title rewrite is no longer represented as active product contract in tests or docs.
+- current V2 proofs remain green for direct attach and duplicate-open no-linked-session behavior; `testPaneSelectionWithMockDaemonAndRealTmux` remains an environment skip when the runner cannot create a tmux session.
+
+## 2026-03-07 — T-106 audit refined the deletion scope across runtime, tests, and docs
+
+### 事象
+- user asked for a full re-review of UI, E2E, and related tests because legacy linked-session assumptions might still remain beyond the shipped runtime path.
+- the repo still contained both dead runtime code and stale positive coverage that treated linked-session creation/title rewriting as active product behavior.
+
+### 実施内容
+- completed a targeted inventory across runtime, tests, and docs.
+- classified the remaining legacy surface into three groups:
+  - delete:
+    - `Sources/AgtmuxTerm/WorkspaceStore.swift`
+    - `Sources/AgtmuxTerm/WorkspaceArea.swift`
+    - `Sources/AgtmuxTerm/LinkedSessionManager.swift`
+    - `Tests/AgtmuxTermIntegrationTests/LinkedSessionIntegrationTests.swift`
+    - linked-session title/runtime UI proofs and stale README wording
+  - rewrite:
+    - UI proofs whose real product intent still matters but whose oracle assumes linked-session creation, especially focus-sync and same-window pane-switch cases
+  - keep:
+    - exact-session identity regressions that prove linked-looking names and `session_group` metadata do not rewrite the normal V2 sidebar path
+- updated design/tracking docs so `T-106` now explicitly covers test/doc cleanup, not just dead runtime deletion.
+
+### 結果
+- the first safe deletion slice is now concrete instead of open-ended.
+- next step is delegated implementation of the slice: remove dead linked-session runtime, delete legacy-positive coverage, and rewrite only the still-needed UI proofs to V2 direct-attach semantics.
+
+## 2026-03-07 — T-106 started: legacy linked-session path deletion is now explicit work
+
+### 事象
+- V2 mainline integration is closed, but the repo still physically contains the older linked-session workspace runtime.
+- user clarified that the intent of the V2 project is stronger than "not on the normal path": linked-session / group-session creation should no longer remain as shipped product behavior at all.
+
+### 実施内容
+- added `T-106` to `docs/60_tasks.md` as the new active implementation task.
+- updated `docs/65_current.md` so the active focus is now physical deletion of the legacy linked-session path rather than open-ended "next task" space.
+- scoped the first execution step to inventory and remove the old runtime surface in slices, starting from:
+  - `WorkspaceStore`
+  - `WorkspaceArea`
+  - `LinkedSessionManager`
+  - `SurfacePool`
+  - linked-session-specific tests and stale docs
+
+### 結果
+- the board now treats linked-session deletion as first-class implementation work, not residual cleanup.
+- next step is a concrete reachability pass over the remaining legacy runtime before code deletion begins.
+
+## 2026-03-07 — T-092 and T-093 umbrella tracking reconciled after fresh evidence
+
+### 事象
+- `T-098` / `T-099` and `T-104` / `T-105` were already closed, but their umbrella task entries `T-092` and `T-093` were still left open in tracking.
+- earlier review evidence also still described `T-094` / `T-095` UI proof as blocked by a locked desktop session.
+
+### 実施内容
+- reran fresh umbrella-focused verification:
+  - `swift build`
+  - `swift test -q --filter WorkbenchV2BrowserTileTests`
+  - `swift test -q --filter WorkbenchV2DocumentTileTests`
+  - `swift test -q --filter GhosttyCLIOSCBridgeTests`
+  - `swift test -q --filter WorkbenchV2BridgeDispatchTests`
+  - `swift test -q --filter GhosttyTerminalSurfaceRegistryTests`
+  - `swift test -q --filter WorkbenchStoreV2PersistenceTests`
+  - `swift test -q --filter WorkbenchStoreV2Tests`
+  - `swift test -q --filter WorkbenchV2DocumentTileTests`
+  - `swift test -q --filter WorkbenchV2TerminalRestoreTests`
+  - `swift test -q --filter WorkbenchV2TerminalAttachTests`
+- refreshed unlocked-session UI evidence:
+  - reran the 6-test `T-094` targeted UI batch and got executed PASS
+  - reran the 2-test health-strip `T-095` UI batch and got executed PASS
+  - reran the 2-test restore-placeholder `T-093` UI batch and got executed PASS
+- aligned the remaining bridge-routing wording from `active Workbench` to the implemented emitting-surface Workbench semantics:
+  - `docs/30_architecture.md`
+  - `docs/42_design-cli-bridge.md`
+- updated:
+  - `docs/60_tasks.md`
+  - `docs/65_current.md`
+  - `docs/85_reviews/review-pack-T-092.md`
+  - `docs/85_reviews/review-pack-T-093.md`
+  - `docs/85_reviews/review-pack-T-094.md`
+  - `docs/85_reviews/review-pack-T-095.md`
+- bounded Codex CLI closeout attempts on the umbrella packs did not return usable final verdicts in reasonable time, so final umbrella `GO` came from direct Codex fallback review over the already-reviewed split-task evidence
+
+### 結果
+- `T-092` is now closed as an umbrella reconciliation of `T-098` plus `T-099` / `T-102` / `T-103`.
+- `T-093` is now closed as an umbrella reconciliation of `T-104` plus `T-105`.
+- `T-094` and `T-095` review packs now include fresh executed UI evidence from an unlocked desktop session instead of the earlier `screenLocked=1` caveat.
+- no active implementation milestone remains on the current task board.
+
+## 2026-03-07 — T-094 and T-095 unlocked-session UI reruns executed PASS
+
+### 事象
+- the earlier `T-094` closeout still carried a locked-session caveat because XCTest had skipped the post-fix 6-test UI batch with `screenLocked=1`.
+- `T-095` also relied on existing UI coverage references, but the strip presence/absence proofs had not yet been rerun on an unlocked desktop in the current tracking pass.
+
+### 実施内容
+- reran:
+  - `xcodegen generate`
+  - `xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -destination 'platform=macOS' test -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testDefaultSidebarOpenUsesWorkbenchV2RealSessionTerminalTile -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testDefaultDuplicateSessionOpenRevealsExistingWorkbenchV2Tile -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testEmptyStateOnLaunch -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testLinkedPrefixedSessionsRemainVisibleAsRealSessions -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testSessionGroupAliasSessionsRemainDistinct -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testSessionGroupAliasSelectionStaysOnExactSessionRow`
+  - `xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -destination 'platform=macOS' test -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testSidebarHealthStripShowsMixedHealthStates -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testSidebarHealthStripStaysAbsentWithoutHealthSnapshot`
+- stabilized the duplicate-open UI proof helper so it reuses the already-waited-for sidebar row instead of requerying before click.
+
+### 結果
+- the full 6-test `T-094` batch now executes and passes on an unlocked desktop session.
+- the 2-test health-strip `T-095` batch also executes and passes on an unlocked desktop session.
+- the remaining `screenLocked=1` note is no longer the current review evidence for either task.
+
+## 2026-03-07 — T-095 closeout: local health-strip offline contract locked and reviewed green
+
+### 事象
+- `T-095` remained open even though the product behavior already existed, because the local health-strip offline/stale-data contract had never been stated precisely in the docs.
+- the first sufficiency review rejected the initial wording because it overpromised an untested coexistence rendering case and the spec section was malformed.
+
+### 実施内容
+- narrowed the contract to the behaviors already covered by tests:
+  - local inventory offline does not clear the last published health strip
+  - `ui.health.v1` refresh continues while inventory is offline
+  - no health snapshot means no health strip
+- fixed the spec/architecture wording in:
+  - `docs/20_spec.md`
+  - `docs/30_architecture.md`
+- reran `swift test -q --filter AppViewModelA0Tests`
+- reran scoped Codex sufficiency review on the narrowed contract
+
+### 結果
+- final reviewer verdicts: `GO`, `GO`
+- `T-095` is now closed without product-code changes; the work was contract-locking plus evidence reconciliation.
+- next active tracking item is the remaining `T-092` umbrella-task reconciliation.
+
+## 2026-03-07 — T-095 started: local health-strip offline contract is now docs-locked
+
+### 事象
+- `T-095` existed to decide and document what the sidebar health strip should do when local inventory goes offline or stale panes remain.
+- the code and tests already implied a behavior, but that contract was not yet written down in the design/architecture docs.
+
+### 実施内容
+- reviewed the current `AppViewModel` / `SidebarView` behavior and the existing coverage surface.
+- documented the chosen contract in:
+  - `docs/30_architecture.md`
+  - `docs/20_spec.md`
+- recorded the existing regression coverage in `docs/60_tasks.md`:
+  - `AppViewModelA0Tests.testLocalDaemonHealthPublishesEvenWhenInventoryFetchFails`
+  - `AppViewModelA0Tests.testLocalInventoryOfflineDoesNotClearExistingHealthAndStillAllowsRefresh`
+  - `AgtmuxTermUITests.testSidebarHealthStripShowsMixedHealthStates`
+  - `AgtmuxTermUITests.testSidebarHealthStripStaysAbsentWithoutHealthSnapshot`
+
+### 結果
+- the intended contract is now explicit:
+  - local inventory offline does not clear the last published health strip
+  - `ui.health.v1` refresh continues while inventory is offline
+  - no health snapshot means no health strip
+- next step is a final sufficiency check on whether the existing executed coverage is enough to close T-095 without new product-code changes.
+
+## 2026-03-07 — T-094 closeout: dual Codex GO after exact-selection fix
+
+### 事象
+- T-094 had been reopened by dual Codex review on an exact-session selection regression after slice 2 landed.
+- the fix and post-fix coverage were in place, but the task still needed fresh verification evidence and final reviewer verdicts.
+
+### 実施内容
+- reran focused verification on the final worktree:
+  - `swift build`
+  - `swift test -q --filter AppViewModelA0Tests`
+  - `swift test -q --filter WorkbenchStoreV2Tests`
+  - `swift test -q --filter WorkbenchV2TerminalAttachTests`
+  - `xcodegen generate`
+- reran targeted UI proofs for the T-094 surface, including `testSessionGroupAliasSelectionStaysOnExactSessionRow`
+  - both the normal rerun and an `AGTMUX_UITEST_ALLOW_LOCKED_SESSION=1` retry reached `xcodebuild` success but skipped because XCTest still reported `screenLocked=1`
+- refreshed `docs/85_reviews/review-pack-T-094.md` and ran two scoped independent Codex re-reviews on the exact-selection fix
+
+### 結果
+- final reviewer verdicts: `GO`, `GO`
+- both reviewers confirmed that exact-session alias selection now stays bound to full pane identity and that the new refresh/UI regression coverage targets the right contract.
+- the remaining UI skip was judged to be an environment-evidence gap, not a blocking product regression.
+- T-094 is now closed; the next active task is T-095.
+
+## 2026-03-07 — T-094 review fix landed: exact-session selection no longer collapses sibling aliases
+
+### 事象
+- dual Codex review reopened T-094 after slice 2: once session-group aliases remained visible as separate rows, sidebar selection and `retainSelection(...)` were still matching only `source + windowId + paneId`.
+- as a result, selecting one alias row could highlight its sibling alias row too, and a refresh could retarget `selectedPane` to the wrong exact session.
+
+### 実施内容
+- tightened exact-selection matching in the mainline path:
+  - `Sources/AgtmuxTerm/AppViewModel.swift`
+    - `retainSelection(...)` now preserves selection by full pane identity (`source + sessionName + windowId + paneId`)
+  - `Sources/AgtmuxTerm/SidebarView.swift`
+    - sidebar selected-row matching now keys off `AgtmuxPane.id` instead of collapsing sibling aliases that share the same pane/window
+  - `Tests/AgtmuxTermIntegrationTests/AppViewModelA0Tests.swift`
+    - added `testFetchAllRetainsSelectionForExactSessionGroupAliasAcrossRefresh`
+  - `Tests/AgtmuxTermUITests/AgtmuxTermUITests.swift`
+    - added `testSessionGroupAliasSelectionStaysOnExactSessionRow`
+    - tightened selected-marker lookup to full `AccessibilityID.paneKey(...)`
+- focused verification:
+  - `swift build`
+  - `swift test -q --filter AppViewModelA0Tests`
+  - `swift test -q --filter WorkbenchStoreV2Tests`
+  - `swift test -q --filter WorkbenchV2TerminalAttachTests`
+  - `xcodegen generate`
+  - `xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -destination 'platform=macOS' test -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testDefaultSidebarOpenUsesWorkbenchV2RealSessionTerminalTile -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testDefaultDuplicateSessionOpenRevealsExistingWorkbenchV2Tile -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testEmptyStateOnLaunch -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testLinkedPrefixedSessionsRemainVisibleAsRealSessions -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testSessionGroupAliasSessionsRemainDistinct -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testSessionGroupAliasSelectionStaysOnExactSessionRow`
+  - `AGTMUX_UITEST_ALLOW_LOCKED_SESSION=1 xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -destination 'platform=macOS' test -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testDefaultSidebarOpenUsesWorkbenchV2RealSessionTerminalTile -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testDefaultDuplicateSessionOpenRevealsExistingWorkbenchV2Tile -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testEmptyStateOnLaunch -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testLinkedPrefixedSessionsRemainVisibleAsRealSessions -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testSessionGroupAliasSessionsRemainDistinct -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testSessionGroupAliasSelectionStaysOnExactSessionRow`
+
+### 結果
+- exact-session alias rows no longer collapse into a shared selected/highlighted state in product code.
+- the latest targeted UI rerun reached `** TEST SUCCEEDED **`, but all 6 selected UI proofs skipped because XCTest still reported `screenLocked=1`.
+- retrying with `AGTMUX_UITEST_ALLOW_LOCKED_SESSION=1` did not bypass the runner-side guard, so T-094 remains open for an actually unlocked-desktop rerun plus review closeout.
+
+## 2026-03-07 — T-094 slice 2 landed: AppViewModel now preserves exact real-session sidebar identity
+
+### 事象
+- after the visible-surface switch, the remaining normal-path linked-session assumption was in `AppViewModel.normalizePanes(...)`: it still hid `agtmux-linked-*` names and canonicalized sessions through `session_group`.
+- that behavior conflicted with the V2 contract that the sidebar should reflect real tmux sessions as-is.
+
+### 実施内容
+- removed the old linked-session/sidebar normalization from `Sources/AgtmuxTerm/AppViewModel.swift`:
+  - stopped filtering `agtmux-linked-*` session names from the normal path
+  - stopped rewriting sidebar identity through `session_group` / local alias canonicalization
+  - kept only exact duplicate-row deduplication (`source + session + window + pane`)
+- added focused product-code coverage in `Tests/AgtmuxTermIntegrationTests/AppViewModelA0Tests.swift`:
+  - linked-looking session names remain visible as exact sessions
+  - session-group aliases remain distinct in `panes` and `panesBySession`
+- rewrote conflicting UI proofs in `Tests/AgtmuxTermUITests/AgtmuxTermUITests.swift`:
+  - `testLinkedPrefixedSessionsRemainVisibleAsRealSessions`
+  - `testSessionGroupAliasSessionsRemainDistinct`
+- removed obsolete `Tests/AgtmuxTermCoreTests/PaneFilterTests.swift`, which only asserted the old prefix-filter contract and no longer covered product behavior
+- focused verification:
+  - `swift build`
+  - `swift test -q --filter AppViewModelA0Tests`
+  - `swift test -q --filter WorkbenchStoreV2Tests`
+  - `xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -destination 'platform=macOS' test -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testLinkedPrefixedSessionsRemainVisibleAsRealSessions -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testSessionGroupAliasSessionsRemainDistinct`
+
+### 結果
+- the remaining linked-session/session-group normalization is no longer part of the normal sidebar path.
+- T-094 then reopened in review on an exact-selection regression; that follow-up fix is tracked in the newer entry above.
+
+## 2026-03-07 — T-094 slice 1 landed: visible cockpit surfaces now default to Workbench V2
+
+### 事象
+- after T-105 closeout, the remaining mainline gap was that the visible cockpit composition still branched on `WorkbenchStoreV2.isFeatureEnabled()` and could still route sidebar-open through the old linked-session workspace path.
+
+### 実施内容
+- updated the visible composition path:
+  - `Sources/AgtmuxTerm/CockpitView.swift`
+    - made `WorkbenchAreaV2` the normal workspace surface
+  - `Sources/AgtmuxTerm/TitlebarChromeView.swift`
+    - made `WorkbenchTabBarV2` the normal titlebar tab surface
+  - `Sources/AgtmuxTerm/SidebarView.swift`
+    - removed the V1 fallback open path from session/window/pane sidebar actions so they always use `WorkbenchStoreV2.openTerminal(...)`
+  - `Sources/AgtmuxTerm/main.swift`
+    - removed normal-path `WorkspaceStore` wiring from the top-level cockpit environment
+  - `Sources/AgtmuxTerm/WindowChromeController.swift`
+    - removed normal-path `WorkspaceStore` wiring from titlebar chrome hosting
+- updated focused UI coverage in `Tests/AgtmuxTermUITests/AgtmuxTermUITests.swift` so the executed proofs target the new default mainline path:
+  - `testDefaultSidebarOpenUsesWorkbenchV2RealSessionTerminalTile`
+  - `testDefaultDuplicateSessionOpenRevealsExistingWorkbenchV2Tile`
+- fallback execution note:
+  - the real agent CLI stalled without a usable report
+  - the delegated Codex tier did not return a usable in-band handoff
+  - the orchestrator finished the remaining owned-file cleanup and UI-proof stabilization directly
+
+### 結果
+- the normal visible cockpit path now defaults to V2 and no longer creates linked sessions from sidebar-open.
+- focused verification:
+  - `swift build`
+  - `AGTMUX_UITEST_ALLOW_SSH=1 xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -destination 'platform=macOS,arch=arm64' test -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testDefaultSidebarOpenUsesWorkbenchV2RealSessionTerminalTile -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testDefaultDuplicateSessionOpenRevealsExistingWorkbenchV2Tile`
+- both targeted UI proofs executed and passed.
+- T-094 remains open for the follow-up slice that removes AppViewModel-side linked-session filtering / title-leak normalization from the main path.
+
+## 2026-03-07 — T-094 started: visible cockpit surfaces are the first mainline-removal slice
+
+### 事象
+- T-105 is fully closed, and the next MVP milestone is T-094: reconnect the sidebar/session browser to Workbench V2 and remove linked-session assumptions from the normal product path.
+- the current codebase still branches on `WorkbenchStoreV2.isFeatureEnabled()` in the visible cockpit composition surfaces (`SidebarView`, `CockpitView`, `TitlebarChromeView`) even though the V2 product path is now the intended mainline.
+
+### 実施内容
+- reviewed `docs/20_spec.md`, `docs/50_plan.md`, and the active cockpit composition files to scope the first T-094 slice.
+- locked the first slice to visible-surface mainline integration:
+  - make `SidebarView` open/reveal V2 terminal tiles as the normal path
+  - make `CockpitView` render `WorkbenchAreaV2` as the normal workspace surface
+  - make `TitlebarChromeView` render `WorkbenchTabBarV2` as the normal titlebar tab surface
+- left the deeper V1 cleanup as an explicit follow-up slice so verification can prove the visible-mainline switch independently before removing remaining legacy wiring.
+
+### 結果
+- T-094 is now active and design-scoped for implementation.
+- next execution step is delegated implementation of the visible-surface V2 mainline switch, followed by focused verification and review.
+
+## 2026-03-07 — T-105 closeout: bootstrap/reachability review blockers fixed and review green
+
+### 事象
+- the first T-105 implementation landed and the new broken-terminal UI proof passed, but dual Codex review reopened two terminal issues and two document issues:
+  - healthy restored terminals could briefly surface a false `Session missing` placeholder before the first inventory fetch completed
+  - terminal rebind options could include stale sessions from offline sources
+  - remote document restore could race startup reachability and stick on a generic access failure
+  - document rebind silently fell back a missing remote target to `local`
+
+### 実施内容
+- `Sources/AgtmuxTerm/AppViewModel.swift`
+  - added `hasCompletedInitialFetch` so restore surfaces can distinguish bootstrap from live inventory truth
+- `Sources/AgtmuxTerm/WorkbenchV2TerminalRestore.swift`
+  - added explicit terminal tile state resolution (`bootstrapping / ready / broken`)
+  - filtered terminal rebind options to live, non-offline sources only and gated them until the first fetch completes
+- `Sources/AgtmuxTerm/WorkbenchAreaV2.swift`
+  - blocked direct attach and broken-tile actions during bootstrap, surfacing a neutral restore-in-progress state instead of a false placeholder
+- `Sources/AgtmuxTerm/WorkbenchV2DocumentTile.swift`
+  - introduced a document load request key keyed by retry token plus live reachability state
+  - deferred remote document load until reachability truth is available
+  - preserved missing remote document targets as explicit unavailable rebind options instead of silently selecting `local`
+- `Tests/AgtmuxTermIntegrationTests/WorkbenchV2TerminalRestoreTests.swift`
+  - added bootstrap-state and offline-option filtering coverage
+- `Tests/AgtmuxTermIntegrationTests/WorkbenchV2DocumentTileTests.swift`
+  - added remote-load defer coverage and explicit missing-target rebind coverage
+- `Tests/AgtmuxTermUITests/AgtmuxTermUITests.swift`
+  - added a healthy restored terminal UI proof so bootstrap settles into direct attach without exposing a false broken placeholder
+- refreshed `docs/85_reviews/review-pack-T-105.md` and reran dual Codex re-review
+
+### 結果
+- T-105 is now closed on code, focused verification, targeted UI proof, and review.
+- final verification:
+  - `swift build`
+  - `swift test -q --filter WorkbenchV2DocumentTileTests`
+  - `swift test -q --filter WorkbenchV2TerminalRestoreTests`
+  - `swift test -q --filter WorkbenchStoreV2Tests`
+  - `swift test -q --filter WorkbenchStoreV2PersistenceTests`
+  - `swift test -q --filter WorkbenchV2TerminalAttachTests`
+  - `xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -destination 'platform=macOS' test -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testV2RestoredBrokenTerminalTileShowsPlaceholderAndCanBeRemoved -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testV2RestoredHealthyTerminalTileDoesNotSurfaceBrokenPlaceholder`
+- final review verdicts: `GO`, `GO`
+
+## 2026-03-07 — T-105 restore placeholder UI landed; targeted UI proof blocked by automation mode
+
+### 事象
+- after the store-side `Remove Tile` / exact-target `Rebind` slice landed, the remaining T-105 work was the render-time placeholder UI for restored terminal/document tiles.
+- both delegated execution tiers failed for the remaining UI slice: real agent CLI runs stalled without usable edits, and the fallback Codex subagent also failed to return a usable patch.
+
+### 実施内容
+- used the documented fallback ladder and completed the remaining slice directly in the orchestrator:
+  - `Sources/AgtmuxTerm/WorkbenchV2DocumentTile.swift`
+    - kept the typed document restore-state model, preflight host/offline checks, retry-token reload path, and exact-target `Rebind` / `Remove Tile` actions
+  - `Sources/AgtmuxTerm/WorkbenchV2TerminalRestore.swift`
+    - added render-time terminal restore issue resolution from persisted `SessionRef` plus live inventory truth
+    - added exact-target terminal rebind option synthesis from live panes
+    - added the terminal rebind sheet surface
+  - `Sources/AgtmuxTerm/WorkbenchAreaV2.swift`
+    - switched terminal tiles to explicit restore placeholders with `Retry`, `Rebind`, and `Remove Tile`
+  - `Tests/AgtmuxTermIntegrationTests/WorkbenchV2TerminalRestoreTests.swift`
+    - added focused coverage for host-missing/offline, local daemon issue surfacing, `tmux unavailable`, session-missing, and exact-target rebind option generation
+  - `Tests/AgtmuxTermUITests/AgtmuxTermUITests.swift`
+    - added targeted UI proof for a restored broken terminal tile staying visible and removable
+- verification completed for:
+  - `swift build`
+  - `swift test -q --filter WorkbenchV2DocumentTileTests`
+  - `swift test -q --filter WorkbenchV2TerminalRestoreTests`
+  - `swift test -q --filter WorkbenchStoreV2Tests`
+  - `swift test -q --filter WorkbenchStoreV2PersistenceTests`
+  - `swift test -q --filter WorkbenchV2TerminalAttachTests`
+
+### 結果
+- T-105 product code now contains the intended render-time recovery path for both document and terminal tiles.
+- the new targeted UI proof is present, but `xcodebuild -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testV2RestoredBrokenTerminalTileShowsPlaceholderAndCanBeRemoved` is currently blocked by `Timed out while enabling automation mode.` before the runner initializes.
+- the next required step is to rerun that targeted UI test once the macOS desktop accepts XCTest automation mode immediately.
+
+## 2026-03-07 — Delegation fallback locked for T-105 execution
+
+### 事象
+- the remaining T-105 UI slice hit repeated delegation instability: real agent CLI runs stalled without usable output, and subagent runs were intermittently disconnected or interrupted.
+
+### 実施内容
+- updated `AGENTS.md`, `docs/60_tasks.md`, and `docs/lessons.md` to lock the user-directed fallback ladder:
+  1. real agent CLI
+  2. Codex subagent
+  3. orchestrator direct execution only after both delegated paths fail
+
+### 結果
+- T-105 can continue without violating repo process when delegation tooling is unstable.
+- subsequent execution must record which fallback tier was actually needed for each remaining slice.
+
+## 2026-03-07 — T-108 execution policy switched to direct orchestrator implementation
+
+### 事象
+- while investigating the reopened pane-selection / overlay regressions, real-agent implementation delegation added latency without producing usable implementation output.
+- the active bugfix slice is now explicit user-directed direct implementation work, not a delegation exercise.
+
+### 実施内容
+- updated `AGENTS.md`, `docs/60_tasks.md`, and `docs/65_current.md` to stop treating real-agent implementation delegation as the default for this slice.
+- recorded that `T-108` will proceed as orchestrator-owned TDD and focused verification.
+
+### 結果
+- the active implementation path is now unambiguous: patch product code directly, prove it with regression tests, then refresh tracking/review evidence.
+
+## 2026-03-06 — T-105 partial progress: store mutation support landed for remove/rebind
+
+### 事象
+- T-105 needed explicit recovery actions, but the existing V2 store still lacked safe mutation seams for `Remove Tile` and exact-target `Rebind`.
+
+### 実施内容
+- `Sources/AgtmuxTerm/WorkbenchStoreV2.swift`
+  - added public tree-safe tile removal that collapses splits and repairs focus
+  - added exact-target terminal/document rebind APIs that preserve tile identity
+  - terminal rebind now clears stale hint-only `SessionRef` fields when target/session changes
+- `Tests/AgtmuxTermIntegrationTests/WorkbenchStoreV2Tests.swift`
+  - added focused coverage for nested remove/collapse behavior, focus repair, and rebind semantics
+- `Tests/AgtmuxTermIntegrationTests/WorkbenchStoreV2PersistenceTests.swift`
+  - added focused autosave proofs for remove/rebind mutations
+
+### 結果
+- the store-side recovery contract for T-105 is now present and verified.
+- remaining work is render-time terminal/document restore placeholder UI plus `Retry` / `Rebind` / `Remove Tile` wiring at the tile layer.
+
+### 検証
+- `swift test --filter WorkbenchStoreV2Tests` ✅
+- `swift test --filter WorkbenchStoreV2PersistenceTests` ✅
+- combined focused result: 26 tests, 0 failures
+
+## 2026-03-06 — T-105 design lock: restore placeholders stay render-time, not persisted state
+
+### 事象
+- after T-104, the remaining Phase E question was whether broken restore state should be stored in the snapshot or recomputed from live truth.
+
+### 実施内容
+- locked `docs/41_design-workbench.md` so restore placeholders are resolved from persisted exact refs plus current host config and tmux inventory truth.
+- added `Host missing` to the explicit restore placeholder vocabulary so the design matches the already-landed host-key contracts in terminal/document restore paths.
+- updated `docs/60_tasks.md` and `docs/65_current.md` to mark the active T-105 slice as terminal/document placeholders plus exact-target `Rebind` and tree-safe `Remove Tile`.
+
+### 結果
+- persistence stays on the simpler `T-104` contract; no cached restore-status field is added to the snapshot format.
+- the next code step is to land render-time restore issue resolution, recovery actions, and focused proof for those flows.
+
+## 2026-03-06 — T-104 closeout: autosave/load plumbing landed and bridge persistence gap fixed
+
+### 事象
+- T-104 landed snapshot plumbing quickly, but re-review reopened one blocking gap: the bridge-dispatch mutation path was mutating workbenches without autosaving, so pinned companions opened from the CLI bridge could miss persistence.
+
+### 実施内容
+- `Sources/AgtmuxTerm/WorkbenchStoreV2Persistence.swift`
+  - added the fixed app-owned snapshot path, validated encode/decode, atomic writes, and save-time pruning of unpinned companion tiles
+- `Sources/AgtmuxTerm/WorkbenchStoreV2.swift`
+  - restored persisted state at launch when no fixture override is present
+  - autosaved representative store mutations fail-loud
+- `Sources/AgtmuxTerm/WorkbenchV2BridgeDispatch.swift`
+  - added autosave on the contextual bridge mutation path so bridge-opened pinned companions are persisted too
+- `Tests/AgtmuxTermIntegrationTests/WorkbenchStoreV2PersistenceTests.swift`
+  - added focused coverage for persisted load, fixture override precedence, prune semantics, representative autosave, explicit-save failure, and bridge-opened pinned companion persistence
+- refreshed `docs/85_reviews/review-pack-T-104.md` and reran dual Codex re-review
+
+### 結果
+- T-104 is now closed on code, focused verification, and review.
+- Phase E now moves to `T-105` restore failure placeholders and recovery actions.
+
+### 検証
+- `swift test --filter WorkbenchStoreV2` ✅
+- `swift test --filter WorkbenchV2BridgeDispatchTests` ✅
+- final review verdicts: `GO`, `GO`
+
+## 2026-03-06 — T-103 closeout: real `GhosttyApp` seam proof landed and review returned green
+
+### 事象
+- T-103 had landed decode/dispatch code, but re-review reopened the task because executed tests still bypassed the real `GhosttyApp.handleAction(...)` callback seam.
+
+### 実施内容
+- `Sources/AgtmuxTerm/GhosttyApp.swift`
+  - exposed a narrow `@testable` seam so integration tests can invoke the real action callback path without changing production behavior
+  - added injectable test hooks for bridge dispatch, failure reporting, and main-actor observation
+- `Tests/AgtmuxTermIntegrationTests/GhosttyCLIOSCBridgeTests.swift`
+  - added executed seam-level tests that call `GhosttyApp.handleAction(...)` itself from an off-main queue
+  - proved valid `OSC 9911` consume/open behavior, non-`9911` passthrough, and unregistered-surface failure reporting on main
+  - expanded decode coverage to unsupported `version` / `action` / `placement` and empty required fields
+- refreshed `docs/85_reviews/review-pack-T-103.md` and reran dual Codex re-review
+
+### 結果
+- T-103 is now closed on code, focused verification, and review.
+- together with the already-closed T-102 carrier exposure, T-099 terminal bridge transport is now closed in-repo.
+
+### 検証
+- `swift build` ✅
+- `swift test --filter GhosttyCLIOSCBridgeTests` ✅
+  - `Executed 16 tests, with 0 failures (0 unexpected)`
+- `swift test -q --filter WorkbenchV2BridgeDispatchTests` ✅
+- `swift test -q --filter GhosttyTerminalSurfaceRegistryTests` ✅
+- final review verdicts: `GO`, `GO`
+
+## 2026-03-06 — T-093 decomposition: autosave/load and restore affordances split
+
+### 事象
+- after closing bridge transport, the next MVP phase is persistence plus restore states.
+- current code review shows two different work surfaces: snapshot storage/load and restore-failure affordances.
+
+### 実施内容
+- updated `docs/60_tasks.md` to split `T-093` into:
+  - `T-104` workbench autosave/load snapshot plumbing
+  - `T-105` restore failure placeholders and recovery actions
+- updated `docs/65_current.md` so the next implementation focus points at the split tasks rather than the old umbrella only.
+
+### 結果
+- the next implementation can land storage first without entangling it with `Retry` / `Rebind` / `Remove Tile` UI work.
+- `T-093` remains the umbrella acceptance surface while execution proceeds through `T-104` then `T-105`.
+
+## 2026-03-06 — T-103 review reopened: real `GhosttyApp` seam proof is still missing
+
+### 事象
+- T-103 landed app-side decode/dispatch code plus focused tests, but re-review split on the verification bar.
+- one Codex reviewer returned `GO`; another returned `NO_GO`.
+
+### 実施内容
+- refreshed `docs/85_reviews/review-pack-T-103.md`.
+- reviewed the current evidence against the design-locked verification bar in `docs/42_design-cli-bridge.md`.
+
+### 結果
+- the bridge decoder/dispatcher itself is not the blocker.
+- the blocking gap is proof: current tests call `GhosttyCLIOSCBridge.dispatchIfBridgeAction(...)` directly, so they do not yet exercise the real `GhosttyApp.handleAction(...)` callback seam, main-thread hop, or failure surfacing path.
+- the next fix is to add executed integration proof at the real app callback seam and use that to satisfy the product-level bridge verification requirement.
+
+## 2026-03-06 — T-102 closeout: custom OSC carrier verified and reviewed green
+
+### 事象
+- T-102 had been reopened on two blocking review findings: GTK `.custom_osc` parity and missing runtime-hop proof that exact `osc` plus payload bytes reach the host `action_cb`.
+
+### 実施内容
+- verified the current worktree against the reopened findings.
+- confirmed:
+  - `vendor/ghostty/src/apprt/embedded.zig` now proves `.custom_osc` reaches the embedded runtime callback with exact `osc` and payload bytes
+  - `vendor/ghostty/src/terminal/stream.zig` now covers the ST-terminated path in addition to BEL parser coverage
+  - `vendor/ghostty/src/apprt/gtk/class/application.zig` now handles `.custom_osc` explicitly for shared-source parity
+- refreshed `docs/85_reviews/review-pack-T-102.md` with the new evidence and reran dual Codex review.
+
+### 結果
+- T-102 is now closed on code, fresh verification, and review.
+- the remaining bridge work moves entirely into app-side decode/dispatch (`T-103`).
+
+### 検証
+- `cd vendor/ghostty && zig build test -Dtest-filter='custom osc'` ✅
+- `./scripts/build-ghosttykit.sh` ✅
+- `cmp -s vendor/ghostty/include/ghostty.h GhosttyKit/GhosttyKit.xcframework/macos-arm64_x86_64/Headers/ghostty.h` ✅
+- `cmp -s vendor/ghostty/include/ghostty.h GhosttyKit/GhosttyKit.xcframework/ios-arm64/Headers/ghostty.h` ✅
+- `cmp -s vendor/ghostty/include/ghostty.h GhosttyKit/GhosttyKit.xcframework/ios-arm64-simulator/Headers/ghostty.h` ✅
+- `swift build` ✅
+- final review verdicts: `GO`, `GO`
+
+## 2026-03-06 — T-103 preflight: payload contract locked before app-side decode
+
+### 事象
+- after `T-102`, the remaining bridge work moved into Swift decode/dispatch.
+- the docs already locked `OSC 9911` as the carrier, but the payload defaulting rules still needed to be concrete before app-side code could be delegated cleanly.
+
+### 実施内容
+- updated `docs/42_design-cli-bridge.md`.
+- locked the app-visible payload as strict UTF-8 JSON with explicit `version`, `action`, `kind`, `target`, `cwd`, `argument`, `placement`, and `pin`.
+- locked host-side validation to fail loudly for malformed JSON, unsupported enum values, empty required fields, and relative file paths.
+- updated `docs/30_architecture.md` so Flow-004 explicitly says the command emits an `OSC 9911` UTF-8 JSON payload.
+
+### 結果
+- `T-103` can now implement decode/validation without making a parallel design decision in code.
+- the external emitter remains out of tree, but the in-repo host contract is now concrete enough for app-side tests and dispatch wiring.
+
+## 2026-03-06 — T-103 preflight: `agt` emitter is out of tree
+
+### 事象
+- after landing `T-102`, the next question was whether this repo already contained the `agt open` emitter side.
+
+### 実施内容
+- searched package targets, `Sources/`, scripts, and bundled tools paths.
+- confirmed only `AgtmuxTerm`, `AgtmuxDaemonService`, and helper `agtmux` daemon tooling exist in-tree.
+
+### 結果
+- there is no `agt` CLI implementation in this repo.
+- the documented `agt open` contract remains valid, but the in-repo next step is app-side `custom_osc` decode/dispatch (`T-103`), not emitter implementation.
+
+## 2026-03-06 — T-102 implementation checkpoint: `OSC 9911` carrier exposed through GhosttyKit
+
+### 事象
+- T-099 had moved from external blocker to repo-local work: vendored Ghostty needed to surface the custom OSC carrier through the existing embedded runtime seam.
+
+### 実施内容
+- vendored Ghostty
+  - `vendor/ghostty/src/terminal/osc.zig`
+  - `vendor/ghostty/src/terminal/stream.zig`
+  - `vendor/ghostty/src/termio/stream_handler.zig`
+  - `vendor/ghostty/src/apprt/surface.zig`
+  - `vendor/ghostty/src/Surface.zig`
+  - `vendor/ghostty/src/apprt/action.zig`
+  - `vendor/ghostty/include/ghostty.h`
+  - `OSC 9911` を typed `custom_osc` action として `action_cb` に流す path を追加した。
+- framework rebuild
+  - `scripts/build-ghosttykit.sh`
+  - `GhosttyKit/GhosttyKit.xcframework/**`
+  - source header と rebuilt xcframework header が一致する状態まで再生成した。
+
+### 結果
+- `GhosttyApp.handleAction(...)` から観測できる host-visible carrier が current worktree に入った。
+- T-099 の残りは app-side decode/dispatch (`T-103`) に絞られた。
+
+### 検証
+- `cd vendor/ghostty && zig build test -Dtest-filter='OSC: custom osc 9911'` ✅
+- `./scripts/build-ghosttykit.sh` ✅
+- `cmp -s vendor/ghostty/include/ghostty.h GhosttyKit/GhosttyKit.xcframework/macos-arm64_x86_64/Headers/ghostty.h` ✅
+- `cmp -s vendor/ghostty/include/ghostty.h GhosttyKit/GhosttyKit.xcframework/ios-arm64/Headers/ghostty.h` ✅
+- `cmp -s vendor/ghostty/include/ghostty.h GhosttyKit/GhosttyKit.xcframework/ios-arm64-simulator/Headers/ghostty.h` ✅
+- `swift build` ✅
+
+## 2026-03-06 — T-099 unblock investigation: repo-local GhosttyKit expansion is viable
+
+### 事象
+- T-099 had been tracked as blocked because the shipped `GhosttyKit.xcframework` exposes only typed runtime actions and no host-visible custom OSC carrier.
+
+### 実施内容
+- inspected
+  - public C header surface in `GhosttyKit/GhosttyKit.xcframework/.../Headers/ghostty.h`
+  - vendored Ghostty embedded runtime in `vendor/ghostty/src/apprt/embedded.zig`
+  - internal OSC parse/message flow in `vendor/ghostty/src/terminal/osc.zig`, `vendor/ghostty/src/termio/stream_handler.zig`, and `vendor/ghostty/src/Surface.zig`
+  - framework rebuild path in `scripts/build-ghosttykit.sh`
+
+### 結果
+- the current shipped xcframework still has no raw/generic custom OSC action at the C boundary.
+- however, this is not an external upstream blocker anymore: the repo already vendors Ghostty source and can rebuild `GhosttyKit.xcframework`.
+- the narrowest viable path is to add one new typed `ghostty_action_s` case for custom OSC payloads through the existing `action_cb`, then wire app-side decode/dispatch on top of the T-101 surface registry + dispatch scaffold.
+- execution is now split into `T-102` and `T-103`.
+
+## 2026-03-06 — T-091 closeout: executed UI proof recovered after automation approval
+
+### 事象
+- the latest T-091 rerun had already narrowed the blocker to macOS automation approval rather than `screenLocked=1`.
+- after approving `Enable UI Automation` on the desktop session, the targeted rerun could finally execute the tests again.
+
+### 実施内容
+- commands
+  - `xcodegen generate`
+  - `AGTMUX_UITEST_ALLOW_SSH=1 xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -destination 'platform=macOS,arch=arm64' test -resultBundlePath /tmp/T-091-ui-proof.xcresult -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testV2FeatureFlagOpensRealSessionTerminalTileFromSidebar -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testV2DuplicateSessionOpenRevealsExistingTileInsteadOfCreatingSecond`
+- result
+  - `testV2DuplicateSessionOpenRevealsExistingTileInsteadOfCreatingSecond` PASS (`20.480s`)
+  - `testV2FeatureFlagOpensRealSessionTerminalTileFromSidebar` PASS (`16.555s`)
+
+### 結果
+- T-091 now has fresh executed UI proof for both targeted behaviors.
+- the task is closed on code, focused verification, and review evidence.
+
+### 検証
+- targeted `xcodebuild` ✅
+  - `Executed 2 tests, with 0 failures (0 unexpected) in 37.035 (37.037) seconds`
+  - result bundle: `/tmp/T-091-ui-proof.xcresult`
+  - `Failed to suppress screen saver (SACSetScreenSaverCanRun returned 22)` は非致命
+
+## 2026-03-06 — T-091 diagnosis: UI automation approval prompt is the blocker
+
+### 事象
+- after `xcodegen generate`, the latest targeted T-091 rerun still failed before either UI proof executed with `Timed out while enabling automation mode.`
+
+### 実施内容
+- inspected
+  - `/Users/virtualmachine/Library/Developer/Xcode/DerivedData/AgtmuxTerm-fceaqdlhjyreqtdcfsbnupqgkkjc/Logs/Test/Test-AgtmuxTerm-2026.03.06_09-28-31--0800.xcresult`
+  - `/Users/virtualmachine/Library/Developer/Xcode/DerivedData/AgtmuxTerm-fceaqdlhjyreqtdcfsbnupqgkkjc/Logs/Test/Test-AgtmuxTerm-2026.03.06_09-28-07--0800.xcresult`
+- xcresult / archived system log evidence
+  - `testmanagerd` logged `Enabling Automation Mode...`
+  - writer daemon required authentication
+  - `coreauthd` evaluated `Enable UI Automation` with `MechanismPasscode`
+  - `coreautha` showed the approval UI
+  - `runningboardd` still saw `com.apple.dt.AutomationModeUI(501)` alive at timeout
+
+### 結果
+- this blocker is environment-only, not an app/test-code regression.
+- the current machine has no biometric/watch fast-path, so the rerun needs an on-console passcode/password approval of the automation prompt.
+- next action is a manual approval during the targeted `xcodebuild` rerun.
+
+## 2026-03-06 — T-091 rerun changed blocker: automation mode timeout after xcodegen
+
+### 事象
+- T-091 closeout rerun was retried after T-101 landed.
+- this time the failure mode changed:
+  - first targeted `xcodebuild` failed before tests ran because the generated Xcode project was stale and missing the latest app sources
+  - after `xcodegen generate`, the second targeted `xcodebuild` still failed before either UI proof executed, with `Timed out while enabling automation mode.`
+- importantly, `screenLocked=1` did not appear in this rerun.
+
+### 実施内容
+- rerun commands
+  - `xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -destination 'platform=macOS' test -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testV2FeatureFlagOpensRealSessionTerminalTileFromSidebar -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testV2DuplicateSessionOpenRevealsExistingTileInsteadOfCreatingSecond`
+  - `xcodegen generate`
+  - same targeted `xcodebuild` again
+- evidence
+  - first run: build failure from stale generated project
+  - second run: `AgtmuxTermUITests-Runner ... encountered an error` / `Timed out while enabling automation mode.`
+
+### 結果
+- T-091 is still blocked on fresh executed UI proof.
+- the blocker has shifted from screen lock to UI automation initialization, so the next step is harness/environment diagnosis rather than another blind rerun.
+
+## 2026-03-06 — T-101 closeout: final dual Codex GO
+
+### 事象
+- T-101 had one final robustness fix pending after the placement and surface-handle remediations.
+- real Claude Code CLI was installed and authenticated, but it did not produce a usable review response in this environment because stdin raw mode was unsupported and repeated `claude -p` calls hung without output.
+
+### 実施内容
+- `Sources/AgtmuxTerm/WorkbenchStoreV2.swift`
+  - valid non-empty workbenches with `focusedTileID == nil` now normalize to the first tile in traversal order before placement is applied.
+- `Tests/AgtmuxTermIntegrationTests/WorkbenchV2BridgeDispatchTests.swift`
+  - added regression coverage for `.replace` and directional placement against an unfocused split workbench fixture.
+- review
+  - compensated for the blocked Claude leg with two independent Codex reviews on the final crash-fixed worktree.
+
+### 結果
+- T-101 is now closed on code, focused verification, and review.
+- app-side downstream CLI bridge plumbing is in place; the remaining bridge blocker is only `T-099` carrier ingress in GhosttyKit.
+
+### 検証
+- `swift build` ✅
+- `swift test -q --filter WorkbenchV2BridgeDispatchTests` ✅（7 tests）
+- `swift test -q --filter GhosttyTerminalSurfaceRegistryTests` ✅（3 tests）
+- `swift test -q --filter WorkbenchStoreV2Tests` ✅（8 tests）
+- final re-review verdicts: `GO`, `GO`
+
+## 2026-03-06 — T-101 crash fix landed: unfocused non-empty workbench normalization
+
+### 事象
+- T-101 re-review reopened a remaining crash: `dispatchBridgeRequest(_:)` could precondition-fail on a valid non-empty workbench whose `focusedTileID` was `nil`.
+
+### 実施内容
+- `Sources/AgtmuxTerm/WorkbenchStoreV2.swift`
+  - non-empty workbench で `focusedTileID == nil` の場合、placement 前に tree traversal 順の first tile を deterministic fallback として採用するようにした。
+  - stale focus ID や tileless non-empty tree のような actually invalid state では従来どおり loud failure を維持した。
+- `Tests/AgtmuxTermIntegrationTests/WorkbenchV2BridgeDispatchTests.swift`
+  - unfocused split workbench fixture を追加した。
+  - `.replace` が fallback tile だけを置換し sibling branch を保つことを固定した。
+  - `.left/.right/.up/.down` が preset focus なしでも同じ fallback tile を基準に split insertion することを固定した。
+
+### 結果
+- bridge dispatch は valid な unfocused non-empty workbench でも crash せず placement を適用できるようになった。
+- T-101 の known code-level blockers は current worktree で解消済み。
+- 残るのは fresh review verdict の回収だけ。
+
+### 検証
+- `swift build` ✅
+- `swift test -q --filter WorkbenchV2BridgeDispatchTests` ✅（7 tests）
+- `swift test -q --filter GhosttyTerminalSurfaceRegistryTests` ✅（3 tests）
+- `swift test -q --filter WorkbenchStoreV2Tests` ✅（8 tests）
+- filtered `swift test` の末尾に Swift Testing footer (`0 tests in 0 suites passed`) が出るが、exit code は `0` で非致命
+
+## 2026-03-06 — T-101 re-review reopened again: unfocused non-empty workbench crash
+
+### 事象
+- post-remediation re-review produced a split verdict.
+  - one Codex reviewer returned `GO`
+  - another returned `NO_GO`
+- the blocking finding is that `WorkbenchStoreV2.placeTile(...)` still preconditions on `focusedTileID` for any non-empty workbench, so `dispatchBridgeRequest(_:)` can crash on a valid restored/seeded workbench whose layout has tiles but no focused tile set.
+
+### 実施内容
+- tracking
+  - `docs/60_tasks.md`
+  - `docs/65_current.md`
+  - `docs/70_progress.md`
+  - `docs/85_reviews/review-pack-T-101.md`
+  を更新し、`T-101` を re-review-closeout から unfocused-workbench crash fix に戻した。
+
+### 結果
+- surface-handle routing と placement-preserving dispatch は review で概ね確認された。
+- ただし `focusedTileID == nil` への robustness gap が残っているため、`T-101` はまだ close できない。
+- 次の実装は fallback focus normalization とその regression coverage の追加。
+
+## 2026-03-06 — T-101 remediation landed: surface-handle routing and placement-preserving dispatch
+
+### 事象
+- `T-101` short review had reopened the work because the surface registry could not resolve from the real Ghostty callback seam and the bridge request path still dropped non-`replace` placement.
+
+### 実施内容
+- `Sources/AgtmuxTerm/GhosttyTerminalSurfaceRegistry.swift`
+  - registry を tile ID key から canonical `GhosttySurfaceHandle` key へ切り替えた。
+  - `context(forTarget:)` を追加し、`ghostty_target_s.target.surface` から直接 `GhosttyTerminalSurfaceContext` を引ける seam を作った。
+- `Sources/AgtmuxTerm/GhosttySurfaceHostView.swift`
+  - successful reattach 前に old handle を unregister し、new `ghostty_surface_t` handle で register し直すようにした。
+  - dismantle でも surface handle 基準で cleanup するようにした。
+- `Sources/AgtmuxTerm/WorkbenchV2BridgeDispatch.swift`, `Sources/AgtmuxTerm/WorkbenchStoreV2.swift`
+  - `WorkbenchV2BridgeRequest` に placement を追加した。
+  - `.replace` は従来どおり focused tile replacement を維持し、`.left/.right/.up/.down` は focused tile を軸に split insertion するようにした。
+- tests
+  - `Tests/AgtmuxTermIntegrationTests/GhosttyTerminalSurfaceRegistryTests.swift`
+  - `Tests/AgtmuxTermIntegrationTests/WorkbenchV2BridgeDispatchTests.swift`
+  - handle-based resolve/unregister/overwrite と directional placement split を固定した。
+
+### 結果
+- `T-101` は review で指摘された 2 つの code-level gap を current worktree で閉じた。
+- app-side downstream plumbing は、carrier ingress を除けば design-locked contract にかなり近い状態まで揃った。
+- 現在の残作業は fresh review verdict の回収だけ。
+
+### 検証
+- `swift build` ✅
+- `swift test -q --filter WorkbenchV2BridgeDispatchTests` ✅（5 tests）
+- `swift test -q --filter GhosttyTerminalSurfaceRegistryTests` ✅（3 tests）
+- `swift test -q --filter WorkbenchStoreV2Tests` ✅（8 tests）
+- `swift test -q --filter WorkbenchV2DocumentTileTests` ✅（4 tests）
+- filtered `swift test` の末尾に Swift Testing footer (`0 tests in 0 suites passed`) が出るが、XCTest 実行結果とは独立で非致命
+
+## 2026-03-06 — T-101 review reopened: surface callback routing and placement contract
+
+### 事象
+- short review for `T-101` returned `NO_GO` even though the initial focused verification was green.
+- the review found that the terminal-surface registry was only keyed by app tile ID, while the real Ghostty callback boundary is keyed by `ghostty_target_s.target.surface`.
+- the review also found that the bridge request/dispatch path had dropped the design-locked placement contract and still always fell through to replace-only insertion.
+
+### 実施内容
+- tracking
+  - `docs/60_tasks.md`
+  - `docs/65_current.md`
+  - `docs/70_progress.md`
+  - `docs/85_reviews/review-pack-T-101.md`
+  を更新し、`T-101` を short-review-pending から explicit remediation state に戻した。
+- remediation scope を 2 slices に固定した。
+  - surface registry: real `ghostty_surface_t` callback key から `GhosttyTerminalSurfaceContext` を引ける production path を作る
+  - bridge dispatch: `WorkbenchV2BridgeRequest` と `WorkbenchStoreV2` に placement contract を通し、replace-only 以外の open も保持する
+
+### 結果
+- `T-101` は carrier-only blocked ではなく、app-side downstream plumbing にまだ 2 つの gap がある状態だと確定した。
+- 次の実装は review 指摘の 2 点を閉じてから re-review する流れに切り替わった。
+
+## 2026-03-06 — T-101 implementation checkpoint: app-side bridge scaffold
+
+### 事象
+- `T-099` は carrier ingress で blocked だが、app-side の request/dispatch/registration plumbing は先に進められる状態だった。
+
+### 実施内容
+- `Sources/AgtmuxTerm/WorkbenchV2BridgeDispatch.swift`
+  - carrier-free な `WorkbenchV2BridgeRequest` を追加した。
+  - browser/document の resolved request を emitting terminal の Workbench に dispatch する `dispatchBridgeRequest(_:)` を追加した。
+- `Sources/AgtmuxTerm/GhosttyTerminalSurfaceRegistry.swift`
+  - future bridge routing 用に terminal tile metadata を保持する registry を追加した。
+- `Sources/AgtmuxTerm/GhosttySurfaceHostView.swift`, `Sources/AgtmuxTerm/WorkbenchAreaV2.swift`
+  - V2 terminal surface の register / unregister を host boundary に追加した。
+- tests
+  - `Tests/AgtmuxTermIntegrationTests/WorkbenchV2BridgeDispatchTests.swift`
+  - `Tests/AgtmuxTermIntegrationTests/GhosttyTerminalSurfaceRegistryTests.swift`
+  - dispatch payload 保持、emitting-Workbench placement、surface registry overwrite/unregister を固定した。
+
+### 結果
+- `T-099` の downstream plumbing は current worktree で先に成立した。
+- これで CLI bridge の残実装は、carrier ingress を `GhosttyApp.handleAction(...)` に届ける部分へほぼ限定された。
+
+### 検証
+- `swift build` ✅
+- `swift test -q --filter WorkbenchV2BridgeDispatchTests` ✅（3 tests）
+- `swift test -q --filter GhosttyTerminalSurfaceRegistryTests` ✅（3 tests）
+- `swift test -q --filter WorkbenchStoreV2Tests` ✅（8 tests）
+- `swift test -q --filter WorkbenchV2DocumentTileTests` ✅（4 tests）
+
+## 2026-03-06 — T-098 fix landed: document late-completion guard
+
+### 事象
+- Codex re-review で reopened した T-098 blocker は、old async document fetch completion が replacement tile の phase を上書きし得ることだった。
+
+### 実施内容
+- `Sources/AgtmuxTerm/WorkbenchV2DocumentTile.swift`
+  - `WorkbenchV2DocumentLoadCoordinator` を追加した。
+  - current `WorkbenchV2DocumentLoadToken` を保持し、`begin` で `.loading` に戻し、completion は `currentToken == token && !Task.isCancelled` の時だけ commit するようにした。
+- `Tests/AgtmuxTermIntegrationTests/WorkbenchV2DocumentTileTests.swift`
+  - old token completion が newer token phase を上書きしない test を追加した。
+  - cancelled completion が無視される test を追加した。
+  - current token success / failure commit を直接 hold する test を追加した。
+
+### 結果
+- document tile は replacement 後の stale completion で repaint されなくなった。
+- short post-fix Codex re-review は `GO` で、review scope に新しい blocking regression は無かった。
+
+### 検証
+- `swift build` ✅
+- `swift test -q --filter WorkbenchV2BrowserTileTests` ✅（5 tests）
+- `swift test -q --filter WorkbenchV2DocumentTileTests` ✅（4 tests）
+- `swift test -q --filter WorkbenchV2DocumentLoaderTests` ✅（5 tests）
+- `swift test -q --filter WorkbenchStoreV2Tests` ✅（8 tests）
+- `xcodegen generate` ✅
+- `xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -destination 'platform=macOS' test -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testV2FeatureFlagOpensRealSessionTerminalTileFromSidebar -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testV2DuplicateSessionOpenRevealsExistingTileInsteadOfCreatingSecond` ✅
+  - suite は成功したが、2 tests とも `screenLocked=1` により skip
+  - `SACSetScreenSaverCanRun returned 22` は非致命 warning
+
+## 2026-03-06 — T-098 re-review reopened: document late-completion overwrite
+
+### 事象
+- stale reopen-state fix を入れた後の Codex re-review で、document tile は token を分けても old async completion が replacement tile の `phase` を上書きできることが分かった。
+
+### 実施内容
+- `Sources/AgtmuxTerm/WorkbenchV2DocumentTile.swift`
+  - current implementation を再点検し、`loadToken` change 後も old task completion が unconditional に `phase` を commit している点を blocker として切り出した。
+- `Tests/AgtmuxTermIntegrationTests/WorkbenchV2DocumentTileTests.swift`
+  - current token-equality tests だけでは late-completion overwrite を hold できていないことを確認した。
+- tracking
+  - `docs/60_tasks.md`, `docs/65_current.md`
+  - T-098 を `DONE` から `IN PROGRESS` に戻し、document stale-completion fix を active work に戻した。
+
+### 結果
+- T-098 は browser 側の stale-state bug は閉じたが、document 側は late-completion overwrite bug が残っている。
+- 次の実装は document load completion を current token / cancellation で gate し、その contract を direct test で固定することになった。
+
+## 2026-03-06 — T-099 carrier discovery: Ghostty C API mismatch
+
+### 事象
+- `T-099` は design-locked では terminal-scoped custom OSC carrier を前提にしているが、current GhosttyKit integration で raw/generic custom OSC が app に届くかは未確定だった。
+
+### 実施内容
+- `GhosttyKit/GhosttyKit.xcframework/macos-arm64_x86_64/Headers/ghostty.h`
+  - runtime callback surface と `ghostty_action_s` union を確認した。
+- `Sources/AgtmuxTerm/GhosttyApp.swift`
+  - current app-side ingress が `GhosttyApp.handleAction(...)` だけであることを再確認した。
+- `Sources/AgtmuxTerm/GhosttySurfaceHostView.swift`, `Sources/AgtmuxTerm/SurfacePool.swift`, `Sources/AgtmuxTerm/WorkbenchStoreV2.swift`
+  - surface identity を `WorkbenchStoreV2` dispatch に接続できる seam を整理した。
+- design docs
+  - `docs/42_design-cli-bridge.md`, `docs/30_architecture.md`, `docs/50_plan.md`
+  - custom OSC carrier は維持しつつ、current GhosttyKit capability が前提であり、typed action への便乗は mainline で採らないことを明文化した。
+
+### 結果
+- current GhosttyKit C API は fixed runtime callbacks と typed `ghostty_action_s` payload しか expose しておらず、raw/generic custom OSC callback は無いことが分かった。
+- したがって `T-099` の narrowest app-side seam は `GhosttyApp.handleAction(...) -> surface resolution -> WorkbenchStoreV2` だが、design-locked custom OSC carrier 自体は current C API では観測できない。
+- `T-099` は transport 実装より前に carrier decision が必要になったため、`T-100` を追加した。
+- `T-100` の結論として、temporary typed-action piggyback は採らず、custom OSC carrier を host-visible にする capability が前提だと整理した。
+
+## 2026-03-06 — T-098 regression closeout: stale reopen state fixed
+
+### 事象
+- Codex review で、same URL/path を reopen した新 companion tile が previous tile の `WKWebView` / `loadError` / document load phase を引き継ぐ stale-state bug が見つかった。
+
+### 実施内容
+- `Sources/AgtmuxTerm/WorkbenchV2BrowserTile.swift`
+  - browser reload behavior を `tile.id` + URL で key し、fresh navigation 開始時に stale error state を clear するようにした。
+  - `WKWebView` cancellation error は visible failure に昇格しないようにした。
+- `Sources/AgtmuxTerm/WorkbenchV2DocumentTile.swift`
+  - document load state を `WorkbenchV2DocumentLoadToken(tileID, ref)` で key し、token change 時に `.loading` へ reset するようにした。
+- tests
+  - `Tests/AgtmuxTermIntegrationTests/WorkbenchV2BrowserTileTests.swift`
+  - `Tests/AgtmuxTermIntegrationTests/WorkbenchV2DocumentTileTests.swift`
+  - `Tests/AgtmuxTermIntegrationTests/WorkbenchV2DocumentLoaderTests.swift`
+  - browser stale-state regression、document token identity、missing remote host key loud failure を固定した。
+
+### 結果
+- browser/document companion surfaces は reopen 時に stale loaded/failed state を引き継がなくなった。
+- T-098 acceptance は code + focused coverage まで閉じた。
+
+### 検証
+- `swift build` ✅
+- `swift test -q --filter WorkbenchV2BrowserTileTests` ✅（5 tests）
+- `swift test -q --filter WorkbenchV2DocumentTileTests` ✅（2 tests）
+- `swift test -q --filter WorkbenchV2DocumentLoaderTests` ✅（5 tests）
+- `swift test -q --filter WorkbenchStoreV2Tests` ✅（8 tests）
+
+## 2026-03-06 — T-091 review checkpoint: Claude verdict obtained
+
+### 事象
+- T-091 は code-level review closeout が残っていた。
+- final patch 後の targeted UI proof も fresh に取り直す必要があった。
+
+### 実施内容
+- real Claude Code CLI review を実行し、usable verdict を取得した。
+- Claude condition だった `missingRemoteHostKey` coverage を `Tests/AgtmuxTermIntegrationTests/WorkbenchV2DocumentLoaderTests.swift` に追加した。
+- targeted UI proof を March 6, 2026 07:40 PST と 07:55 PST に rerun した。
+
+### 結果
+- real Claude Code CLI verdict は `GO_WITH_CONDITIONS` で、唯一の blocking condition は `missingRemoteHostKey` coverage だった。
+- その condition は current worktree で解消済み。
+- ただし latest targeted UI-proof reruns はどちらも `screenLocked=1` で skip し、final executed proof はまだ fresh に取り直せていない。
+- T-091 の残 blocker は unlocked interactive macOS session の availability のみ。
+
+### 検証
+- `swift test -q --filter WorkbenchV2DocumentLoaderTests` ✅（5 tests）
+- `xcodegen generate` ✅
+- `xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -destination 'platform=macOS' test -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testV2FeatureFlagOpensRealSessionTerminalTileFromSidebar -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testV2DuplicateSessionOpenRevealsExistingTileInsteadOfCreatingSecond` ✅
+  - March 6, 2026 07:40 PST rerun: `Executed 2 tests, with 2 tests skipped and 0 failures`
+  - March 6, 2026 07:55 PST rerun: command succeeded but the first targeted test skipped with `screenLocked=1`; no fresh executed PASS was produced
+  - `SACSetScreenSaverCanRun returned 22` は非致命 warning
+
+## 2026-03-06 — T-091 review hardening and T-098 loader coverage
+
+### 事象
+- T-091 の executed UI proof はすでに green だったが、follow-up review で `WorkbenchV2DocumentLoader` の child-process handling と duplicate-open UI proof の timing dependency が指摘された。
+- 同時に、T-098 では document companion surface の load-path は入っていたものの focused regression coverage が不足していた。
+
+### 実施内容
+- `Sources/AgtmuxTerm/WorkbenchV2DocumentLoader.swift`
+  - `process.standardInput = FileHandle.nullDevice` を追加し、child が親 stdin を掴まないようにした。
+  - `stdout` / `stderr` capture を `Pipe` 直読みから temporary file capture に変更し、large remote output で child が pipe buffer に詰まる deadlock risk を除去した。
+- `Tests/AgtmuxTermUITests/AgtmuxTermUITests.swift`
+  - duplicate-open UI proof の `Thread.sleep(0.3)` を除去し、`count > 1` に対する inverted predicate expectation で duplicate tile が一度も出現しないことを待つ形にした。
+- `Tests/AgtmuxTermIntegrationTests/WorkbenchV2DocumentLoaderTests.swift`
+  - local success
+  - remote success with injected runner
+  - explicit remote command failure
+  - explicit local directory rejection
+  を固定した。
+
+### 結果
+- T-091 review-driven fix は current worktree に反映され、known `NO_GO` findings は code と focused verification で閉じた。
+- T-098 は document loader の load/failure contract まで automated coverage が入った。
+- Claude Code の usable verdict は依然 pending だが、repo policy どおり Codex review coverage を増やす前提が固まった。
+
+### 検証
+- `swift test -q --filter WorkbenchV2DocumentLoaderTests` ✅（4 tests）
+- `swift build` ✅
+- `xcodegen generate` ✅
+- `xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -destination 'platform=macOS' build` ✅
+- `xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -destination 'platform=macOS' test -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testV2FeatureFlagOpensRealSessionTerminalTileFromSidebar -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testV2DuplicateSessionOpenRevealsExistingTileInsteadOfCreatingSecond` ✅
+  - current environment では `screenLocked=1` により skip した rerun もあったが、2026-03-06 の earlier executed proof はすでに PASS を保持している
+  - `SACSetScreenSaverCanRun returned 22` は非致命 warning
+  - `WorkbenchV2DocumentLoaderTests.swift` の injected runner closure には Swift 6 sendable-capture warning が残るが、failure ではない
+
+## 2026-03-06 — T-098 implementation checkpoint: companion surface render path
+
+### 事象
+- T-098 では、V2 `browser` / `document` tile が placeholder のままで、app-local companion surface の実 rendering が未接続だった。
+- current worktree には `WorkbenchV2DocumentLoader.swift` の下地が入っていたため、まず browser/document の minimal render path を buildable にする方針で進めた。
+
+### 実施内容
+- `Sources/AgtmuxTerm/WorkbenchV2BrowserTile.swift`
+  - `WKWebView` ベースの browser tile view を追加した。
+  - visible header / open externally action / explicit load-failure banner を追加した。
+- `Sources/AgtmuxTerm/WorkbenchV2DocumentTile.swift`
+  - `WorkbenchV2DocumentLoader` を使う document tile view を追加した。
+  - loading / loaded / failed phase を明示し、local/remote text fetch failure を tile 上に surfacing するようにした。
+- `Sources/AgtmuxTerm/WorkbenchAreaV2.swift`
+  - `.browser` を `WorkbenchBrowserTileViewV2` に接続した。
+  - `.document` を `WorkbenchDocumentTileViewV2` に接続した。
+- manifests
+  - `Package.swift`
+  - `project.yml`
+  - browser tile のために `WebKit` linkage を追加した。
+
+### 結果
+- V2 Workbench は placeholder ではなく、minimal browser/document companion surface を描画できる状態になった。
+- browser tile は exact URL をそのまま開き、load error を tile 内で visible に保つ。
+- document tile は local/remote text content を lazy load し、missing path / directory / remote host key / remote fetch error を explicit failure として残す。
+- focused coverage はまだ足していないため、T-098 は継続中のまま。
+
+### 検証
+- `swift build` ✅
+- `xcodegen generate` ✅
+- `xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -destination 'platform=macOS' build` ✅
+  - multiple matching macOS destinations (`arm64` / `x86_64`) warning は非致命
+  - `appintentsmetadataprocessor` の metadata extraction skipped warning は非致命
+  - `SACSetScreenSaverCanRun returned 22` は今回の build では未観測
+
+## 2026-03-06 — T-091 rerun closeout: executed UI proof recovered
+
+### 事象
+- unlocked desktop session で T-091 targeted UI proof を rerun したところ、skip ではなく実行まで進んだ。
+- rerun の途中で、current worktree には `WorkbenchV2DocumentLoader.swift` の compile blocker と、single-open UI proof の AX contract mismatch が残っていることが分かった。
+
+### 実施内容
+- `Sources/AgtmuxTerm/WorkbenchV2DocumentLoader.swift`
+  - `Self.runProcess` を default argument で参照していた initializer を split し、xcodebuild が current worktree を build できる状態に戻した。
+- `Sources/AgtmuxTerm/WorkbenchAreaV2.swift`
+  - V2 terminal tile の既存 tile AX anchor はそのまま残しつつ、direct-attach status 専用の invisible AX anchor を追加した。
+- `Tests/AgtmuxTermUITests/AgtmuxTermUITests.swift`
+  - single-open UI proof を tile `value` 待ちから、dedicated `.status` AX anchor 待ちに切り替えた。
+- rerun
+  - `swift build`
+  - `swift test -q --filter WorkbenchV2ModelsTests`
+  - `swift test -q --filter WorkbenchStoreV2Tests`
+  - `swift test -q --filter WorkbenchV2TerminalAttachTests`
+  - `xcodegen generate`
+  - `xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -destination 'platform=macOS' test -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testV2FeatureFlagOpensRealSessionTerminalTileFromSidebar -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testV2DuplicateSessionOpenRevealsExistingTileInsteadOfCreatingSecond`
+
+### 結果
+- T-091 の targeted UI proof 2 本は skip ではなく actual execution で両方 PASS に戻った。
+- duplicate-open proof は既存 tile reveal/focus semantics を保ったまま green を維持した。
+- single-open proof は direct-attach status の explicit AX contract を使う形で安定化した。
+- T-091 の実装/verification blocker は external review verdict のみになった。
+
+## 2026-03-06 — T-092 decomposition kickoff: surfaces vs bridge boundary
+
+### 事象
+- T-092 は browser/document companion surfaces と `agt open` bridge を同時に含んでいた。
+- 現コードを確認すると、browser/document tile rendering は app-local に完結する一方、`agt open` は Ghostty action/OSC boundary をまたぐため実装面が明確に異なっていた。
+
+### 実施内容
+- `docs/60_tasks.md`
+  - T-092 を Phase D umbrella として残しつつ、app-local companion surface 実装を `T-098`、bridge transport 実装を `T-099` に分割した。
+- `docs/65_current.md`
+  - current focus を `T-098` / `T-099` に更新した。
+
+### 結果
+- companion surface rendering は bridge carrier の最終決定を待たずに進められる状態になった。
+- Ghostty/runtime boundary をまたぐ `agt open` transport は `T-099` に切り出し、silent fallback なしで別途詰める方針に整理した。
+- current codebase には production の agtmux custom-OSC parser は無く、T-099 の ingress 候補は `GhosttyApp.handleAction(...)` だけだと確認した。
+
+## 2026-03-06 — T-099 ingress discovery checkpoint
+
+### 事象
+- `agt open` bridge transport は `T-099` に切り出したが、現コードに production の custom OSC parser / dispatcher があるかは未確認だった。
+
+### 実施内容
+- codebase inspection を行い、terminal-to-app callback surface を確認した。
+- `Sources/AgtmuxTerm/GhosttyApp.swift`
+  - Ghostty runtime `action_cb` が `GhosttyApp.handleAction(...)` に集約されていることを確認した。
+- `Sources/AgtmuxTerm/GhosttySurfaceHostView.swift`, `Sources/AgtmuxTerm/WorkbenchAreaV2.swift`, `Sources/AgtmuxTerm/main.swift`
+  - per-surface identity を bridge routing に載せる候補点として整理した。
+
+### 結果
+- production の agtmux custom-OSC parser / dispatcher はまだ存在しないことが分かった。
+- `T-099` の最小 ingress 候補は `GhosttyApp.handleAction(...)` で、そこへ surface/tile registration を渡す設計が自然だと整理した。
+- したがって `T-099` は単なる wiring ではなく、terminal-to-app bridge layer の新設が必要な可能性が高い。
+
+## 2026-03-06 — T-091 implementation checkpoint: real-session terminal tile
+
+### 事象
+- T-090 では V2 Workbench path が placeholder terminal tile までしか入っておらず、direct tmux attach と duplicate-session policy は未実装だった。
+- T-091 では linked-session model を再導入せずに、V2 path だけで real-session terminal open を成立させる必要があった。
+
+### 実施内容
+- `Sources/AgtmuxTerm/WorkbenchStoreV2.swift`
+  - terminal open API を placeholder insertion から real-session open に差し替えた。
+  - exact `SessionRef` equality で全 workbench を横断する duplicate detection を追加し、既存 tile があれば reveal/focus するようにした。
+- `Sources/AgtmuxTerm/WorkbenchAreaV2.swift`
+  - terminal tile を placeholder view から direct-attach terminal view に差し替えた。
+  - configured remote host key を attach 時に逆引きし、見つからない場合は tile 上で explicit error を surfacing するようにした。
+  - UITest mode では Ghostty surface を省略しつつ、real-session attach state を AX value で検証できるようにした。
+- `Sources/AgtmuxTerm/SidebarView.swift`
+  - V2 branch の session/window/pane open を real terminal open API に接続した。
+- `Sources/AgtmuxTerm/RemoteHostsConfig.swift`
+  - `RemoteHost.id` からの reverse lookup helper を追加した。
+- shared terminal hosting
+  - `Sources/AgtmuxTerm/GhosttySurfaceHostView.swift` を追加し、V1/V2 の Ghostty surface hosting core を共用化した。
+  - `Sources/AgtmuxTerm/WorkbenchV2TerminalAttach.swift` を追加し、local/ssh/mosh attach command を pure helper として切り出した。
+- tests
+  - `Tests/AgtmuxTermIntegrationTests/WorkbenchStoreV2Tests.swift`
+    duplicate reveal/focus semantics を同一 workbench / 複数 workbench 両方で固定した。
+  - `Tests/AgtmuxTermIntegrationTests/WorkbenchV2TerminalAttachTests.swift`
+    local + ssh + mosh attach command と missing host key failure を固定した。
+  - `Tests/AgtmuxTermUITests/AgtmuxTermUITests.swift`
+    T-090 placeholder proof を supersede し、real-session open / duplicate reopen の targeted UI proof に更新した。
+- verification refresh
+  - fresh `xcodebuild` verification で generated Xcode project が stale になっていることを確認した。
+  - `xcodegen generate` で `project.yml` から `AgtmuxTerm.xcodeproj` を再生成し、同じ targeted `xcodebuild` command を rerun した。
+
+### 結果
+- V2 sidebar open は placeholder terminal tile を挿すのではなく、exact session name に対する direct attach plan を持つ terminal tile を作るようになった。
+- duplicate open は app-global に既存 tile を reveal/focus し、同じ `SessionRef` の visible terminal tile を増やさない実装になった。
+- remote `TargetRef.remote(hostKey:)` は attach 時に configured `RemoteHost.id` を逆引きし、unknown host key は local/hostname へ fall back せず explicit failure になる。
+- generated Xcode project を refresh 後、targeted `xcodebuild` command 自体は成功するところまで戻した。
+- ただし current desktop session は `screenLocked=1` に戻っており、T-091 の targeted UI proof 2 本は rerun しても skip のまま。
+
+### 検証
+- `swift build` ✅
+- `swift test -q --filter WorkbenchV2ModelsTests` ✅（3 tests）
+- `swift test -q --filter WorkbenchStoreV2Tests` ✅（8 tests）
+- `swift test -q --filter WorkbenchV2TerminalAttachTests` ✅（4 tests）
+- `xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -destination 'platform=macOS' test -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testV2FeatureFlagOpensRealSessionTerminalTileFromSidebar -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testV2DuplicateSessionOpenRevealsExistingTileInsteadOfCreatingSecond` ✅
+  - command/build は成功したが、2 tests は `screenLocked=1, onConsole=1, loginDone=1` により skip
+  - `AGTMUX_UITEST_ALLOW_LOCKED_SESSION=1` を付けた rerun でも同じ理由で skip した
+  - `SACSetScreenSaverCanRun returned 22` は非致命 warning として観測した
+
+### Review
+- `docs/85_reviews/review-pack-T-091.md` を作成済み。
+- real review CLI availability は `codex` / `claude` を確認した。
+- bounded `codex review --uncommitted` attempt は 45 秒 timeout で終了し、現 worktree に対する reliable verdict はまだ返ってきていない。
+
+## 2026-03-06 — T-096/T-097 完了: T-090 condition closeout
+
+### 事象
+- T-090 review は `GO_WITH_CONDITIONS` で、2 つの条件が残っていた。
+- 条件は、remote hostname -> configured host key mapping の regression coverage と、feature-flagged V2 sidebar-open path の executed UI proof だった。
+
+### 実施内容
+- `Tests/AgtmuxTermIntegrationTests/WorkbenchStoreV2Tests.swift`
+  - configured remote hostname が configured `RemoteHost.id` に写像されて V2 `SessionRef.target` に入る test を追加。
+  - unconfigured remote hostname が raw hostname のまま explicit に残る test を追加。
+- `Sources/AgtmuxTerm/WorkbenchAreaV2.swift`
+  - placeholder tile の AX label/value を追加し、UI proof を tile element 自体で検証できるようにした。
+- `Tests/AgtmuxTermUITests/AgtmuxTermUITests.swift`
+  - targeted V2 UI test の query を placeholder tile の AX contract に合わせて修正した。
+- rerun
+  - `swift build`
+  - `swift test -q --filter WorkbenchV2ModelsTests`
+  - `swift test -q --filter WorkbenchStoreV2Tests`
+  - `xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -destination 'platform=macOS' test -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testV2FeatureFlagOpensPlaceholderTerminalTileFromSidebar`
+
+### 結果
+- T-096 condition は code + regression coverage で閉じた。
+- T-097 condition は unlocked interactive macOS session で targeted UI test を actual execution し、PASS で閉じた。
+- T-090 の review conditions は両方とも解消した。
+- T-090 の final re-review verdict は `GO` だった。
+
+### 検証
+- `swift build` ✅
+- `swift test -q --filter WorkbenchV2ModelsTests` ✅（3 tests）
+- `swift test -q --filter WorkbenchStoreV2Tests` ✅（6 tests）
+- `xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -destination 'platform=macOS' test -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testV2FeatureFlagOpensPlaceholderTerminalTileFromSidebar` ✅（1 test）
+- `SACSetScreenSaverCanRun returned 22` は再度観測したが非致命だった
+
+## 2026-03-06 — T-090 phase checkpoint: Workbench V2 foundation path
+
+### 事象
+- V2 docs と handover では、linked-session path を壊さずに isolated な Workbench foundation path を立ち上げる必要があった。
+- 現コードは `WorkspaceStore` / `WorkspaceArea` / `LinkedSessionManager` を前提にしており、そのままでは V2 model と top-level view path を導入できなかった。
+
+### 実施内容
+- `Sources/AgtmuxTermCore/WorkbenchV2Models.swift`
+  - V2 `Workbench`, `WorkbenchNode`, `WorkbenchTile`, `TileKind`, `SessionRef`, `DocumentRef`, `TargetRef` を追加。
+  - empty node / split node / placeholder tile rendering 用の model utility を追加。
+- `Sources/AgtmuxTerm/WorkbenchStoreV2.swift`
+  - empty default state, active workbench tracking, placeholder terminal/browser/document insertion API を追加。
+  - `AGTMUX_COCKPIT_WORKBENCH_V2=1` feature flag と `AGTMUX_WORKBENCH_V2_FIXTURE_JSON` fixture decode path を追加。
+- `Sources/AgtmuxTerm/WorkbenchAreaV2.swift`
+  - empty state と terminal/browser/document placeholder tile を描画する V2 area を追加。
+- `Sources/AgtmuxTerm/WorkbenchTabBarV2.swift`
+  - V2 workbench tab strip を追加。
+- existing integration points
+  - `main.swift`, `CockpitView.swift`, `TitlebarChromeView.swift`, `WindowChromeController.swift`, `SidebarView.swift`
+  - feature flag が ON の時だけ V2 area/tab bar/store を使い、sidebar open は linked-session path ではなく `SessionRef` placeholder insertion に分岐するようにした。
+- `Sources/AgtmuxTerm/RemoteHostsConfig.swift`
+  - remote pane source hostname から configured `RemoteHost.id` を引く helper を追加し、V2 `TargetRef` が host key 契約を守るようにした。
+- tests
+  - `Tests/AgtmuxTermCoreTests/WorkbenchV2ModelsTests.swift`
+  - `Tests/AgtmuxTermIntegrationTests/WorkbenchStoreV2Tests.swift`
+  - `Tests/AgtmuxTermUITests/AgtmuxTermUITests.swift`
+  - model codable, pin semantics, placeholder insertion, fixture bootstrap を固定した。
+  - `AGTMUX_COCKPIT_WORKBENCH_V2=1` 時に sidebar open が placeholder terminal path を使う targeted UI test を追加した。
+
+### 結果
+- V2 foundation path は feature flag 下で app に統合された。
+- `AGTMUX_COCKPIT_WORKBENCH_V2=1` 時、visible workspace/titlebar/sidebar-open path は linked-session lifecycle に入らず、V2 placeholder tile path を使うコード/targeted UI test を追加した。
+- remote `TargetRef` は configured remote host key を使うようになり、raw hostname を保存しない契約に戻った。
+- V1 path は flag OFF のまま隔離された。
+
+### 検証
+- `swift build` ✅
+- `swift test -q --filter WorkbenchV2ModelsTests` ✅（3 tests）
+- `swift test -q --filter WorkbenchStoreV2Tests` ✅（4 tests）
+- `xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -destination 'platform=macOS' test -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testV2FeatureFlagOpensPlaceholderTerminalTileFromSidebar` ✅
+  - targeted UI test は build/test command 自体は成功したが、`screenLocked=1, onConsole=1, loginDone=1` により test は skip だった。
+  - `SACSetScreenSaverCanRun returned 22` は非致命 warning として観測した。
+
+### Review
+- reviewer verdict: `GO_WITH_CONDITIONS`
+- condition 1:
+  `pane.source` hostname -> configured `RemoteHost.id` -> V2 `SessionRef.target` mapping の regression test を追加する
+- condition 2:
+  `AgtmuxTermUITests.testV2FeatureFlagOpensPlaceholderTerminalTileFromSidebar` を unlocked interactive macOS session で rerun し、executed result を progress/review evidence に記録する
+- follow-up tasks:
+  `T-096`, `T-097`
 
 ## 2026-03-06 — T-089 完了: sync-v2 XPC review blocker closeout
 
@@ -201,3 +1854,231 @@ Historical progress detail lives in `docs/archive/progress/2026-02-28_to_2026-03
 
 - Full historical progress ledger:
   `docs/archive/progress/2026-02-28_to_2026-03-06.md`
+## 2026-03-07 — T-108 gap isolation: pane-selection UI proof was bypassing the render path
+
+Context:
+- live March 7, 2026 user evidence still showed two regressions after the earlier `T-108` slice:
+  - local `zsh` panes were still surfaced as managed `codex` / `running`
+  - same-session pane clicks could update sidebar highlight without changing the visible main-panel terminal
+
+What changed:
+- re-inspected the live local daemon socket and confirmed the currently running `ui.bootstrap.v2` payload is still legacy/incompatible:
+  - it emits `session_id` instead of `session_key`
+  - it omits `pane_instance_id`
+  - it still includes orphan managed rows with null `session_name` / `window_id`
+- re-audited the current pane-selection UI proof path and found a structural test gap:
+  - `WorkbenchAreaV2` replaced the real Ghostty terminal surface with a UITest placeholder when `AGTMUX_UITEST=1`
+  - as a result, the green pane-selection UI proofs only exercised sidebar/store/tmux state, not visible main-panel retargeting
+- narrowed the next fix shape:
+  - move pane-selection E2E into real-surface mode for the focused terminal tile
+  - add rendered-surface attach command / generation as a fourth oracle alongside live tmux truth, canonical `ActivePaneRef`, and sidebar highlight
+
+Why it matters:
+- the old UI proof could not detect the user-visible bug where sidebar selection changed but the rendered terminal stayed on the previous pane
+- `T-108` remains open until both the metadata fail-closed path and the real rendered-surface retarget path are re-proved
+
+## 2026-03-07 — T-108 implementation checkpoint: real-surface oracle and legacy-daemon sample regression
+
+Context:
+- the earlier `T-108` slice fixed canonical selection state, but the trusted pane-selection proof was still missing the actual main-panel render path.
+- the live local daemon on March 7, 2026 still emits legacy `ui.bootstrap.v2` rows with `session_id` and orphan managed records, matching the bad `codex/running` labels seen in product.
+
+What changed:
+- `WorkbenchAreaV2` now allows a focused UI test to opt into real Ghostty surfaces via `AGTMUX_UITEST_ENABLE_GHOSTTY_SURFACES=1`, and the terminal host is hard-reset with a new SwiftUI identity whenever the attach command changes.
+- `GhosttyTerminalSurfaceRegistry` now records rendered attach command plus monotonic per-tile render generation.
+- `UITestTmuxBridge` now exports rendered attach state, so pane-selection E2E can require four agreeing oracles:
+  - live tmux target
+  - canonical app target
+  - sidebar selection marker
+  - rendered surface attach command / generation
+- `AppViewModelA0Tests` gained a regression that decodes a real March 7, 2026 legacy daemon bootstrap sample and proves the app stays inventory-only with explicit incompatibility instead of surfacing stale `managed/provider/activity` state.
+- `GhosttyTerminalSurfaceRegistryTests` gained generation semantics coverage so harmless re-registers do not advance render generation, while actual attach-command retargets do.
+
+Verification:
+- `swift build` ✅
+- `swift test -q --filter AppViewModelA0Tests` ✅
+- `swift test -q --filter GhosttyTerminalSurfaceRegistryTests` ✅
+- `swift test -q --filter GhosttyCLIOSCBridgeTests` ✅
+- `swift test -q --filter WorkbenchStoreV2Tests` ✅
+- `swift test -q --filter WorkbenchV2TerminalAttachTests` ✅
+- `swift test -q --filter AgtmuxSyncV2DecodingTests` ✅
+- `xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -destination 'platform=macOS,arch=arm64' test -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testPaneSelectionWithMockDaemonAndRealTmux -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testTerminalPaneChangeUpdatesSidebarSelectionWithRealTmux` ❌ environment blocker
+  - the app process launches, but `XCUIApplication.launch()` times out with `Failed to activate application ... (current state: Running Background)`
+  - an immediate host-side check via `CGSessionCopyCurrentDictionary()` still reports `CGSSessionScreenIsLocked = 1`, so this is current session state, not a product assertion
+
+Result:
+- the false-green pane-selection test gap is closed in code and focused regression coverage
+- final executed real-surface UI evidence is pending a truly unlocked interactive desktop session
+
+## 2026-03-07 — T-108 rerun narrowed to one metadata-enabled reverse-sync red
+
+Context:
+- reran the current-code focused proofs after the `OSC 9911` client-tty bind, staged registry registration, desired/observed split, and render-path retry fixes.
+- fresh targeted verification now distinguishes the remaining product bug from the earlier broader “pane sync is broken” bucket.
+
+What changed:
+- focused non-UI verification is green on the current worktree:
+  - `swift test -q --filter WorkbenchStoreV2Tests`
+  - `swift test -q --filter AppViewModelA0Tests`
+- fresh targeted UI rerun now has only one red:
+  - `testPaneSelectionWithMockDaemonAndRealTmux` ✅
+  - `testTerminalPaneChangeUpdatesSidebarSelectionWithRealTmux` ✅
+  - `testMetadataEnabledPaneSelectionAndReverseSyncWithRealTmux` ❌
+- the failing UI oracle is specific:
+  - under metadata-enabled launch, same-session sidebar retarget to the second pane succeeds
+  - later terminal-originated reverse sync back to the first pane is overwritten
+  - the rendered tmux client remains on the second pane, so the bug is stale desired-pane persistence, not initial attach, not sidebar click dispatch, and not missing rendered-client tty binding
+- also captured the live daemon/local tmux sample for a new no-leak regression:
+  - local tmux inventory currently shows unmanaged `utm-main`, managed `vm agtmux`, and mixed managed/unmanaged panes in `vm agtmux-term`
+  - `ui.bootstrap.v2` currently emits opaque `session_key` values for the managed rows
+  - this sample is the right fixture to prove managed/provider/activity overlay does not bleed onto unrelated exact local rows when `session_key != session_name`
+
+Result:
+- `T-108` remains open, but the remaining pane-sync bug is now constrained to metadata-enabled desired/observed convergence after same-session retarget.
+- next product slice is:
+  - add store-level regression for post-convergence reverse sync after same-session retarget
+  - add AppViewModel no-leak regression from the live daemon sample
+  - then tighten the reducer/runtime contract and rerun the single red UI proof
+
+## 2026-03-07 — T-108 closeout: same-session retarget confirmation is now origin-aware
+
+Context:
+- after the previous rerun, only one UI proof was still red:
+  - `testMetadataEnabledPaneSelectionAndReverseSyncWithRealTmux`
+- the failure shape was specific:
+  - same-session sidebar retarget reached the requested pane
+  - a later rendered-client-originated pane change was still overwritten because desired state lingered too long
+- a new store regression reproduced the exact bug shape:
+  - reverse sync failed after the first matching observation of a same-session retarget
+
+What changed:
+- added TDD-first regression coverage:
+  - `WorkbenchStoreV2Tests.testSameSessionRetargetAllowsLaterRenderedClientReverseSyncAfterFirstMatchingObservation`
+  - `AppViewModelA0Tests.testLiveOpaqueSessionKeyBootstrapDoesNotLeakManagedOverlayOntoUnrelatedLocalRows`
+- refined the reducer contract:
+  - desired-pane confirmation is no longer a single global threshold
+  - initial attach still requires stable confirmation
+  - same-session retarget from an already observed rendered client clears desired state after the first matching observation
+  - this preserves the transient-attach guard while allowing immediate terminal-originated reverse sync after a successful same-session retarget
+- reran focused verification on the final code:
+  - `swift build`
+  - `swift test -q --filter WorkbenchStoreV2Tests`
+  - `swift test -q --filter AppViewModelA0Tests`
+  - `swift test -q --filter WorkbenchV2NavigationSyncResolverTests`
+  - `xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -destination 'platform=macOS,arch=arm64' test -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testPaneSelectionWithMockDaemonAndRealTmux -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testTerminalPaneChangeUpdatesSidebarSelectionWithRealTmux -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testMetadataEnabledPaneSelectionAndReverseSyncWithRealTmux`
+
+Result:
+- `T-108` is closed on app-side code and fresh verification.
+- current evidence now supports:
+  - no managed/provider/activity bleed across exact local rows under opaque `session_key`
+  - inventory-only same-session retarget and reverse sync
+  - metadata-enabled same-session retarget and reverse sync on the normal app path
+
+## 2026-03-07 — T-108 root cause tightened again: rendered attach command is still too weak
+
+Context:
+- fresh live tmux inspection on March 7, 2026 showed the remaining pane-sync bug is more specific than the previous render-path gap:
+  - the running app child tmux client on `/dev/ttys008` remained on pane `%2`
+  - the rendered attach command tracked for that same tile targeted pane `%4`
+- this means the current real-surface oracle can still false-green: rendered attach command is intent, not exact rendered tmux client truth.
+
+What changed:
+- inspected the live runtime directly:
+  - `ps` confirmed the app-owned child process command line was `tmux select-window -t '@2' ; select-pane -t '%4' ; attach-session -t 'vm agtmux-term'`
+  - `tmux list-clients` confirmed the visible app client still reported `%2`
+  - manually reproducing the same attach sequence outside the app moved the exact tmux client to `%4`, so the remaining gap is app-side truth binding, not tmux command semantics alone
+- narrowed the final remediation shape and updated docs before code:
+  - reserve host-owned `OSC 9912` for rendered-surface telemetry
+  - bind each rendered terminal tile to one exact tmux client tty
+  - switch reverse sync and pane-selection UI/E2E truth from session-scoped `list-panes` flags to exact-client `list-clients`
+
+Result:
+- `T-108` now has a concrete product root cause for the remaining pane-sync half of the bug.
+- next implementation step is exact-client telemetry plus stronger regression/E2E proof that asserts the rendered client's real pane/window, not just the attach command string.
+
+## 2026-03-07 — T-108 clean-break correction: same-session retarget must preserve one rendered client
+
+Context:
+- fresh re-read of the live failure reports and the current worktree shows the latest same-session path still relies on attach-command mutation and surface recreation.
+- that contract is weaker than the user-facing product requirement: one visible session tile should keep one rendered tmux client, then move that exact client between panes/windows.
+
+What changed:
+- design/tracking docs now lock the clean-break direction:
+  - mixed-era local sync-v2 pane payloads that still carry `session_id` are incompatible whole-payload input
+  - same-session pane/window navigation must use exact-client `switch-client -c <tty> -t <pane>`
+  - same-session pane-selection E2E should require stable rendered-surface identity instead of treating surface recreation as success
+
+Result:
+- the next product slice is now narrower and more coherent:
+  - fix mixed-era sync-v2 decode
+  - remove active-pane dependence from terminal attach command generation
+  - drive same-session navigation through the rendered tmux client tty
+  - replace the false-positive surface-generation assertions in E2E with stable-client assertions
+
+## 2026-03-07 — T-108 implementation checkpoint: exact-client navigation landed, executed UI proof still blocked
+
+Context:
+- the clean-break plan is now implemented in product code and tests.
+- the remaining gap is not compilation or unit coverage; it is executed XCUITest evidence.
+
+What changed:
+- product/runtime:
+  - `AgtmuxSyncV2RawPane` now rejects mixed-era `session_id` rows at decode time, even when `session_key` and `pane_instance_id` are also present
+  - `AppViewModel` now classifies legacy `session_id` parse failures as explicit `incompatible sync-v2`
+  - `WorkbenchV2TerminalAttachResolver` now keeps terminal attach session-scoped instead of encoding pane/window intent into the attach command
+  - `WorkbenchV2TerminalNavigationResolver` now drives same-session pane/window retarget through exact-client `switch-client -c <tty> -t <pane>`
+  - `WorkbenchAreaV2` now waits for the rendered tmux client tty and applies same-session navigation through that bound client instead of surface recreation
+- tests:
+  - `WorkbenchV2TerminalAttachTests` now lock the session-scoped attach contract and exact-client `switch-client` contract
+  - `AppViewModelA0Tests` and `AgtmuxSyncV2DecodingTests` now prove mixed-era `session_id` payloads fail closed
+  - same-session UI/E2E assertions now require stable rendered-surface generation rather than treating surface recreation as success
+- verification:
+  - `swift build` ✅
+  - `swift test -q --filter AgtmuxSyncV2DecodingTests` ✅
+  - `swift test -q --filter AppViewModelA0Tests` ✅
+  - `swift test -q --filter WorkbenchV2TerminalAttachTests` ✅
+  - `swift test -q --filter WorkbenchStoreV2Tests` ✅
+  - `swift test -q --filter GhosttyTerminalSurfaceRegistryTests` ✅
+  - `xcodegen generate` ✅
+  - targeted `xcodebuild` for the two real-surface pane-sync UI proofs now builds successfully but still fails before execution with `Timed out while enabling automation mode.` ❌ environment
+
+Result:
+- the code path now matches the clean-break design:
+  - metadata fail-closed is explicit for mixed-era local daemon payloads
+  - same-session navigation is exact-client-scoped and no longer depends on attach-command mutation
+- `T-108` remains open only for executed real-surface UI evidence because the XCTest runner is still timing out while enabling automation mode
+
+## 2026-03-07 — T-108 reopened again after the agtmux wire fix: remaining bug is in the term consumer
+
+### Fresh live evidence
+- user reran the normal app path with:
+  - `AGTMUX_BIN=/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/debug/agtmux swift run AgtmuxTerm`
+- the previous `session_id` incompatibility is gone, but product logs now show:
+  - `metadata overlay dropped for mismatched session identity 59bafe97-... != vm agtmux on pane %1`
+  - `metadata overlay dropped for mismatched session identity rollout-... != vm agtmux-term on pane %2`
+- the same live report says selecting panes inside `utm-main` still does not retarget the visible terminal in the normal app path.
+
+### Root cause refinement
+- `AppViewModel.mergeLocalInventory(...)` is still comparing `metadataSessionKey(for: metadataPane)` to `inventoryPane.sessionName`.
+  - after the agtmux-side wire fix, `metadataSessionKey` is now a real opaque `session_key` (UUID / rollout id), so that guard is invalid even for otherwise correct rows.
+- `AppViewModel.metadataBasePane(for:)` still falls back to inventory with `pane.sessionName == paneState.sessionKey`, which is the same incorrect assumption on the change-replay path.
+- this means the current consumer can still drop valid managed overlay rows even though the daemon payload is now exact-identity-valid enough to connect.
+- the same-session pane retarget area is still not trusted until it is re-proved on the normal daemon-connected path after this metadata fix; the earlier green UITest path is no longer sufficient by itself.
+
+### Docs / tracking update
+- `docs/20_spec.md`
+  - FR-003 now explicitly says `session_key` is opaque and must not be compared to visible `session_name`.
+  - FR-023 now explicitly requires same-session pane sync to keep working when the sidebar is inventory-only.
+- `docs/30_architecture.md`
+  - Flow-001 now records bootstrap-vs-change correlation rules and forbids `sessionName == session_key` fallback.
+- `docs/41_design-workbench.md`
+  - metadata overlay gate now treats `session_key` as opaque and requires inventory-only pane sync to remain correct.
+- `docs/60_tasks.md`
+  - `T-108` TDD bundle now includes valid `session_key != session_name` regressions and normal daemon-connected pane-retarget proof.
+- `docs/65_current.md`
+  - current truth now reflects that the agtmux wire fix landed and the remaining metadata bug is consumer-side.
+
+### Next
+- add failing AppViewModel regressions for valid bootstrap/change payloads where `session_key != session_name`
+- implement the consumer-side correlation fix
+- rerun focused pane-retarget proof on the normal daemon-connected path after the metadata fix, not only on the app-driven UITest harness

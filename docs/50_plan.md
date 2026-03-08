@@ -84,6 +84,12 @@ Deliverables:
 - document tile
 - explicit MVP rejection path for directory inputs
 
+Current implementation note:
+
+- the app-side companion surfaces are implemented, and the remaining CLI bridge work is now a repo-local vendored GhosttyKit expansion plus app-side decode/dispatch
+- the narrowest implementation path is a new typed custom-OSC `ghostty_action_s` case delivered through the existing `action_cb`
+- `T-100` exists to lock that carrier decision before `T-099` implementation proceeds
+
 Exit criteria:
 
 - browser/document tiles can be opened from local or remote shells inside agtmux-hosted terminals
@@ -136,6 +142,12 @@ Deliverables:
 
 - Workbench V2 tests
 - duplicate-session tests
+- exact pane instance identity coverage through sync-v2 / XPC
+- inventory-only degrade coverage when sync-v2 omits exact identity
+- stale-overlay eviction coverage when a new incompatible local bootstrap arrives after previously valid metadata
+- single-source active-pane selection + reverse-sync coverage
+- live tmux E2E oracles for same-session pane navigation
+- exact-client reverse-sync E2E that stimulates pane changes on the rendered tmux client tty
 - CLI bridge tests
 - restore placeholder tests
 - browser/document persistence tests

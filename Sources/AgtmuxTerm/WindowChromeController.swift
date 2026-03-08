@@ -6,7 +6,7 @@ final class WindowChromeController: NSObject {
     private weak var window: NSWindow?
     private let chromeState: CockpitChromeState
     private let viewModel: AppViewModel
-    private let workspaceStore: WorkspaceStore
+    private let workbenchStoreV2: WorkbenchStoreV2
 
     private let accessoryController = NSTitlebarAccessoryViewController()
     private let accessoryView = TrafficLightAwareAccessoryView(frame: .zero)
@@ -15,11 +15,11 @@ final class WindowChromeController: NSObject {
     init(
         chromeState: CockpitChromeState,
         viewModel: AppViewModel,
-        workspaceStore: WorkspaceStore
+        workbenchStoreV2: WorkbenchStoreV2
     ) {
         self.chromeState = chromeState
         self.viewModel = viewModel
-        self.workspaceStore = workspaceStore
+        self.workbenchStoreV2 = workbenchStoreV2
         super.init()
     }
 
@@ -28,7 +28,7 @@ final class WindowChromeController: NSObject {
 
         let rootView = TitlebarChromeView()
             .environmentObject(viewModel)
-            .environment(workspaceStore)
+            .environment(workbenchStoreV2)
             .environment(chromeState)
         let hostingView = NSHostingView(rootView: rootView)
         accessoryView.embed(hostingView)

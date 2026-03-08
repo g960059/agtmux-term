@@ -61,6 +61,21 @@ struct HostsConfig: Codable {
         hosts.first { $0.hostname == source }
     }
 
+    /// Lookup host by its configured app-owned key.
+    func host(id: String) -> RemoteHost? {
+        hosts.first { $0.id == id }
+    }
+
+    /// Resolve the configured remote host key from a pane source.
+    ///
+    /// `source` is "local" or the remote hostname carried by `AgtmuxPane`.
+    /// V2 `TargetRef` should persist the configured `RemoteHost.id`, not the raw hostname.
+    /// When the hostname is not configured, return the raw source so the caller can
+    /// surface the unknown remote identity explicitly rather than silently guessing.
+    func remoteHostKey(for source: String) -> String {
+        host(for: source)?.id ?? source
+    }
+
     // MARK: - Private
 
     private static func hostsConfigURL() -> URL {

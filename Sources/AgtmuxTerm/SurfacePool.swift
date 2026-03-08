@@ -11,7 +11,6 @@ import GhosttyKit
 ///
 /// Dual index enables event-based lookup:
 ///   - pane ID ("%250")        → leafIDsByPaneID     [for %pane-exited events]
-///   - linked session name     → leafIDByLinkedSession [for session destroy events]
 ///
 /// GC is timer-driven. The timer runs only while pendingGC entries exist.
 /// Tab switches do NOT call gc() directly.
@@ -31,8 +30,6 @@ final class SurfacePool {
         let leafID: UUID
         /// The tmux pane ID (e.g. "%250"). Used for markDefunct(byPaneID:).
         let tmuxPaneID: String
-        /// Set when T-037 LinkedSessionManager is in use.
-        var linkedSessionName: String?
         /// Strong reference prevents ARC dealloc during pendingGC grace period.
         let view: GhosttyTerminalView
         var state: SurfaceState
@@ -44,7 +41,6 @@ final class SurfacePool {
 
     private var pool: [UUID: ManagedSurface] = [:]
     private var leafIDsByPaneID: [String: Set<UUID>] = [:]
-    private var leafIDByLinkedSession: [String: UUID] = [:]
 
     // MARK: - GC timer
 
@@ -58,22 +54,17 @@ final class SurfacePool {
     /// Safe to call multiple times for the same leafID (re-attach replaces the entry).
     func register(view: GhosttyTerminalView,
                   leafID: UUID,
-                  tmuxPaneID: String,
-                  linkedSessionName: String? = nil) {
+                  tmuxPaneID: String) {
         deregisterInternal(leafID: leafID)
 
         let managed = ManagedSurface(
             leafID: leafID,
             tmuxPaneID: tmuxPaneID,
-            linkedSessionName: linkedSessionName,
             view: view,
             state: .active
         )
         pool[leafID] = managed
         leafIDsByPaneID[tmuxPaneID, default: []].insert(leafID)
-        if let name = linkedSessionName {
-            leafIDByLinkedSession[name] = leafID
-        }
     }
 
     // MARK: - Occlusion
@@ -124,14 +115,6 @@ final class SurfacePool {
         }
     }
 
-    /// Schedule GC for the leaf attached to a linked session.
-    /// Called when a linked session is destroyed (T-037).
-    func markDefunct(byLinkedSession sessionName: String) {
-        if let leafID = leafIDByLinkedSession[sessionName] {
-            scheduleGC(leafID: leafID)
-        }
-    }
-
     /// Called by _GhosttyNSView.dismantleNSView to start the grace period.
     func release(leafID: UUID) {
         // If there is no pool entry (view never got a surface), just return.
@@ -173,9 +156,6 @@ final class SurfacePool {
         leafIDsByPaneID[managed.tmuxPaneID]?.remove(leafID)
         if leafIDsByPaneID[managed.tmuxPaneID]?.isEmpty == true {
             leafIDsByPaneID.removeValue(forKey: managed.tmuxPaneID)
-        }
-        if let name = managed.linkedSessionName {
-            leafIDByLinkedSession.removeValue(forKey: name)
         }
         pool.removeValue(forKey: leafID)
     }

@@ -72,6 +72,7 @@ targets:
       - sdk: Carbon.framework
       - sdk: UserNotifications.framework
       - sdk: UniformTypeIdentifiers.framework
+      - sdk: WebKit.framework
       - sdk: libiconv.tbd
       - sdk: libc++.tbd
     settings:

@@ -6,28 +6,23 @@ E2E tests must leave **zero residue** after each test:
 
 1. tmux sessions created by tests
 2. agent processes inside those sessions (Codex / Claude / shells started by them)
-3. linked session UX contracts (for example, linked session titles) must be verified via explicit E2E cases when changed
+3. V2 direct-attach regressions must be verified via explicit E2E cases when changed
 
 Title consistency contracts:
 
 1. user-facing tab title should track selected pane/session context
-2. internal linked session names (`agtmux-linked-*`) must not leak into user-facing titles
+2. titles and sidebar identity must use the exact selected session context; do not rewrite through linked-session or `session_group` aliases
 3. sidebar pane identity must be `source + session + pane` (not only `pane`) to avoid alias collisions
-4. session-group aliases that expose the same pane must collapse to a single sidebar row
-5. main-panel pane focus changes must sync back to sidebar selected-row highlight
-6. sidebar pane-row click path must enable the same focus-sync behavior (not only context-menu window open)
-7. opening one tmux window must produce exactly one workspace tile (single-surface contract)
-8. focus-sync monitoring must continue even if the original parent session is gone (linked-session runtime is authoritative)
-9. linked session `status-left` / `set-titles-string` must preserve parent template intent (local or inherited global) and rewrite session-name token to `session_group`
-10. titlebar sidebar-toggle icon (`sidebar.filter.toggle`) must always collapse/expand sidebar
-11. a local tmux session created after app launch must appear in sidebar (session row + pane row)
-12. local tmux socket override must be applied consistently to inventory, attach command, and control mode (`AGTMUX_TMUX_SOCKET_NAME` / `AGTMUX_TMUX_SOCKET`)
-13. inherited `TMUX` must not hijack local socket targeting in UITest runs unless a test explicitly opts in
-14. terminal-driven pane focus change must update sidebar selected-row within 2.0s
-15. sidebar same-window pane switch must complete within 0.8s without `workspace.loading.*` and without creating an extra linked session
-16. runner-side tmux preflight must distinguish `no server running` from true socket-inaccessible failures; skip理由は分類して明示する
-17. live tmux UI tests should execute tmux commands via app-side UITest bridge (file command channel), not via runner shell
-18. pane-ID suffix matching helpers must use `_ + sanitizedPaneID` (not `__ + ...`) so `%123` resolves to `...__123`
+4. session-group aliases that expose the same pane must remain distinct exact-session rows
+5. opening one tmux window must produce exactly one workspace tile (single-surface contract)
+6. opening a terminal tile on the V2 path must not create hidden linked sessions
+7. titlebar sidebar-toggle icon (`sidebar.filter.toggle`) must always collapse/expand sidebar
+8. a local tmux session created after app launch must appear in sidebar (session row + pane row)
+9. local tmux socket override must be applied consistently to inventory, attach command, and control mode (`AGTMUX_TMUX_SOCKET_NAME` / `AGTMUX_TMUX_SOCKET`)
+10. inherited `TMUX` must not hijack local socket targeting in UITest runs unless a test explicitly opts in
+11. runner-side tmux preflight must distinguish `no server running` from true socket-inaccessible failures; skip理由は分類して明示する
+12. live tmux UI tests should execute tmux commands via app-side UITest bridge (file command channel), not via runner shell
+13. pane-ID suffix matching helpers must use `_ + sanitizedPaneID` (not `__ + ...`) so `%123` resolves to `...__123`
 
 Accessibility contracts for E2E:
 

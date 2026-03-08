@@ -21,7 +21,7 @@ struct TitlebarChromeView: View {
             controls
                 .frame(width: controlsSlotWidth, alignment: .leading)
 
-            TabBarView()
+            WorkbenchTabBarV2()
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)

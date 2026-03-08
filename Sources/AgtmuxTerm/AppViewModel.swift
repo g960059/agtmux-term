@@ -62,6 +62,17 @@ enum LocalDaemonIssue: Equatable {
     }
 }
 
+private enum LocalMetadataOverlayError: LocalizedError {
+    case ambiguousBootstrapLocation(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .ambiguousBootstrapLocation(let metadataKey):
+            return "RPC ui.bootstrap.v2 parse failed: sync-v2 bootstrap ambiguous exact pane location \(metadataKey)"
+        }
+    }
+}
+
 // MARK: - AppViewModel
 
 /// Central state holder for the agtmux-term UI.
@@ -79,6 +90,7 @@ final class AppViewModel: ObservableObject {
     @Published private(set) var pinnedPaneKeys: Set<String> = []
     @Published private(set) var paneDisplayTitleOverrides: [String: String] = [:]
     @Published private(set) var sessionOrderBySource: [String: [String]] = [:]
+    @Published private(set) var hasCompletedInitialFetch = false
     @Published private(set) var localDaemonIssue: LocalDaemonIssue?
     @Published private(set) var localDaemonHealth: AgtmuxUIHealthV1?
 
@@ -212,6 +224,10 @@ final class AppViewModel: ObservableObject {
         "\(pane.source):\(pane.sessionName):\(pane.windowId):\(pane.paneId)"
     }
 
+    func hasSamePaneIdentity(_ lhs: AgtmuxPane, _ rhs: AgtmuxPane) -> Bool {
+        paneIdentityKey(for: lhs) == paneIdentityKey(for: rhs)
+    }
+
     // MARK: - Selection
 
     func selectPane(_ pane: AgtmuxPane) {
@@ -248,7 +264,7 @@ final class AppViewModel: ObservableObject {
     private var remoteClients: [RemoteTmuxClient] = []
     let hostsConfig: HostsConfig
     private var lastSuccessfulPanesBySource: [String: [AgtmuxPane]] = [:]
-    private var lastSuccessfulLocalSessionAliasMap: [String: String] = [:]
+    private var lastSuccessfulLocalInventory: [AgtmuxPane] = []
     private var cachedLocalMetadataByPaneKey: [String: AgtmuxPane] = [:]
     private var localMetadataRefreshTask: Task<Void, Never>?
     private var localHealthRefreshTask: Task<Void, Never>?
@@ -273,6 +289,10 @@ final class AppViewModel: ObservableObject {
     }
 
     private func classifyLocalDaemonIssue(from error: any Error) -> LocalDaemonIssue? {
+        if let overlayError = error as? LocalMetadataOverlayError {
+            return .incompatibleSyncV2(detail: overlayError.errorDescription ?? String(describing: overlayError))
+        }
+
         if let daemonError = error as? DaemonError {
             switch daemonError {
             case .daemonUnavailable:
@@ -302,14 +322,32 @@ final class AppViewModel: ObservableObject {
             return makeLocalDaemonUnavailableIssue(detail: description)
         }
 
-        let referencesSyncV2Method =
+        let referencesSyncV2Contract =
             normalized.contains("ui.bootstrap.v2") ||
-            normalized.contains("ui.changes.v2")
-        let indicatesMissingMethod =
+            normalized.contains("ui.changes.v2") ||
+            normalized.contains("agtmux_ui_bootstrap_v2_json") ||
+            normalized.contains("agtmux_ui_changes_v2_json") ||
+            normalized.contains("sync-v2 bootstrap") ||
+            normalized.contains("sync-v2 pane")
+        let indicatesIncompatibleMethod =
             normalized.contains("-32601") ||
             normalized.contains("method not found")
+        let indicatesMissingExactIdentity =
+            normalized.contains("missing required exact identity field") ||
+            normalized.contains("legacy identity field") ||
+            normalized.contains("session_id") ||
+            normalized.contains("session_key") ||
+            normalized.contains("pane_instance_id") ||
+            normalized.contains("session_name") ||
+            normalized.contains("window_id") ||
+            normalized.contains("ambiguous exact pane location") ||
+            normalized.contains("ambiguous exact pane") ||
+            normalized.contains("mismatched pane instance") ||
+            normalized.contains("unknown exact pane")
 
-        guard referencesSyncV2Method, indicatesMissingMethod else { return nil }
+        guard referencesSyncV2Contract, indicatesIncompatibleMethod || indicatesMissingExactIdentity else {
+            return nil
+        }
         return .incompatibleSyncV2(detail: description)
     }
 
@@ -499,69 +537,21 @@ final class AppViewModel: ObservableObject {
         sessionOrderBySource = updated
     }
 
-    /// Normalize panes so UI identity and grouping are stable:
-    /// - collapse session-group aliases to a canonical session name
-    /// - hide internal linked sessions
-    /// - dedupe repeated rows that point to the same pane in the same canonical session
-    private func normalizePanes(_ allPanes: [AgtmuxPane]) async -> [AgtmuxPane] {
+    /// Normalize panes so UI identity and grouping stay stable while preserving
+    /// exact real-session visibility in the sidebar.
+    ///
+    /// Deduplication is limited to exact duplicate rows that point at the same
+    /// source/session/window/pane. Session-group aliases and linked-looking
+    /// session names are preserved as-is so the normal path reflects tmux truth.
+    private func normalizePanes(_ allPanes: [AgtmuxPane]) -> [AgtmuxPane] {
         let bySource = Dictionary(grouping: allPanes, by: \.source)
         var normalized: [AgtmuxPane] = []
 
         for source in sortedSources(bySource.keys) {
-            let sourcePanes = bySource[source] ?? []
-            let aliasMap = source == "local" ? await localSessionAliasMap() : [:]
-
-            let transformed = sourcePanes.compactMap { pane -> AgtmuxPane? in
-                // Internal linked sessions are implementation details.
-                if pane.sessionName.hasPrefix("agtmux-linked-") { return nil }
-
-                let canonicalSession: String
-                if let group = pane.sessionGroup, !group.isEmpty {
-                    canonicalSession = group
-                } else if let alias = aliasMap[pane.sessionName], !alias.isEmpty {
-                    canonicalSession = alias
-                } else {
-                    canonicalSession = pane.sessionName
-                }
-
-                if canonicalSession == pane.sessionName { return pane }
-                return pane.withSessionName(canonicalSession)
-            }
-
-            normalized.append(contentsOf: dedupePanes(transformed))
+            normalized.append(contentsOf: dedupePanes(bySource[source] ?? []))
         }
 
         return normalized
-    }
-
-    /// Map local tmux session_name -> canonical session-group name.
-    ///
-    /// This mapping must stay stable across polls; canonical target is always
-    /// `session_group` when available. On transient command failure, return the
-    /// previous successful map to avoid flicker.
-    private func localSessionAliasMap() async -> [String: String] {
-        let format = "#{session_name}\t#{session_group}"
-        guard let output = try? await TmuxCommandRunner.shared.run(
-            ["list-sessions", "-F", format],
-            source: "local"
-        ) else {
-            return lastSuccessfulLocalSessionAliasMap
-        }
-        var aliases: [String: String] = [:]
-        for line in output.split(separator: "\n") {
-            let fields = line.split(separator: "\t", omittingEmptySubsequences: false)
-            guard let rawName = fields.first else { continue }
-            let name = String(rawName)
-            guard !name.isEmpty else { continue }
-            let group = fields.count >= 2 ? String(fields[1]) : ""
-            aliases[name] = group.isEmpty ? name : group
-        }
-
-        if aliases.isEmpty {
-            return lastSuccessfulLocalSessionAliasMap
-        }
-        lastSuccessfulLocalSessionAliasMap = aliases
-        return aliases
     }
 
     private func dedupePanes(_ panes: [AgtmuxPane]) -> [AgtmuxPane] {
@@ -590,17 +580,57 @@ final class AppViewModel: ObservableObject {
         return score(rhs) > score(lhs) ? rhs : lhs
     }
 
-    private func paneMetadataKey(source: String, paneId: String) -> String {
-        "\(source):\(paneId)"
+    private func paneMetadataKey(for pane: AgtmuxPane) -> String {
+        "\(pane.source):\(pane.sessionName):\(pane.windowId):\(pane.paneId)"
     }
 
-    private func localMetadataMap(from metadata: [AgtmuxPane]) -> [String: AgtmuxPane] {
+    private func metadataSessionKey(for pane: AgtmuxPane) -> String {
+        pane.metadataSessionKey ?? pane.sessionName
+    }
+
+    private struct BootstrapMetadataIdentity: Hashable {
+        let sessionKey: String
+        let paneInstanceID: AgtmuxSyncV2PaneInstanceID
+    }
+
+    private func resolveBootstrapMetadataPane(
+        candidates: [AgtmuxPane],
+        metadataKey: String
+    ) throws -> AgtmuxPane {
+        guard let first = candidates.first else {
+            throw LocalMetadataOverlayError.ambiguousBootstrapLocation(metadataKey)
+        }
+
+        let grouped = Dictionary(grouping: candidates) { pane in
+            BootstrapMetadataIdentity(
+                sessionKey: metadataSessionKey(for: pane),
+                paneInstanceID: pane.paneInstanceID ?? AgtmuxSyncV2PaneInstanceID(
+                    paneId: pane.paneId,
+                    generation: nil,
+                    birthTs: nil
+                )
+            )
+        }
+
+        guard candidates.count == 1, grouped.count == 1 else {
+            throw LocalMetadataOverlayError.ambiguousBootstrapLocation(metadataKey)
+        }
+
+        return first
+    }
+
+    private func localMetadataMap(from metadata: [AgtmuxPane]) throws -> [String: AgtmuxPane] {
         let grouped = Dictionary(grouping: metadata.filter { $0.source == "local" }) {
-            paneMetadataKey(source: $0.source, paneId: $0.paneId)
+            paneMetadataKey(for: $0)
         }
-        return grouped.mapValues { panes in
-            panes.reduce(panes[0]) { preferredPane($0, $1) }
+        var metadataByPaneKey: [String: AgtmuxPane] = [:]
+        for (metadataKey, panes) in grouped {
+            metadataByPaneKey[metadataKey] = try resolveBootstrapMetadataPane(
+                candidates: panes,
+                metadataKey: metadataKey
+            )
         }
+        return metadataByPaneKey
     }
 
     /// Merge local tmux inventory with daemon metadata overlay.
@@ -613,8 +643,13 @@ final class AppViewModel: ObservableObject {
         metadataByPaneKey: [String: AgtmuxPane]
     ) -> [AgtmuxPane] {
         return inventory.map { inventoryPane in
-            let key = paneMetadataKey(source: inventoryPane.source, paneId: inventoryPane.paneId)
+            let key = paneMetadataKey(for: inventoryPane)
             guard let metadataPane = metadataByPaneKey[key] else { return inventoryPane }
+            // session_key is opaque daemon identity and must not be compared to the visible
+            // session_name. Correlation is already guaranteed by the paneMetadataKey lookup
+            // above (source:sessionName:windowId:paneId). Comparing metadataSessionKey to
+            // sessionName here would incorrectly drop valid overlays whenever session_key
+            // differs from session_name (e.g. numeric IDs or UUIDs).
             return AgtmuxPane(
                 source: inventoryPane.source,
                 paneId: inventoryPane.paneId,
@@ -632,7 +667,9 @@ final class AppViewModel: ObservableObject {
                 gitBranch: metadataPane.gitBranch,
                 currentCmd: metadataPane.currentCmd ?? inventoryPane.currentCmd,
                 updatedAt: metadataPane.updatedAt,
-                ageSecs: metadataPane.ageSecs
+                ageSecs: metadataPane.ageSecs,
+                metadataSessionKey: metadataPane.metadataSessionKey,
+                paneInstanceID: metadataPane.paneInstanceID
             )
         }
     }
@@ -655,19 +692,97 @@ final class AppViewModel: ObservableObject {
             gitBranch: basePane.gitBranch,
             currentCmd: basePane.currentCmd,
             updatedAt: paneState.updatedAt,
-            ageSecs: basePane.ageSecs
+            ageSecs: basePane.ageSecs,
+            metadataSessionKey: paneState.sessionKey,
+            paneInstanceID: paneState.paneInstanceID
         )
     }
 
-    private func metadataBasePane(for paneId: String) -> AgtmuxPane? {
-        let key = paneMetadataKey(source: "local", paneId: paneId)
-        if let cached = cachedLocalMetadataByPaneKey[key] {
-            return cached
+    private func resolveMetadataBaseCandidate(
+        candidates: [AgtmuxPane],
+        paneState: AgtmuxSyncV2PaneState,
+        candidateSource: String
+    ) -> AgtmuxPane? {
+        guard !candidates.isEmpty else { return nil }
+
+        let paneInstanceID = paneState.paneInstanceID
+        let exactMatches = candidates.filter { $0.paneInstanceID == paneInstanceID }
+        if exactMatches.count == 1 {
+            return exactMatches[0]
+        }
+        if exactMatches.count > 1 {
+            logLocalFetch(
+                "sync-v2 pane change dropped for ambiguous exact \(candidateSource) pane " +
+                "\(paneState.sessionKey)/\(paneState.paneId)"
+            )
+            return nil
         }
 
-        return lastSuccessfulPanesBySource["local"]?.first { pane in
-            pane.source == "local" && pane.paneId == paneId
+        if candidates.contains(where: { $0.paneInstanceID != nil }) {
+            logLocalFetch(
+                "sync-v2 pane change dropped for mismatched pane instance " +
+                "\(paneState.sessionKey)/\(paneState.paneId)"
+            )
+            return nil
         }
+
+        if candidates.count == 1 {
+            return candidates[0]
+        }
+
+        logLocalFetch(
+            "sync-v2 pane change dropped for ambiguous \(candidateSource) pane " +
+            "\(paneState.sessionKey)/\(paneState.paneId)"
+        )
+        return nil
+    }
+
+    private func metadataBasePane(for paneState: AgtmuxSyncV2PaneState) -> AgtmuxPane? {
+        let cachedCandidates = cachedLocalMetadataByPaneKey.values.filter { pane in
+            pane.source == "local"
+                && pane.paneId == paneState.paneId
+                && metadataSessionKey(for: pane) == paneState.sessionKey
+        }
+        if !cachedCandidates.isEmpty {
+            return resolveMetadataBaseCandidate(
+                candidates: cachedCandidates,
+                paneState: paneState,
+                candidateSource: "cached"
+            )
+        }
+
+        let visibleSessionNames = Set<String>(
+            cachedLocalMetadataByPaneKey.values.compactMap { pane in
+                guard pane.source == "local" else { return nil }
+                guard metadataSessionKey(for: pane) == paneState.sessionKey else { return nil }
+                return pane.sessionName
+            }
+        )
+        if visibleSessionNames.count > 1 {
+            logLocalFetch(
+                "sync-v2 pane change dropped for ambiguous session-key mapping " +
+                "\(paneState.sessionKey)"
+            )
+            return nil
+        }
+        guard let visibleSessionName = visibleSessionNames.first else {
+            return nil
+        }
+
+        let inventoryCandidates = lastSuccessfulLocalInventory.filter { pane in
+            pane.source == "local"
+                && pane.paneId == paneState.paneId
+                && pane.sessionName == visibleSessionName
+        }
+        if let inventory = resolveMetadataBaseCandidate(
+            candidates: inventoryCandidates,
+            paneState: paneState,
+            candidateSource: "inventory"
+        ) {
+            return inventory
+        }
+
+        return nil
     }
 
     private func applyLocalMetadataChanges(_ payload: AgtmuxSyncV2Changes) -> [String: AgtmuxPane] {
@@ -675,11 +790,14 @@ final class AppViewModel: ObservableObject {
 
         for change in payload.changes {
             guard let paneState = change.pane else { continue }
-            let key = paneMetadataKey(source: "local", paneId: paneState.paneId)
-            guard let basePane = metadataBasePane(for: paneState.paneId) else {
-                logLocalFetch("sync-v2 pane change dropped for unknown pane_id \(paneState.paneId)")
+            guard let basePane = metadataBasePane(for: paneState) else {
+                logLocalFetch(
+                    "sync-v2 pane change dropped for unknown exact pane " +
+                    "\(paneState.sessionKey)/\(paneState.paneId)"
+                )
                 continue
             }
+            let key = paneMetadataKey(for: basePane)
             metadataByPaneKey[key] = overlayLocalMetadata(paneState, onto: basePane)
         }
 
@@ -690,13 +808,23 @@ final class AppViewModel: ObservableObject {
         cachedLocalMetadataByPaneKey = metadataByPaneKey
         nextLocalMetadataRefreshAt = Date().addingTimeInterval(localMetadataSuccessInterval)
 
-        if let localPanes = lastSuccessfulPanesBySource["local"] {
+        if !lastSuccessfulLocalInventory.isEmpty {
             lastSuccessfulPanesBySource["local"] = mergeLocalInventory(
-                inventory: localPanes,
+                inventory: lastSuccessfulLocalInventory,
                 metadataByPaneKey: metadataByPaneKey
             )
             await publishFromSnapshotCache()
         }
+    }
+
+    private func clearLocalMetadataCache() async {
+        cachedLocalMetadataByPaneKey = [:]
+        guard !lastSuccessfulLocalInventory.isEmpty else { return }
+        lastSuccessfulPanesBySource["local"] = mergeLocalInventory(
+            inventory: lastSuccessfulLocalInventory,
+            metadataByPaneKey: [:]
+        )
+        await publishFromSnapshotCache()
     }
 
     private func scheduleLocalHealthRefreshIfNeeded() {
@@ -744,7 +872,7 @@ final class AppViewModel: ObservableObject {
                 if !self.localMetadataSyncPrimed {
                     let bootstrap = try await self.localClient.fetchUIBootstrapV2()
                     try Task.checkCancellation()
-                    let metadataByPaneKey = self.localMetadataMap(from: bootstrap.panes)
+                    let metadataByPaneKey = try self.localMetadataMap(from: bootstrap.panes)
                     self.localMetadataSyncPrimed = true
                     self.localDaemonIssue = nil
                     await self.publishLocalMetadataCache(metadataByPaneKey)
@@ -765,7 +893,7 @@ final class AppViewModel: ObservableObject {
                     await self.localClient.resetUIChangesV2()
                     let bootstrap = try await self.localClient.fetchUIBootstrapV2()
                     try Task.checkCancellation()
-                    let metadataByPaneKey = self.localMetadataMap(from: bootstrap.panes)
+                    let metadataByPaneKey = try self.localMetadataMap(from: bootstrap.panes)
                     self.localMetadataSyncPrimed = true
                     self.localDaemonIssue = nil
                     await self.publishLocalMetadataCache(metadataByPaneKey)
@@ -783,7 +911,8 @@ final class AppViewModel: ObservableObject {
                 self.localMetadataSyncPrimed = false
                 self.nextLocalMetadataRefreshAt = Date().addingTimeInterval(self.localMetadataFailureBackoff)
                 self.localDaemonIssue = self.classifyLocalDaemonIssue(from: error)
-                self.logLocalFetch("sync-v2 metadata unavailable; keeping cached overlay: \(error)")
+                await self.clearLocalMetadataCache()
+                self.logLocalFetch("sync-v2 metadata unavailable; cleared cached overlay: \(error)")
             }
         }
     }
@@ -794,6 +923,7 @@ final class AppViewModel: ObservableObject {
         // Fixture mode for deterministic UI tests. Keep the current AGTMUX_JSON-only behavior.
         if env["AGTMUX_JSON"] != nil {
             let snapshot = try await localClient.fetchSnapshot()
+            lastSuccessfulLocalInventory = snapshot.panes
             return snapshot.panes
         }
 
@@ -801,11 +931,14 @@ final class AppViewModel: ObservableObject {
         // Running `agtmux json` here can block app responsiveness under XCUITest
         // (metadata collection may require host capabilities not available to tests).
         if env["AGTMUX_UITEST"] == "1", env["AGTMUX_UITEST_INVENTORY_ONLY"] == "1" {
-            return try await localInventoryClient.fetchPanes()
+            let inventory = try await localInventoryClient.fetchPanes()
+            lastSuccessfulLocalInventory = inventory
+            return inventory
         }
 
         scheduleLocalHealthRefreshIfNeeded()
         let inventory = try await localInventoryClient.fetchPanes()
+        lastSuccessfulLocalInventory = inventory
         scheduleLocalMetadataRefreshIfNeeded()
         return mergeLocalInventory(inventory: inventory, metadataByPaneKey: cachedLocalMetadataByPaneKey)
     }
@@ -821,18 +954,14 @@ final class AppViewModel: ObservableObject {
 
     private func retainSelection(in normalized: [AgtmuxPane]) {
         guard let currentSelectedPane = selectedPane else { return }
-        selectedPane = normalized.first {
-            $0.source == currentSelectedPane.source
-                && $0.paneId == currentSelectedPane.paneId
-                && $0.windowId == currentSelectedPane.windowId
-        }
+        selectedPane = normalized.first { hasSamePaneIdentity($0, currentSelectedPane) }
     }
 
     private func publishFromSnapshotCache(offlineHosts newOffline: Set<String>? = nil) async {
         trimSnapshotCacheToKnownSources()
         let merged = sortedSources(lastSuccessfulPanesBySource.keys)
             .flatMap { lastSuccessfulPanesBySource[$0] ?? [] }
-        let normalized = await normalizePanes(merged)
+        let normalized = normalizePanes(merged)
         reconcileSessionOrder(with: normalized)
         panes = normalized
         let livePaneKeys = Set(normalized.map(paneIdentityKey(for:)))
@@ -895,5 +1024,6 @@ final class AppViewModel: ObservableObject {
             await localClient.resetUIChangesV2()
         }
         await publishFromSnapshotCache(offlineHosts: newOffline)
+        hasCompletedInitialFetch = true
     }
 }

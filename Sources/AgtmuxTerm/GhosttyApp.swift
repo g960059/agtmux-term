@@ -12,6 +12,31 @@ import GhosttyKit
 final class GhosttyApp {
     static let shared = GhosttyApp()
 
+    typealias BridgeActionDispatcher = @MainActor (
+        ghostty_target_s,
+        ghostty_action_s
+    ) throws -> GhosttyCLIOSCBridgeResult?
+    typealias BridgeFailureReporter = @MainActor (Error) -> Void
+    typealias BridgeMainActorObserver = @MainActor () -> Void
+
+    @MainActor
+    private static var bridgeActionDispatcher: BridgeActionDispatcher = { target, action in
+        try GhosttyCLIOSCBridge.dispatchIfBridgeAction(
+            target: target,
+            action: action,
+            store: workbenchStoreV2,
+            registry: .shared
+        )
+    }
+
+    @MainActor
+    private static var bridgeFailureReporter: BridgeFailureReporter = { error in
+        reportBridgeFailure(error)
+    }
+
+    @MainActor
+    private static var bridgeMainActorObserver: BridgeMainActorObserver = {}
+
     private(set) var app: ghostty_app_t?
 
     /// Weak collection of all live terminal views.
@@ -66,11 +91,11 @@ final class GhosttyApp {
 
     // MARK: - Runtime callbacks
 
-    private static func handleAction(_ app: ghostty_app_t?,
-                                     target: ghostty_target_s,
-                                     action: ghostty_action_s) -> Bool {
+    /// Internal so integration tests can invoke the exact libghostty action callback seam.
+    static func handleAction(_ app: ghostty_app_t?,
+                             target: ghostty_target_s,
+                             action: ghostty_action_s) -> Bool {
         _ = app
-        _ = target
 
         // These are emitted during surface creation and can be safely ignored
         // in this embedding.
@@ -92,12 +117,71 @@ final class GhosttyApp {
             return true
         case GHOSTTY_ACTION_SET_TITLE:
             return true
+        case GHOSTTY_ACTION_CUSTOM_OSC:
+            return handleCustomOSC(target: target, action: action)
 
         default:
             break
         }
 
         return false
+    }
+
+    private static func handleCustomOSC(
+        target: ghostty_target_s,
+        action: ghostty_action_s
+    ) -> Bool {
+        let runOnMain = {
+            MainActor.assumeIsolated {
+                bridgeMainActorObserver()
+
+                do {
+                    let result = try bridgeActionDispatcher(target, action)
+                    return result != nil
+                } catch {
+                    bridgeFailureReporter(error)
+                    return true
+                }
+            }
+        }
+
+        if Thread.isMainThread {
+            return runOnMain()
+        }
+
+        return DispatchQueue.main.sync(execute: runOnMain)
+    }
+
+    /// Integration-test seam for the real action callback path.
+    @MainActor
+    static func withTestBridgeHooks<T>(
+        dispatcher: @escaping BridgeActionDispatcher,
+        failureReporter: @escaping BridgeFailureReporter,
+        mainActorObserver: @escaping BridgeMainActorObserver = {},
+        _ body: () async throws -> T
+    ) async rethrows -> T {
+        let originalDispatcher = bridgeActionDispatcher
+        let originalFailureReporter = bridgeFailureReporter
+        let originalMainActorObserver = bridgeMainActorObserver
+
+        bridgeActionDispatcher = dispatcher
+        bridgeFailureReporter = failureReporter
+        bridgeMainActorObserver = mainActorObserver
+
+        defer {
+            bridgeActionDispatcher = originalDispatcher
+            bridgeFailureReporter = originalFailureReporter
+            bridgeMainActorObserver = originalMainActorObserver
+        }
+
+        return try await body()
+    }
+
+    @MainActor
+    private static func reportBridgeFailure(_ error: Error) {
+        let message = "AgtmuxTerm CLI bridge failure: \(error)"
+        fputs(message + "\n", stderr)
+        assertionFailure(message)
     }
 
     deinit {

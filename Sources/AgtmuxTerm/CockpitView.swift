@@ -40,7 +40,7 @@ struct CockpitView: View {
                             .transition(.move(edge: .leading).combined(with: .opacity))
                     }
 
-                    WorkspaceArea()
+                    WorkbenchAreaV2()
                         .frame(minWidth: 560, maxWidth: .infinity, maxHeight: .infinity)
                         .background(CockpitChrome.workspaceShade)
                 }

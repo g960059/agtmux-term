@@ -1,5 +1,19 @@
 import Foundation
 
+package enum AgtmuxSyncV2ProtocolError: LocalizedError, Equatable, Sendable {
+    case missingBootstrapPaneField(String)
+    case legacyPaneField(String)
+
+    package var errorDescription: String? {
+        switch self {
+        case .missingBootstrapPaneField(let field):
+            return "sync-v2 bootstrap pane missing required exact identity field '\(field)'"
+        case .legacyPaneField(let field):
+            return "sync-v2 pane payload contains legacy identity field '\(field)'"
+        }
+    }
+}
+
 package struct AgtmuxSyncV2Cursor: Codable, Equatable, Sendable {
     package let epoch: UInt64
     package let seq: UInt64
@@ -38,7 +52,7 @@ package struct AgtmuxSyncV2SessionState: Codable, Equatable, Sendable {
     }
 }
 
-package struct AgtmuxSyncV2PaneInstanceID: Codable, Equatable, Sendable {
+package struct AgtmuxSyncV2PaneInstanceID: Codable, Equatable, Hashable, Sendable {
     package let paneId: String
     package let generation: UInt64?
     package let birthTs: Date?
@@ -57,6 +71,10 @@ package struct AgtmuxSyncV2PaneInstanceID: Codable, Equatable, Sendable {
 }
 
 package struct AgtmuxSyncV2PaneState: Codable, Equatable, Sendable {
+    private enum LegacyCodingKeys: String, CodingKey {
+        case sessionID = "session_id"
+    }
+
     package let paneInstanceID: AgtmuxSyncV2PaneInstanceID
     package let presence: PanePresence
     package let evidenceMode: EvidenceMode
@@ -91,6 +109,32 @@ package struct AgtmuxSyncV2PaneState: Codable, Equatable, Sendable {
         case provider
         case sessionKey = "session_key"
         case updatedAt = "updated_at"
+    }
+
+    package init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let legacyContainer = try decoder.container(keyedBy: LegacyCodingKeys.self)
+        if legacyContainer.contains(.sessionID) {
+            throw AgtmuxSyncV2ProtocolError.legacyPaneField(LegacyCodingKeys.sessionID.rawValue)
+        }
+        paneInstanceID = try container.decode(AgtmuxSyncV2PaneInstanceID.self, forKey: .paneInstanceID)
+        presence = try container.decode(PanePresence.self, forKey: .presence)
+        evidenceMode = try container.decode(EvidenceMode.self, forKey: .evidenceMode)
+        activityState = try container.decode(ActivityState.self, forKey: .activityState)
+        provider = try container.decodeIfPresent(Provider.self, forKey: .provider)
+        sessionKey = try container.decode(String.self, forKey: .sessionKey)
+        updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+    }
+
+    package func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(paneInstanceID, forKey: .paneInstanceID)
+        try container.encode(presence, forKey: .presence)
+        try container.encode(evidenceMode, forKey: .evidenceMode)
+        try container.encode(activityState, forKey: .activityState)
+        try container.encodeIfPresent(provider, forKey: .provider)
+        try container.encode(sessionKey, forKey: .sessionKey)
+        try container.encode(updatedAt, forKey: .updatedAt)
     }
 }
 
@@ -257,12 +301,18 @@ package struct AgtmuxSyncV2Bootstrap: Codable, Equatable, Sendable {
 }
 
 private struct AgtmuxSyncV2RawPane: Codable, Equatable, Sendable {
+    private enum LegacyCodingKeys: String, CodingKey {
+        case sessionID = "session_id"
+    }
+
     let paneId: String
     let sessionName: String
+    let sessionKey: String
     let sessionGroup: String?
     let windowId: String
     let windowIndex: Int?
     let windowName: String?
+    let paneInstanceID: AgtmuxSyncV2PaneInstanceID
     let activityState: ActivityState?
     let presence: PanePresence?
     let provider: Provider?
@@ -277,10 +327,12 @@ private struct AgtmuxSyncV2RawPane: Codable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case paneId = "pane_id"
         case sessionName = "session_name"
+        case sessionKey = "session_key"
         case sessionGroup = "session_group"
         case windowId = "window_id"
         case windowIndex = "window_index"
         case windowName = "window_name"
+        case paneInstanceID = "pane_instance_id"
         case activityState = "activity_state"
         case presence
         case provider
@@ -295,12 +347,22 @@ private struct AgtmuxSyncV2RawPane: Codable, Equatable, Sendable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        let legacyContainer = try decoder.container(keyedBy: LegacyCodingKeys.self)
+        if legacyContainer.contains(.sessionID) {
+            throw AgtmuxSyncV2ProtocolError.legacyPaneField(LegacyCodingKeys.sessionID.rawValue)
+        }
         paneId = try container.decode(String.self, forKey: .paneId)
-        sessionName = try container.decodeIfPresent(String.self, forKey: .sessionName) ?? ""
+        sessionName = try container.decode(String.self, forKey: .sessionName)
+        sessionKey = try Self.decodeRequired(String.self, from: container, forKey: .sessionKey)
         sessionGroup = try container.decodeIfPresent(String.self, forKey: .sessionGroup)
-        windowId = try container.decodeIfPresent(String.self, forKey: .windowId) ?? ""
+        windowId = try container.decode(String.self, forKey: .windowId)
         windowIndex = try container.decodeIfPresent(Int.self, forKey: .windowIndex)
         windowName = try container.decodeIfPresent(String.self, forKey: .windowName)
+        paneInstanceID = try Self.decodeRequired(
+            AgtmuxSyncV2PaneInstanceID.self,
+            from: container,
+            forKey: .paneInstanceID
+        )
         activityState = try container.decodeIfPresent(ActivityState.self, forKey: .activityState)
         presence = try container.decodeIfPresent(PanePresence.self, forKey: .presence)
         provider = try container.decodeIfPresent(Provider.self, forKey: .provider)
@@ -314,12 +376,22 @@ private struct AgtmuxSyncV2RawPane: Codable, Equatable, Sendable {
     }
 
     init(_ pane: AgtmuxPane) {
+        precondition(
+            pane.metadataSessionKey != nil,
+            "AgtmuxSyncV2RawPane requires metadataSessionKey for sync-v2 bootstrap encoding"
+        )
+        precondition(
+            pane.paneInstanceID != nil,
+            "AgtmuxSyncV2RawPane requires paneInstanceID for sync-v2 bootstrap encoding"
+        )
         paneId = pane.paneId
         sessionName = pane.sessionName
+        sessionKey = pane.metadataSessionKey!
         sessionGroup = pane.sessionGroup
         windowId = pane.windowId
         windowIndex = pane.windowIndex
         windowName = pane.windowName
+        paneInstanceID = pane.paneInstanceID!
         activityState = pane.activityState
         presence = pane.presence
         provider = pane.provider
@@ -336,10 +408,12 @@ private struct AgtmuxSyncV2RawPane: Codable, Equatable, Sendable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(paneId, forKey: .paneId)
         try container.encode(sessionName, forKey: .sessionName)
+        try container.encode(sessionKey, forKey: .sessionKey)
         try container.encodeIfPresent(sessionGroup, forKey: .sessionGroup)
         try container.encode(windowId, forKey: .windowId)
         try container.encodeIfPresent(windowIndex, forKey: .windowIndex)
         try container.encodeIfPresent(windowName, forKey: .windowName)
+        try container.encode(paneInstanceID, forKey: .paneInstanceID)
         try container.encodeIfPresent(activityState, forKey: .activityState)
         try container.encodeIfPresent(presence, forKey: .presence)
         try container.encodeIfPresent(provider, forKey: .provider)
@@ -370,8 +444,22 @@ private struct AgtmuxSyncV2RawPane: Codable, Equatable, Sendable {
             gitBranch: gitBranch,
             currentCmd: currentCmd,
             updatedAt: updatedAt,
-            ageSecs: ageSecs
+            ageSecs: ageSecs,
+            metadataSessionKey: sessionKey,
+            paneInstanceID: paneInstanceID
         )
+    }
+
+    private static func decodeRequired<T: Decodable>(
+        _ type: T.Type,
+        from container: KeyedDecodingContainer<CodingKeys>,
+        forKey key: CodingKeys
+    ) throws -> T {
+        do {
+            return try container.decode(T.self, forKey: key)
+        } catch {
+            throw AgtmuxSyncV2ProtocolError.missingBootstrapPaneField(key.rawValue)
+        }
     }
 
 }

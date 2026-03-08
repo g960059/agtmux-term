@@ -27,6 +27,8 @@ final class NonDraggableHostingView<Content: View>: NSHostingView<Content> {
 // The handler also terminates the daemon child process owned by this app instance.
 let isUITest = CommandLine.arguments.contains { $0.hasPrefix("-XCTest") }
     || ProcessInfo.processInfo.environment["AGTMUX_UITEST"] == "1"
+let enableUITestGhosttySurfaces = ProcessInfo.processInfo.environment["AGTMUX_UITEST_ENABLE_GHOSTTY_SURFACES"] == "1"
+let requiresGhosttyRuntime = !isUITest || enableUITestGhosttySurfaces
 let xpcDisabled = ProcessInfo.processInfo.environment["AGTMUX_XPC_DISABLED"] == "1"
 let xpcServiceBundled: Bool = {
     // SwiftPM (`swift run`) does not embed XPC services.
@@ -51,7 +53,7 @@ signal(SIGTERM, agtmuxTermSIGTERMHandler)
 //
 // UI tests do not require real Ghostty surfaces; skipping init keeps launch stable
 // under XCTest activation timing constraints.
-if !isUITest {
+if requiresGhosttyRuntime {
     let ghosttyInitResult = ghostty_init(UInt(CommandLine.argc), CommandLine.unsafeArgv)
     guard ghosttyInitResult == 0 else {
         fatalError("ghostty_init failed with code \(ghosttyInitResult)")
@@ -65,7 +67,7 @@ let app = NSApplication.shared
 app.setActivationPolicy(.regular)
 
 // 2. Initialise GhosttyApp singleton (triggers ghostty_app_new) for normal runs.
-if !isUITest {
+if requiresGhosttyRuntime {
     _ = GhosttyApp.shared
 }
 
@@ -98,11 +100,16 @@ let uiTestTmuxBridge: UITestTmuxBridge? = MainActor.assumeIsolated {
     isUITest ? UITestTmuxBridge(viewModel: viewModel) : nil
 }
 
-// 4. Create WorkspaceStore with a default tab.
-let workspaceStore: WorkspaceStore = MainActor.assumeIsolated {
-    let store = WorkspaceStore()
-    store.createTab()
-    return store
+// 4. Create the Workbench V2 store for the normal cockpit path.
+let workbenchStoreV2: WorkbenchStoreV2 = MainActor.assumeIsolated {
+    do {
+        return try WorkbenchStoreV2(
+            env: ProcessInfo.processInfo.environment,
+            persistence: isUITest ? nil : .live()
+        )
+    } catch {
+        fatalError("WorkbenchStoreV2 init failed: \(error)")
+    }
 }
 
 let chromeState: CockpitChromeState = MainActor.assumeIsolated {
@@ -112,7 +119,7 @@ let chromeState: CockpitChromeState = MainActor.assumeIsolated {
 // 5. Build the SwiftUI view hierarchy wrapped in NSHostingView.
 let cockpit = CockpitView()
     .environmentObject(viewModel)
-    .environment(workspaceStore)
+    .environment(workbenchStoreV2)
     .environment(chromeState)
 
 let hostingView = NonDraggableHostingView(rootView: cockpit)
@@ -139,7 +146,7 @@ let windowChromeController: WindowChromeController = MainActor.assumeIsolated {
     let controller = WindowChromeController(
         chromeState: chromeState,
         viewModel: viewModel,
-        workspaceStore: workspaceStore
+        workbenchStoreV2: workbenchStoreV2
     )
     controller.install(on: window)
     return controller
@@ -156,11 +163,13 @@ func forceForeground(_ app: NSApplication, window: NSWindow) {
 
 // 6. Kick async startup once run loop is alive.
 DispatchQueue.main.async {
-    if let uiTestTmuxBridge {
-        Task { await uiTestTmuxBridge.startIfNeeded() }
+    Task {
+        if let uiTestTmuxBridge {
+            await uiTestTmuxBridge.startIfNeeded()
+        } else {
+            await viewModel.fetchAll()
+        }
     }
-
-    Task { await viewModel.fetchAll() }
     if !isUITest {
         viewModel.startPolling()
     }

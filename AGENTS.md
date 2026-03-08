@@ -44,6 +44,12 @@
 
 1. **Delegate**: コード実装 / テスト実行 / コードレビューは subagent に委任。
    Orchestrator は**コードを**直接書かない・実行しない（`docs/*` 編集は Orchestrator の責務）。
+   - ただし user が明示した fallback policy がある場合はそれを優先する。
+   - 現在の user-directed execution policy:
+     1. real agent CLI への実装委任は行わない
+     2. 実装 / テスト実行は Orchestrator が直接行ってよい
+     3. subagent は必要に応じて分析や review に使ってよいが、実装開始の前提条件にはしない
+   - fallback 発動時は blocker と移行理由を tracking docs に記録する
 
 2. **Plan → docs first**: Plan 承認後、コード1行書く前に：
    - Design tier：変更があれば更新
@@ -81,7 +87,8 @@
 ## Mandatory Review Policy (Highest Priority)
 
 1. Never use role-play reviewers such as "claude role", "codex role", "Claude reviewer", "Codex reviewer", or any simulated reviewer persona.
-2. Always request architecture/code reviews from the real tool binaries/services (e.g., actual Claude Code CLI, actual Codex tooling) when the user asks for Claude/Codex review.
-3. If real tool execution is blocked (authentication, network, permission, or binary missing), report the blocker explicitly and do not silently substitute role-play reviewers.
-4. This policy applies to all future review requests in this repository.
-
+2. Claude review must always use the real Claude Code CLI / service. Do not satisfy a Claude review request with a simulated reviewer or a plain subagent.
+3. Codex review may use Codex subagents instead of a separate real CLI invocation, as long as the review is not role-play and remains an actual Codex-driven review flow.
+4. If Claude Code does not return a valid, usable review response in reasonable time, increase Codex review coverage with additional independent Codex subagent reviews instead of silently substituting a fake Claude verdict.
+5. If required real tool execution is blocked (authentication, network, permission, or binary missing), report the blocker explicitly and do not silently substitute role-play reviewers.
+6. This policy applies to all future review requests in this repository.

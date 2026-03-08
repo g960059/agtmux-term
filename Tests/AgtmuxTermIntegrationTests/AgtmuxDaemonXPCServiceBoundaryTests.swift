@@ -418,7 +418,13 @@ private enum AgtmuxXPCHealthTestSupport {
                     conversationTitle: "Boundary sync-v2",
                     currentCmd: "node",
                     updatedAt: generatedAt,
-                    ageSecs: 0
+                    ageSecs: 0,
+                    metadataSessionKey: "dev",
+                    paneInstanceID: AgtmuxSyncV2PaneInstanceID(
+                        paneId: "%5",
+                        generation: 1,
+                        birthTs: Date(timeIntervalSince1970: 1_778_825_000)
+                    )
                 )
             ],
             sessions: [

@@ -1,4 +1,5 @@
 import Foundation
+import AgtmuxTermCore
 
 /// UITest-only tmux bridge.
 ///
@@ -38,10 +39,26 @@ final class UITestTmuxBridge {
         let error: String?
     }
 
+    private struct ActiveTerminalTargetSnapshot: Codable {
+        let workbenchID: String
+        let tileID: String
+        let sessionName: String
+        let windowID: String
+        let paneID: String
+        let selectedPaneInventoryID: String
+        let attachCommand: String
+        let renderedAttachCommand: String
+        let renderedClientTTY: String
+        let renderedClientWindowID: String
+        let renderedClientPaneID: String
+        let renderedSurfaceGeneration: UInt64
+    }
+
     private let viewModel: AppViewModel
     private let env: [String: String]
     private var commandLoopTask: Task<Void, Never>?
     private var createdSessions: Set<String> = []
+    private let activeTerminalTargetCommand = "__agtmux_dump_active_terminal_target__"
 
     init(viewModel: AppViewModel, env: [String: String] = ProcessInfo.processInfo.environment) {
         self.viewModel = viewModel
@@ -51,12 +68,15 @@ final class UITestTmuxBridge {
     func startIfNeeded() async {
         guard env["AGTMUX_UITEST"] == "1" else { return }
 
+        startCommandLoopIfNeeded()
+
         if let scenarioJSON = env["AGTMUX_UITEST_TMUX_SCENARIO"],
            !scenarioJSON.isEmpty {
             await runBootstrapScenario(from: scenarioJSON)
+            return
         }
 
-        startCommandLoopIfNeeded()
+        await viewModel.fetchAll()
     }
 
     func shutdown() async {
@@ -198,26 +218,30 @@ final class UITestTmuxBridge {
                     error: "unknown error"
                 )
 
-                do {
-                    let stdout = try await TmuxCommandRunner.shared.run(request.args, source: "local")
-                    if request.refreshInventory ?? true {
-                        await viewModel.fetchAll()
-                    }
-                    response = CommandResponse(id: request.id, ok: true, stdout: stdout, error: nil)
+                if let internalResponse = await handleInternalCommand(request) {
+                    response = internalResponse
+                } else {
+                    do {
+                        let stdout = try await TmuxCommandRunner.shared.run(request.args, source: "local")
+                        if request.refreshInventory ?? true {
+                            await viewModel.fetchAll()
+                        }
+                        response = CommandResponse(id: request.id, ok: true, stdout: stdout, error: nil)
 
-                    if let session = sessionNameFromNewSessionArgs(request.args) {
-                        createdSessions.insert(session)
+                        if let session = sessionNameFromNewSessionArgs(request.args) {
+                            createdSessions.insert(session)
+                        }
+                        if let killedSession = sessionNameFromKillSessionArgs(request.args) {
+                            createdSessions.remove(killedSession)
+                        }
+                    } catch {
+                        response = CommandResponse(
+                            id: request.id,
+                            ok: false,
+                            stdout: "",
+                            error: error.localizedDescription
+                        )
                     }
-                    if let killedSession = sessionNameFromKillSessionArgs(request.args) {
-                        createdSessions.remove(killedSession)
-                    }
-                } catch {
-                    response = CommandResponse(
-                        id: request.id,
-                        ok: false,
-                        stdout: "",
-                        error: error.localizedDescription
-                    )
                 }
 
                 if let payload = try? encoder.encode(response) {
@@ -242,6 +266,122 @@ final class UITestTmuxBridge {
     private var commandResponseURL: URL? {
         guard let path = env["AGTMUX_UITEST_TMUX_COMMAND_RESULT_PATH"], !path.isEmpty else { return nil }
         return URL(fileURLWithPath: path)
+    }
+
+    private func handleInternalCommand(_ request: CommandRequest) async -> CommandResponse? {
+        guard request.args.first == activeTerminalTargetCommand else { return nil }
+
+        do {
+            let snapshot = try await activeTerminalTargetSnapshot()
+            let data = try JSONEncoder().encode(snapshot)
+            let stdout = String(decoding: data, as: UTF8.self)
+            return CommandResponse(id: request.id, ok: true, stdout: stdout, error: nil)
+        } catch {
+            return CommandResponse(
+                id: request.id,
+                ok: false,
+                stdout: "",
+                error: error.localizedDescription
+            )
+        }
+    }
+
+    private func activeTerminalTargetSnapshot() async throws -> ActiveTerminalTargetSnapshot {
+        guard let workbench = workbenchStoreV2.activeWorkbench else {
+            throw NSError(
+                domain: "UITestTmuxBridge",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "No active workbench"]
+            )
+        }
+
+        let selection = workbenchStoreV2.activePaneSelection(
+            panes: viewModel.panes,
+            hostsConfig: viewModel.hostsConfig
+        )
+
+        guard let selection else {
+            throw NSError(
+                domain: "UITestTmuxBridge",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "Canonical active terminal target is unresolved"]
+            )
+        }
+
+        guard let terminalTile = workbench.tiles.first(where: { $0.id == selection.tileID }) else {
+            throw NSError(
+                domain: "UITestTmuxBridge",
+                code: 3,
+                userInfo: [NSLocalizedDescriptionKey: "Selected terminal tile is missing from active workbench"]
+            )
+        }
+        guard case .terminal(let sessionRef) = terminalTile.kind else {
+            throw NSError(
+                domain: "UITestTmuxBridge",
+                code: 4,
+                userInfo: [NSLocalizedDescriptionKey: "Selected tile is not a terminal tile"]
+            )
+        }
+
+        guard let activePaneContext = workbenchStoreV2.activePaneContext,
+              activePaneContext.workbenchID == selection.workbenchID else {
+            throw NSError(
+                domain: "UITestTmuxBridge",
+                code: 5,
+                userInfo: [NSLocalizedDescriptionKey: "Canonical active pane context is missing"]
+            )
+        }
+
+        let attachPlan = try WorkbenchV2TerminalAttachResolver.resolve(
+            sessionRef: sessionRef,
+            activePaneRef: activePaneContext.activePaneRef,
+            hostsConfig: viewModel.hostsConfig,
+            env: env
+        ).get()
+
+        guard let selectedPaneInventoryID = selection.paneInventoryID else {
+            throw NSError(
+                domain: "UITestTmuxBridge",
+                code: 6,
+                userInfo: [NSLocalizedDescriptionKey: "Canonical active pane did not resolve to live inventory"]
+            )
+        }
+
+        guard let renderedState = GhosttyTerminalSurfaceRegistry.shared.renderedState(forTileID: terminalTile.id) else {
+            throw NSError(
+                domain: "UITestTmuxBridge",
+                code: 7,
+                userInfo: [NSLocalizedDescriptionKey: "Rendered Ghostty surface state is missing"]
+            )
+        }
+        guard let renderedClientTTY = renderedState.clientTTY else {
+            throw NSError(
+                domain: "UITestTmuxBridge",
+                code: 8,
+                userInfo: [NSLocalizedDescriptionKey: "Rendered Ghostty surface client tty is missing"]
+            )
+        }
+
+        let renderedClientTarget = try await WorkbenchV2TerminalNavigationResolver.liveTarget(
+            sessionRef: sessionRef,
+            renderedClientTTY: renderedClientTTY,
+            hostsConfig: viewModel.hostsConfig
+        )
+
+        return ActiveTerminalTargetSnapshot(
+            workbenchID: selection.workbenchID.uuidString,
+            tileID: terminalTile.id.uuidString,
+            sessionName: sessionRef.sessionName,
+            windowID: selection.windowID,
+            paneID: selection.paneID,
+            selectedPaneInventoryID: selectedPaneInventoryID,
+            attachCommand: attachPlan.command,
+            renderedAttachCommand: renderedState.attachCommand,
+            renderedClientTTY: renderedClientTTY,
+            renderedClientWindowID: renderedClientTarget.windowID,
+            renderedClientPaneID: renderedClientTarget.paneID,
+            renderedSurfaceGeneration: renderedState.generation
+        )
     }
 
     private func writeBootstrapResult(_ result: BootstrapResult) {

@@ -94,6 +94,52 @@ final class AgtmuxDaemonXPCClientTests: XCTestCase {
         XCTAssertEqual(proxy.lastFetchUIChangesV2Limit, 17)
     }
 
+    func testFetchUIBootstrapV2RejectsMixedEraSessionIDPayloadFromInjectedXPCProxy() async throws {
+        let mixedEraJSON = #"""
+        {
+          "epoch": 1,
+          "snapshot_seq": 1,
+          "generated_at": "2026-03-07T16:57:36Z",
+          "replay_cursor": { "epoch": 1, "seq": 2 },
+          "sessions": [],
+          "panes": [
+            {
+              "pane_id": "%1",
+              "session_id": "$1",
+              "session_name": "vm agtmux",
+              "session_key": "vm agtmux",
+              "window_id": "@1",
+              "pane_instance_id": {
+                "pane_id": "%1",
+                "generation": 1,
+                "birth_ts": "2026-03-07T16:45:00Z"
+              },
+              "presence": "managed",
+              "activity_state": "running",
+              "provider": "codex",
+              "updated_at": "2026-03-07T16:46:08Z"
+            }
+          ]
+        }
+        """#
+        let proxy = ProxyStub()
+        proxy.bootstrapReply = (Data(mixedEraJSON.utf8), nil)
+
+        let client = AgtmuxDaemonXPCClient(
+            serviceName: "test.agtmux.xpc",
+            proxyProviderOverride: { _ in proxy }
+        )
+
+        do {
+            _ = try await client.fetchUIBootstrapV2()
+            XCTFail("mixed-era bootstrap payload must fail loudly across the XPC client seam")
+        } catch let XPCClientError.decode(text) {
+            XCTAssertTrue(text.contains("session_id"))
+        } catch {
+            XCTFail("unexpected error: \(error)")
+        }
+    }
+
     func testFetchUIHealthV1DecodesHealthPayloadFromInjectedXPCProxy() async throws {
         let expected = makeHealth(
             runtimeStatus: .degraded,
@@ -180,7 +226,13 @@ final class AgtmuxDaemonXPCClientTests: XCTestCase {
                     conversationTitle: "Review sync-v2",
                     currentCmd: "node",
                     updatedAt: generatedAt,
-                    ageSecs: 0
+                    ageSecs: 0,
+                    metadataSessionKey: "dev",
+                    paneInstanceID: AgtmuxSyncV2PaneInstanceID(
+                        paneId: "%41",
+                        generation: 2,
+                        birthTs: Date(timeIntervalSince1970: 1_778_825_000)
+                    )
                 )
             ],
             sessions: [

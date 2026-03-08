@@ -345,7 +345,7 @@ struct WindowBlockView: View {
 
     @State private var isExpanded: Bool = true
     @EnvironmentObject private var viewModel: AppViewModel
-    @Environment(WorkspaceStore.self) private var workspaceStore
+    @Environment(WorkbenchStoreV2.self) private var workbenchStoreV2
 
     private var rowID: String { "window:\(window.id)" }
     private var isHighlighted: Bool { highlightedRowID == rowID }
@@ -416,7 +416,8 @@ struct WindowBlockView: View {
             .contextMenu {
                 let allPinned = viewModel.areAllPanesPinned(in: window)
                 Button {
-                    Task { await workspaceStore.placeWindow(window) }
+                    guard let pane = window.panes.first else { return }
+                    workbenchStoreV2.openTerminal(for: pane, hostsConfig: viewModel.hostsConfig)
                 } label: {
                     Label("Open in Workspace", systemImage: "rectangle.3.group")
                 }
@@ -540,15 +541,7 @@ struct WindowBlockView: View {
     }
 
     private func isPaneSelected(_ pane: AgtmuxPane) -> Bool {
-        if selectedPaneId == pane.id {
-            return true
-        }
-        guard let selected = viewModel.selectedPane else {
-            return false
-        }
-        return selected.source == pane.source
-            && selected.windowId == pane.windowId
-            && selected.paneId == pane.paneId
+        selectedPaneId == pane.id
     }
 }
 
@@ -562,7 +555,7 @@ struct PaneRowView: View {
     @Binding var highlightedRowID: String?
 
     @EnvironmentObject private var viewModel: AppViewModel
-    @Environment(WorkspaceStore.self) private var workspaceStore
+    @Environment(WorkbenchStoreV2.self) private var workbenchStoreV2
 
     private var rowID: String { "pane:\(pane.id)" }
     private var isHighlighted: Bool { highlightedRowID == rowID }
@@ -618,8 +611,7 @@ struct PaneRowView: View {
         .contextMenu {
             let isPinned = viewModel.isPanePinned(pane)
             Button {
-                viewModel.selectPane(pane)
-                Task { await workspaceStore.placePane(pane) }
+                workbenchStoreV2.openTerminal(for: pane, hostsConfig: viewModel.hostsConfig)
             } label: {
                 Label("Open", systemImage: "arrow.up.right.square")
             }
@@ -1223,9 +1215,16 @@ private extension Date {
 /// Scrollable pane list, grouped by source → session → window → pane.
 struct SidebarView: View {
     @EnvironmentObject var viewModel: AppViewModel
-    @Environment(WorkspaceStore.self) private var workspaceStore
+    @Environment(WorkbenchStoreV2.self) private var workbenchStoreV2
     @State private var highlightedRowID: String?
     @State private var draggedSession: DraggedSession?
+
+    private var selectedPaneID: String? {
+        workbenchStoreV2.activePaneSelection(
+            panes: viewModel.panes,
+            hostsConfig: viewModel.hostsConfig
+        )?.paneInventoryID
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1257,12 +1256,14 @@ struct SidebarView: View {
                                 ForEach(group.sessions) { session in
                                     SessionBlockView(
                                         session: session,
-                                        selectedPaneId: viewModel.selectedPane?.id,
+                                        selectedPaneId: selectedPaneID,
                                         highlightedRowID: $highlightedRowID,
                                         draggedSession: $draggedSession,
-                                        onSelect: { pane, window in
-                                            viewModel.selectPane(pane)
-                                            Task { await workspaceStore.placeWindow(window, preferredPaneID: pane.paneId) }
+                                        onSelect: { pane, _ in
+                                            workbenchStoreV2.openTerminal(
+                                                for: pane,
+                                                hostsConfig: viewModel.hostsConfig
+                                            )
                                         }
                                     )
                                 }
@@ -1274,7 +1275,7 @@ struct SidebarView: View {
                     .onAppear {
                         scrollToSelectedPane(with: proxy, animated: false)
                     }
-                    .onChange(of: viewModel.selectedPane?.id) { _, _ in
+                    .onChange(of: selectedPaneID) { _, _ in
                         scrollToSelectedPane(with: proxy, animated: true)
                     }
                 }
@@ -1287,8 +1288,8 @@ struct SidebarView: View {
     }
 
     private func scrollToSelectedPane(with proxy: ScrollViewProxy, animated: Bool) {
-        guard let selectedPane = viewModel.selectedPane else { return }
-        let targetID = paneScrollRowID(selectedPane)
+        guard let selectedPaneID else { return }
+        let targetID = "pane:\(selectedPaneID)"
         DispatchQueue.main.async {
             if animated {
                 withAnimation(.easeInOut(duration: 0.18)) {

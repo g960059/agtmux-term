@@ -120,13 +120,20 @@ Responsible for:
 
 - receiving explicit open requests from terminals
 - preserving source / cwd context
-- opening browser/document tiles in the active Workbench
+- opening browser/document tiles in the emitting terminal's Workbench
 
 Primary modules:
 
 - `agt open`
 - terminal-scoped OSC transport
 - bridge decoder / dispatch layer
+
+Current implementation seam:
+
+- vendored Ghostty will surface the custom OSC carrier to the app by adding a typed custom-OSC `ghostty_action_s` case through the existing `action_cb`
+- `GhosttyApp.handleAction(...)` is the host ingress
+- `GhosttyTerminalSurfaceRegistry` provides surface-scoped routing to the emitting Workbench terminal tile
+- `WorkbenchStoreV2.dispatchBridgeRequest(...)` is the downstream open path once payload decode succeeds
 
 ## Domain Model
 
@@ -186,15 +193,27 @@ struct SessionRef {
     var lastSeenSessionID: String?
     var lastSeenRepoRoot: String?
 }
+
+struct ActivePaneRef {
+    var target: TargetRef
+    var sessionName: String
+    var windowID: String
+    var paneID: String
+    var paneInstanceID: AgtmuxSyncV2PaneInstanceID?
+}
 ```
 
 Key semantics:
 
 - `SessionRef = target + exact session name`
+- terminal tile identity is session-scoped; live pane selection is a separate runtime-only `ActivePaneRef`
+- canonical runtime selection state also carries the rendered tmux client binding plus split `desired` / `observed` pane refs; this reducer state is the only owner of pane focus truth
+- when `ActivePaneRef.paneInstanceID` is present, inventory reconciliation is fail-closed on exact-instance mismatch and does not fall back to pane location reuse
 - `TargetRef` is app-owned identity (`local` or configured remote host key)
 - `TargetRef` is not guessed from prompt text, `user@host`, or ad-hoc hostname parsing
 - `lastSeenSessionID` is a hint only
 - one `SessionRef` may appear in only one visible terminal tile in MVP
+- Workbench persistence stores layout plus session identity, not live pane focus
 - future directory tile must be additive to this model, not a redesign trigger
 
 ## Data Flows
@@ -218,7 +237,17 @@ Role split:
 
 - inventory decides what exists
 - metadata enriches what exists
+- `session_key` is opaque overlay identity, not visible tmux `session_name`
+- bootstrap merge correlates metadata rows to visible inventory by `source + session_name + window_id + pane_id`; it must not reject a valid row only because `session_key != session_name`
+- change replay correlates by bootstrap-learned exact identity (`session_key + pane_instance_id`) and must not fall back to `sessionName == session_key`
+- local managed rows that lack `session_name` or `window_id` are ingress-invalid and dropped before merge
+- metadata overlay cache must prefer exact pane instance identity (`source + session_key + pane_instance_id`) and must not silently normalize invalid local managed rows by pane location
+- missing exact-identity fields on the sync-v2/XPC path are explicit protocol failures, not normalization paths
+- legacy identity field `session_id` in local sync-v2 pane payload is also an explicit protocol failure; the app rejects the whole local metadata payload instead of partially accepting mixed-era rows
+- missing exact-identity fields or orphan managed rows cause the app to clear stale overlay cache for the active daemon epoch and publish inventory-only rows rather than surface guessed managed/provider/activity state
 - failure in metadata must not invent or delete tmux objects
+- pane-selection UI/E2E coverage must not stub away the Ghostty terminal surface when the contract under test includes visible main-panel retargeting
+- the render-path oracle for same-session pane retarget must include the focused tile's exact tmux client tty plus rendered client pane/window truth, not store intent alone
 
 ### Flow-002: Health Observability
 
@@ -233,14 +262,27 @@ LocalHealthClient
 Health is annotation only.
 It does not alter tmux object existence.
 
+Local health-strip contract:
+
+- local tmux inventory remains the source of truth for pane/session existence
+- a local inventory failure marks `offlineHosts` for `local`, but does not clear the last published `ui.health.v1` snapshot
+- while local inventory is offline, the app keeps polling `ui.health.v1` and replaces the strip with newer health snapshots when available
+- if no health snapshot has ever been published, the health strip stays absent instead of synthesizing stale or guessed health UI
+
 ### Flow-003: Real Session Attach
 
 ```
-User selects session
-  → WorkbenchStore places SessionRef in terminal tile
-  → terminal host builds attach command
-  → GhosttyApp.newSurface(command: "tmux attach-session -t <exact-session>")
-  → GhosttyTerminalView attaches surface
+User selects session or pane row
+  → Workbench intent dispatcher emits `selectPane`
+  → Workbench active-pane reducer updates desired `ActivePaneRef`
+  → WorkbenchStore reveals existing terminal tile by session identity or creates one on first open
+  → exact pane/window selection is applied to the visible session tile without changing tile identity
+  → initial open uses direct attach to the real tmux session
+  → terminal surface startup emits a host-owned `bind_client` payload over `OSC 9911` so the app can bind that tile to one exact tmux client tty
+  → same-session retarget uses exact-client tmux navigation (`switch-client -c <tty> -t <pane>`) against that rendered client, not surface recreation
+  → terminal-originated pane changes are observed from the rendered surface's exact tmux client state and committed as observed `ActivePaneRef`
+  → reducer resolves desired vs observed state without letting stale observation overwrite a newer desired selection
+  → sidebar highlight is projected from current inventory + reducer-resolved active pane, not from an independent copied pane snapshot
 ```
 
 Important behavior:
@@ -248,15 +290,23 @@ Important behavior:
 - terminal tile attaches to the real tmux session directly
 - no hidden linked session is created in the normal path
 - the terminal tile must preserve normal terminal interaction
+- same-session pane changes are live navigation on the one visible session tile, not hidden clone creation
+- same-session pane navigation and reverse sync must still work when the visible sidebar rows are inventory-only (for example when local metadata overlay is absent or degraded)
+- pane-selection proof is incomplete unless four oracles agree:
+  - exact tmux client pane/window for the rendered surface
+  - canonical `ActivePaneRef`
+  - sidebar selected-row marker
+  - rendered Ghostty surface attach state for the visible tile
+- reverse-sync proof must drive pane changes on the rendered client itself or by exact-client tty, not by mutating an unrelated tmux control client
 
 ### Flow-004: CLI Open Bridge
 
 ```
 User or agent runs `agt open <url-or-file>` inside terminal tile
   → command resolves cwd + source context
-  → command emits custom OSC payload
+  → command emits `OSC 9911` UTF-8 JSON payload
   → app bridge receives payload
-  → active Workbench opens browser/document tile
+  → emitting terminal's Workbench opens browser/document tile
 ```
 
 Why this architecture:
@@ -306,6 +356,7 @@ Broken refs are not auto-rebound.
 - carries source/cwd context
 - bridges shell actions to app-level Workbench composition
 - is driven by explicit terminal-originated OSC payloads, not by remote shells calling a local app socket directly
+- current vendored GhosttyKit must expose that custom OSC carrier to the host app by extending the existing `action_cb` typed-action surface; piggybacking on unrelated existing actions is not the mainline architecture
 
 ## Key Architectural Decisions
 
@@ -317,6 +368,7 @@ Broken refs are not auto-rebound.
 | ADR-004 | Workbench は app-owned saved layout とする | tmux state と layout state を分離するため |
 | ADR-005 | CLI bridge は terminal-scoped custom OSC を第一経路にする | local/remote をまたいで explicit に扱えるため |
 | ADR-006 | hidden linked-session を normal product path から外す | tmux power user の mental model と整合させるため |
+| ADR-007 | active pane selection は one visible session tile + canonical reducer で扱う | sidebar state / workbench state / live tmux state の split-brain を防ぐため |
 
 ## Deprecated Mainline Direction
 

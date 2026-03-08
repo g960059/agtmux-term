@@ -171,6 +171,8 @@ package struct AgtmuxPane: Identifiable, Codable, Equatable, Sendable {
     package let currentCmd: String?     // running process name
     package let updatedAt: Date?        // last state update from daemon
     package let ageSecs: Int?           // seconds since updatedAt
+    package let metadataSessionKey: String?
+    package let paneInstanceID: AgtmuxSyncV2PaneInstanceID?
 
     /// Memberwise init.
     package init(source: String,
@@ -189,7 +191,9 @@ package struct AgtmuxPane: Identifiable, Codable, Equatable, Sendable {
                  gitBranch: String? = nil,
                  currentCmd: String? = nil,
                  updatedAt: Date? = nil,
-                 ageSecs: Int? = nil) {
+                 ageSecs: Int? = nil,
+                 metadataSessionKey: String? = nil,
+                 paneInstanceID: AgtmuxSyncV2PaneInstanceID? = nil) {
         self.source            = source
         self.paneId            = paneId
         self.sessionName       = sessionName
@@ -207,6 +211,8 @@ package struct AgtmuxPane: Identifiable, Codable, Equatable, Sendable {
         self.currentCmd        = currentCmd
         self.updatedAt         = updatedAt
         self.ageSecs           = ageSecs
+        self.metadataSessionKey = metadataSessionKey
+        self.paneInstanceID     = paneInstanceID
     }
 
     // MARK: Post-MVP stubs
@@ -262,7 +268,9 @@ extension AgtmuxPane {
                    gitBranch: gitBranch,
                    currentCmd: currentCmd,
                    updatedAt: updatedAt,
-                   ageSecs: ageSecs)
+                   ageSecs: ageSecs,
+                   metadataSessionKey: metadataSessionKey,
+                   paneInstanceID: paneInstanceID)
     }
 
     /// Returns a copy with a different session name (UI/session-group normalization).
@@ -283,7 +291,9 @@ extension AgtmuxPane {
                    gitBranch: gitBranch,
                    currentCmd: currentCmd,
                    updatedAt: updatedAt,
-                   ageSecs: ageSecs)
+                   ageSecs: ageSecs,
+                   metadataSessionKey: metadataSessionKey,
+                   paneInstanceID: paneInstanceID)
     }
 }
 
