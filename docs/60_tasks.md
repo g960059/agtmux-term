@@ -10,6 +10,48 @@ Commit closeout is clear; next implementation proceeds on the new Workbench path
 
 ## Active / Next
 
+### T-109 — Terminal-originated tmux session-switch reverse sync
+- **Status**: IN_PROGRESS
+- **Priority**: P0
+- **Depends**: T-108
+- **Owner**: Orchestrator (direct implementation)
+- **Progress**:
+  - fresh March 8, 2026 user evidence reopens terminal reverse-sync at the session layer:
+    - when the main terminal changes tmux session from inside the rendered client (for example via `repo` from `~/.config/zsh`), the sidebar remains pinned to the old session
+    - the visible terminal continues to run on the new tmux session, so the app is now stale relative to rendered-client truth
+  - current product root cause is narrower than metadata or same-session pane sync:
+    - `WorkbenchV2TerminalNavigationResolver.liveTarget(sessionRef:renderedClientTTY:...)` filters `list-clients` by both `client_tty` and the tile's stored `sessionRef.sessionName`
+    - once the rendered tmux client switches to another session, observation fails as `renderedClientUnavailable` instead of reporting the new session
+    - `WorkbenchStoreV2.syncTerminalNavigation(...)` only updates window/pane on the existing stored session and has no path to rebind the tile's `SessionRef` from observed rendered-client truth
+  - clean-break implementation direction:
+    - rendered-client observation becomes authoritative for cross-session switch on the focused visible tile
+    - the store gets an explicit observed-session rebind path that updates the tile's `SessionRef` and canonical active selection in place while preserving surface identity
+    - duplicate-session collision on an observed session rebind must fail loudly instead of silently freezing the sidebar on stale identity
+  - TDD order:
+    - add failing store-level regression for rendered-client session switch rebasing the tile identity and active selection
+    - add failing UI/E2E proof that switches the rendered tmux client to another session and expects sidebar/session highlight to follow
+    - then land product code and rerun focused SPM + targeted UI verification
+  - current implementation progress:
+    - `WorkbenchStoreV2` now has an observed-session rebind path for rendered-client tmux session switches
+    - rendered-client observation no longer filters `list-clients` by the tile's stored `sessionRef.sessionName`; it now observes the exact `client_tty` first and rebases session identity from that truth
+    - same-surface cross-session rebases preserve rendered surface generation and client tty in `GhosttyTerminalSurfaceRegistry`
+    - focused store/runtime regressions are green:
+      - `testTerminalOriginatedSessionSwitchRebindsVisibleTileIdentityAndActiveSelection`
+      - `testTerminalOriginatedSessionSwitchFailsLoudlyOnDuplicateVisibleDestinationSession`
+      - `swift test -q --filter WorkbenchStoreV2Tests`
+      - `swift test -q --filter GhosttyTerminalSurfaceRegistryTests`
+      - `swift test -q --filter WorkbenchV2TerminalAttachTests`
+      - `swift build`
+    - targeted real-surface UI proof exists, but the latest March 8, 2026 arm64 rerun did not execute because XCTest again failed before test start with `Timed out while enabling automation mode.`
+- **Description**:
+  - Make terminal-originated tmux session switches authoritative so the visible tile and sidebar follow the rendered client's actual session instead of freezing on the session that was originally attached.
+- **Acceptance Criteria**:
+  - [ ] terminal-originated tmux client session switch on the rendered visible tile updates sidebar session/pane highlight to the observed session
+  - [ ] the current visible tile rebases its `SessionRef` in place to the observed session when no duplicate visible owner exists
+  - [ ] the rebased tile preserves one Ghostty surface; session-switch reverse sync must not recreate a hidden clone or second visible tile
+  - [ ] if the observed destination session is already owned by another visible tile, the app surfaces an explicit collision instead of silently keeping stale sidebar state
+  - [ ] focused regression coverage proves rendered-client truth, tile identity, and sidebar selection all agree after a terminal-originated session switch
+
 ### T-108 — Active-pane single-source-of-truth and pane-instance identity recovery
 - **Status**: DONE
 - **Priority**: P0

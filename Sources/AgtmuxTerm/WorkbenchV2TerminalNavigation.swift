@@ -65,11 +65,11 @@ enum WorkbenchV2TerminalNavigationResolver {
     }
 
     static func liveTarget(
-        sessionRef: SessionRef,
         renderedClientTTY: String,
+        target: TargetRef,
         hostsConfig: HostsConfig
     ) async throws -> WorkbenchV2TerminalLiveTarget {
-        let source = try tmuxSource(for: sessionRef.target, hostsConfig: hostsConfig)
+        let source = try tmuxSource(for: target, hostsConfig: hostsConfig)
         let output = try await TmuxCommandRunner.shared.run(
             [
                 "list-clients",
@@ -79,7 +79,6 @@ enum WorkbenchV2TerminalNavigationResolver {
         )
         return try parseLiveTarget(
             output: output,
-            expectedSessionName: sessionRef.sessionName,
             expectedClientTTY: renderedClientTTY
         )
     }
@@ -108,14 +107,12 @@ enum WorkbenchV2TerminalNavigationResolver {
 
     static func parseLiveTarget(
         output: String,
-        expectedSessionName: String,
         expectedClientTTY: String
     ) throws -> WorkbenchV2TerminalLiveTarget {
         for line in output.split(separator: "\n") {
             let fields = line.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
             guard fields.count == 4 else { continue }
             guard fields[0] == expectedClientTTY else { continue }
-            guard fields[1] == expectedSessionName else { continue }
             return WorkbenchV2TerminalLiveTarget(
                 sessionName: fields[1],
                 windowID: fields[2],
@@ -124,7 +121,7 @@ enum WorkbenchV2TerminalNavigationResolver {
         }
 
         throw WorkbenchV2TerminalNavigationError.renderedClientUnavailable(
-            sessionName: expectedSessionName,
+            sessionName: "",
             clientTTY: expectedClientTTY,
             output: output
         )

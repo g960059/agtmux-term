@@ -363,8 +363,8 @@ final class UITestTmuxBridge {
         }
 
         let renderedClientTarget = try await WorkbenchV2TerminalNavigationResolver.liveTarget(
-            sessionRef: sessionRef,
             renderedClientTTY: renderedClientTTY,
+            target: sessionRef.target,
             hostsConfig: viewModel.hostsConfig
         )
 

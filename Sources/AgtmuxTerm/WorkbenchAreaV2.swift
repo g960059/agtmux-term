@@ -287,7 +287,13 @@ private struct WorkbenchTerminalTileViewV2: View {
                 hostsConfig: hostsConfig
             )
         }
-        .onChange(of: sessionRef) { _, _ in
+        .onChange(of: sessionRef) { oldValue, newValue in
+            if shouldPreserveFrozenAttachPlan(
+                oldValue: oldValue,
+                newValue: newValue
+            ) {
+                return
+            }
             frozenAttachPlan = nil
         }
         .task(id: attachPlanFreezeIdentity) {
@@ -610,8 +616,8 @@ private struct WorkbenchTerminalTileViewV2: View {
                 let liveTarget: WorkbenchV2TerminalLiveTarget
                 do {
                     liveTarget = try await WorkbenchV2TerminalNavigationResolver.liveTarget(
-                        sessionRef: sessionRef,
                         renderedClientTTY: renderedClientTTY,
+                        target: sessionRef.target,
                         hostsConfig: hostsConfig
                     )
                 } catch let error as WorkbenchV2TerminalNavigationError {
@@ -624,6 +630,18 @@ private struct WorkbenchTerminalTileViewV2: View {
                     }
                 }
                 guard navigationTaskSnapshotIsCurrent else { return }
+                if liveTarget.sessionName != sessionRef.sessionName {
+                    let didChange = try store.syncTerminalObservation(
+                        tileID: tile.id,
+                        observedSessionName: liveTarget.sessionName,
+                        preferredWindowID: liveTarget.windowID,
+                        preferredPaneID: liveTarget.paneID,
+                        paneInstanceID: livePaneInstanceID(for: liveTarget)
+                    )
+                    navigationSyncErrorMessage = nil
+                    try await Task.sleep(for: .milliseconds(didChange ? 100 : 400))
+                    continue
+                }
                 if WorkbenchV2NavigationSyncResolver.shouldApplyNavigationIntent(
                     desiredPaneRef: desiredPaneRef,
                     observedPaneRef: liveObservedPaneRef(from: liveTarget),
@@ -690,6 +708,18 @@ private struct WorkbenchTerminalTileViewV2: View {
         guard terminalState == .ready else { return }
         guard case .success(let plan) = liveAttachResolution else { return }
         frozenAttachPlan = plan
+    }
+
+    @MainActor
+    private func shouldPreserveFrozenAttachPlan(
+        oldValue: SessionRef,
+        newValue: SessionRef
+    ) -> Bool {
+        guard oldValue.target == newValue.target else { return false }
+        guard oldValue.sessionName != newValue.sessionName else { return false }
+        guard frozenAttachPlan != nil else { return false }
+        guard terminalState == .ready else { return false }
+        return GhosttyTerminalSurfaceRegistry.shared.renderedState(forTileID: tile.id)?.clientTTY != nil
     }
 
     private var selectionSource: String {

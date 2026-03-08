@@ -207,6 +207,7 @@ Key semantics:
 
 - `SessionRef = target + exact session name`
 - terminal tile identity is session-scoped; live pane selection is a separate runtime-only `ActivePaneRef`
+- terminal-originated cross-session switch is observation-authoritative: when the rendered tmux client moves to another session, the current tile's `SessionRef` must rebase to that observed session unless doing so would collide with another visible tile
 - canonical runtime selection state also carries the rendered tmux client binding plus split `desired` / `observed` pane refs; this reducer state is the only owner of pane focus truth
 - when `ActivePaneRef.paneInstanceID` is present, inventory reconciliation is fail-closed on exact-instance mismatch and does not fall back to pane location reuse
 - `TargetRef` is app-owned identity (`local` or configured remote host key)
@@ -281,6 +282,7 @@ User selects session or pane row
   → terminal surface startup emits a host-owned `bind_client` payload over `OSC 9911` so the app can bind that tile to one exact tmux client tty
   → same-session retarget uses exact-client tmux navigation (`switch-client -c <tty> -t <pane>`) against that rendered client, not surface recreation
   → terminal-originated pane changes are observed from the rendered surface's exact tmux client state and committed as observed `ActivePaneRef`
+  → terminal-originated session switches are also observed from that exact tmux client state and committed by rebasing the visible tile's `SessionRef` plus active selection to the observed session
   → reducer resolves desired vs observed state without letting stale observation overwrite a newer desired selection
   → sidebar highlight is projected from current inventory + reducer-resolved active pane, not from an independent copied pane snapshot
 ```
@@ -291,6 +293,8 @@ Important behavior:
 - no hidden linked session is created in the normal path
 - the terminal tile must preserve normal terminal interaction
 - same-session pane changes are live navigation on the one visible session tile, not hidden clone creation
+- terminal-originated cross-session switch is also live navigation on that one visible session tile; the app must not leave the sidebar pinned to the stale pre-switch session
+- if a terminal-originated cross-session switch would collide with another visible tile already owning the destination session, the app must fail loudly instead of silently inventing dual ownership
 - same-session pane navigation and reverse sync must still work when the visible sidebar rows are inventory-only (for example when local metadata overlay is absent or degraded)
 - pane-selection proof is incomplete unless four oracles agree:
   - exact tmux client pane/window for the rendered surface

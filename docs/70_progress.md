@@ -13,6 +13,38 @@ Historical progress detail lives in `docs/archive/progress/2026-02-28_to_2026-03
 
 ## Recent Entries
 
+## 2026-03-08 — T-109 started: rendered-client tmux session switch is not yet reflected in sidebar
+
+### 事象
+- after commit/push of the V2 mainline, fresh live user evidence on Sunday, March 8, 2026 exposed a new reverse-sync gap:
+  - when the main terminal changes tmux session from inside the rendered client (for example via `repo` in `~/.config/zsh`), the sidebar remains on the old session
+  - this is not the earlier same-session pane retarget bug; the rendered tmux client itself has moved to another session while the app still projects the original `SessionRef`
+
+### 実施内容
+- inspected the current render-path observation flow before code:
+  - `WorkbenchV2TerminalNavigationResolver.liveTarget(sessionRef:renderedClientTTY:...)` currently filters `list-clients` by both `client_tty` and stored `sessionRef.sessionName`
+  - once the rendered client switches sessions, that observation path fails as `renderedClientUnavailable`
+  - `WorkbenchStoreV2.syncTerminalNavigation(...)` only updates pane/window on the already stored session and cannot rebind tile identity to a newly observed session
+- updated spec / architecture / workbench design / tracking docs first:
+  - rendered-client cross-session switch is now explicit MVP contract
+  - destination-session collision is defined as fail-loudly, not silent stale-sidebar fallback
+- landed the app-side product slice:
+  - `WorkbenchStoreV2` now rebases the visible tile's `SessionRef` and canonical active selection from observed rendered-client session switches
+  - rendered-client observation now resolves by exact `client_tty` instead of stored session name
+  - `GhosttyTerminalSurfaceRegistry` preserves generation/client tty across in-place session rebases on the same surface
+- added and verified focused regressions:
+  - `WorkbenchStoreV2Tests.testTerminalOriginatedSessionSwitchRebindsVisibleTileIdentityAndActiveSelection`
+  - `WorkbenchStoreV2Tests.testTerminalOriginatedSessionSwitchFailsLoudlyOnDuplicateVisibleDestinationSession`
+  - `swift build`
+  - `swift test -q --filter WorkbenchStoreV2Tests`
+  - `swift test -q --filter GhosttyTerminalSurfaceRegistryTests`
+  - `swift test -q --filter WorkbenchV2TerminalAttachTests`
+
+### 結果
+- `T-109` is now the active product task.
+- app-side implementation is in place and focused SPM verification is green.
+- remaining closeout blocker is executed real-surface UI proof; the latest targeted arm64 rerun on March 8, 2026 failed before test execution with `Timed out while enabling automation mode.`
+
 ## 2026-03-07 — T-108 tracking reconciliation: final green is now the active source of truth
 
 ### 事象

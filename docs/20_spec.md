@@ -27,6 +27,7 @@
 | FR-021 | terminal tile は right click・主要 shortcut・tmux 操作感を app が上書きしない | [MVP] |
 | FR-022 | remote URL は指定どおりに開き、implicit localhost rewrite や implicit SSH tunnel は行わない | [MVP] |
 | FR-023 | active pane selection は runtime-only の canonical reducer state を single source of truth とし、`desired ActivePaneRef`、`observed ActivePaneRef`、rendered client binding (`client_tty`) を一体で扱う。sidebar click・duplicate reveal は desired 側、terminal-originated pane change・focused tile observation は observed 側を更新し、両者の解決は同じ reducer を通す。pane sync は local metadata overlay の有無に依存してはならず、inventory-only rows しか無いときでも same-session pane retarget と sidebar highlight は current inventory から解決されなければならない。copied pane snapshot、local view state、persisted layout hint を source of truth にしない | [MVP] |
+| FR-024 | terminal-originated tmux client session switch も rendered-client truth として扱う。visible terminal tile 上の tmux client が別 session へ移動したら、app はその exact `client_tty` 観測から session change を検知し、same surface / same tile のまま current tile の `SessionRef` と canonical active selection を observed session へ rebasing し、sidebar session / pane highlight を更新する。もし destination session を別 visible tile がすでに所有しているなら silent freeze や guessed merge を行わず explicit collision を surfacing する | [MVP] |
 
 ## Non-functional Requirements
 
@@ -63,6 +64,7 @@
 - active pane selection は copied pane snapshot ではなく canonical active-pane state として保持する
 - reducer は `desired` と `observed` の pane state を分離し、古い observed state が新しい desired selection を上書きしない
 - terminal 内で pane が変わった場合も、sidebar highlight は同じ active-pane state に追従する
+- terminal 内で tmux client が別 session へ移動した場合も、sidebar selection は rendered client truth に追従し、current tile の session identity は observed session へ rebasing される
 - Workbench persistence は terminal session identity を保存するが、live pane focus は autosave しない
 - same-session multi-view は MVP では不採用
 

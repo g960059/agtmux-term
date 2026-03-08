@@ -129,7 +129,6 @@ final class WorkbenchV2TerminalAttachTests: XCTestCase {
 
         let target = try WorkbenchV2TerminalNavigationResolver.parseLiveTarget(
             output: output,
-            expectedSessionName: "feature branch",
             expectedClientTTY: "/dev/ttys008"
         )
 

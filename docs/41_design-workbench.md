@@ -171,6 +171,8 @@ Rules:
 - same-session retarget keeps retrying on the currently rendered client until `list-clients` for that exact `client_tty` reports the requested pane/window
 - reverse sync must read the current pane/window from the rendered surface's exact tmux client (`list-clients` filtered by client tty), not from generic session-wide `list-panes` active flags
 - reverse-sync E2E must stimulate pane changes on that same rendered client tty; driving a separate control client is insufficient product evidence
+- reverse sync also owns terminal-originated session switches on that rendered client: if `list-clients` reports a different `session_name` for the bound `client_tty`, the visible tile must rebind its `SessionRef` in place and refresh sidebar selection from that observed session
+- if the observed destination session is already owned by another visible terminal tile, surface an explicit collision state; do not silently keep showing the stale old session in the sidebar
 
 Tradeoff:
 
@@ -188,6 +190,8 @@ Duplicate open behavior:
 - optional secondary action: `Move here`
 - if the open request names a different pane/window in the same session, update canonical active-pane state and apply that exact pane/window intent to the existing tile before returning
 - same-session pane/window retarget must preserve tile identity and must not persist pane/window selection as tile identity
+- if a terminal-originated session switch rebases one tile to a new session, that rebased `SessionRef` becomes the new duplicate-ownership key for future opens
+- terminal-originated session-switch collision with another visible tile is an explicit error path, not silent dual ownership
 
 This intentionally prevents same-session multi-view ambiguity from re-entering through another path.
 

@@ -2,8 +2,18 @@ import Foundation
 import Observation
 import AgtmuxTermCore
 
-enum WorkbenchStoreV2Error: Error, Equatable {
+enum WorkbenchStoreV2Error: Error, Equatable, LocalizedError {
     case invalidFixture(String)
+    case observedSessionCollision(target: TargetRef, sessionName: String)
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidFixture(let message):
+            return message
+        case .observedSessionCollision(let target, let sessionName):
+            return "Terminal session switch failed: \(target.label) session '\(sessionName)' is already visible in another tile"
+        }
+    }
 }
 
 enum WorkbenchStoreV2TerminalOpenResult: Equatable {
@@ -449,6 +459,28 @@ final class WorkbenchStoreV2 {
             || lhs.lastSeenRepoRoot != rhs.lastSeenRepoRoot
     }
 
+    private func rebindObservedTerminalTile(
+        tileID: UUID,
+        to observedRef: SessionRef,
+        inWorkbenchAt index: Int
+    ) -> Bool {
+        guard workbenches.indices.contains(index) else { return false }
+        guard let existingTile = workbenches[index].tiles.first(where: { $0.id == tileID }) else { return false }
+        guard case .terminal(let existingRef) = existingTile.kind else { return false }
+        guard existingRef != observedRef else { return false }
+
+        let updatedTile = WorkbenchTile(
+            id: tileID,
+            kind: .terminal(sessionRef: observedRef),
+            pinned: existingTile.pinned
+        )
+        guard let updatedRoot = workbenches[index].root.replacing(tileID: tileID, with: .tile(updatedTile)) else {
+            fatalError("WorkbenchStoreV2.rebindObservedTerminalTile: tile \(tileID) not found in tree")
+        }
+        workbenches[index].root = updatedRoot
+        return true
+    }
+
     private func focusTile(id: UUID, inWorkbenchAt index: Int) -> Bool {
         guard workbenches.indices.contains(index) else { return false }
         guard workbenches[index].root.tileIDs.contains(id) else { return false }
@@ -565,6 +597,82 @@ final class WorkbenchStoreV2 {
                 return true
             }
             return false
+        }
+        return false
+    }
+
+    @discardableResult
+    func syncTerminalObservation(
+        tileID: UUID,
+        observedSessionName: String,
+        preferredWindowID: String?,
+        preferredPaneID: String?,
+        paneInstanceID: AgtmuxSyncV2PaneInstanceID? = nil
+    ) throws -> Bool {
+        let normalizedSessionName = observedSessionName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedSessionName.isEmpty else { return false }
+
+        for index in workbenches.indices {
+            guard let existingTile = workbenches[index].tiles.first(where: { $0.id == tileID }) else { continue }
+            guard case .terminal(let existingRef) = existingTile.kind else { continue }
+
+            let observedRef = SessionRef(
+                target: existingRef.target,
+                sessionName: normalizedSessionName
+            )
+            let normalizedWindowID = Self.normalizedNavigationField(preferredWindowID)
+            let normalizedPaneID = Self.normalizedNavigationField(preferredPaneID)
+            let observedPaneRef = Self.activePaneRef(
+                target: observedRef.target,
+                sessionName: observedRef.sessionName,
+                windowID: normalizedWindowID,
+                paneID: normalizedPaneID,
+                paneInstanceID: paneInstanceID
+            )
+            let workbenchID = workbenches[index].id
+            let sessionChanged = existingRef.sessionName != observedRef.sessionName
+            var didChange = false
+
+            if sessionChanged {
+                if let collision = existingTerminalTile(for: observedRef),
+                   !(collision.workbenchIndex == index && collision.tile.id == tileID) {
+                    throw WorkbenchStoreV2Error.observedSessionCollision(
+                        target: observedRef.target,
+                        sessionName: observedRef.sessionName
+                    )
+                }
+
+                didChange = rebindObservedTerminalTile(
+                    tileID: tileID,
+                    to: observedRef,
+                    inWorkbenchAt: index
+                ) || didChange
+
+                let focusRequestNonce = activePaneRuntimeByWorkbenchID[workbenchID]?.focusRequestNonce ?? 0
+                let nextState = WorkbenchActivePaneRuntimeState(
+                    tileID: tileID,
+                    desiredPaneRef: nil,
+                    observedPaneRef: observedPaneRef,
+                    focusRequestNonce: focusRequestNonce,
+                    desiredMatchObservationCount: 0,
+                    desiredObservationConfirmationTarget: 0
+                )
+                if activePaneRuntimeByWorkbenchID[workbenchID] != nextState {
+                    activePaneRuntimeByWorkbenchID[workbenchID] = nextState
+                    didChange = true
+                }
+            } else {
+                didChange = syncObservedPaneRuntime(
+                    tileID: tileID,
+                    sessionRef: observedRef,
+                    observedPaneRef: observedPaneRef
+                ) || didChange
+            }
+
+            if didChange {
+                autosaveIfNeeded()
+            }
+            return didChange
         }
         return false
     }

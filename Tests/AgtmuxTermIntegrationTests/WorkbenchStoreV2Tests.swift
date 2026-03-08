@@ -521,6 +521,107 @@ final class WorkbenchStoreV2Tests: XCTestCase {
     }
 
     @MainActor
+    func testTerminalOriginatedSessionSwitchRebindsVisibleTileIdentityAndActiveSelection() throws {
+        let firstPane = AgtmuxPane(
+            source: "local",
+            paneId: "%1",
+            sessionName: "alpha",
+            windowId: "@1"
+        )
+        let secondPane = AgtmuxPane(
+            source: "local",
+            paneId: "%7",
+            sessionName: "beta",
+            windowId: "@3"
+        )
+        let store = WorkbenchStoreV2()
+
+        let result = store.openTerminal(for: firstPane, hostsConfig: .empty)
+        _ = try store.syncTerminalObservation(
+            tileID: result.tileID,
+            observedSessionName: firstPane.sessionName,
+            preferredWindowID: firstPane.windowId,
+            preferredPaneID: firstPane.paneId
+        )
+
+        let didRebind = try store.syncTerminalObservation(
+            tileID: result.tileID,
+            observedSessionName: secondPane.sessionName,
+            preferredWindowID: secondPane.windowId,
+            preferredPaneID: secondPane.paneId
+        )
+        let selection = store.activePaneSelection(
+            panes: [firstPane, secondPane],
+            hostsConfig: .empty
+        )
+
+        guard let focusedContext = store.focusedTerminalTileContext else {
+            return XCTFail("Expected focused terminal context after rendered-client session switch")
+        }
+        guard let activePaneContext = store.activePaneContext else {
+            return XCTFail("Expected active pane context after rendered-client session switch")
+        }
+
+        XCTAssertTrue(didRebind, "Observed session switch on the rendered client must rebind the tile identity")
+        XCTAssertEqual(focusedContext.tileID, result.tileID)
+        XCTAssertEqual(
+            focusedContext.sessionRef,
+            SessionRef(target: .local, sessionName: secondPane.sessionName),
+            "Rendered-client session switch must update the visible tile to the observed session"
+        )
+        XCTAssertEqual(selection?.sessionName, secondPane.sessionName)
+        XCTAssertEqual(selection?.paneID, secondPane.paneId)
+        XCTAssertEqual(selection?.paneInventoryID, secondPane.id)
+        XCTAssertEqual(activePaneContext.activePaneRef.sessionName, secondPane.sessionName)
+        XCTAssertEqual(activePaneContext.activePaneRef.paneID, secondPane.paneId)
+    }
+
+    @MainActor
+    func testTerminalOriginatedSessionSwitchFailsLoudlyOnDuplicateVisibleDestinationSession() throws {
+        let firstPane = AgtmuxPane(
+            source: "local",
+            paneId: "%1",
+            sessionName: "alpha",
+            windowId: "@1"
+        )
+        let secondPane = AgtmuxPane(
+            source: "local",
+            paneId: "%7",
+            sessionName: "beta",
+            windowId: "@3"
+        )
+        let store = WorkbenchStoreV2()
+
+        let firstResult = store.openTerminal(for: firstPane, hostsConfig: .empty)
+        _ = store.createWorkbench(title: "Second")
+        _ = store.openTerminal(for: secondPane, hostsConfig: .empty)
+        store.switchWorkbench(to: store.workbenches[0].id)
+
+        XCTAssertThrowsError(
+            try store.syncTerminalObservation(
+                tileID: firstResult.tileID,
+                observedSessionName: secondPane.sessionName,
+                preferredWindowID: secondPane.windowId,
+                preferredPaneID: secondPane.paneId
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? WorkbenchStoreV2Error,
+                .observedSessionCollision(
+                    target: .local,
+                    sessionName: secondPane.sessionName
+                )
+            )
+        }
+
+        XCTAssertEqual(
+            store.focusedTerminalTileContext?.sessionRef,
+            SessionRef(target: .local, sessionName: firstPane.sessionName),
+            "Collision must keep the original tile identity intact"
+        )
+    }
+
+    @MainActor
     func testSameSessionRetargetIncrementsFocusRestoreNonce() {
         let firstPane = AgtmuxPane(
             source: "local",

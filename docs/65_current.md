@@ -18,6 +18,13 @@
 - T-094 and T-095 review evidence now includes fresh executed UI proof from an unlocked desktop session
 - T-107 closeout is no longer trusted as product truth; live March 7, 2026 evidence reopened the area as `T-108`
 - T-108 is now closed on app-side code and focused verification; execution stayed in direct orchestrator mode for this slice
+- fresh March 8, 2026 live user evidence opens a new reverse-sync boundary at the session layer:
+  - when the rendered tmux client switches to another session from inside the main terminal, the sidebar remains on the old session
+  - current product code still treats `sessionRef.sessionName` as an observation filter instead of allowing rendered-client session rebasing
+- current March 8, 2026 implementation slice has already landed the app-side fix:
+  - rendered-client observation is now keyed by exact `client_tty`, not by stored `sessionRef.sessionName`
+  - store-side session rebasing and duplicate-collision failure path are in place
+  - remaining closeout blocker is executed UI proof, not another design gap
 - fresh live tmux inspection proved the durable product oracle is exact rendered-client truth, not attach-command intent alone
 - vendor Ghostty forwards only `OSC 9911` into the embedded host action seam, and the app's rendered-client binding now uses that supported path
 - fresh current-code rerun closed the last metadata-enabled pane-sync red:
@@ -41,11 +48,13 @@
 - `session_key` is now treated as opaque overlay identity, not as a visible tmux session alias
 - same-session pane selection must reuse the existing session tile and navigate it to the requested pane/window without reviving linked-session behavior
 - same-session pane selection and terminal-originated pane changes must converge through one reducer-owned runtime pane state with desired/observed separation
+- terminal-originated cross-session switch on the rendered tmux client is also observation-authoritative and must rebase the visible tile's `SessionRef` plus sidebar selection to the observed session
 - pane-selection proof is not trusted unless it exercises a real Ghostty surface and checks rendered attach state, not just store/sidebar/tmux intent
 - pane-selection truth must now be exact-client scoped: the visible terminal tile is bound to one rendered tmux client tty, and reverse sync / E2E proof must use that client's pane/window rather than session-wide active flags
 - rendered-client binding now rides the structured `OSC 9911` host bridge rather than a private `OSC 9912` path
 - initial attach and same-session retarget use different desired-pane confirmation policies; same-session retarget from an already observed rendered client releases desired state after the first matching observation
 - same-session pane/window retarget must preserve the existing Ghostty surface and navigate the already bound tmux client with `switch-client -c <tty> -t <pane>`
+- terminal-originated session-switch collision with another visible tile is an explicit error path; stale sidebar state is not an acceptable fallback
 - same-session multi-view is out of MVP
 
 ## Locked MVP Decisions
@@ -74,7 +83,8 @@
 
 ### Active
 
-- no open app-side product task is currently blocking the V2 cockpit path
+- `T-109`
+  rendered-client tmux session-switch reverse sync and in-place `SessionRef` rebasing
 
 ### Done
 
@@ -117,13 +127,13 @@
 
 ### Next
 
-- if live status disagreements still remain after this slice, treat them as daemon-payload truth issues first and validate `ui.bootstrap.v2` / `ui.changes.v2` output before reopening the term consumer
-- optional follow-up: capture a fresh post-fix manual screenshot/log pair from the live desktop to confirm the earlier March 7, 2026 user report no longer reproduces in the shipped app path
+- land `T-109` with TDD-first coverage for terminal-originated cross-session switch
+- keep validating daemon payload truth first for managed/provider/activity disagreements; `T-109` is about rendered-client session rebasing, not metadata overlay
 
 ## Open Blockers
 
-- no app-side blocker is currently tracked
-- if fresh live disagreement appears, validate daemon payload truth first before reopening the term consumer
+- active closeout blocker is environmental:
+  - March 8, 2026 targeted `xcodebuild` for `T-109` failed before test execution with `Timed out while enabling automation mode.`
 
 ## Read Next
 

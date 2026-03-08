@@ -1925,6 +1925,113 @@ final class AgtmuxTermUITests: XCTestCase {
         )
     }
 
+    /// T-E2E-016: terminal-originated tmux session switches must rebind the visible
+    /// tile/session selection in place instead of leaving the sidebar on the stale session.
+    func testTerminalSessionSwitchUpdatesSidebarSelectionWithRealTmux() throws {
+        let token = String(UUID().uuidString.prefix(8)).lowercased()
+        let firstSession = "agtmux-e2e-session-a-\(token)"
+        let secondSession = "agtmux-e2e-session-b-\(token)"
+        let socket = "agtmux-session-\(token)"
+        let control = try makeAppTmuxControlPaths(token: token)
+        let scenario = AppTmuxScenario(
+            sessionName: firstSession,
+            windowName: "main",
+            paneCount: 1,
+            shellCommand: "/bin/sleep 600"
+        )
+
+        configureAppDrivenTmux(socketName: socket, control: control, scenario: scenario)
+        app.launchForUITest()
+
+        let bootstrap = try waitForAppTmuxBootstrapResult(control: control)
+        guard bootstrap.ok,
+              bootstrap.sessionName == firstSession,
+              let firstPaneID = bootstrap.paneIDs.first,
+              let firstWindowID = bootstrap.windowID else {
+            throw XCTSkip("App-driven tmux bootstrap failed for session-switch reverse-sync test")
+        }
+
+        XCTAssertTrue(
+            clickSidebarPaneRow(source: "local", sessionName: firstSession, paneID: firstPaneID),
+            "Initial session pane must appear before session-switch reverse-sync proof"
+        )
+        let firstSnapshot = waitForAppWorkbenchTerminalTarget(
+            control: control,
+            sessionName: firstSession,
+            windowID: firstWindowID,
+            paneID: firstPaneID,
+            selectedPaneInventoryID: paneInventoryID(
+                source: "local",
+                sessionName: firstSession,
+                paneID: firstPaneID
+            )
+        )
+        waitForRenderedClientTmuxTarget(
+            control: control,
+            clientTTY: firstSnapshot.renderedClientTTY,
+            sessionName: firstSession,
+            windowID: firstWindowID,
+            paneID: firstPaneID
+        )
+
+        _ = try sendAppTmuxCommand(
+            ["new-session", "-d", "-s", secondSession, "-n", "main", "/bin/sleep 600"],
+            control: control
+        )
+        let secondSessionSnapshot = try waitForAppPaneDescriptors(
+            tmuxTarget: "\(secondSession):main",
+            windowDescription: "main",
+            expectedPaneCount: 1,
+            control: control
+        )
+        guard let secondPaneID = secondSessionSnapshot.paneIDs.first else {
+            throw XCTSkip("Could not resolve pane identity for destination session")
+        }
+
+        XCTAssertTrue(
+            paneRow(source: "local", sessionName: secondSession, paneID: secondPaneID)
+                .waitForExistence(timeout: TestConstants.sidebarPopulateTimeout),
+            "Destination session must appear in sidebar before the rendered client switches into it"
+        )
+
+        _ = try sendAppTmuxCommand(
+            ["switch-client", "-c", firstSnapshot.renderedClientTTY, "-t", secondSession],
+            refreshInventory: false,
+            control: control
+        )
+        waitForRenderedClientTmuxTarget(
+            control: control,
+            clientTTY: firstSnapshot.renderedClientTTY,
+            sessionName: secondSession,
+            windowID: secondSessionSnapshot.windowID,
+            paneID: secondPaneID
+        )
+
+        XCTAssertTrue(
+            selectedPaneMarker(sessionName: secondSession, paneID: secondPaneID)
+                .waitForExistence(timeout: TestConstants.focusSyncLatencyBudget),
+            "Rendered-client session switch must move sidebar selection to the destination session"
+        )
+
+        let switchedSnapshot = waitForAppWorkbenchTerminalSessionSwitchTarget(
+            control: control,
+            sessionName: secondSession,
+            windowID: secondSessionSnapshot.windowID,
+            paneID: secondPaneID,
+            selectedPaneInventoryID: paneInventoryID(
+                source: "local",
+                sessionName: secondSession,
+                paneID: secondPaneID
+            ),
+            renderedClientTTY: firstSnapshot.renderedClientTTY
+        )
+        XCTAssertEqual(
+            switchedSnapshot.renderedSurfaceGeneration,
+            firstSnapshot.renderedSurfaceGeneration,
+            "Terminal-originated session switch must preserve the rendered Ghostty surface"
+        )
+    }
+
     /// T-E2E-013: Live local tmux lifecycle must reflect in sidebar (session/window/pane).
     ///
     /// Flow:
@@ -2327,6 +2434,69 @@ final class AgtmuxTermUITests: XCTestCase {
             "renderedWindow=\(latest?.renderedClientWindowID ?? "nil") " +
             "renderedPane=\(latest?.renderedClientPaneID ?? "nil") " +
             "renderedGeneration=\(latest?.renderedSurfaceGeneration.description ?? "nil") " +
+            "latestError=\(latestError ?? "nil")"
+        )
+        return latest ?? AppWorkbenchTerminalTargetSnapshot(
+            workbenchID: "",
+            tileID: "",
+            sessionName: "",
+            windowID: "",
+            paneID: "",
+            selectedPaneInventoryID: "",
+            attachCommand: "",
+            renderedAttachCommand: "",
+            renderedClientTTY: "",
+            renderedClientWindowID: "",
+            renderedClientPaneID: "",
+            renderedSurfaceGeneration: 0
+        )
+    }
+
+    private func waitForAppWorkbenchTerminalSessionSwitchTarget(
+        control: AppTmuxControlPaths,
+        sessionName: String,
+        windowID: String,
+        paneID: String,
+        selectedPaneInventoryID: String,
+        renderedClientTTY: String,
+        timeout: TimeInterval = TestConstants.focusSyncLatencyBudget
+    ) -> AppWorkbenchTerminalTargetSnapshot {
+        let deadline = Date().addingTimeInterval(timeout)
+        var latest: AppWorkbenchTerminalTargetSnapshot?
+        var latestError: String?
+
+        while Date() < deadline {
+            do {
+                let snapshot = try appWorkbenchTerminalTargetSnapshot(control: control)
+                latest = snapshot
+                latestError = nil
+                if snapshot.sessionName == sessionName,
+                   snapshot.windowID == windowID,
+                   snapshot.paneID == paneID,
+                   snapshot.selectedPaneInventoryID == selectedPaneInventoryID,
+                   snapshot.renderedClientTTY == renderedClientTTY,
+                   snapshot.renderedClientWindowID == windowID,
+                   snapshot.renderedClientPaneID == paneID,
+                   attachCommandAttachesSession(
+                       snapshot.attachCommand,
+                       sessionName: sessionName
+                   ) {
+                    return snapshot
+                }
+            } catch {
+                latestError = error.localizedDescription
+            }
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+
+        XCTFail(
+            "App store must rebind to session=\(sessionName) window=\(windowID) pane=\(paneID) " +
+            "selected=\(selectedPaneInventoryID) tty=\(renderedClientTTY); " +
+            "latest session=\(latest?.sessionName ?? "nil") window=\(latest?.windowID ?? "nil") " +
+            "pane=\(latest?.paneID ?? "nil") selected=\(latest?.selectedPaneInventoryID ?? "nil") " +
+            "attach=\(latest?.attachCommand ?? "nil") renderedAttach=\(latest?.renderedAttachCommand ?? "nil") " +
+            "renderedTTY=\(latest?.renderedClientTTY ?? "nil") renderedWindow=\(latest?.renderedClientWindowID ?? "nil") " +
+            "renderedPane=\(latest?.renderedClientPaneID ?? "nil") renderedGeneration=\(latest?.renderedSurfaceGeneration.description ?? "nil") " +
             "latestError=\(latestError ?? "nil")"
         )
         return latest ?? AppWorkbenchTerminalTargetSnapshot(
