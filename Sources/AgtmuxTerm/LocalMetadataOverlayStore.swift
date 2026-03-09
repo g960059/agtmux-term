@@ -138,6 +138,16 @@ struct LocalMetadataOverlayStore {
                 guard let paneSnapshot = change.pane else { continue }
                 let overlay = localMetadataOverlay(from: paneSnapshot)
                 let key = Self.paneMetadataKey(for: overlay.pane)
+                if let existingPane = nextMetadataByPaneKey[key],
+                   existingPane.source == "local",
+                   (Self.metadataSessionKey(for: existingPane) != Self.metadataSessionKey(for: overlay.pane)
+                    || existingPane.paneInstanceID != overlay.pane.paneInstanceID) {
+                    log(
+                        "sync-v3 pane upsert dropped for conflicting exact pane " +
+                        "\(change.sessionKey)/\(change.paneID)"
+                    )
+                    continue
+                }
                 nextMetadataByPaneKey[key] = overlay.pane
                 nextPresentationByPaneKey[key] = overlay.presentation
             }

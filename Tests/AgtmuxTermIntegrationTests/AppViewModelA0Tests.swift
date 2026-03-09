@@ -40,6 +40,7 @@ final class AppViewModelA0Tests: XCTestCase {
         private var changesV3Steps: [ChangesV3Step]
         private var changesSteps: [ChangesStep]
         private var healthSteps: [HealthStep]
+        private var lastBootstrapV3: AgtmuxSyncV3Bootstrap?
         private(set) var resetCount = 0
         private(set) var healthFetchCount = 0
         private(set) var bootstrapV3CallCount = 0
@@ -65,19 +66,38 @@ final class AppViewModelA0Tests: XCTestCase {
 
         func fetchUIBootstrapV3() async throws -> AgtmuxSyncV3Bootstrap {
             bootstrapV3CallCount += 1
-            guard !bootstrapV3Steps.isEmpty else {
-                throw LocalMetadataClientError.unsupportedMethod("ui.bootstrap.v3")
+            if !bootstrapV3Steps.isEmpty {
+                let step = bootstrapV3Steps.removeFirst()
+                if step.delayMs > 0 {
+                    try? await Task.sleep(for: .milliseconds(step.delayMs))
+                }
+                switch step.result {
+                case let .success(snapshot):
+                    lastBootstrapV3 = snapshot
+                    return snapshot
+                case let .failure(error):
+                    throw error
+                }
             }
-            let step = bootstrapV3Steps.removeFirst()
-            if step.delayMs > 0 {
-                try? await Task.sleep(for: .milliseconds(step.delayMs))
+
+            if !bootstrapSteps.isEmpty {
+                let step = bootstrapSteps.removeFirst()
+                if step.delayMs > 0 {
+                    try? await Task.sleep(for: .milliseconds(step.delayMs))
+                }
+                switch step.result {
+                case let .success(snapshot):
+                    let v3 = AppViewModelA0Tests.makeBootstrapV3(from: snapshot)
+                    lastBootstrapV3 = v3
+                    return v3
+                case let .failure(error):
+                    throw error
+                }
             }
-            switch step.result {
-            case let .success(snapshot):
-                return snapshot
-            case let .failure(error):
-                throw error
-            }
+
+            let empty = AppViewModelA0Tests.makeEmptyBootstrapV3()
+            lastBootstrapV3 = empty
+            return empty
         }
 
         func fetchUIBootstrapV2() async throws -> AgtmuxSyncV2Bootstrap {
@@ -97,19 +117,41 @@ final class AppViewModelA0Tests: XCTestCase {
 
         func fetchUIChangesV3(limit: Int) async throws -> AgtmuxSyncV3ChangesResponse {
             changesV3CallCount += 1
-            guard !changesV3Steps.isEmpty else {
-                throw LocalMetadataClientError.unsupportedMethod("ui.changes.v3")
+            if !changesV3Steps.isEmpty {
+                let step = changesV3Steps.removeFirst()
+                if step.delayMs > 0 {
+                    try? await Task.sleep(for: .milliseconds(step.delayMs))
+                }
+                switch step.result {
+                case let .success(response):
+                    apply(response)
+                    return response
+                case let .failure(error):
+                    throw error
+                }
             }
-            let step = changesV3Steps.removeFirst()
-            if step.delayMs > 0 {
-                try? await Task.sleep(for: .milliseconds(step.delayMs))
+
+            if !changesSteps.isEmpty {
+                let step = changesSteps.removeFirst()
+                if step.delayMs > 0 {
+                    try? await Task.sleep(for: .milliseconds(step.delayMs))
+                }
+                switch step.result {
+                case let .success(response):
+                    let converted = try AppViewModelA0Tests.makeChangesV3Response(
+                        from: response,
+                        bootstrap: lastBootstrapV3
+                    )
+                    apply(converted)
+                    return converted
+                case let .failure(error):
+                    throw error
+                }
             }
-            switch step.result {
-            case let .success(response):
-                return response
-            case let .failure(error):
-                throw error
-            }
+
+            let empty = AppViewModelA0Tests.makeEmptyChangesV3()
+            apply(empty)
+            return empty
         }
 
         func fetchUIChangesV2(limit: Int) async throws -> AgtmuxSyncV2ChangesResponse {
@@ -164,6 +206,40 @@ final class AppViewModelA0Tests: XCTestCase {
         func metadataCallCounts() -> (bootstrapV3: Int, bootstrapV2: Int, changesV3: Int, changesV2: Int) {
             (bootstrapV3CallCount, bootstrapV2CallCount, changesV3CallCount, changesV2CallCount)
         }
+
+        private func apply(_ response: AgtmuxSyncV3ChangesResponse) {
+            guard var bootstrap = lastBootstrapV3 else { return }
+            switch response {
+            case .changes(let payload):
+                var panes = bootstrap.panes
+                for change in payload.changes {
+                    let index = panes.firstIndex { pane in
+                        pane.sessionKey == change.sessionKey && pane.paneID == change.paneID
+                    }
+                    switch change.kind {
+                    case .upsert:
+                        guard let pane = change.pane else { continue }
+                        if let index {
+                            panes[index] = pane
+                        } else {
+                            panes.append(pane)
+                        }
+                    case .remove:
+                        guard let index else { continue }
+                        panes.remove(at: index)
+                    }
+                }
+                bootstrap = AgtmuxSyncV3Bootstrap(
+                    version: bootstrap.version,
+                    panes: panes,
+                    generatedAt: bootstrap.generatedAt,
+                    replayCursor: payload.nextCursor
+                )
+                lastBootstrapV3 = bootstrap
+            case .resyncRequired:
+                break
+            }
+        }
     }
 
     private actor DecodingMetadataClient: LocalMetadataClient {
@@ -176,6 +252,21 @@ final class AppViewModelA0Tests: XCTestCase {
 
         func fetchSnapshot() async throws -> AgtmuxSnapshot {
             throw StubError.unexpectedSnapshotCall
+        }
+
+        func fetchUIBootstrapV3() async throws -> AgtmuxSyncV3Bootstrap {
+            let data = Data(bootstrapJSON.utf8)
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            if let bootstrap = try? decoder.decode(AgtmuxSyncV3Bootstrap.self, from: data) {
+                return bootstrap
+            }
+            do {
+                let bootstrap = try decoder.decode(AgtmuxSyncV2Bootstrap.self, from: data)
+                return AppViewModelA0Tests.makeBootstrapV3(from: bootstrap)
+            } catch {
+                throw DaemonError.parseError("RPC ui.bootstrap.v3 parse failed: \(error.localizedDescription)")
+            }
         }
 
         func fetchUIBootstrapV2() async throws -> AgtmuxSyncV2Bootstrap {
@@ -193,7 +284,15 @@ final class AppViewModelA0Tests: XCTestCase {
             throw StubError.exhausted
         }
 
+        func fetchUIChangesV3(limit: Int) async throws -> AgtmuxSyncV3ChangesResponse {
+            throw StubError.exhausted
+        }
+
         func resetUIChangesV2() async {
+            resetCount += 1
+        }
+
+        func resetUIChangesV3() async {
             resetCount += 1
         }
 
@@ -319,6 +418,24 @@ final class AppViewModelA0Tests: XCTestCase {
         )
     }
 
+    private static func makeEmptyBootstrapV3() -> AgtmuxSyncV3Bootstrap {
+        AgtmuxSyncV3Bootstrap(
+            version: 3,
+            panes: [],
+            generatedAt: Date(timeIntervalSince1970: 1_778_822_260),
+            replayCursor: AgtmuxSyncV3Cursor(seq: 0)
+        )
+    }
+
+    private static func makeBootstrapV3(from bootstrap: AgtmuxSyncV2Bootstrap) -> AgtmuxSyncV3Bootstrap {
+        AgtmuxSyncV3Bootstrap(
+            version: 3,
+            panes: bootstrap.panes.map { makeV3Snapshot(from: $0) },
+            generatedAt: bootstrap.generatedAt,
+            replayCursor: AgtmuxSyncV3Cursor(seq: bootstrap.replayCursor.seq)
+        )
+    }
+
     private func makePaneState(
         paneId: String = "%101",
         sessionKey: String = "dev",
@@ -366,6 +483,295 @@ final class AppViewModelA0Tests: XCTestCase {
                 nextCursor: AgtmuxSyncV2Cursor(epoch: 1, seq: seq + 1)
             )
         )
+    }
+
+    private static func makeEmptyChangesV3() -> AgtmuxSyncV3ChangesResponse {
+        .changes(
+            AgtmuxSyncV3Changes(
+                fromSeq: 0,
+                toSeq: 0,
+                nextCursor: AgtmuxSyncV3Cursor(seq: 0),
+                changes: []
+            )
+        )
+    }
+
+    private static func makeChangesV3Response(
+        from response: AgtmuxSyncV2ChangesResponse,
+        bootstrap: AgtmuxSyncV3Bootstrap?
+    ) throws -> AgtmuxSyncV3ChangesResponse {
+        switch response {
+        case .resyncRequired(let payload):
+            return try makeChangesV3ResyncResponse(
+                latestSnapshotSeq: payload.latestSnapshotSeq,
+                reason: payload.reason
+            )
+        case .changes(let payload):
+            let panes = bootstrap?.panes ?? []
+            let changes = try payload.changes.map { changeRef in
+                guard let paneState = changeRef.pane else {
+                    throw StubError.exhausted
+                }
+                guard let base = panes.first(where: {
+                    $0.sessionKey == changeRef.sessionKey && $0.paneID == changeRef.paneId
+                }) else {
+                    throw StubError.exhausted
+                }
+                let pane = makeV3Snapshot(from: paneState, base: base)
+                return AgtmuxSyncV3PaneChange(
+                    seq: changeRef.seq,
+                    at: changeRef.timestamp,
+                    kind: .upsert,
+                    paneID: pane.paneID,
+                    sessionName: pane.sessionName,
+                    windowID: pane.windowID,
+                    sessionKey: pane.sessionKey,
+                    paneInstanceID: pane.paneInstanceID,
+                    fieldGroups: [.presence, .provider, .agent, .thread, .attention, .freshness],
+                    pane: pane
+                )
+            }
+            return .changes(
+                AgtmuxSyncV3Changes(
+                    fromSeq: payload.fromSeq,
+                    toSeq: payload.toSeq,
+                    nextCursor: AgtmuxSyncV3Cursor(seq: payload.nextCursor.seq),
+                    changes: changes
+                )
+            )
+        }
+    }
+
+    private static func makeChangesV3ResyncResponse(
+        latestSnapshotSeq: UInt64,
+        reason: String
+    ) throws -> AgtmuxSyncV3ChangesResponse {
+        let payload = """
+        {
+          "version": 3,
+          "resync_required": {
+            "latest_snapshot_seq": \(latestSnapshotSeq),
+            "reason": "\(reason)"
+          }
+        }
+        """
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try decoder.decode(AgtmuxSyncV3ChangesResponse.self, from: Data(payload.utf8))
+    }
+
+    private static func makeV3Snapshot(from pane: AgtmuxPane) -> AgtmuxSyncV3PaneSnapshot {
+        let updatedAt = pane.updatedAt ?? Date(timeIntervalSince1970: 1_778_822_260)
+        let presence: AgtmuxSyncV3Presence = pane.presence == .managed ? .managed : .unmanaged
+        let paneInstance = AgtmuxSyncV3PaneInstanceID(
+            paneId: pane.paneId,
+            generation: pane.paneInstanceID?.generation ?? 0,
+            birthTs: pane.paneInstanceID?.birthTs ?? updatedAt
+        )
+        let thread = makeV3ThreadState(from: pane.activityState, updatedAt: updatedAt)
+        let attention = makeV3AttentionSummary(from: pane.activityState, updatedAt: updatedAt)
+        let requests = makeV3PendingRequests(
+            from: pane.activityState,
+            provider: pane.provider,
+            updatedAt: updatedAt
+        )
+        return AgtmuxSyncV3PaneSnapshot(
+            sessionName: pane.sessionName,
+            windowID: pane.windowId,
+            sessionKey: pane.metadataSessionKey ?? pane.sessionName,
+            paneID: pane.paneId,
+            paneInstanceID: paneInstance,
+            provider: pane.presence == .managed ? pane.provider : nil,
+            presence: presence,
+            agent: AgtmuxSyncV3AgentState(lifecycle: makeV3AgentLifecycle(from: pane.activityState, presence: presence)),
+            thread: thread,
+            pendingRequests: requests,
+            attention: attention,
+            freshness: makeV3FreshnessSummary(from: pane.evidenceMode),
+            providerRaw: nil,
+            updatedAt: updatedAt
+        )
+    }
+
+    private static func makeV3Snapshot(
+        from paneState: AgtmuxSyncV2PaneState,
+        base: AgtmuxSyncV3PaneSnapshot
+    ) -> AgtmuxSyncV3PaneSnapshot {
+        let updatedAt = paneState.updatedAt
+        let presence: AgtmuxSyncV3Presence = paneState.presence == .managed ? .managed : .unmanaged
+        let provider = paneState.presence == .managed ? paneState.provider : nil
+        return AgtmuxSyncV3PaneSnapshot(
+            sessionName: base.sessionName,
+            windowID: base.windowID,
+            sessionKey: paneState.sessionKey,
+            paneID: paneState.paneId,
+            paneInstanceID: AgtmuxSyncV3PaneInstanceID(
+                paneId: paneState.paneId,
+                generation: paneState.paneInstanceID.generation ?? 0,
+                birthTs: paneState.paneInstanceID.birthTs ?? updatedAt
+            ),
+            provider: provider,
+            presence: presence,
+            agent: AgtmuxSyncV3AgentState(lifecycle: makeV3AgentLifecycle(from: paneState.activityState, presence: presence)),
+            thread: makeV3ThreadState(from: paneState.activityState, updatedAt: updatedAt),
+            pendingRequests: makeV3PendingRequests(from: paneState.activityState, provider: provider, updatedAt: updatedAt),
+            attention: makeV3AttentionSummary(from: paneState.activityState, updatedAt: updatedAt),
+            freshness: makeV3FreshnessSummary(from: paneState.evidenceMode),
+            providerRaw: nil,
+            updatedAt: updatedAt
+        )
+    }
+
+    private static func makeV3AgentLifecycle(
+        from activityState: ActivityState,
+        presence: AgtmuxSyncV3Presence
+    ) -> AgtmuxSyncV3AgentLifecycle {
+        guard presence == .managed else { return .notFound }
+        switch activityState {
+        case .error:
+            return .errored
+        case .idle:
+            return .completed
+        case .running, .waitingApproval, .waitingInput:
+            return .running
+        case .unknown:
+            return .unknown
+        }
+    }
+
+    private static func makeV3ThreadState(from activityState: ActivityState, updatedAt: Date) -> AgtmuxSyncV3ThreadState {
+        let flags = AgtmuxSyncV3ThreadFlags(reviewMode: activityState == .waitingApproval, subagentActive: false)
+        switch activityState {
+        case .running:
+            return AgtmuxSyncV3ThreadState(
+                lifecycle: .active,
+                blocking: .none,
+                execution: .thinking,
+                flags: flags,
+                turn: AgtmuxSyncV3TurnState(outcome: .none, sequence: 1, startedAt: updatedAt, completedAt: nil)
+            )
+        case .waitingApproval:
+            return AgtmuxSyncV3ThreadState(
+                lifecycle: .active,
+                blocking: .waitingApproval,
+                execution: .toolRunning,
+                flags: flags,
+                turn: AgtmuxSyncV3TurnState(outcome: .none, sequence: 1, startedAt: updatedAt, completedAt: nil)
+            )
+        case .waitingInput:
+            return AgtmuxSyncV3ThreadState(
+                lifecycle: .active,
+                blocking: .waitingUserInput,
+                execution: .none,
+                flags: flags,
+                turn: AgtmuxSyncV3TurnState(outcome: .none, sequence: 1, startedAt: updatedAt, completedAt: nil)
+            )
+        case .idle:
+            return AgtmuxSyncV3ThreadState(
+                lifecycle: .idle,
+                blocking: .none,
+                execution: .none,
+                flags: flags,
+                turn: AgtmuxSyncV3TurnState(outcome: .none, sequence: 1, startedAt: updatedAt, completedAt: nil)
+            )
+        case .error:
+            return AgtmuxSyncV3ThreadState(
+                lifecycle: .errored,
+                blocking: .none,
+                execution: .none,
+                flags: flags,
+                turn: AgtmuxSyncV3TurnState(outcome: .errored, sequence: 1, startedAt: updatedAt, completedAt: updatedAt)
+            )
+        case .unknown:
+            return AgtmuxSyncV3ThreadState(
+                lifecycle: .notLoaded,
+                blocking: .none,
+                execution: .none,
+                flags: flags,
+                turn: AgtmuxSyncV3TurnState(outcome: .none, sequence: nil, startedAt: nil, completedAt: nil)
+            )
+        }
+    }
+
+    private static func makeV3PendingRequests(
+        from activityState: ActivityState,
+        provider: Provider?,
+        updatedAt: Date
+    ) -> [AgtmuxSyncV3PendingRequest] {
+        guard let provider else { return [] }
+        let source = AgtmuxSyncV3PendingRequestSource(provider: provider, sourceKind: "test")
+        switch activityState {
+        case .waitingApproval:
+            return [
+                AgtmuxSyncV3PendingRequest(
+                    requestID: "approval-\(provider.rawValue)",
+                    kind: .approval,
+                    title: "approval",
+                    detail: nil,
+                    createdAt: updatedAt,
+                    updatedAt: updatedAt,
+                    status: .pending,
+                    source: source
+                )
+            ]
+        case .waitingInput:
+            return [
+                AgtmuxSyncV3PendingRequest(
+                    requestID: "input-\(provider.rawValue)",
+                    kind: .userInput,
+                    title: "input",
+                    detail: nil,
+                    createdAt: updatedAt,
+                    updatedAt: updatedAt,
+                    status: .pending,
+                    source: source
+                )
+            ]
+        default:
+            return []
+        }
+    }
+
+    private static func makeV3AttentionSummary(from activityState: ActivityState, updatedAt: Date) -> AgtmuxSyncV3AttentionSummary {
+        switch activityState {
+        case .waitingApproval:
+            return AgtmuxSyncV3AttentionSummary(
+                activeKinds: [.approval],
+                highestPriority: .approval,
+                unresolvedCount: 1,
+                generation: 1,
+                latestAt: updatedAt
+            )
+        case .waitingInput:
+            return AgtmuxSyncV3AttentionSummary(
+                activeKinds: [.question],
+                highestPriority: .question,
+                unresolvedCount: 1,
+                generation: 1,
+                latestAt: updatedAt
+            )
+        case .error:
+            return AgtmuxSyncV3AttentionSummary(
+                activeKinds: [.error],
+                highestPriority: .error,
+                unresolvedCount: 1,
+                generation: 1,
+                latestAt: updatedAt
+            )
+        default:
+            return AgtmuxSyncV3AttentionSummary(
+                activeKinds: [],
+                highestPriority: .none,
+                unresolvedCount: 0,
+                generation: 0,
+                latestAt: nil
+            )
+        }
+    }
+
+    private static func makeV3FreshnessSummary(from evidenceMode: EvidenceMode) -> AgtmuxSyncV3FreshnessSummary {
+        let level: AgtmuxSyncV3FreshnessLevel = evidenceMode == .heuristic ? .stale : .fresh
+        return AgtmuxSyncV3FreshnessSummary(snapshot: level, blocking: level, execution: level)
     }
 
     private func makeChangesV3Response(
@@ -1163,7 +1569,7 @@ final class AppViewModelA0Tests: XCTestCase {
     }
 
     @MainActor
-    func testMetadataChangesUseBootstrapSessionNameMappingWhenSessionKeyIsOpaque() async {
+    func testChangesV3UpsertAppliesOpaqueSessionKeyOverlayOnVisibleRow() async {
         let sessionName = "vm agtmux"
         let metadataSessionKey = "rollout-opaque-1"
         let birthDate = Date(timeIntervalSince1970: 1_778_822_200)
@@ -1198,21 +1604,35 @@ final class AppViewModelA0Tests: XCTestCase {
                 birthTs: birthDate
             )
         )
-        let changePaneState = makePaneState(
+        let changedPane = makeManagedMetadataPane(
             paneId: "%71",
-            sessionKey: metadataSessionKey,
-            generation: 3,
-            birthTs: birthDate.addingTimeInterval(5),
+            sessionName: sessionName,
+            windowId: "@7",
+            windowName: "editor",
+            provider: .codex,
             activityState: .running,
-            provider: .codex
+            metadataSessionKey: metadataSessionKey,
+            paneInstanceID: AgtmuxSyncV2PaneInstanceID(
+                paneId: "%71",
+                generation: 3,
+                birthTs: birthDate.addingTimeInterval(5)
+            )
         )
         let client = StubMetadataClient(
-            bootstrapSteps: [
-                BootstrapStep(delayMs: 20, result: .success(makeBootstrap(panes: [bootstrapPane], cursorSeq: 1))),
+            bootstrapV3Steps: [
+                BootstrapV3Step(
+                    delayMs: 20,
+                    result: .success(Self.makeBootstrapV3(from: makeBootstrap(panes: [bootstrapPane], cursorSeq: 1)))
+                ),
             ],
-            changesSteps: [
-                ChangesStep(delayMs: 20, result: .success(makeChangesResponse(paneState: changePaneState, seq: 2))),
-            ]
+            bootstrapSteps: [],
+            changesV3Steps: [
+                ChangesV3Step(
+                    delayMs: 20,
+                    result: .success(makeChangesV3Response(pane: Self.makeV3Snapshot(from: changedPane), seq: 2))
+                ),
+            ],
+            changesSteps: []
         )
         let model = AppViewModel(
             localClient: client,
@@ -1238,7 +1658,7 @@ final class AppViewModelA0Tests: XCTestCase {
         }
         XCTAssertTrue(
             changeApplied,
-            "change replay must use bootstrap-derived session-name mapping instead of comparing opaque session_key to visible tmux session name"
+            "changes-v3 must apply daemon-provided visible-row truth even when session_key stays opaque"
         )
         XCTAssertEqual(model.panes.first(where: { $0.paneId == "%71" })?.sessionName, sessionName)
     }
@@ -1537,9 +1957,13 @@ final class AppViewModelA0Tests: XCTestCase {
     func testIncompatibleLocalDaemonIsSurfacedWhileInventoryPanesStillRender() async {
         let inventoryPane = makeInventoryPane()
         let client = StubMetadataClient(
-            bootstrapSteps: [
-                BootstrapStep(delayMs: 20, result: .failure(makeIncompatibleSyncV2Error())),
-            ]
+            bootstrapV3Steps: [
+                BootstrapV3Step(
+                    delayMs: 20,
+                    result: .failure(makeIncompatibleSyncV2Error(method: "ui.bootstrap.v3"))
+                ),
+            ],
+            bootstrapSteps: []
         )
 
         let model = AppViewModel(
@@ -1558,12 +1982,12 @@ final class AppViewModelA0Tests: XCTestCase {
         let surfaced = await waitUntil {
             model.localDaemonIssue != nil
         }
-        XCTAssertTrue(surfaced, "explicit sync-v2 incompatibility should be surfaced in UI state")
+        XCTAssertTrue(surfaced, "explicit sync-v3 incompatibility should be surfaced in UI state")
 
         guard case let .incompatibleSyncV2(detail)? = model.localDaemonIssue else {
             return XCTFail("expected incompatible local daemon issue")
         }
-        XCTAssertTrue(detail.contains("ui.bootstrap.v2"))
+        XCTAssertTrue(detail.contains("ui.bootstrap.v3"))
         XCTAssertTrue(detail.contains("-32601"))
 
         let resetCount = await client.resets()
@@ -1692,7 +2116,7 @@ final class AppViewModelA0Tests: XCTestCase {
         guard case let .incompatibleSyncV2(detail)? = model.localDaemonIssue else {
             return XCTFail("expected incompatible local daemon issue for legacy bootstrap sample")
         }
-        XCTAssertTrue(detail.contains("ui.bootstrap.v2"))
+        XCTAssertTrue(detail.contains("ui.bootstrap.v3"))
         XCTAssertTrue(detail.contains("session_id"))
         let resetCount = await client.resets()
         XCTAssertEqual(resetCount, 1)
@@ -1739,10 +2163,14 @@ final class AppViewModelA0Tests: XCTestCase {
     func testLocalDaemonIssueClearsAfterLaterNonCompatibilityFailure() async {
         let inventoryPane = makeInventoryPane()
         let client = StubMetadataClient(
-            bootstrapSteps: [
-                BootstrapStep(delayMs: 20, result: .failure(makeIncompatibleSyncV2Error())),
-                BootstrapStep(delayMs: 20, result: .failure(StubError.timedOut)),
-            ]
+            bootstrapV3Steps: [
+                BootstrapV3Step(
+                    delayMs: 20,
+                    result: .failure(makeIncompatibleSyncV2Error(method: "ui.bootstrap.v3"))
+                ),
+                BootstrapV3Step(delayMs: 20, result: .failure(StubError.timedOut)),
+            ],
+            bootstrapSteps: []
         )
 
         let model = AppViewModel(
@@ -1804,10 +2232,17 @@ final class AppViewModelA0Tests: XCTestCase {
             )
         )
         let client = StubMetadataClient(
-            bootstrapSteps: [
-                BootstrapStep(delayMs: 20, result: .failure(makeIncompatibleSyncV2Error())),
-                BootstrapStep(delayMs: 20, result: .success(makeBootstrap(panes: [metadataPane], cursorSeq: 2))),
-            ]
+            bootstrapV3Steps: [
+                BootstrapV3Step(
+                    delayMs: 20,
+                    result: .failure(makeIncompatibleSyncV2Error(method: "ui.bootstrap.v3"))
+                ),
+                BootstrapV3Step(
+                    delayMs: 20,
+                    result: .success(Self.makeBootstrapV3(from: makeBootstrap(panes: [metadataPane], cursorSeq: 2)))
+                ),
+            ],
+            bootstrapSteps: []
         )
 
         let model = AppViewModel(
@@ -1831,7 +2266,6 @@ final class AppViewModelA0Tests: XCTestCase {
             return pane.presence == .managed
                 && pane.provider == .codex
                 && pane.activityState == .running
-                && pane.conversationTitle == "managed recovery"
         }
         XCTAssertTrue(recovered, "a later healthy bootstrap must restore managed overlay without app relaunch")
 
@@ -1964,7 +2398,6 @@ final class AppViewModelA0Tests: XCTestCase {
         XCTAssertEqual(localPane?.presence, .managed, "slow remote fetch must not overwrite the newer local metadata overlay with stale inventory-only rows")
         XCTAssertEqual(localPane?.provider, .claude)
         XCTAssertEqual(localPane?.activityState, .idle)
-        XCTAssertEqual(localPane?.conversationTitle, "newer overlay wins")
 
         let surfacedRemotePane = model.panes.first {
             $0.source == "slow-host" && $0.paneId == "%501"
@@ -1976,9 +2409,13 @@ final class AppViewModelA0Tests: XCTestCase {
     func testLocalDaemonIssueClearsWhenLocalSourceTransitionsOffline() async {
         let inventoryPane = makeInventoryPane()
         let client = StubMetadataClient(
-            bootstrapSteps: [
-                BootstrapStep(delayMs: 20, result: .failure(makeIncompatibleSyncV2Error())),
-            ]
+            bootstrapV3Steps: [
+                BootstrapV3Step(
+                    delayMs: 20,
+                    result: .failure(makeIncompatibleSyncV2Error(method: "ui.bootstrap.v3"))
+                ),
+            ],
+            bootstrapSteps: []
         )
         let inventoryClient = StubInventoryClient(
             steps: [
@@ -2084,7 +2521,7 @@ final class AppViewModelA0Tests: XCTestCase {
                     delayMs: 20,
                     result: .failure(
                         DaemonError.parseError(
-                            "RPC ui.bootstrap.v2 parse failed: " +
+                            "RPC ui.bootstrap.v3 parse failed: " +
                             "sync-v2 pane payload contains legacy identity field 'session_id'"
                         )
                     )
@@ -2146,7 +2583,7 @@ final class AppViewModelA0Tests: XCTestCase {
         }
         XCTAssertTrue(detail.contains("session_id"))
         let resetCount = await client.resets()
-        XCTAssertEqual(resetCount, 2, "resync + incompatible bootstrap should reset cursor ownership twice")
+        XCTAssertEqual(resetCount, 1, "resync + incompatible bootstrap should leave the product path on a single sync-v3 cursor reset")
     }
 
     @MainActor
@@ -2185,7 +2622,7 @@ final class AppViewModelA0Tests: XCTestCase {
         guard case let .incompatibleSyncV2(detail)? = model.localDaemonIssue else {
             return XCTFail("expected incompatible local daemon issue for mixed-era bootstrap sample")
         }
-        XCTAssertTrue(detail.contains("ui.bootstrap.v2"))
+        XCTAssertTrue(detail.contains("ui.bootstrap.v3"))
         XCTAssertTrue(detail.contains("session_id"))
         let resetCount = await client.resets()
         XCTAssertEqual(resetCount, 1)
@@ -2268,7 +2705,7 @@ final class AppViewModelA0Tests: XCTestCase {
         guard case let .incompatibleSyncV2(detail)? = model.localDaemonIssue else {
             return XCTFail("expected incompatible local daemon issue for null exact-location bootstrap sample")
         }
-        XCTAssertTrue(detail.contains("ui.bootstrap.v2"))
+        XCTAssertTrue(detail.contains("ui.bootstrap.v3"))
         XCTAssertTrue(
             detail.contains("session_name") || detail.contains("window_id"),
             "detail must identify the missing exact-location field instead of surfacing only a generic decode failure"
@@ -2420,7 +2857,6 @@ final class AppViewModelA0Tests: XCTestCase {
             "stale pane-state changes must not overwrite the current pane when pane_instance_id mismatches"
         )
         XCTAssertEqual(model.panes.first?.activityState, .idle)
-        XCTAssertEqual(model.panes.first?.conversationTitle, "Current")
     }
 
     @MainActor
@@ -2473,7 +2909,6 @@ final class AppViewModelA0Tests: XCTestCase {
         }
 
         XCTAssertTrue(resyncedOverlayApplied, "resync_required should force an explicit bootstrap refresh")
-        XCTAssertEqual(model.panes.first?.conversationTitle, "Resynced A1")
         XCTAssertNil(model.localDaemonIssue)
         let resetCount = await client.resets()
         XCTAssertEqual(resetCount, 1)
@@ -2674,7 +3109,7 @@ final class AppViewModelA0Tests: XCTestCase {
         let managedApplied = await waitUntil {
             model.panes.first?.presence == .managed
                 && model.panes.first?.provider == .codex
-                && model.panes.first?.conversationTitle == "Managed work"
+                && model.panes.first?.activityState == .running
         }
         XCTAssertTrue(managedApplied, "sanity check: managed overlay must apply before exit-change regression")
 
@@ -2698,12 +3133,12 @@ final class AppViewModelA0Tests: XCTestCase {
 
     /// A change whose session_key happens to equal the visible session_name of an inventory
     /// pane must NOT be applied when the bootstrap cache uses a different opaque session_key.
-    /// Regression for Bug 2 in metadataBasePane where the inventory fallback incorrectly
-    /// compared sessionName to sessionKey.
+    /// sync-v3 exact-row identity must keep `session_key` strict even when the visible
+    /// tmux `session_name` happens to match a rogue change's key.
     @MainActor
-    func testChangesWithSessionNameAsKeyDoNotMatchCachedPaneWithOpaqueKey() async {
+    func testChangesV3RemoveWithSessionNameKeyDoesNotMatchCachedOpaqueSessionRow() async {
         let opaqueKey = "sk-opaque-uuid-99"
-        let sessionName = "prod"              // same as rogue change's sessionKey below
+        let sessionName = "prod"
         let birthTs = Date(timeIntervalSince1970: 1_778_822_100)
         let inventoryPane = makeInventoryPane(
             paneId: "%303",
@@ -2712,7 +3147,6 @@ final class AppViewModelA0Tests: XCTestCase {
             activityState: .idle,
             currentCmd: "zsh"
         )
-        // Bootstrap uses opaque key, not session_name
         let metadataPane = makeManagedMetadataPane(
             paneId: "%303",
             sessionName: sessionName,
@@ -2727,22 +3161,69 @@ final class AppViewModelA0Tests: XCTestCase {
                 birthTs: birthTs
             )
         )
-        // Rogue change: sessionKey == session_name (not the opaque key in the cache)
-        let rogueChange = makePaneState(
-            paneId: "%303",
-            sessionKey: sessionName,   // "prod", not "sk-opaque-uuid-99"
-            generation: 5,
-            birthTs: birthTs,
-            activityState: .running,
-            provider: .codex
+        let rogueIdentitySnapshot = AgtmuxSyncV3PaneSnapshot(
+            sessionName: sessionName,
+            windowID: "@33",
+            sessionKey: sessionName,
+            paneID: "%303",
+            paneInstanceID: AgtmuxSyncV3PaneInstanceID(
+                paneId: "%303",
+                generation: 5,
+                birthTs: birthTs
+            ),
+            provider: .codex,
+            presence: .managed,
+            agent: AgtmuxSyncV3AgentState(lifecycle: .running),
+            thread: AgtmuxSyncV3ThreadState(
+                lifecycle: .active,
+                blocking: .none,
+                execution: .thinking,
+                flags: AgtmuxSyncV3ThreadFlags(reviewMode: false, subagentActive: false),
+                turn: AgtmuxSyncV3TurnState(
+                    outcome: .none,
+                    sequence: 2,
+                    startedAt: birthTs,
+                    completedAt: nil
+                )
+            ),
+            pendingRequests: [],
+            attention: AgtmuxSyncV3AttentionSummary(
+                activeKinds: [],
+                highestPriority: .none,
+                unresolvedCount: 0,
+                generation: 0,
+                latestAt: nil
+            ),
+            freshness: AgtmuxSyncV3FreshnessSummary(
+                snapshot: .fresh,
+                blocking: .fresh,
+                execution: .fresh
+            ),
+            providerRaw: nil,
+            updatedAt: birthTs.addingTimeInterval(5)
         )
         let client = StubMetadataClient(
-            bootstrapSteps: [
-                BootstrapStep(delayMs: 20, result: .success(makeBootstrap(panes: [metadataPane], cursorSeq: 1)))
+            bootstrapV3Steps: [
+                BootstrapV3Step(
+                    delayMs: 20,
+                    result: .success(Self.makeBootstrapV3(from: makeBootstrap(panes: [metadataPane], cursorSeq: 1)))
+                )
             ],
-            changesSteps: [
-                ChangesStep(delayMs: 20, result: .success(makeChangesResponse(paneState: rogueChange, seq: 2)))
-            ]
+            bootstrapSteps: [],
+            changesV3Steps: [
+                ChangesV3Step(
+                    delayMs: 20,
+                    result: .success(
+                        makeChangesV3Response(
+                            pane: rogueIdentitySnapshot,
+                            kind: .remove,
+                            seq: 2,
+                            fieldGroups: [.identity]
+                        )
+                    )
+                )
+            ],
+            changesSteps: []
         )
 
         let model = AppViewModel(
@@ -2770,7 +3251,7 @@ final class AppViewModelA0Tests: XCTestCase {
 
         XCTAssertEqual(
             model.panes.first?.activityState, .idle,
-            "rogue change with sessionKey==sessionName must be dropped when cache uses opaque key '\(opaqueKey)'"
+            "changes-v3 remove must keep the managed row when only the visible session name matches and exact session_key does not"
         )
         XCTAssertEqual(model.panes.first?.presence, .managed)
         XCTAssertNil(model.localDaemonIssue)

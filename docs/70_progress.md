@@ -10,8 +10,31 @@ Historical progress detail lives in `docs/archive/progress/2026-02-28_to_2026-03
 - local daemon runtime hardening and A2 health observability are complete
 - `T-108` is now closed on app-side code, focused verification, and executed real-surface UI proof
 - current follow-up boundary is explicit: if a fresh live disagreement appears, validate daemon payload truth before reopening the term consumer
+- the broad `AppViewModelA0Tests` product suite now matches the sync-v3-only product path; remaining sync-v2 assumptions are compat-only
 
 ## Recent Entries
+
+## 2026-03-09 — T-133 landed: broad AppViewModel product suite no longer encodes sync-v2 fallback
+
+### What landed
+- migrated the broad `AppViewModelA0Tests` suite onto current product behavior:
+  - product metadata requires `ui.bootstrap.v3` / `ui.changes.v3`
+  - unsupported sync-v3 methods surface daemon incompatibility plus inventory-only rows
+  - exact-row bootstrap-v3 / changes-v3 behavior is the product truth
+- removed stale product assertions that depended on pre-cutover sync-v2 assumptions:
+  - unsupported bootstrap/changes no longer expect a product fallback into sync-v2
+  - old product assertions that relied on legacy `conversationTitle` carry-over were narrowed away from the v3 product lane
+- tightened one remaining exact-row guard in product code:
+  - `LocalMetadataOverlayStore` now drops `ui.changes.v3` upserts that try to overwrite the same visible pane location with a conflicting `pane_instance_id` / `session_key` without first removing the current exact row
+
+### What remains
+- sync-v2 transport/service-boundary/workbench coverage still exists for compatibility-only callers
+- legacy `conversationTitle` remains a compat field on `AgtmuxPane`; there is still no normalized v3 title field in the product lane
+
+### Verification
+- `swift test -q --filter LocalMetadataOverlayStoreTests`
+- `swift test -q --filter AppViewModelA0Tests`
+- result: all passed
 
 ## 2026-03-09 — T-132 landed: product local metadata path no longer falls back to sync-v2
 

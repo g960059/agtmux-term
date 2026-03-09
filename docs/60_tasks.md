@@ -242,7 +242,7 @@ Commit closeout is clear; next implementation proceeds on the new Workbench path
   - [x] remaining sync-v2 code is documented as compatibility-only, not product refresh truth
 
 ### T-133 — migrate broad AppViewModel product tests off sync-v2 assumptions
-- **Status**: TODO
+- **Status**: DONE
 - **Priority**: P1
 - **Depends**: T-132
 - **Owner**: term implementation agent
@@ -250,9 +250,9 @@ Commit closeout is clear; next implementation proceeds on the new Workbench path
   - The broad `AppViewModelA0Tests` suite still contains many pre-cutover cases that inject sync-v2-only bootstrap/changes into the product AppViewModel path.
   - Migrate those product-facing tests to sync-v3 fixtures or move remaining sync-v2 expectations into compat-only suites so the broad product suite matches current product truth.
 - **Acceptance Criteria**:
-  - [ ] broad AppViewModel product tests no longer assume sync-v2 fallback in the product metadata path
-  - [ ] any remaining sync-v2 coverage lives in compat-only transport/service-boundary tests instead of product AppViewModel expectations
-  - [ ] focused no-fallback sync-v3 product tests remain green after the migration
+  - [x] broad AppViewModel product tests no longer assume sync-v2 fallback in the product metadata path
+  - [x] any remaining sync-v2 coverage lives in compat-only transport/service-boundary tests instead of product AppViewModel expectations
+  - [x] focused no-fallback sync-v3 product tests remain green after the migration
 
 ### T-126 — thin live canary for sync-v3 bootstrap/changes exact-row lane
 - **Status**: DONE

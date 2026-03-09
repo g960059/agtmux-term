@@ -275,3 +275,11 @@ This keeps the remaining seam explicit:
 - async decision orchestration now lives in `LocalMetadataRefreshCoordinator`
 - product local metadata now requires sync-v3; the remaining sync-v2 helper surface is compat-only
 - only the outer `Task` lifecycle and fetch/publish shell remain in `AppViewModel`
+
+## Broad Product Test Alignment
+
+The broad `AppViewModelA0Tests` suite now treats sync-v3 as the only product metadata path.
+
+- unsupported `ui.bootstrap.v3` / `ui.changes.v3` is expected to surface daemon incompatibility and inventory-only rows
+- exact-row bootstrap-v3 / changes-v3 behavior is the product truth in the broad suite
+- legacy `conversationTitle` carry-over is no longer treated as normalized sync-v3 truth; remaining title assertions belong to compat-only sync-v2 transport coverage until daemon truth exposes a normalized v3 title field

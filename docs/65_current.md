@@ -94,9 +94,12 @@
   - the product `AppViewModel` local metadata path now requires sync-v3 for both bootstrap and changes
   - unsupported `ui.bootstrap.v3` / `ui.changes.v3` now clears local overlay state and surfaces daemon incompatibility instead of silently downgrading to sync-v2
   - remaining sync-v2 transport/service-boundary/workbench code is compatibility-only
-- `T-133` is now open:
-  - broad `AppViewModelA0Tests` still contains pre-cutover sync-v2 product assumptions
-  - those tests must be migrated to sync-v3 fixtures or split into compat-only suites so the broad product suite matches current product truth
+- `T-133` is now closed:
+  - the broad `AppViewModelA0Tests` suite now matches current product behavior:
+    - product metadata requires sync-v3
+    - unsupported `ui.bootstrap.v3` / `ui.changes.v3` surfaces daemon incompatibility plus inventory-only rows instead of sync-v2 fallback
+    - exact-row v3 updates are the product truth in the broad suite
+  - stale product assertions that depended on legacy sync-v2 replay or legacy `conversationTitle` carry-over were removed from the broad suite; remaining sync-v2 assumptions are compat-only
 - `T-116` is now open:
   - metadata-enabled health-strip UI and pane-sync UI both reach their real assertions
   - upstream producer truth is now present in the same failing plain-zsh Codex lane:

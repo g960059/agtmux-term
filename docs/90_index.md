@@ -89,7 +89,7 @@ Mainline product truth is now:
 - `T-132`
   product local metadata now requires sync-v3; remaining sync-v2 code is compatibility-only
 - `T-133`
-  migrate broad AppViewModel product tests off pre-cutover sync-v2 assumptions
+  broad AppViewModel product tests now match the sync-v3-only product path; remaining sync-v2 assertions are compat-only
 - `T-087`
   docs compaction and active-context redesign complete
 - `T-076` through `T-084`

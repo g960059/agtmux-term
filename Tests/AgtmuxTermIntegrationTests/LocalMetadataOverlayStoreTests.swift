@@ -245,6 +245,75 @@ final class LocalMetadataOverlayStoreTests: XCTestCase {
         XCTAssertNil(removed.presentationByPaneKey[key])
     }
 
+    func testApplyV3ChangesDropsConflictingUpsertAtSameLocationWhenPaneInstanceDiffers() {
+        let cachedPane = makePane(
+            paneID: "%1",
+            sessionName: "visible-session",
+            windowID: "@1",
+            sessionKey: "opaque-session-key",
+            paneInstanceID: makeV2PaneInstanceID(paneID: "%1", generation: 2),
+            provider: .codex,
+            activityState: .idle
+        )
+        let cachedPresentation = PanePresentationState(
+            snapshot: makeV3Snapshot(
+                sessionName: "visible-session",
+                windowID: "@1",
+                sessionKey: "opaque-session-key",
+                paneID: "%1",
+                paneInstanceID: makeV3PaneInstanceID(paneID: "%1", generation: 2),
+                provider: .codex,
+                presence: .managed,
+                threadLifecycle: .idle,
+                blocking: .none,
+                execution: .none
+            )
+        )
+        let store = makeStore(
+            metadataByPaneKey: [LocalMetadataOverlayStore.paneMetadataKey(for: cachedPane): cachedPane],
+            presentationByPaneKey: [LocalMetadataOverlayStore.paneMetadataKey(for: cachedPane): cachedPresentation]
+        )
+        let conflictingSnapshot = makeV3Snapshot(
+            sessionName: "visible-session",
+            windowID: "@1",
+            sessionKey: "opaque-session-key",
+            paneID: "%1",
+            paneInstanceID: makeV3PaneInstanceID(paneID: "%1", generation: 1),
+            provider: .claude,
+            presence: .managed,
+            threadLifecycle: .active,
+            blocking: .none,
+            execution: .thinking
+        )
+
+        let nextCache = store.apply(
+            AgtmuxSyncV3Changes(
+                fromSeq: 7,
+                toSeq: 7,
+                nextCursor: AgtmuxSyncV3Cursor(seq: 7),
+                changes: [
+                    AgtmuxSyncV3PaneChange(
+                        seq: 7,
+                        at: now,
+                        kind: .upsert,
+                        paneID: "%1",
+                        sessionName: "visible-session",
+                        windowID: "@1",
+                        sessionKey: "opaque-session-key",
+                        paneInstanceID: makeV3PaneInstanceID(paneID: "%1", generation: 1),
+                        fieldGroups: [.identity, .provider, .thread],
+                        pane: conflictingSnapshot
+                    )
+                ]
+            )
+        )
+
+        let key = "local:visible-session:@1:%1"
+        XCTAssertEqual(nextCache.metadataByPaneKey[key]?.provider, .codex)
+        XCTAssertEqual(nextCache.metadataByPaneKey[key]?.activityState, .idle)
+        XCTAssertEqual(nextCache.presentationByPaneKey[key]?.primaryState, .completedIdle)
+    }
+
     private func makeStore(
         inventory: [AgtmuxPane] = [],
         metadataByPaneKey: [String: AgtmuxPane] = [:],
