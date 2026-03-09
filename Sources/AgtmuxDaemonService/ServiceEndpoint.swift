@@ -6,6 +6,8 @@ import AgtmuxTermCore
 final class ServiceDaemonSupervisor {
     private static let inlineOverrideKeys = [
         "AGTMUX_JSON",
+        "AGTMUX_UI_BOOTSTRAP_V3_JSON",
+        "AGTMUX_UI_CHANGES_V3_JSON",
         "AGTMUX_UI_BOOTSTRAP_V2_JSON",
         "AGTMUX_UI_CHANGES_V2_JSON",
         "AGTMUX_UI_HEALTH_V1_JSON",
@@ -194,6 +196,7 @@ final class AgtmuxDaemonServiceEndpoint: NSObject, AgtmuxDaemonServiceXPCProtoco
     private let supervisor: any ServiceDaemonSupervising
     private let daemonClient: AgtmuxDaemonClient
     private let syncV2Session: AgtmuxSyncV2Session
+    private let syncV3Session: AgtmuxSyncV3Session
 
     init(
         supervisor: any ServiceDaemonSupervising = ServiceDaemonSupervisor(),
@@ -202,6 +205,7 @@ final class AgtmuxDaemonServiceEndpoint: NSObject, AgtmuxDaemonServiceXPCProtoco
         self.supervisor = supervisor
         self.daemonClient = daemonClient
         syncV2Session = AgtmuxSyncV2Session(transport: daemonClient)
+        syncV3Session = AgtmuxSyncV3Session(transport: daemonClient)
         super.init()
     }
 
@@ -254,8 +258,23 @@ final class AgtmuxDaemonServiceEndpoint: NSObject, AgtmuxDaemonServiceXPCProtoco
         }
         Task {
             do {
-                let bootstrap = try await daemonClient.fetchUIBootstrapV3()
+                let bootstrap = try await syncV3Session.bootstrap()
                 reply(try encode(bootstrap) as NSData, nil)
+            } catch {
+                reply(nil, errorText(for: error) as NSString)
+            }
+        }
+    }
+
+    func fetchUIChangesV3(_ limit: NSNumber, reply: @escaping (NSData?, NSString?) -> Void) {
+        guard supervisor.startIfNeeded() else {
+            reply(nil, "agtmux daemon unavailable" as NSString)
+            return
+        }
+        Task {
+            do {
+                let response = try await syncV3Session.pollChanges(limit: limit.intValue)
+                reply(try encode(response) as NSData, nil)
             } catch {
                 reply(nil, errorText(for: error) as NSString)
             }
@@ -295,6 +314,13 @@ final class AgtmuxDaemonServiceEndpoint: NSObject, AgtmuxDaemonServiceXPCProtoco
     func resetUIChangesV2(_ reply: @escaping () -> Void) {
         Task {
             await syncV2Session.reset()
+            reply()
+        }
+    }
+
+    func resetUIChangesV3(_ reply: @escaping () -> Void) {
+        Task {
+            await syncV3Session.reset()
             reply()
         }
     }

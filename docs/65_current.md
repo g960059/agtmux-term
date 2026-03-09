@@ -44,7 +44,7 @@
   - fresh live inspection shows the current daemon process started after the rebuilt local `AGTMUX_BIN`
   - direct `ui.bootstrap.v2` probe on the normal app-owned socket now returns strict-compatible rows again
 - `T-120` is now closed:
-  - term-side `sync-v3` consumer foundation is landed but not yet wired into the live app path
+  - term-side `sync-v3` consumer foundation is landed and ready for additive live wiring
   - strict `AgtmuxSyncV3Models` now preserve exact-row identity assumptions on the consumer side
   - a local `PanePresentationState` derivation layer now exists so future v3 UI cutover does not bind views directly to raw daemon structs
   - temporary local decode fixtures were only a bridge until daemon-owned canonical fixtures arrived
@@ -56,7 +56,13 @@
   - AppViewModel bootstrap/resync now prefers daemon `ui.bootstrap.v3` truth and adapts it into the existing local overlay cache without weakening exact-row identity
   - bundled XPC service/client expose the same additive bootstrap-v3 surface, so packaged app and direct daemon paths stay aligned
   - intentional deferral remains:
-    - live delta replay is still `ui.changes.v2`
+    - current sidebar/titlebar/filter/count rendering still flows through legacy `AgtmuxPane` / `ActivityState`
+- `T-123` is now closed:
+  - AppViewModel live replay can now consume daemon `ui.changes.v3` additively after a bootstrap-v3 epoch is established
+  - bundled XPC service/client expose matching `fetchUIChangesV3()` / `resetUIChangesV3()` transport so packaged app and direct daemon paths stay aligned
+  - exact-row update/remove remains strict on `session_name` / `window_id` / `session_key` / `pane_id` / `pane_instance_id`
+  - sync-v2 remains the intact fallback path when bootstrap-v3 or changes-v3 is unsupported
+  - intentional deferral remains:
     - current sidebar/titlebar/filter/count rendering still flows through legacy `AgtmuxPane` / `ActivityState`
 - `T-116` is now open:
   - metadata-enabled health-strip UI and pane-sync UI both reach their real assertions
@@ -186,6 +192,8 @@
   daemon-owned sync-v3 fixture ingestion and additive bootstrap decode surface (`DONE`)
 - `T-122`
   additive bootstrap-v3 consumer bridge in AppViewModel/XPC path (`DONE`)
+- `T-123`
+  additive changes-v3 consumer bridge in AppViewModel/XPC path (`DONE`)
 - `T-114`
   single-writer local overlay recovery and live managed-pane surfacing (`DONE`)
 - `T-115`

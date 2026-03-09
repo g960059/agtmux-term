@@ -155,6 +155,27 @@ Commit closeout is clear; next implementation proceeds on the new Workbench path
 
 ## Recently Closed
 
+### T-123 — additive changes-v3 consumer bridge in AppViewModel/XPC path
+- **Status**: DONE
+- **Priority**: P1
+- **Depends**: T-122
+- **Owner**: term implementation agent
+- **Description**:
+  - Consume daemon `ui.changes.v3` additively in the term replay path without cutting over the live render path yet.
+  - Keep exact-row correlation strict and adapt v3 change truth into the existing term-local row model only as far as needed for live overlay update/remove.
+- **Acceptance Criteria**:
+  - [x] the daemon client and bundled XPC service expose additive `fetchUIChangesV3()` / `resetUIChangesV3()` support
+  - [x] `AppViewModel` can keep a bootstrap-v3 live overlay current through additive `ui.changes.v3` upsert/remove handling
+  - [x] exact-row replay mapping remains strict on:
+    - `session_name`
+    - `window_id`
+    - `session_key`
+    - `pane_id`
+    - `pane_instance_id`
+  - [x] sync-v2 remains the fallback path whenever bootstrap-v3 or changes-v3 is unsupported
+  - [x] focused tests cover changes-v3 decode, v3 session cursor handling, XPC/service transport handling, and AppViewModel exact-row update/remove/fallback behavior
+  - [x] current sidebar/titlebar/filter/count rendering remains intentionally on legacy `AgtmuxPane` / `ActivityState`
+
 ### T-122 — additive bootstrap-v3 consumer bridge in AppViewModel/XPC path
 - **Status**: DONE
 - **Priority**: P1

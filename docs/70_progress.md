@@ -13,6 +13,52 @@ Historical progress detail lives in `docs/archive/progress/2026-02-28_to_2026-03
 
 ## Recent Entries
 
+## 2026-03-09 — T-123 landed: additive `ui.changes.v3` consumer path now keeps the exact local row current without cutting over the live render path
+
+### What landed
+- extended the term-side v3 wire model to match the daemon `ui.changes.v3` contract from `agtmux` commit:
+  - `f37b5ad71c617e9396d71068de6b355d9afa1e28`
+- added additive v3 replay session state in `AgtmuxSyncV3Session`
+- extended direct/XPC daemon clients plus bundled service boundary with:
+  - `fetchUIChangesV3(limit:)`
+  - `resetUIChangesV3()`
+- `AppViewModel` now carries a minimal transport-version adapter:
+  - bootstrap-v3 establishes a v3 replay epoch
+  - changes-v3 upsert/remove mutate the existing exact-row overlay cache without weakening identity
+  - sync-v2 remains the intact fallback when bootstrap-v3 or changes-v3 is unsupported
+- exact-row correlation stayed strict on:
+  - `session_name`
+  - `window_id`
+  - `session_key`
+  - `pane_id`
+  - `pane_instance_id`
+- current UI/render path still intentionally stays on legacy `AgtmuxPane` / `ActivityState`
+
+### Focused coverage
+- added core decode coverage for `ui.changes.v3`:
+  - valid upsert batch
+  - invalid remove-with-pane payload
+  - invalid resync + batch metadata mixture
+- added `AgtmuxSyncV3SessionTests`
+  - bootstrap-required gate
+  - cursor advance
+  - resync reset
+- added direct/XPC transport coverage for `fetchUIChangesV3()`
+- added AppViewModel exact-row coverage for:
+  - v3 upsert updates existing exact row
+  - v3 remove clears overlay back to inventory truth
+  - unsupported `ui.changes.v3` falls back to sync-v2 after bootstrap-v3
+
+### Verification
+- `swift build`
+- `swift test -q --filter AgtmuxSyncV3DecodingTests`
+- `swift test -q --filter AgtmuxSyncV3SessionTests`
+- `swift test -q --filter RuntimeHardeningTests/testDaemonClientFetchUIChangesV3DecodesInlineOverride`
+- `swift test -q --filter AgtmuxDaemonXPCClientTests`
+- `swift test -q --filter AgtmuxDaemonXPCServiceBoundaryTests`
+- `swift test -q --filter AppViewModelA0Tests`
+- result: all passed
+
 ## 2026-03-09 — T-121 landed: term-side v3 tests now consume daemon-owned canonical fixtures
 
 ### Fixture source of truth

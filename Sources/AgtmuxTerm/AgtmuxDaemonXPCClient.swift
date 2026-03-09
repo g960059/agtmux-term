@@ -133,6 +133,26 @@ actor AgtmuxDaemonXPCClient: AgtmuxDaemonXPCClientMetadataConformance {
         return try decode(AgtmuxSyncV3Bootstrap.self, from: payload)
     }
 
+    func fetchUIChangesV3(limit: Int = 256) async throws -> AgtmuxSyncV3ChangesResponse {
+        try await startManagedDaemonIfNeeded()
+
+        let payload: Data = try await invoke(timeout: 5.0, operation: "fetchUIChangesV3") { proxy, done in
+            proxy.fetchUIChangesV3(NSNumber(value: limit)) { data, errorText in
+                if let errorText {
+                    done(.failure(XPCClientError.remote(errorText as String)))
+                    return
+                }
+                guard let data else {
+                    done(.failure(XPCClientError.remote("no changes v3 payload")))
+                    return
+                }
+                done(.success(data as Data))
+            }
+        }
+
+        return try decode(AgtmuxSyncV3ChangesResponse.self, from: payload)
+    }
+
     func fetchUIChangesV2(limit: Int = 256) async throws -> AgtmuxSyncV2ChangesResponse {
         try await startManagedDaemonIfNeeded()
 
@@ -176,6 +196,14 @@ actor AgtmuxDaemonXPCClient: AgtmuxDaemonXPCClientMetadataConformance {
     func resetUIChangesV2() async {
         _ = try? await invoke(timeout: 2.0, operation: "resetUIChangesV2") { proxy, done in
             proxy.resetUIChangesV2 {
+                done(.success(()))
+            }
+        }
+    }
+
+    func resetUIChangesV3() async {
+        _ = try? await invoke(timeout: 2.0, operation: "resetUIChangesV3") { proxy, done in
+            proxy.resetUIChangesV3 {
                 done(.success(()))
             }
         }

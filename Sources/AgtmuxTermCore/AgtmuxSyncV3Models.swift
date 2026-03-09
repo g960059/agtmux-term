@@ -4,6 +4,8 @@ package enum AgtmuxSyncV3ProtocolError: LocalizedError, Equatable, Sendable {
     case unsupportedVersion(Int)
     case missingBootstrapPaneField(String)
     case paneInstanceIDMismatch(topLevelPaneID: String, paneInstancePaneID: String)
+    case missingChangesField(String)
+    case invalidChangesPayload(String)
 
     package var errorDescription: String? {
         switch self {
@@ -13,16 +15,18 @@ package enum AgtmuxSyncV3ProtocolError: LocalizedError, Equatable, Sendable {
             return "sync-v3 bootstrap pane missing required exact identity field '\(field)'"
         case .paneInstanceIDMismatch(let topLevelPaneID, let paneInstancePaneID):
             return "sync-v3 bootstrap pane_instance_id.pane_id '\(paneInstancePaneID)' does not match pane_id '\(topLevelPaneID)'"
+        case .missingChangesField(let field):
+            return "ui.changes.v3 payload missing required field '\(field)'"
+        case .invalidChangesPayload(let detail):
+            return "ui.changes.v3 payload is invalid: \(detail)"
         }
     }
 }
 
 package struct AgtmuxSyncV3Cursor: Codable, Equatable, Sendable {
-    package let epoch: UInt64
     package let seq: UInt64
 
-    package init(epoch: UInt64, seq: UInt64) {
-        self.epoch = epoch
+    package init(seq: UInt64) {
         self.seq = seq
     }
 }
@@ -478,21 +482,15 @@ package struct AgtmuxSyncV3PaneSnapshot: Codable, Equatable, Sendable {
 
 package struct AgtmuxSyncV3Bootstrap: Codable, Equatable, Sendable {
     package let version: Int
-    package let epoch: UInt64?
-    package let snapshotSeq: UInt64?
     package let panes: [AgtmuxSyncV3PaneSnapshot]
     package let generatedAt: Date
     package let replayCursor: AgtmuxSyncV3Cursor?
 
     package init(version: Int,
-                 epoch: UInt64?,
-                 snapshotSeq: UInt64?,
                  panes: [AgtmuxSyncV3PaneSnapshot],
                  generatedAt: Date,
                  replayCursor: AgtmuxSyncV3Cursor?) {
         self.version = version
-        self.epoch = epoch
-        self.snapshotSeq = snapshotSeq
         self.panes = panes
         self.generatedAt = generatedAt
         self.replayCursor = replayCursor
@@ -500,8 +498,6 @@ package struct AgtmuxSyncV3Bootstrap: Codable, Equatable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case version
-        case epoch
-        case snapshotSeq = "snapshot_seq"
         case panes
         case generatedAt = "generated_at"
         case replayCursor = "replay_cursor"
@@ -513,10 +509,249 @@ package struct AgtmuxSyncV3Bootstrap: Codable, Equatable, Sendable {
         if version != 3 {
             throw AgtmuxSyncV3ProtocolError.unsupportedVersion(version)
         }
-        epoch = try container.decodeIfPresent(UInt64.self, forKey: .epoch)
-        snapshotSeq = try container.decodeIfPresent(UInt64.self, forKey: .snapshotSeq)
         panes = try container.decode([AgtmuxSyncV3PaneSnapshot].self, forKey: .panes)
         generatedAt = try container.decode(Date.self, forKey: .generatedAt)
         replayCursor = try container.decodeIfPresent(AgtmuxSyncV3Cursor.self, forKey: .replayCursor)
+    }
+}
+
+package enum AgtmuxSyncV3FieldGroup: String, Codable, Equatable, Sendable {
+    case identity
+    case presence
+    case provider
+    case agent
+    case thread
+    case pendingRequests = "pending_requests"
+    case attention
+    case freshness
+    case providerRaw = "provider_raw"
+}
+
+package enum AgtmuxSyncV3ChangeKind: String, Codable, Equatable, Sendable {
+    case upsert
+    case remove
+}
+
+package struct AgtmuxSyncV3PaneChange: Codable, Equatable, Sendable {
+    package let seq: UInt64
+    package let at: Date
+    package let kind: AgtmuxSyncV3ChangeKind
+    package let paneID: String
+    package let sessionName: String
+    package let windowID: String
+    package let sessionKey: String
+    package let paneInstanceID: AgtmuxSyncV3PaneInstanceID
+    package let fieldGroups: [AgtmuxSyncV3FieldGroup]
+    package let pane: AgtmuxSyncV3PaneSnapshot?
+
+    package init(
+        seq: UInt64,
+        at: Date,
+        kind: AgtmuxSyncV3ChangeKind,
+        paneID: String,
+        sessionName: String,
+        windowID: String,
+        sessionKey: String,
+        paneInstanceID: AgtmuxSyncV3PaneInstanceID,
+        fieldGroups: [AgtmuxSyncV3FieldGroup],
+        pane: AgtmuxSyncV3PaneSnapshot?
+    ) {
+        self.seq = seq
+        self.at = at
+        self.kind = kind
+        self.paneID = paneID
+        self.sessionName = sessionName
+        self.windowID = windowID
+        self.sessionKey = sessionKey
+        self.paneInstanceID = paneInstanceID
+        self.fieldGroups = fieldGroups
+        self.pane = pane
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case seq
+        case at
+        case kind
+        case paneID = "pane_id"
+        case sessionName = "session_name"
+        case windowID = "window_id"
+        case sessionKey = "session_key"
+        case paneInstanceID = "pane_instance_id"
+        case fieldGroups = "field_groups"
+        case pane
+    }
+
+    package init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        seq = try container.decode(UInt64.self, forKey: .seq)
+        at = try container.decode(Date.self, forKey: .at)
+        kind = try container.decode(AgtmuxSyncV3ChangeKind.self, forKey: .kind)
+        sessionName = try Self.decodeRequired(String.self, from: container, forKey: .sessionName)
+        windowID = try Self.decodeRequired(String.self, from: container, forKey: .windowID)
+        sessionKey = try Self.decodeRequired(String.self, from: container, forKey: .sessionKey)
+        paneID = try Self.decodeRequired(String.self, from: container, forKey: .paneID)
+        paneInstanceID = try Self.decodeRequired(AgtmuxSyncV3PaneInstanceID.self, from: container, forKey: .paneInstanceID)
+        fieldGroups = try container.decode([AgtmuxSyncV3FieldGroup].self, forKey: .fieldGroups)
+        pane = try container.decodeIfPresent(AgtmuxSyncV3PaneSnapshot.self, forKey: .pane)
+
+        if paneInstanceID.paneId != paneID {
+            throw AgtmuxSyncV3ProtocolError.paneInstanceIDMismatch(
+                topLevelPaneID: paneID,
+                paneInstancePaneID: paneInstanceID.paneId
+            )
+        }
+        if fieldGroups.isEmpty {
+            throw AgtmuxSyncV3ProtocolError.invalidChangesPayload("field_groups must not be empty")
+        }
+
+        switch kind {
+        case .upsert:
+            guard let pane else {
+                throw AgtmuxSyncV3ProtocolError.invalidChangesPayload("upsert change requires pane payload")
+            }
+            guard pane.paneID == paneID,
+                  pane.sessionName == sessionName,
+                  pane.windowID == windowID,
+                  pane.sessionKey == sessionKey,
+                  pane.paneInstanceID == paneInstanceID else {
+                throw AgtmuxSyncV3ProtocolError.invalidChangesPayload(
+                    "upsert change identity fields must match nested pane payload"
+                )
+            }
+        case .remove:
+            if pane != nil {
+                throw AgtmuxSyncV3ProtocolError.invalidChangesPayload("remove change must not include pane payload")
+            }
+        }
+    }
+
+    private static func decodeRequired<T: Decodable>(
+        _ type: T.Type,
+        from container: KeyedDecodingContainer<CodingKeys>,
+        forKey key: CodingKeys
+    ) throws -> T {
+        do {
+            return try container.decode(T.self, forKey: key)
+        } catch {
+            throw AgtmuxSyncV3ProtocolError.missingChangesField(key.rawValue)
+        }
+    }
+}
+
+package struct AgtmuxSyncV3ResyncRequired: Codable, Equatable, Sendable {
+    package let latestSnapshotSeq: UInt64
+    package let reason: String
+
+    enum CodingKeys: String, CodingKey {
+        case latestSnapshotSeq = "latest_snapshot_seq"
+        case reason
+    }
+}
+
+package struct AgtmuxSyncV3Changes: Codable, Equatable, Sendable {
+    package let fromSeq: UInt64
+    package let toSeq: UInt64
+    package let nextCursor: AgtmuxSyncV3Cursor
+    package let changes: [AgtmuxSyncV3PaneChange]
+
+    package init(
+        fromSeq: UInt64,
+        toSeq: UInt64,
+        nextCursor: AgtmuxSyncV3Cursor,
+        changes: [AgtmuxSyncV3PaneChange]
+    ) {
+        self.fromSeq = fromSeq
+        self.toSeq = toSeq
+        self.nextCursor = nextCursor
+        self.changes = changes
+    }
+}
+
+package enum AgtmuxSyncV3ChangesResponse: Equatable, Sendable {
+    case changes(AgtmuxSyncV3Changes)
+    case resyncRequired(AgtmuxSyncV3ResyncRequired)
+}
+
+extension AgtmuxSyncV3ChangesResponse: Codable {
+    private enum CodingKeys: String, CodingKey {
+        case version
+        case changes
+        case fromSeq = "from_seq"
+        case toSeq = "to_seq"
+        case nextCursor = "next_cursor"
+        case resyncRequired = "resync_required"
+    }
+
+    package init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let version = try container.decode(Int.self, forKey: .version)
+        if version != 3 {
+            throw AgtmuxSyncV3ProtocolError.unsupportedVersion(version)
+        }
+
+        if let resync = try container.decodeIfPresent(AgtmuxSyncV3ResyncRequired.self, forKey: .resyncRequired) {
+            let changes = try container.decodeIfPresent([AgtmuxSyncV3PaneChange].self, forKey: .changes) ?? []
+            let fromSeq = try container.decodeIfPresent(UInt64.self, forKey: .fromSeq)
+            let toSeq = try container.decodeIfPresent(UInt64.self, forKey: .toSeq)
+            let nextCursor = try container.decodeIfPresent(AgtmuxSyncV3Cursor.self, forKey: .nextCursor)
+            if !changes.isEmpty || fromSeq != nil || toSeq != nil || nextCursor != nil {
+                throw AgtmuxSyncV3ProtocolError.invalidChangesPayload(
+                    "resync_required response must not include batch cursors or changes"
+                )
+            }
+            self = .resyncRequired(resync)
+            return
+        }
+
+        let fromSeq = try Self.decodeRequired(UInt64.self, from: container, forKey: .fromSeq)
+        let toSeq = try Self.decodeRequired(UInt64.self, from: container, forKey: .toSeq)
+        let nextCursor = try Self.decodeRequired(AgtmuxSyncV3Cursor.self, from: container, forKey: .nextCursor)
+        let changes = try container.decodeIfPresent([AgtmuxSyncV3PaneChange].self, forKey: .changes) ?? []
+
+        let lowerBound = fromSeq == 0 ? 0 : fromSeq - 1
+        if toSeq < lowerBound {
+            throw AgtmuxSyncV3ProtocolError.invalidChangesPayload("to_seq must be >= from_seq - 1")
+        }
+        if nextCursor.seq != toSeq {
+            throw AgtmuxSyncV3ProtocolError.invalidChangesPayload("next_cursor.seq must equal to_seq")
+        }
+        for change in changes where change.seq < fromSeq || change.seq > toSeq {
+            throw AgtmuxSyncV3ProtocolError.invalidChangesPayload("change seq outside response window")
+        }
+
+        self = .changes(
+            AgtmuxSyncV3Changes(
+                fromSeq: fromSeq,
+                toSeq: toSeq,
+                nextCursor: nextCursor,
+                changes: changes
+            )
+        )
+    }
+
+    private static func decodeRequired<T: Decodable>(
+        _ type: T.Type,
+        from container: KeyedDecodingContainer<CodingKeys>,
+        forKey key: CodingKeys
+    ) throws -> T {
+        do {
+            return try container.decode(T.self, forKey: key)
+        } catch {
+            throw AgtmuxSyncV3ProtocolError.missingChangesField(key.rawValue)
+        }
+    }
+
+    package func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(3, forKey: .version)
+        switch self {
+        case .changes(let payload):
+            try container.encode(payload.changes, forKey: .changes)
+            try container.encode(payload.fromSeq, forKey: .fromSeq)
+            try container.encode(payload.toSeq, forKey: .toSeq)
+            try container.encode(payload.nextCursor, forKey: .nextCursor)
+        case .resyncRequired(let payload):
+            try container.encode(payload, forKey: .resyncRequired)
+        }
     }
 }

@@ -1,7 +1,7 @@
 import Foundation
 import Darwin
 
-extension AgtmuxDaemonClient: AgtmuxSyncV2Transport {
+extension AgtmuxDaemonClient: AgtmuxSyncV2Transport, AgtmuxSyncV3Transport {
     package func fetchBootstrapV3() async throws -> AgtmuxSyncV3Bootstrap {
         if let inlineJSON = ProcessInfo.processInfo.environment["AGTMUX_UI_BOOTSTRAP_V3_JSON"] {
             guard let data = inlineJSON.data(using: .utf8) else {
@@ -14,6 +14,21 @@ extension AgtmuxDaemonClient: AgtmuxSyncV2Transport {
         return try rpcCall(
             method: "ui.bootstrap.v3",
             params: EmptyRPCParams()
+        )
+    }
+
+    package func fetchChangesV3(cursor: AgtmuxSyncV3Cursor, limit: Int) async throws -> AgtmuxSyncV3ChangesResponse {
+        if let inlineJSON = ProcessInfo.processInfo.environment["AGTMUX_UI_CHANGES_V3_JSON"] {
+            guard let data = inlineJSON.data(using: .utf8) else {
+                throw DaemonError.parseError("AGTMUX_UI_CHANGES_V3_JSON is not valid UTF-8")
+            }
+            return try Self.decodeJSONPayload(AgtmuxSyncV3ChangesResponse.self, from: data, label: "AGTMUX_UI_CHANGES_V3_JSON")
+        }
+
+        try ensureManagedRuntimeConfigured(forInlineOverrideKeys: ["AGTMUX_UI_CHANGES_V3_JSON"])
+        return try rpcCall(
+            method: "ui.changes.v3",
+            params: ChangesV3RPCParams(cursor: cursor, limit: limit)
         )
     }
 
@@ -66,6 +81,11 @@ private extension AgtmuxDaemonClient {
 
     struct ChangesRPCParams: Encodable {
         let cursor: AgtmuxSyncV2Cursor
+        let limit: Int
+    }
+
+    struct ChangesV3RPCParams: Encodable {
+        let cursor: AgtmuxSyncV3Cursor
         let limit: Int
     }
 
@@ -135,7 +155,7 @@ private extension AgtmuxDaemonClient {
         let message = error.message.trimmingCharacters(in: .whitespacesAndNewlines)
         if isMethodNotFound(error: error) {
             switch method {
-            case "ui.bootstrap.v3":
+            case "ui.bootstrap.v3", "ui.changes.v3":
                 return .makeSyncV3MethodNotFoundError(
                     method: method,
                     rpcCode: error.code,

@@ -107,28 +107,29 @@ Local negative tests that assert consumer fail-closed behavior may still use inl
 
 ## Current Limit
 
-The current term rollout is bootstrap-only.
+The current term rollout is additive bootstrap-v3 plus additive changes-v3.
 
 - `AppViewModel` now prefers `ui.bootstrap.v3` when the daemon exposes it
-- exact-row bootstrap correlation still remains strict on:
+- after bootstrap-v3 succeeds, the live replay path can also consume `ui.changes.v3`
+- exact-row correlation still remains strict on:
   - `session_name`
   - `window_id`
   - `session_key`
   - `pane_id`
   - `pane_instance_id`
-- the live delta path is still `ui.changes.v2`
+- sync-v2 remains intact as the fallback path whenever bootstrap-v3 or changes-v3 is unsupported
 - the current product UI still renders through legacy `AgtmuxPane` / `ActivityState`
 
 The v3 bridge deliberately adapts daemon truth into the existing term-local row model without cutting views over yet.
 That means:
 
 - bootstrap-v3 improves initial exact-row truth
+- changes-v3 can now update/remove the existing exact row through the same additive adapter
 - `attention` remains a summary input, not request identity
 - the full sidebar/titlebar/filter/count cutover waits for daemon `changes-v3`
 
 Remaining rollout steps:
 
-1. additive bootstrap-v3 adapter and exact-row AppViewModel bridge
-2. additive `changes-v3` consumer path
-3. presentation cutover onto `PanePresentationState`
-4. removal of active v2-only presentation dependencies
+1. presentation cutover onto `PanePresentationState`
+2. live/UI coverage for the additive v3 delta lane
+3. removal of active v2-only presentation dependencies

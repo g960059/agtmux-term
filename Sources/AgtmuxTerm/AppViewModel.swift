@@ -39,7 +39,7 @@ enum LocalDaemonIssue: Equatable {
         case .localDaemonUnavailable:
             return "No local agtmux daemon runtime is configured. Pane rows below are from local tmux inventory only. Use the bundled app runtime or set AGTMUX_BIN."
         case .incompatibleSyncV2:
-            return "This agtmux daemon is too old for sync-v2 metadata. Pane rows below are from local tmux inventory only. Restart with a newer daemon."
+            return "This agtmux daemon is incompatible with the current sync metadata contract. Pane rows below are from local tmux inventory only. Restart with a newer daemon."
         }
     }
 
@@ -48,7 +48,7 @@ enum LocalDaemonIssue: Equatable {
         case .localDaemonUnavailable:
             return "Local agtmux daemon runtime is unavailable. Use the bundled app runtime or set AGTMUX_BIN."
         case .incompatibleSyncV2:
-            return "This agtmux daemon is too old for sync-v2 metadata. Restart with a newer daemon."
+            return "This agtmux daemon is incompatible with the current sync metadata contract. Restart with a newer daemon."
         }
     }
 
@@ -274,6 +274,12 @@ final class AppViewModel: ObservableObject {
     private var localMetadataRefreshTask: Task<Void, Never>?
     private var localHealthRefreshTask: Task<Void, Never>?
     private var localMetadataSyncPrimed = false
+    private enum LocalMetadataTransportVersion {
+        case v2
+        case v3
+    }
+    private var localMetadataTransportVersion: LocalMetadataTransportVersion?
+    private var localMetadataPrefersSyncV3 = true
     private var uiTestMetadataModeEnabled = false
     private var nextLocalMetadataRefreshAt: Date = .distantPast
     private var nextLocalHealthRefreshAt: Date = .distantPast
@@ -334,8 +340,14 @@ final class AppViewModel: ObservableObject {
             normalized.contains("ui.changes.v2") ||
             normalized.contains("agtmux_ui_bootstrap_v2_json") ||
             normalized.contains("agtmux_ui_changes_v2_json") ||
+            normalized.contains("ui.bootstrap.v3") ||
+            normalized.contains("ui.changes.v3") ||
+            normalized.contains("agtmux_ui_bootstrap_v3_json") ||
+            normalized.contains("agtmux_ui_changes_v3_json") ||
             normalized.contains("sync-v2 bootstrap") ||
-            normalized.contains("sync-v2 pane")
+            normalized.contains("sync-v2 pane") ||
+            normalized.contains("sync-v3 bootstrap") ||
+            normalized.contains("sync-v3 pane")
         let indicatesIncompatibleMethod =
             normalized.contains("-32601") ||
             normalized.contains("method not found")
@@ -523,8 +535,12 @@ final class AppViewModel: ObservableObject {
         localHealthRefreshTask?.cancel()
         localHealthRefreshTask = nil
         localMetadataSyncPrimed = false
+        localMetadataTransportVersion = nil
         nextLocalHealthRefreshAt = .distantPast
-        Task { await localClient.resetUIChangesV2() }
+        Task {
+            await localClient.resetUIChangesV2()
+            await localClient.resetUIChangesV3()
+        }
     }
 
     func enableUITestMetadataMode() {
@@ -534,6 +550,7 @@ final class AppViewModel: ObservableObject {
         localHealthRefreshTask?.cancel()
         localHealthRefreshTask = nil
         localMetadataSyncPrimed = false
+        localMetadataTransportVersion = nil
         nextLocalMetadataRefreshAt = .distantPast
         nextLocalHealthRefreshAt = .distantPast
     }
@@ -624,7 +641,7 @@ final class AppViewModel: ObservableObject {
     }
 
     private enum LocalBootstrapMetadataResult {
-        case metadata([String: AgtmuxPane])
+        case metadata([String: AgtmuxPane], LocalMetadataTransportVersion)
         case deferred
     }
 
@@ -932,6 +949,44 @@ final class AppViewModel: ObservableObject {
         return metadataByPaneKey
     }
 
+    private func matchesV3ExactIdentity(
+        _ pane: AgtmuxPane,
+        sessionKey: String,
+        paneInstanceID: AgtmuxSyncV3PaneInstanceID
+    ) -> Bool {
+        pane.source == "local"
+            && metadataSessionKey(for: pane) == sessionKey
+            && pane.paneInstanceID == legacyPaneInstanceID(from: paneInstanceID)
+    }
+
+    private func applyLocalMetadataChanges(_ payload: AgtmuxSyncV3Changes) -> [String: AgtmuxPane] {
+        var metadataByPaneKey = cachedLocalMetadataByPaneKey
+
+        for change in payload.changes {
+            let matchingKeys = metadataByPaneKey.compactMap { key, pane in
+                matchesV3ExactIdentity(
+                    pane,
+                    sessionKey: change.sessionKey,
+                    paneInstanceID: change.paneInstanceID
+                ) ? key : nil
+            }
+            for key in matchingKeys {
+                metadataByPaneKey.removeValue(forKey: key)
+            }
+
+            switch change.kind {
+            case .remove:
+                continue
+            case .upsert:
+                guard let paneSnapshot = change.pane else { continue }
+                let pane = localMetadataPane(from: paneSnapshot)
+                metadataByPaneKey[paneMetadataKey(for: pane)] = pane
+            }
+        }
+
+        return metadataByPaneKey
+    }
+
     private func publishLocalMetadataCache(_ metadataByPaneKey: [String: AgtmuxPane]) async {
         cachedLocalMetadataByPaneKey = metadataByPaneKey
         nextLocalMetadataRefreshAt = Date().addingTimeInterval(localMetadataSuccessInterval)
@@ -943,6 +998,21 @@ final class AppViewModel: ObservableObject {
         cachedLocalMetadataByPaneKey = [:]
         guard !lastSuccessfulLocalInventory.isEmpty else { return }
         await publishFromSnapshotCache()
+    }
+
+    private func resetActiveLocalMetadataReplayState() async {
+        switch localMetadataTransportVersion {
+        case .v3:
+            await localClient.resetUIChangesV3()
+        case .v2:
+            await localClient.resetUIChangesV2()
+        case nil:
+            if localMetadataPrefersSyncV3 {
+                await localClient.resetUIChangesV3()
+            } else {
+                await localClient.resetUIChangesV2()
+            }
+        }
     }
 
     private func scheduleLocalHealthRefreshIfNeeded() {
@@ -990,35 +1060,82 @@ final class AppViewModel: ObservableObject {
                 if !self.localMetadataSyncPrimed {
                     let bootstrapResult = try await self.fetchLocalBootstrapMetadataByPaneKey()
                     try Task.checkCancellation()
-                    guard case let .metadata(metadataByPaneKey) = bootstrapResult else {
+                    guard case let .metadata(metadataByPaneKey, transportVersion) = bootstrapResult else {
                         return
                     }
+                    self.localMetadataTransportVersion = transportVersion
                     self.localMetadataSyncPrimed = true
                     self.localDaemonIssue = nil
                     await self.publishLocalMetadataCache(metadataByPaneKey)
                     return
                 }
 
-                let response = try await self.localClient.fetchUIChangesV2(limit: self.localMetadataChangeLimit)
-                try Task.checkCancellation()
-                switch response {
-                case let .changes(payload):
-                    let metadataByPaneKey = self.applyLocalMetadataChanges(payload)
-                    self.localDaemonIssue = nil
-                    await self.publishLocalMetadataCache(metadataByPaneKey)
-                case let .resyncRequired(payload):
-                    self.logLocalFetch(
-                        "sync-v2 resync required; reason=\(payload.reason) epoch=\(payload.currentEpoch) snapshot_seq=\(payload.latestSnapshotSeq)"
-                    )
-                    await self.localClient.resetUIChangesV2()
-                    let bootstrapResult = try await self.fetchLocalBootstrapMetadataByPaneKey()
+                switch self.localMetadataTransportVersion ?? .v2 {
+                case .v2:
+                    let response = try await self.localClient.fetchUIChangesV2(limit: self.localMetadataChangeLimit)
                     try Task.checkCancellation()
-                    guard case let .metadata(metadataByPaneKey) = bootstrapResult else {
-                        return
+                    switch response {
+                    case let .changes(payload):
+                        let metadataByPaneKey = self.applyLocalMetadataChanges(payload)
+                        self.localDaemonIssue = nil
+                        await self.publishLocalMetadataCache(metadataByPaneKey)
+                    case let .resyncRequired(payload):
+                        self.logLocalFetch(
+                            "sync-v2 resync required; reason=\(payload.reason) epoch=\(payload.currentEpoch) snapshot_seq=\(payload.latestSnapshotSeq)"
+                        )
+                        await self.localClient.resetUIChangesV2()
+                        let bootstrapResult = try await self.fetchLocalBootstrapMetadataByPaneKey()
+                        try Task.checkCancellation()
+                        guard case let .metadata(metadataByPaneKey, transportVersion) = bootstrapResult else {
+                            return
+                        }
+                        self.localMetadataTransportVersion = transportVersion
+                        self.localMetadataSyncPrimed = true
+                        self.localDaemonIssue = nil
+                        await self.publishLocalMetadataCache(metadataByPaneKey)
                     }
-                    self.localMetadataSyncPrimed = true
-                    self.localDaemonIssue = nil
-                    await self.publishLocalMetadataCache(metadataByPaneKey)
+                case .v3:
+                    do {
+                        let response = try await self.localClient.fetchUIChangesV3(limit: self.localMetadataChangeLimit)
+                        try Task.checkCancellation()
+                        switch response {
+                        case let .changes(payload):
+                            let metadataByPaneKey = self.applyLocalMetadataChanges(payload)
+                            self.localDaemonIssue = nil
+                            await self.publishLocalMetadataCache(metadataByPaneKey)
+                        case let .resyncRequired(payload):
+                            self.logLocalFetch(
+                                "sync-v3 resync required; reason=\(payload.reason) latest_snapshot_seq=\(payload.latestSnapshotSeq)"
+                            )
+                            await self.localClient.resetUIChangesV3()
+                            let bootstrapResult = try await self.fetchLocalBootstrapMetadataByPaneKey()
+                            try Task.checkCancellation()
+                            guard case let .metadata(metadataByPaneKey, transportVersion) = bootstrapResult else {
+                                return
+                            }
+                            self.localMetadataTransportVersion = transportVersion
+                            self.localMetadataSyncPrimed = true
+                            self.localDaemonIssue = nil
+                            await self.publishLocalMetadataCache(metadataByPaneKey)
+                        }
+                    } catch {
+                        guard self.shouldFallbackToSyncV2FromV3Error(error) else {
+                            throw error
+                        }
+                        await self.localClient.resetUIChangesV3()
+                        self.localMetadataPrefersSyncV3 = false
+                        self.localMetadataTransportVersion = nil
+                        self.localMetadataSyncPrimed = false
+                        let bootstrapResult = try await self.fetchLocalBootstrapMetadataByPaneKey()
+                        try Task.checkCancellation()
+                        guard case let .metadata(metadataByPaneKey, transportVersion) = bootstrapResult else {
+                            return
+                        }
+                        self.localMetadataTransportVersion = transportVersion
+                        self.localMetadataSyncPrimed = true
+                        self.localDaemonIssue = nil
+                        await self.publishLocalMetadataCache(metadataByPaneKey)
+                    }
                 }
             } catch is CancellationError {
                 return
@@ -1026,30 +1143,34 @@ final class AppViewModel: ObservableObject {
                 if Task.isCancelled {
                     return
                 }
-                await self.localClient.resetUIChangesV2()
+                await self.resetActiveLocalMetadataReplayState()
                 if Task.isCancelled {
                     return
                 }
                 self.localMetadataSyncPrimed = false
+                self.localMetadataTransportVersion = nil
                 self.nextLocalMetadataRefreshAt = Date().addingTimeInterval(self.localMetadataFailureBackoff)
                 self.localDaemonIssue = self.classifyLocalDaemonIssue(from: error)
                 await self.clearLocalMetadataCache()
-                self.logLocalFetch("sync-v2 metadata unavailable; cleared cached overlay: \(error)")
+                self.logLocalFetch("sync metadata unavailable; cleared cached overlay: \(error)")
             }
         }
     }
 
     private func fetchLocalBootstrapMetadataByPaneKey() async throws -> LocalBootstrapMetadataResult {
-        do {
-            let bootstrap = try await localClient.fetchUIBootstrapV3()
-            try Task.checkCancellation()
-            if await deferBootstrapIfNotReady(bootstrap) {
-                return .deferred
-            }
-            return .metadata(try localMetadataMap(from: bootstrap))
-        } catch {
-            guard shouldFallbackToSyncV2Bootstrap(from: error) else {
-                throw error
+        if localMetadataPrefersSyncV3 {
+            do {
+                let bootstrap = try await localClient.fetchUIBootstrapV3()
+                try Task.checkCancellation()
+                if await deferBootstrapIfNotReady(bootstrap) {
+                    return .deferred
+                }
+                return .metadata(try localMetadataMap(from: bootstrap), .v3)
+            } catch {
+                guard shouldFallbackToSyncV2FromV3Error(error) else {
+                    throw error
+                }
+                localMetadataPrefersSyncV3 = false
             }
         }
 
@@ -1058,12 +1179,13 @@ final class AppViewModel: ObservableObject {
         if await deferBootstrapIfNotReady(bootstrap) {
             return .deferred
         }
-        return .metadata(try localMetadataMap(from: bootstrap.panes))
+        return .metadata(try localMetadataMap(from: bootstrap.panes), .v2)
     }
 
-    private func shouldFallbackToSyncV2Bootstrap(from error: any Error) -> Bool {
+    private func shouldFallbackToSyncV2FromV3Error(_ error: any Error) -> Bool {
         if let metadataError = error as? LocalMetadataClientError {
-            if case let .unsupportedMethod(method) = metadataError, method == "ui.bootstrap.v3" {
+            if case let .unsupportedMethod(method) = metadataError,
+               method == "ui.bootstrap.v3" || method == "ui.changes.v3" {
                 return true
             }
         }
@@ -1095,7 +1217,8 @@ final class AppViewModel: ObservableObject {
         }
 
         let normalized = String(describing: error).lowercased()
-        return normalized.contains("ui.bootstrap.v3")
+        let referencesV3Method = normalized.contains("ui.bootstrap.v3") || normalized.contains("ui.changes.v3")
+        return referencesV3Method
             && (normalized.contains("-32601") || normalized.contains("method not found"))
     }
 
@@ -1104,6 +1227,7 @@ final class AppViewModel: ObservableObject {
         guard bootstrap.panes.isEmpty else { return false }
 
         localMetadataSyncPrimed = false
+        localMetadataTransportVersion = nil
         localDaemonIssue = nil
         nextLocalMetadataRefreshAt = Date().addingTimeInterval(localMetadataBootstrapNotReadyBackoff)
         await localClient.resetUIChangesV2()
@@ -1119,9 +1243,10 @@ final class AppViewModel: ObservableObject {
         guard bootstrap.panes.isEmpty else { return false }
 
         localMetadataSyncPrimed = false
+        localMetadataTransportVersion = nil
         localDaemonIssue = nil
         nextLocalMetadataRefreshAt = Date().addingTimeInterval(localMetadataBootstrapNotReadyBackoff)
-        await localClient.resetUIChangesV2()
+        await localClient.resetUIChangesV3()
         await clearLocalMetadataCache()
         logLocalFetch(
             "sync-v3 bootstrap not ready; local inventory has \(lastSuccessfulLocalInventory.count) panes but bootstrap returned panes=0"
@@ -1246,8 +1371,10 @@ final class AppViewModel: ObservableObject {
             localMetadataRefreshTask?.cancel()
             localMetadataRefreshTask = nil
             localMetadataSyncPrimed = false
+            localMetadataTransportVersion = nil
             localDaemonIssue = nil
             await localClient.resetUIChangesV2()
+            await localClient.resetUIChangesV3()
         }
         await publishFromSnapshotCache(offlineHosts: newOffline)
         hasCompletedInitialFetch = true

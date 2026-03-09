@@ -24,6 +24,11 @@ final class AppViewModelA0Tests: XCTestCase {
         let result: Result<AgtmuxSyncV2ChangesResponse, Error>
     }
 
+    private struct ChangesV3Step {
+        let delayMs: UInt64
+        let result: Result<AgtmuxSyncV3ChangesResponse, Error>
+    }
+
     private struct HealthStep {
         let delayMs: UInt64
         let result: Result<AgtmuxUIHealthV1, Error>
@@ -32,6 +37,7 @@ final class AppViewModelA0Tests: XCTestCase {
     private actor StubMetadataClient: LocalMetadataClient, LocalHealthClient {
         private var bootstrapV3Steps: [BootstrapV3Step]
         private var bootstrapSteps: [BootstrapStep]
+        private var changesV3Steps: [ChangesV3Step]
         private var changesSteps: [ChangesStep]
         private var healthSteps: [HealthStep]
         private(set) var resetCount = 0
@@ -39,10 +45,12 @@ final class AppViewModelA0Tests: XCTestCase {
 
         init(bootstrapV3Steps: [BootstrapV3Step] = [],
              bootstrapSteps: [BootstrapStep],
+             changesV3Steps: [ChangesV3Step] = [],
              changesSteps: [ChangesStep] = [],
              healthSteps: [HealthStep] = []) {
             self.bootstrapV3Steps = bootstrapV3Steps
             self.bootstrapSteps = bootstrapSteps
+            self.changesV3Steps = changesV3Steps
             self.changesSteps = changesSteps
             self.healthSteps = healthSteps
         }
@@ -81,6 +89,22 @@ final class AppViewModelA0Tests: XCTestCase {
             }
         }
 
+        func fetchUIChangesV3(limit: Int) async throws -> AgtmuxSyncV3ChangesResponse {
+            guard !changesV3Steps.isEmpty else {
+                throw LocalMetadataClientError.unsupportedMethod("ui.changes.v3")
+            }
+            let step = changesV3Steps.removeFirst()
+            if step.delayMs > 0 {
+                try? await Task.sleep(for: .milliseconds(step.delayMs))
+            }
+            switch step.result {
+            case let .success(response):
+                return response
+            case let .failure(error):
+                throw error
+            }
+        }
+
         func fetchUIChangesV2(limit: Int) async throws -> AgtmuxSyncV2ChangesResponse {
             guard !changesSteps.isEmpty else { throw StubError.exhausted }
             let step = changesSteps.removeFirst()
@@ -114,6 +138,10 @@ final class AppViewModelA0Tests: XCTestCase {
         }
 
         func resetUIChangesV2() async {
+            resetCount += 1
+        }
+
+        func resetUIChangesV3() async {
             resetCount += 1
         }
 
@@ -324,6 +352,35 @@ final class AppViewModelA0Tests: XCTestCase {
                 fromSeq: seq,
                 toSeq: seq,
                 nextCursor: AgtmuxSyncV2Cursor(epoch: 1, seq: seq + 1)
+            )
+        )
+    }
+
+    private func makeChangesV3Response(
+        pane: AgtmuxSyncV3PaneSnapshot,
+        kind: AgtmuxSyncV3ChangeKind = .upsert,
+        seq: UInt64 = 2,
+        fieldGroups: [AgtmuxSyncV3FieldGroup] = [.thread, .pendingRequests, .attention]
+    ) -> AgtmuxSyncV3ChangesResponse {
+        .changes(
+            AgtmuxSyncV3Changes(
+                fromSeq: seq,
+                toSeq: seq,
+                nextCursor: AgtmuxSyncV3Cursor(seq: seq),
+                changes: [
+                    AgtmuxSyncV3PaneChange(
+                        seq: seq,
+                        at: pane.updatedAt,
+                        kind: kind,
+                        paneID: pane.paneID,
+                        sessionName: pane.sessionName,
+                        windowID: pane.windowID,
+                        sessionKey: pane.sessionKey,
+                        paneInstanceID: pane.paneInstanceID,
+                        fieldGroups: fieldGroups,
+                        pane: kind == .upsert ? pane : nil
+                    )
+                ]
             )
         )
     }
@@ -3236,6 +3293,181 @@ final class AppViewModelA0Tests: XCTestCase {
                 && pane.metadataSessionKey == "opaque-v2-fallback"
         }
         XCTAssertTrue(overlayApplied, "bootstrap-v3 method-not-found must fall back to the intact sync-v2 bootstrap path")
+        XCTAssertNil(model.localDaemonIssue)
+    }
+
+    @MainActor
+    func testBootstrapV3ChangesV3UpsertUpdatesExactRowWithoutWeakeningIdentity() async throws {
+        let bootstrap = try loadSyncV3Fixture(named: "codex-running")
+        let updated = try loadSyncV3Fixture(named: "codex-waiting-approval")
+        let inventoryPane = makeInventoryPane(
+            paneId: "%12",
+            sessionName: "workbench",
+            windowId: "@5",
+            activityState: .unknown,
+            currentCmd: "zsh"
+        )
+        let client = StubMetadataClient(
+            bootstrapV3Steps: [
+                BootstrapV3Step(delayMs: 20, result: .success(bootstrap))
+            ],
+            bootstrapSteps: [],
+            changesV3Steps: [
+                ChangesV3Step(delayMs: 20, result: .success(makeChangesV3Response(
+                    pane: try XCTUnwrap(updated.panes.first),
+                    seq: 41
+                )))
+            ]
+        )
+        let model = AppViewModel(
+            localClient: client,
+            localInventoryClient: StubInventoryClient(panes: [inventoryPane]),
+            hostsConfig: .empty
+        )
+
+        await model.fetchAll()
+        let initialOverlayApplied = await waitUntil {
+            model.panes.first?.activityState == .running
+        }
+        XCTAssertTrue(initialOverlayApplied)
+
+        try? await Task.sleep(for: .milliseconds(1100))
+        await model.fetchAll()
+
+        let updateApplied = await waitUntil {
+            guard let pane = model.panes.first else { return false }
+            return pane.paneId == "%12"
+                && pane.sessionName == "workbench"
+                && pane.windowId == "@5"
+                && pane.metadataSessionKey == "codex:%12"
+                && pane.paneInstanceID?.generation == 7
+                && pane.provider == .codex
+                && pane.activityState == .waitingApproval
+                && pane.needsAttention
+        }
+
+        XCTAssertTrue(updateApplied, "changes-v3 upsert must update the existing exact row without weakening identity requirements")
+        XCTAssertNil(model.localDaemonIssue)
+    }
+
+    @MainActor
+    func testBootstrapV3ChangesV3RemoveClearsOverlayAndReturnsToInventoryTruth() async throws {
+        let bootstrap = try loadSyncV3Fixture(named: "codex-running")
+        let pane = try XCTUnwrap(bootstrap.panes.first)
+        let inventoryPane = makeInventoryPane(
+            paneId: "%12",
+            sessionName: "workbench",
+            windowId: "@5",
+            activityState: .unknown,
+            currentCmd: "zsh"
+        )
+        let client = StubMetadataClient(
+            bootstrapV3Steps: [
+                BootstrapV3Step(delayMs: 20, result: .success(bootstrap))
+            ],
+            bootstrapSteps: [],
+            changesV3Steps: [
+                ChangesV3Step(delayMs: 20, result: .success(makeChangesV3Response(
+                    pane: pane,
+                    kind: .remove,
+                    seq: 42,
+                    fieldGroups: [.presence]
+                )))
+            ]
+        )
+        let model = AppViewModel(
+            localClient: client,
+            localInventoryClient: StubInventoryClient(panes: [inventoryPane]),
+            hostsConfig: .empty
+        )
+
+        await model.fetchAll()
+        let initialManagedOverlayApplied = await waitUntil {
+            model.panes.first?.provider == .codex
+        }
+        XCTAssertTrue(initialManagedOverlayApplied)
+
+        try? await Task.sleep(for: .milliseconds(1100))
+        await model.fetchAll()
+
+        let overlayCleared = await waitUntil {
+            guard let visiblePane = model.panes.first else { return false }
+            return visiblePane.paneId == "%12"
+                && visiblePane.provider == nil
+                && visiblePane.presence == .unmanaged
+                && visiblePane.activityState == .unknown
+                && visiblePane.metadataSessionKey == nil
+                && visiblePane.currentCmd == "zsh"
+        }
+
+        XCTAssertTrue(overlayCleared, "changes-v3 remove must drop the cached overlay and return to inventory-only truth")
+        XCTAssertNil(model.localDaemonIssue)
+    }
+
+    @MainActor
+    func testChangesV3MethodNotFoundFallsBackToSyncV2AfterBootstrapV3() async throws {
+        let bootstrap = try loadSyncV3Fixture(named: "codex-running")
+        let inventoryPane = makeInventoryPane(
+            paneId: "%12",
+            sessionName: "workbench",
+            windowId: "@5",
+            activityState: .unknown,
+            currentCmd: "zsh"
+        )
+        let metadataPane = makeManagedMetadataPane(
+            paneId: "%12",
+            sessionName: "workbench",
+            windowId: "@5",
+            provider: .codex,
+            activityState: .waitingApproval,
+            conversationTitle: "sync-v2 fallback",
+            metadataSessionKey: "opaque-v2-after-v3",
+            paneInstanceID: AgtmuxSyncV2PaneInstanceID(
+                paneId: "%12",
+                generation: 7,
+                birthTs: Date(timeIntervalSince1970: 1_778_822_994)
+            )
+        )
+        let client = StubMetadataClient(
+            bootstrapV3Steps: [
+                BootstrapV3Step(delayMs: 20, result: .success(bootstrap))
+            ],
+            bootstrapSteps: [
+                BootstrapStep(delayMs: 20, result: .success(makeBootstrap(panes: [metadataPane], cursorSeq: 9)))
+            ],
+            changesV3Steps: [
+                ChangesV3Step(
+                    delayMs: 20,
+                    result: .failure(LocalMetadataClientError.unsupportedMethod("ui.changes.v3"))
+                )
+            ]
+        )
+        let model = AppViewModel(
+            localClient: client,
+            localInventoryClient: StubInventoryClient(panes: [inventoryPane]),
+            hostsConfig: .empty
+        )
+
+        await model.fetchAll()
+        let initialV3OverlayApplied = await waitUntil {
+            model.panes.first?.metadataSessionKey == "codex:%12"
+        }
+        XCTAssertTrue(initialV3OverlayApplied)
+
+        try? await Task.sleep(for: .milliseconds(1100))
+        await model.fetchAll()
+
+        let fallbackApplied = await waitUntil {
+            guard let pane = model.panes.first else { return false }
+            return pane.provider == .codex
+                && pane.activityState == .waitingApproval
+                && pane.metadataSessionKey == "opaque-v2-after-v3"
+        }
+
+        let resetCount = await client.resets()
+
+        XCTAssertTrue(fallbackApplied, "unsupported ui.changes.v3 must drop back to the intact sync-v2 live path")
+        XCTAssertEqual(resetCount, 1)
         XCTAssertNil(model.localDaemonIssue)
     }
 }

@@ -19,15 +19,23 @@ protocol LocalHealthClient {
 
 protocol LocalMetadataClient: LocalSnapshotClient {
     func fetchUIBootstrapV3() async throws -> AgtmuxSyncV3Bootstrap
+    func fetchUIChangesV3(limit: Int) async throws -> AgtmuxSyncV3ChangesResponse
     func fetchUIBootstrapV2() async throws -> AgtmuxSyncV2Bootstrap
     func fetchUIChangesV2(limit: Int) async throws -> AgtmuxSyncV2ChangesResponse
     func resetUIChangesV2() async
+    func resetUIChangesV3() async
 }
 
 extension LocalMetadataClient {
     func fetchUIBootstrapV3() async throws -> AgtmuxSyncV3Bootstrap {
         throw LocalMetadataClientError.unsupportedMethod("ui.bootstrap.v3")
     }
+
+    func fetchUIChangesV3(limit: Int) async throws -> AgtmuxSyncV3ChangesResponse {
+        throw LocalMetadataClientError.unsupportedMethod("ui.changes.v3")
+    }
+
+    func resetUIChangesV3() async {}
 }
 
 extension AgtmuxDaemonClient: LocalMetadataClient, LocalHealthClient {}

@@ -19,6 +19,7 @@ package enum DaemonError: Error {
 package actor AgtmuxDaemonClient {
     package let socketPath: String
     private var syncV2Session: AgtmuxSyncV2Session?
+    private var syncV3Session: AgtmuxSyncV3Session?
 
     package init(socketPath: String = AgtmuxBinaryResolver.resolvedSocketPath()) {
         self.socketPath = socketPath
@@ -65,7 +66,8 @@ package actor AgtmuxDaemonClient {
 
     package func fetchUIBootstrapV3() async throws -> AgtmuxSyncV3Bootstrap {
         try ensureManagedRuntimeConfigured(forInlineOverrideKeys: ["AGTMUX_UI_BOOTSTRAP_V3_JSON"])
-        return try await fetchBootstrapV3()
+        let session = syncV3SessionInstance()
+        return try await session.bootstrap()
     }
 
     package func fetchUIChangesV2(limit: Int = 256) async throws -> AgtmuxSyncV2ChangesResponse {
@@ -74,8 +76,18 @@ package actor AgtmuxDaemonClient {
         return try await session.pollChanges(limit: limit)
     }
 
+    package func fetchUIChangesV3(limit: Int = 256) async throws -> AgtmuxSyncV3ChangesResponse {
+        try ensureManagedRuntimeConfigured(forInlineOverrideKeys: ["AGTMUX_UI_CHANGES_V3_JSON"])
+        let session = syncV3SessionInstance()
+        return try await session.pollChanges(limit: limit)
+    }
+
     package func resetUIChangesV2() async {
         syncV2Session = nil
+    }
+
+    package func resetUIChangesV3() async {
+        syncV3Session = nil
     }
 
     private func runJSON(binaryURL agtmuxURL: URL) throws -> AgtmuxSnapshot {
@@ -103,6 +115,16 @@ package actor AgtmuxDaemonClient {
 
         let created = AgtmuxSyncV2Session(transport: self)
         syncV2Session = created
+        return created
+    }
+
+    private func syncV3SessionInstance() -> AgtmuxSyncV3Session {
+        if let syncV3Session {
+            return syncV3Session
+        }
+
+        let created = AgtmuxSyncV3Session(transport: self)
+        syncV3Session = created
         return created
     }
 
@@ -255,7 +277,7 @@ package extension DaemonError {
     static func makeSyncV3MethodNotFoundError(method: String, rpcCode: Int?, message: String) -> DaemonError {
         let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
         let codeText = rpcCode.map(String.init) ?? "unknown"
-        let humanMessage = "agtmux daemon does not expose sync-v3 bootstrap yet: missing RPC method \(method) (code \(codeText)): \(trimmed)"
+        let humanMessage = "agtmux daemon does not expose sync-v3 RPC method \(method) (code \(codeText)): \(trimmed)"
         return makeStructuredMethodNotFoundError(
             code: .syncV3MethodNotFound,
             method: method,

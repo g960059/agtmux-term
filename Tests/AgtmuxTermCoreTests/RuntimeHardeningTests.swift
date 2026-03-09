@@ -127,6 +127,51 @@ final class RuntimeHardeningTests: XCTestCase {
         XCTAssertEqual(actual, expected)
     }
 
+    func testDaemonClientFetchUIChangesV3DecodesInlineOverride() async throws {
+        let fixtureBootstrap = try AgtmuxSyncV3FixtureLoader.bootstrap(named: "codex-waiting-approval")
+        let pane = try XCTUnwrap(fixtureBootstrap.panes.first)
+        let bootstrap = AgtmuxSyncV3Bootstrap(
+            version: 3,
+            panes: fixtureBootstrap.panes,
+            generatedAt: fixtureBootstrap.generatedAt,
+            replayCursor: AgtmuxSyncV3Cursor(seq: 40)
+        )
+        let expected: AgtmuxSyncV3ChangesResponse = .changes(
+            AgtmuxSyncV3Changes(
+                fromSeq: 41,
+                toSeq: 41,
+                nextCursor: AgtmuxSyncV3Cursor(seq: 41),
+                changes: [
+                    AgtmuxSyncV3PaneChange(
+                        seq: 41,
+                        at: pane.updatedAt,
+                        kind: .upsert,
+                        paneID: pane.paneID,
+                        sessionName: pane.sessionName,
+                        windowID: pane.windowID,
+                        sessionKey: pane.sessionKey,
+                        paneInstanceID: pane.paneInstanceID,
+                        fieldGroups: [.thread, .pendingRequests, .attention],
+                        pane: pane
+                    )
+                ]
+            )
+        )
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let client = AgtmuxDaemonClient(socketPath: "/tmp/agtmux-sync-v3-test.sock")
+
+        let actual = try await withEnvironment([
+            "AGTMUX_UI_BOOTSTRAP_V3_JSON": String(decoding: try encoder.encode(bootstrap), as: UTF8.self),
+            "AGTMUX_UI_CHANGES_V3_JSON": String(decoding: try encoder.encode(expected), as: UTF8.self)
+        ]) {
+            _ = try await client.fetchUIBootstrapV3()
+            return try await client.fetchUIChangesV3(limit: 33)
+        }
+
+        XCTAssertEqual(actual, expected)
+    }
+
     func testManagedDaemonFreshnessRequiresRestartWhenBinaryIsNewerThanDefaultSocket() throws {
         let tempDirectory = try makeTemporaryDirectory(prefix: "agtmux-daemon-freshness")
         defer { try? FileManager.default.removeItem(at: tempDirectory) }

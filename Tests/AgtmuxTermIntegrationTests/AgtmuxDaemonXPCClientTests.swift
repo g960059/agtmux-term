@@ -6,15 +6,19 @@ final class AgtmuxDaemonXPCClientTests: XCTestCase {
     private final class ProxyStub: NSObject, AgtmuxDaemonServiceXPCProtocol {
         var startManagedDaemonResult: (Bool, String?) = (true, nil)
         var bootstrapV3Reply: (Data?, String?) = (nil, nil)
+        var changesV3Reply: (Data?, String?) = (nil, nil)
         var bootstrapReply: (Data?, String?) = (nil, nil)
         var changesReply: (Data?, String?) = (nil, nil)
         var healthReply: (Data?, String?) = (nil, nil)
         private(set) var startManagedDaemonCalls = 0
         private(set) var fetchUIBootstrapV3Calls = 0
+        private(set) var fetchUIChangesV3Calls = 0
         private(set) var fetchUIBootstrapV2Calls = 0
         private(set) var fetchUIChangesV2Calls = 0
         private(set) var fetchUIHealthV1Calls = 0
+        private(set) var resetUIChangesV3Calls = 0
         private(set) var lastFetchUIChangesV2Limit: Int?
+        private(set) var lastFetchUIChangesV3Limit: Int?
 
         func startManagedDaemon(_ reply: @escaping (Bool, NSString?) -> Void) {
             startManagedDaemonCalls += 1
@@ -35,6 +39,12 @@ final class AgtmuxDaemonXPCClientTests: XCTestCase {
             reply(bootstrapReply.0.map { $0 as NSData }, bootstrapReply.1.map { $0 as NSString })
         }
 
+        func fetchUIChangesV3(_ limit: NSNumber, reply: @escaping (NSData?, NSString?) -> Void) {
+            fetchUIChangesV3Calls += 1
+            lastFetchUIChangesV3Limit = limit.intValue
+            reply(changesV3Reply.0.map { $0 as NSData }, changesV3Reply.1.map { $0 as NSString })
+        }
+
         func fetchUIChangesV2(_ limit: NSNumber, reply: @escaping (NSData?, NSString?) -> Void) {
             fetchUIChangesV2Calls += 1
             lastFetchUIChangesV2Limit = limit.intValue
@@ -47,6 +57,11 @@ final class AgtmuxDaemonXPCClientTests: XCTestCase {
         }
 
         func resetUIChangesV2(_ reply: @escaping () -> Void) {
+            reply()
+        }
+
+        func resetUIChangesV3(_ reply: @escaping () -> Void) {
+            resetUIChangesV3Calls += 1
             reply()
         }
 
@@ -120,6 +135,31 @@ final class AgtmuxDaemonXPCClientTests: XCTestCase {
         XCTAssertEqual(proxy.fetchUIBootstrapV2Calls, 1)
         XCTAssertEqual(proxy.fetchUIChangesV2Calls, 1)
         XCTAssertEqual(proxy.lastFetchUIChangesV2Limit, 17)
+    }
+
+    func testFetchUIChangesV3DecodesPayloadAndForwardsLimitFromInjectedXPCProxy() async throws {
+        let bootstrap = makeBootstrapV3(replayCursor: .init(seq: 40))
+        let expected = makeChangesResponseV3(nextCursor: .init(seq: 41))
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+
+        let proxy = ProxyStub()
+        proxy.bootstrapV3Reply = (try encoder.encode(bootstrap), nil)
+        proxy.changesV3Reply = (try encoder.encode(expected), nil)
+
+        let client = AgtmuxDaemonXPCClient(
+            serviceName: "test.agtmux.xpc",
+            proxyProviderOverride: { _ in proxy }
+        )
+
+        _ = try await client.fetchUIBootstrapV3()
+        let actual = try await client.fetchUIChangesV3(limit: 19)
+
+        XCTAssertEqual(actual, expected)
+        XCTAssertEqual(proxy.startManagedDaemonCalls, 1)
+        XCTAssertEqual(proxy.fetchUIBootstrapV3Calls, 1)
+        XCTAssertEqual(proxy.fetchUIChangesV3Calls, 1)
+        XCTAssertEqual(proxy.lastFetchUIChangesV3Limit, 19)
     }
 
     func testFetchUIBootstrapV2RejectsMixedEraSessionIDPayloadFromInjectedXPCProxy() async throws {
@@ -277,12 +317,10 @@ final class AgtmuxDaemonXPCClientTests: XCTestCase {
         )
     }
 
-    private func makeBootstrapV3() -> AgtmuxSyncV3Bootstrap {
+    private func makeBootstrapV3(replayCursor: AgtmuxSyncV3Cursor? = nil) -> AgtmuxSyncV3Bootstrap {
         let generatedAt = ISO8601DateFormatter().date(from: "2026-03-09T20:11:04Z")!
         return AgtmuxSyncV3Bootstrap(
             version: 3,
-            epoch: nil,
-            snapshotSeq: nil,
             panes: [
                 AgtmuxSyncV3PaneSnapshot(
                     sessionName: "workbench",
@@ -335,7 +373,34 @@ final class AgtmuxDaemonXPCClientTests: XCTestCase {
                 )
             ],
             generatedAt: generatedAt,
-            replayCursor: nil
+            replayCursor: replayCursor
+        )
+    }
+
+    private func makeChangesResponseV3(
+        nextCursor: AgtmuxSyncV3Cursor
+    ) -> AgtmuxSyncV3ChangesResponse {
+        let pane = makeBootstrapV3().panes[0]
+        return .changes(
+            AgtmuxSyncV3Changes(
+                fromSeq: nextCursor.seq,
+                toSeq: nextCursor.seq,
+                nextCursor: nextCursor,
+                changes: [
+                    AgtmuxSyncV3PaneChange(
+                        seq: nextCursor.seq,
+                        at: Date(timeIntervalSince1970: 1_778_825_310),
+                        kind: .upsert,
+                        paneID: pane.paneID,
+                        sessionName: pane.sessionName,
+                        windowID: pane.windowID,
+                        sessionKey: pane.sessionKey,
+                        paneInstanceID: pane.paneInstanceID,
+                        fieldGroups: [.thread, .pendingRequests, .attention],
+                        pane: pane
+                    )
+                ]
+            )
         )
     }
 
