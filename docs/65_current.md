@@ -139,6 +139,9 @@
 - `T-144` is now closed:
   - product-facing tests and injected metadata stubs now type against `ProductLocalMetadataClient`
   - `LocalMetadataClient` is now an explicit compat-only surface for low-level sync-v2 coverage
+- `T-145` is now closed:
+  - `PaneDisplayState` is still presentation-first, but its legacy `ActivityState` collapse now lives in explicit compat-only helper `PaneDisplayCompatFallback`
+  - visible sidebar/accessibility behavior is unchanged; the cleanup only narrows the fallback seam
 - `T-116` is now open:
   - metadata-enabled health-strip UI and pane-sync UI both reach their real assertions
   - upstream producer truth is now present in the same failing plain-zsh Codex lane:

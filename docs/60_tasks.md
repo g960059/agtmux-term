@@ -399,6 +399,18 @@ Commit closeout is clear; next implementation proceeds on the new Workbench path
   - [x] product-facing client wording now describes snapshot + sync-v3 metadata + health instead of generic sync-v2-era metadata
   - [x] focused verification stays green without widening sync-v2 RPC deletion scope
 
+### T-145 — isolate PaneDisplayState legacy activity fallback seam
+- **Status**: DONE
+- **Priority**: P3
+- **Depends**: T-144
+- **Owner**: term implementation agent
+- **Description**:
+  - Keep `PaneDisplayState` presentation-first while moving legacy `ActivityState` collapse into an explicit compat-only helper in `AgtmuxTermCore`.
+- **Acceptance Criteria**:
+  - [x] `PaneDisplayState` no longer inlines the legacy `ActivityState` → primary/freshness mapping
+  - [x] a compat-only helper owns that mapping without changing visible behavior
+  - [x] focused core tests cover the extracted seam and the unchanged display behavior
+
 ### T-126 — thin live canary for sync-v3 bootstrap/changes exact-row lane
 - **Status**: DONE
 - **Priority**: P1

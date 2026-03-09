@@ -17,6 +17,8 @@ final class PaneDisplayStateTests: XCTestCase {
 
         let display = PaneDisplayState(pane: pane, presentation: nil)
 
+        XCTAssertEqual(PaneDisplayCompatFallback.primaryState(for: pane), .waitingUserInput)
+        XCTAssertEqual(PaneDisplayCompatFallback.freshnessText(for: pane), "18s")
         XCTAssertEqual(display.provider, .codex)
         XCTAssertEqual(display.presence, .managed)
         XCTAssertEqual(display.primaryState, .waitingUserInput)

@@ -186,6 +186,7 @@ Before full compatibility cleanup, product-facing consumers should read one shar
   - badge/count derivation
   - row accessibility summaries
   - UI-test sidebar presentation snapshots
+- `PaneDisplayCompatFallback` now owns the compatibility-only collapse from legacy `ActivityState` into `PanePresentationPrimaryState` / freshness text when no v3 presentation is available
 - remaining compatibility fields still live behind that adapter:
   - `AgtmuxPane.activityState`
   - `AgtmuxPane.presence`

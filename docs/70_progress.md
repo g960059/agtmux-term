@@ -16,6 +16,19 @@ Historical progress detail lives in `docs/archive/progress/2026-02-28_to_2026-03
 
 ## Recent Entries
 
+## 2026-03-09 — T-145 landed: PaneDisplayState legacy collapse is now an explicit compat seam
+
+### What landed
+- extracted legacy `ActivityState` → primary/freshness collapse into `PaneDisplayCompatFallback`
+- kept `PaneDisplayState` presentation-first while making the compat fallback boundary explicit
+- preserved existing sidebar/accessibility-visible behavior
+
+### Verification
+- `swift build`
+- `swift test -q --filter PaneDisplayCompatFallbackTests`
+- `swift test -q --filter PaneDisplayStateTests`
+- result: all passed
+
 ## 2026-03-09 — T-144 landed: product-facing metadata client surface is now v3-only
 
 ### What landed

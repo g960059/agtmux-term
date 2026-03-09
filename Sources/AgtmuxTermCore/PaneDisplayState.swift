@@ -23,13 +23,11 @@ package struct PaneDisplayState: Equatable, Sendable {
             return
         }
 
-        let legacyPrimary = Self.legacyPrimaryState(from: pane.activityState)
+        let legacyPrimary = PaneDisplayCompatFallback.primaryState(for: pane)
         self.provider = pane.provider
         self.presence = pane.presence
         self.primaryState = legacyPrimary
-        self.freshnessText = pane.isManaged && pane.activityState != .running
-            ? Self.legacyFreshnessText(ageSecs: pane.ageSecs, activityState: .idle)
-            : nil
+        self.freshnessText = PaneDisplayCompatFallback.freshnessText(for: pane)
         self.isManaged = pane.isManaged
         self.needsAttention = pane.needsAttention
     }
@@ -71,35 +69,6 @@ package struct PaneDisplayState: Equatable, Sendable {
         if presentation.primaryState == .running {
             return nil
         }
-        return legacyFreshnessText(ageSecs: ageSecs, activityState: pane.activityState)
-    }
-
-    private static func legacyPrimaryState(from activityState: ActivityState) -> PanePresentationPrimaryState {
-        switch activityState {
-        case .running:
-            return .running
-        case .waitingApproval:
-            return .waitingApproval
-        case .waitingInput:
-            return .waitingUserInput
-        case .error:
-            return .error
-        case .idle:
-            return .idle
-        case .unknown:
-            return .inactive
-        }
-    }
-
-    package static func legacyFreshnessText(ageSecs: Int?, activityState: ActivityState) -> String? {
-        guard activityState != .running, let ageSecs else { return nil }
-        switch ageSecs {
-        case 0..<60:
-            return "\(ageSecs)s"
-        case 60..<3600:
-            return "\(ageSecs / 60)m"
-        default:
-            return "\(ageSecs / 3600)h"
-        }
+        return PaneDisplayCompatFallback.freshnessText(ageSecs: ageSecs, activityState: pane.activityState)
     }
 }
