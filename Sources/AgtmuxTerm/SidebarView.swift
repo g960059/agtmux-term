@@ -503,7 +503,7 @@ struct WindowBlockView: View {
         }
         .buttonStyle(.plain)
         .contentShape(Rectangle())
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier(
             AccessibilityID.sidebarPanePrefix +
             AccessibilityID.paneKey(
@@ -512,7 +512,8 @@ struct WindowBlockView: View {
                 paneID: pane.paneId
             )
         )
-        .accessibilityValue(Text(isSelected ? "selected" : "unselected"))
+        .accessibilityLabel(Text(viewModel.paneDisplayTitle(for: pane)))
+        .accessibilityValue(Text(PaneRowAccessibility.summary(for: pane, isSelected: isSelected)))
         .accessibilityAddTraits(.isButton)
         .id(paneScrollRowID(pane))
         .overlay(alignment: .trailing) {
@@ -559,6 +560,13 @@ struct PaneRowView: View {
 
     private var rowID: String { "pane:\(pane.id)" }
     private var isHighlighted: Bool { highlightedRowID == rowID }
+    private var paneAXKey: String {
+        AccessibilityID.paneKey(
+            source: pane.source,
+            sessionName: pane.sessionName,
+            paneID: pane.paneId
+        )
+    }
 
     var body: some View {
         HStack(spacing: 10) {
@@ -599,6 +607,9 @@ struct PaneRowView: View {
             RoundedRectangle(cornerRadius: SidebarRowStyle.cornerRadius, style: .continuous)
                 .stroke(rowStroke, lineWidth: 1)
         )
+        .overlay(alignment: .trailing) {
+            accessibilityMetadataMarkers
+        }
         .contentShape(Rectangle())
         .help(tooltipText)
         .onHover { hovering in
@@ -658,6 +669,29 @@ struct PaneRowView: View {
                 TmuxManager.shared.killPane(pane.paneId, source: pane.source, viewModel: viewModel)
             } label: {
                 Label("Kill Pane", systemImage: "trash")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var accessibilityMetadataMarkers: some View {
+        HStack(spacing: 0) {
+            if let provider = pane.provider {
+                Color.clear
+                    .frame(width: 1, height: 1)
+                    .allowsHitTesting(false)
+                    .accessibilityElement()
+                    .accessibilityIdentifier(AccessibilityID.sidebarPaneProviderPrefix + paneAXKey)
+                    .accessibilityLabel(provider.rawValue)
+            }
+
+            if pane.isManaged {
+                Color.clear
+                    .frame(width: 1, height: 1)
+                    .allowsHitTesting(false)
+                    .accessibilityElement()
+                    .accessibilityIdentifier(AccessibilityID.sidebarPaneActivityPrefix + paneAXKey)
+                    .accessibilityLabel(pane.activityState.rawValue)
             }
         }
     }
@@ -798,11 +832,21 @@ struct ProviderIcon: View {
 
     var body: some View {
         if let img = provider.svgImage {
-            Image(nsImage: img)
-                .resizable()
-                .interpolation(.high)
-                .antialiased(true)
-                .frame(width: size, height: size)
+            if provider.usesTemplateRendering {
+                Image(nsImage: img)
+                    .renderingMode(.template)
+                    .resizable()
+                    .interpolation(.high)
+                    .antialiased(true)
+                    .foregroundStyle(Color.white.opacity(0.78))
+                    .frame(width: size, height: size)
+            } else {
+                Image(nsImage: img)
+                    .resizable()
+                    .interpolation(.high)
+                    .antialiased(true)
+                    .frame(width: size, height: size)
+            }
         }
     }
 }
@@ -829,7 +873,7 @@ private extension Provider {
         }
     }
 
-    private var usesTemplateRendering: Bool {
+    var usesTemplateRendering: Bool {
         switch self {
         case .claude, .gemini: return false
         case .codex, .copilot: return true
@@ -850,11 +894,7 @@ struct FreshnessLabel: View {
     }
 
     private var formatted: String {
-        switch ageSecs {
-        case 0..<60:    return "\(ageSecs)s"
-        case 60..<3600: return "\(ageSecs / 60)m"
-        default:        return "\(ageSecs / 3600)h"
-        }
+        PaneRowAccessibility.formattedFreshness(ageSecs: ageSecs, activityState: .idle)
     }
 }
 

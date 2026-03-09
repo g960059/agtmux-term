@@ -66,6 +66,24 @@ Primary modules:
 - `AppViewModel`
 - `SidebarView`
 
+Local consumer state model:
+
+- local inventory and local metadata are separate caches
+- local visible rows are derived from those two caches at publish time
+- `fetchAll()` owns inventory refresh only; background metadata tasks own metadata refresh only
+- stale local merged snapshots are not allowed to write back over a newer metadata-derived publish
+- recovery from `daemon incompatible` to healthy bootstrap must happen in the same app instance without relaunch
+- when daemon truth changes an exact row back to unmanaged shell state, the next publish must clear stale provider/activity/title overlay instead of keeping the previous managed decoration alive
+- metadata-enabled app-driven XCUITest must isolate both the local tmux socket and the daemon socket; reusing the persistent app-owned daemon socket is architecturally invalid because it can observe a different tmux universe than the test inventory path
+- managed-daemon child launch must normalize its environment (`PATH`, `HOME`, `USER`, `LOGNAME`, `XDG_CONFIG_HOME`, `CODEX_HOME`) and pass an explicit `TMUX_BIN` when resolvable so app/XCUITest-launched daemon probes see the same tmux runtime as shell-launched probes
+
+Planned sync-v3 consumer split:
+
+- daemon remains the semantic truth producer for normalized multi-axis status, pending requests, attention summary, freshness, and provider-native raw state
+- term keeps exact-row correlation strict and derives a local presentation model from the raw v3 snapshot before views consume it
+- `attention` is treated as a daemon-generated summary, not as request-identity truth; request identity remains `pending_requests[].request_id`
+- the current v2 / `ActivityState` render path remains live until the v3 adapter cutover lands
+
 ### 2. Terminal Runtime
 
 Responsible for:
@@ -81,6 +99,13 @@ Primary modules:
 - `GhosttyTerminalView`
 - `GhosttyInput`
 - terminal-tile hosting layer
+
+Terminal input contract:
+
+- `GhosttyTerminalView` must follow Ghostty's AppKit IME ordering, not a simplified terminal-first path
+- `keyDown` must let AppKit `interpretKeyEvents` / `NSTextInputClient` drive preedit and commit before final terminal key encoding
+- preedit clearing must be explicitly synchronized to libghostty when marked text ends
+- command selectors emitted by AppKit during text input must be handled explicitly (`doCommand(by:)`) so IME commit and command-key paths are not dropped or reinterpreted as raw terminal input
 
 ### 3. Workbench Runtime
 
@@ -231,7 +256,8 @@ LocalMetadataClient
   → app-owned daemon socket
   → ui.bootstrap.v2 / ui.changes.v2
   → pane metadata overlay
-  → AppViewModel merged sidebar model
+  → derive local visible rows from `inventory + metadata state`
+  → AppViewModel sidebar model
 ```
 
 Role split:
@@ -246,9 +272,14 @@ Role split:
 - missing exact-identity fields on the sync-v2/XPC path are explicit protocol failures, not normalization paths
 - legacy identity field `session_id` in local sync-v2 pane payload is also an explicit protocol failure; the app rejects the whole local metadata payload instead of partially accepting mixed-era rows
 - missing exact-identity fields or orphan managed rows cause the app to clear stale overlay cache for the active daemon epoch and publish inventory-only rows rather than surface guessed managed/provider/activity state
+- inventory refresh never writes a stale local merged snapshot back over a newer metadata-derived local publish
+- once daemon truth becomes healthy again, the next successful bootstrap/changes publish must restore provider/activity/title surfacing on the exact local rows without app relaunch
 - failure in metadata must not invent or delete tmux objects
+- `agtmux` owns producer-side semantic truth for real provider sessions; `agtmux-term` owns the consumer boundary from daemon payload to exact visible sidebar row
+- terminal-repo live tests must treat daemon exact-row payload truth as the primary oracle; sidebar/UI proof is secondary and tmux capture is diagnostic only
 - pane-selection UI/E2E coverage must not stub away the Ghostty terminal surface when the contract under test includes visible main-panel retargeting
 - the render-path oracle for same-session pane retarget must include the focused tile's exact tmux client tty plus rendered client pane/window truth, not store intent alone
+- metadata-enabled app-driven UI tests must hand the exact bootstrap-resolved tmux `#{socket_path}` into managed-daemon startup; re-resolving `AGTMUX_TMUX_SOCKET_NAME` later inside the supervisor is not a trusted oracle under XCUITest
 
 ### Flow-002: Health Observability
 

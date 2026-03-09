@@ -23,6 +23,8 @@ Title consistency contracts:
 11. runner-side tmux preflight must distinguish `no server running` from true socket-inaccessible failures; skip理由は分類して明示する
 12. live tmux UI tests should execute tmux commands via app-side UITest bridge (file command channel), not via runner shell
 13. pane-ID suffix matching helpers must use `_ + sanitizedPaneID` (not `__ + ...`) so `%123` resolves to `...__123`
+14. metadata-enabled managed-pane live proofs may assert provider/activity through explicit pane-row AX marker children instead of icon raster/state heuristics
+15. metadata-enabled app-driven tmux proofs must diagnose the exact managed-daemon tmux runtime (`managedSocket`, `tmuxArgs`, `daemonArgs`, `bootstrapTmuxSocket`) in failure output so socket-universe mismatches are not silent
 
 Accessibility contracts for E2E:
 
@@ -30,6 +32,8 @@ Accessibility contracts for E2E:
 2. pane row AX value: `selected` / `unselected`
 3. window row AX identifier: `sidebar.window.<source_session_window>`
 4. session row AX identifier: `sidebar.session.<source_session>`
+5. managed pane provider marker AX identifier: `sidebar.pane.provider.<source_session_pane>`
+6. managed pane activity marker AX identifier: `sidebar.pane.activity.<source_session_pane>`
 
 ## Required rules for new tests
 

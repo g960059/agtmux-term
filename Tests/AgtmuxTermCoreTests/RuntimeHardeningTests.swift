@@ -82,6 +82,147 @@ final class RuntimeHardeningTests: XCTestCase {
         XCTAssertFalse(AgtmuxBinaryResolver.defaultSocketPath.contains("/tmp/agtmux-"))
     }
 
+    func testResolvedSocketPathPrefersExplicitManagedSocketOverride() async throws {
+        let tempDirectory = try makeTemporaryDirectory(prefix: "agtmux-daemon-socket-override")
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let socketURL = tempDirectory.appendingPathComponent("override.sock", isDirectory: false)
+
+        let resolved = try await withEnvironment([
+            AgtmuxBinaryResolver.managedSocketPathEnvKey: socketURL.path
+        ]) {
+            AgtmuxBinaryResolver.resolvedSocketPath()
+        }
+
+        XCTAssertEqual(resolved, socketURL.path)
+    }
+
+    func testDaemonClientDefaultInitUsesResolvedManagedSocketOverride() async throws {
+        let tempDirectory = try makeTemporaryDirectory(prefix: "agtmux-daemon-client-override")
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let socketURL = tempDirectory.appendingPathComponent("client.sock", isDirectory: false)
+
+        let socketPath = try await withEnvironment([
+            AgtmuxBinaryResolver.managedSocketPathEnvKey: socketURL.path
+        ]) {
+            await AgtmuxDaemonClient().socketPath
+        }
+
+        XCTAssertEqual(socketPath, socketURL.path)
+    }
+
+    func testManagedDaemonFreshnessRequiresRestartWhenBinaryIsNewerThanDefaultSocket() throws {
+        let tempDirectory = try makeTemporaryDirectory(prefix: "agtmux-daemon-freshness")
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let binary = try makeExecutable(named: "agtmux", in: tempDirectory)
+        let socketURL = tempDirectory.appendingPathComponent("agtmuxd.sock", isDirectory: false)
+        try "".write(to: socketURL, atomically: true, encoding: .utf8)
+
+        let socketDate = Date(timeIntervalSince1970: 100)
+        let binaryDate = Date(timeIntervalSince1970: 200)
+        try FileManager.default.setAttributes([.modificationDate: socketDate], ofItemAtPath: socketURL.path)
+        try FileManager.default.setAttributes([.modificationDate: binaryDate], ofItemAtPath: binary.path)
+
+        XCTAssertTrue(
+            AgtmuxManagedDaemonRuntime.shouldRestartReachableDaemon(
+                socketPath: socketURL.path,
+                candidateBinaryURL: binary,
+                appOwnedSocketPath: socketURL.path
+            )
+        )
+    }
+
+    func testManagedDaemonFreshnessUsesProcessStartTimeWhenSocketFileLooksFresh() throws {
+        let tempDirectory = try makeTemporaryDirectory(prefix: "agtmux-daemon-process-freshness")
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let binary = try makeExecutable(named: "agtmux", in: tempDirectory)
+        let socketURL = tempDirectory.appendingPathComponent("agtmuxd.sock", isDirectory: false)
+        try "".write(to: socketURL, atomically: true, encoding: .utf8)
+
+        let binaryDate = Date(timeIntervalSince1970: 1_773_100_000)
+        let socketDate = Date(timeIntervalSince1970: 1_773_200_000)
+        try FileManager.default.setAttributes([.modificationDate: socketDate], ofItemAtPath: socketURL.path)
+        try FileManager.default.setAttributes([.modificationDate: binaryDate], ofItemAtPath: binary.path)
+
+        let psOutput = """
+          101 Thu Jan  1 00:01:40 1970 /tmp/agtmux --socket-path \(socketURL.path) daemon
+        """
+
+        XCTAssertTrue(
+            AgtmuxManagedDaemonRuntime.shouldRestartReachableDaemon(
+                socketPath: socketURL.path,
+                candidateBinaryURL: binary,
+                appOwnedSocketPath: socketURL.path,
+                psOutput: psOutput
+            )
+        )
+    }
+
+    func testManagedDaemonFreshnessDoesNotRestartForCustomSocketPaths() throws {
+        let tempDirectory = try makeTemporaryDirectory(prefix: "agtmux-daemon-custom-socket")
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let binary = try makeExecutable(named: "agtmux", in: tempDirectory)
+        let socketURL = tempDirectory.appendingPathComponent("agtmuxd.sock", isDirectory: false)
+        try "".write(to: socketURL, atomically: true, encoding: .utf8)
+
+        let socketDate = Date(timeIntervalSince1970: 100)
+        let binaryDate = Date(timeIntervalSince1970: 200)
+        try FileManager.default.setAttributes([.modificationDate: socketDate], ofItemAtPath: socketURL.path)
+        try FileManager.default.setAttributes([.modificationDate: binaryDate], ofItemAtPath: binary.path)
+
+        XCTAssertFalse(
+            AgtmuxManagedDaemonRuntime.shouldRestartReachableDaemon(
+                socketPath: socketURL.path,
+                candidateBinaryURL: binary,
+                appOwnedSocketPath: "/tmp/not-the-app-owned.sock"
+            )
+        )
+    }
+
+    func testManagedDaemonProcessMatcherOnlyReturnsExactSocketDaemonProcesses() {
+        let socketPath = "/Users/test/Library/Application Support/AGTMUXDesktop/agtmuxd.sock"
+        let psOutput = """
+          101 /Users/test/bin/agtmux --socket-path \(socketPath) daemon
+          102 /Users/test/bin/agtmux --socket-path /tmp/other.sock daemon
+          103 /Users/test/bin/agtmux json
+          104 /Users/test/bin/agtmux --socket-path \(socketPath) watch
+        """
+
+        XCTAssertEqual(
+            AgtmuxManagedDaemonRuntime.daemonProcessIDs(socketPath: socketPath, psOutput: psOutput),
+            [101]
+        )
+    }
+
+    func testManagedDaemonProcessRuntimeParserReadsStartTimeForExactSocketDaemon() throws {
+        let socketPath = "/Users/test/Library/Application Support/AGTMUXDesktop/agtmuxd.sock"
+        let psOutput = """
+          101 Sun Mar  8 12:47:30 2026 /Users/test/bin/agtmux --socket-path \(socketPath) daemon
+          102 Sun Mar  8 13:00:00 2026 /Users/test/bin/agtmux --socket-path /tmp/other.sock daemon
+        """
+
+        let processes = AgtmuxManagedDaemonRuntime.daemonProcesses(
+            socketPath: socketPath,
+            psOutput: psOutput
+        )
+
+        XCTAssertEqual(processes.map(\.pid), [101])
+        let startedAt = try XCTUnwrap(processes.first?.startedAt)
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "EEE MMM d HH:mm:ss yyyy"
+        let expectedStart = try XCTUnwrap(formatter.date(from: "Sun Mar 8 12:47:30 2026"))
+        XCTAssertEqual(
+            startedAt.timeIntervalSince1970,
+            expectedStart.timeIntervalSince1970,
+            accuracy: 1
+        )
+    }
+
     func testFetchUIBootstrapV2MethodNotFoundSurfacesStructuredUIError() async throws {
         let tempDirectory = try makeTemporaryDirectory(prefix: "agtmux-sync-v2")
         defer { try? FileManager.default.removeItem(at: tempDirectory) }
@@ -270,6 +411,51 @@ final class RuntimeHardeningTests: XCTestCase {
         }
 
         await fulfillment(of: [served], timeout: 1.0)
+    }
+
+    func testManagedDaemonLaunchEnvironmentNormalizesUserPathAndClearsInheritedTmux() {
+        let normalized = ManagedDaemonLaunchEnvironment.normalized(
+            from: [
+                "PATH": "/custom/bin:/bin",
+                "TMUX": "/tmp/stale.sock,123,1",
+                "TMUX_PANE": "%1",
+                "USER": "virtualmachine",
+                "HOME": "/Users/virtualmachine"
+            ],
+            tmuxBinResolver: { _ in "/opt/homebrew/bin/tmux" }
+        )
+
+        XCTAssertNil(normalized["TMUX"])
+        XCTAssertNil(normalized["TMUX_PANE"])
+        XCTAssertEqual(normalized["USER"], "virtualmachine")
+        XCTAssertEqual(normalized["LOGNAME"], "virtualmachine")
+        XCTAssertEqual(normalized["HOME"], "/Users/virtualmachine")
+        XCTAssertEqual(normalized["XDG_CONFIG_HOME"], "/Users/virtualmachine/.config")
+        XCTAssertEqual(normalized["CODEX_HOME"], "/Users/virtualmachine/.codex")
+        XCTAssertEqual(normalized["TMUX_BIN"], "/opt/homebrew/bin/tmux")
+        XCTAssertEqual(
+            normalized["PATH"],
+            "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/custom/bin"
+        )
+    }
+
+    func testManagedDaemonLaunchEnvironmentPreservesExplicitCodexHomeAndCanOmitTmuxBin() {
+        let normalized = ManagedDaemonLaunchEnvironment.normalized(
+            from: [
+                "PATH": "/usr/bin",
+                "USER": "virtualmachine",
+                "HOME": "/Users/virtualmachine",
+                "CODEX_HOME": "/tmp/custom-codex-home"
+            ],
+            tmuxBinResolver: { _ in nil }
+        )
+
+        XCTAssertEqual(normalized["CODEX_HOME"], "/tmp/custom-codex-home")
+        XCTAssertNil(normalized["TMUX_BIN"])
+        XCTAssertEqual(
+            normalized["PATH"],
+            "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+        )
     }
 
     private func withEnvironment<T>(

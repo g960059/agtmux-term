@@ -73,6 +73,11 @@ private enum LocalMetadataOverlayError: LocalizedError {
     }
 }
 
+struct RemotePaneInventorySource {
+    let source: String
+    let fetchPanes: @Sendable () async throws -> [AgtmuxPane]
+}
+
 // MARK: - AppViewModel
 
 /// Central state holder for the agtmux-term UI.
@@ -261,18 +266,20 @@ final class AppViewModel: ObservableObject {
     private let localClient: any LocalMetadataClient
     private let localHealthClient: (any LocalHealthClient)?
     private let localInventoryClient: any LocalPaneInventoryClient
-    private var remoteClients: [RemoteTmuxClient] = []
+    private var remotePaneSources: [RemotePaneInventorySource] = []
     let hostsConfig: HostsConfig
-    private var lastSuccessfulPanesBySource: [String: [AgtmuxPane]] = [:]
+    private var lastSuccessfulRemotePanesBySource: [String: [AgtmuxPane]] = [:]
     private var lastSuccessfulLocalInventory: [AgtmuxPane] = []
     private var cachedLocalMetadataByPaneKey: [String: AgtmuxPane] = [:]
     private var localMetadataRefreshTask: Task<Void, Never>?
     private var localHealthRefreshTask: Task<Void, Never>?
     private var localMetadataSyncPrimed = false
+    private var uiTestMetadataModeEnabled = false
     private var nextLocalMetadataRefreshAt: Date = .distantPast
     private var nextLocalHealthRefreshAt: Date = .distantPast
     private let localMetadataSuccessInterval: TimeInterval = 1.0
     private let localMetadataFailureBackoff: TimeInterval = 3.0
+    private let localMetadataBootstrapNotReadyBackoff: TimeInterval = 0.5
     private let localMetadataChangeLimit = 256
     private let localHealthSuccessInterval: TimeInterval = 1.0
     private let localHealthFailureBackoff: TimeInterval = 3.0
@@ -353,16 +360,17 @@ final class AppViewModel: ObservableObject {
 
     private func makeLocalDaemonUnavailableIssue(detail: String? = nil) -> LocalDaemonIssue {
         let env = ProcessInfo.processInfo.environment
+        let managedSocketPath = AgtmuxBinaryResolver.resolvedSocketPath(from: env)
         let explicitBinary = env["AGTMUX_BIN"]?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let fallbackDetail: String
         if explicitBinary.isEmpty {
             fallbackDetail = """
-            Local agtmux daemon runtime is unavailable: no bundled daemon was found and AGTMUX_BIN is not set. The managed socket is \(AgtmuxBinaryResolver.defaultSocketPath).
+            Local agtmux daemon runtime is unavailable: no bundled daemon was found and AGTMUX_BIN is not set. The managed socket is \(managedSocketPath).
             """
         } else {
             fallbackDetail = """
-            Local agtmux daemon runtime is unavailable: AGTMUX_BIN is set to \(explicitBinary), but no executable daemon runtime could be resolved for the managed socket \(AgtmuxBinaryResolver.defaultSocketPath).
+            Local agtmux daemon runtime is unavailable: AGTMUX_BIN is set to \(explicitBinary), but no executable daemon runtime could be resolved for the managed socket \(managedSocketPath).
             """
         }
 
@@ -464,13 +472,24 @@ final class AppViewModel: ObservableObject {
 
     init(localClient: any LocalMetadataClient = AgtmuxDaemonClient(),
          localInventoryClient: any LocalPaneInventoryClient = LocalTmuxInventoryClient(),
-         hostsConfig: HostsConfig? = nil) {
+         hostsConfig: HostsConfig? = nil,
+         remotePaneSources: [RemotePaneInventorySource]? = nil) {
         self.localClient = localClient
         self.localHealthClient = localClient as? any LocalHealthClient
         self.localInventoryClient = localInventoryClient
         let config = hostsConfig ?? HostsConfig.load()
         self.hostsConfig = config
-        self.remoteClients = config.hosts.map { RemoteTmuxClient(host: $0) }
+        if let remotePaneSources {
+            self.remotePaneSources = remotePaneSources
+        } else {
+            self.remotePaneSources = config.hosts.map { host in
+                let client = RemoteTmuxClient(host: host)
+                return RemotePaneInventorySource(
+                    source: host.hostname,
+                    fetchPanes: { try await client.fetchPanes() }
+                )
+            }
+        }
     }
 
     // MARK: - Polling
@@ -506,6 +525,17 @@ final class AppViewModel: ObservableObject {
         localMetadataSyncPrimed = false
         nextLocalHealthRefreshAt = .distantPast
         Task { await localClient.resetUIChangesV2() }
+    }
+
+    func enableUITestMetadataMode() {
+        uiTestMetadataModeEnabled = true
+        localMetadataRefreshTask?.cancel()
+        localMetadataRefreshTask = nil
+        localHealthRefreshTask?.cancel()
+        localHealthRefreshTask = nil
+        localMetadataSyncPrimed = false
+        nextLocalMetadataRefreshAt = .distantPast
+        nextLocalHealthRefreshAt = .distantPast
     }
 
     // MARK: - Private
@@ -675,7 +705,8 @@ final class AppViewModel: ObservableObject {
     }
 
     private func overlayLocalMetadata(_ paneState: AgtmuxSyncV2PaneState, onto basePane: AgtmuxPane) -> AgtmuxPane {
-        AgtmuxPane(
+        let isManaged = paneState.presence == .managed
+        return AgtmuxPane(
             source: basePane.source,
             paneId: basePane.paneId,
             sessionName: basePane.sessionName,
@@ -687,9 +718,9 @@ final class AppViewModel: ObservableObject {
             presence: paneState.presence,
             provider: paneState.provider,
             evidenceMode: paneState.evidenceMode,
-            conversationTitle: basePane.conversationTitle,
+            conversationTitle: isManaged ? basePane.conversationTitle : nil,
             currentPath: basePane.currentPath,
-            gitBranch: basePane.gitBranch,
+            gitBranch: isManaged ? basePane.gitBranch : nil,
             currentCmd: basePane.currentCmd,
             updatedAt: paneState.updatedAt,
             ageSecs: basePane.ageSecs,
@@ -737,38 +768,47 @@ final class AppViewModel: ObservableObject {
         return nil
     }
 
-    private func metadataBasePane(for paneState: AgtmuxSyncV2PaneState) -> AgtmuxPane? {
+    private func cachedMetadataBasePane(for paneState: AgtmuxSyncV2PaneState) -> (hadCandidates: Bool, pane: AgtmuxPane?) {
         let cachedCandidates = cachedLocalMetadataByPaneKey.values.filter { pane in
             pane.source == "local"
                 && pane.paneId == paneState.paneId
                 && metadataSessionKey(for: pane) == paneState.sessionKey
         }
         if !cachedCandidates.isEmpty {
-            return resolveMetadataBaseCandidate(
-                candidates: cachedCandidates,
-                paneState: paneState,
-                candidateSource: "cached"
+            return (
+                true,
+                resolveMetadataBaseCandidate(
+                    candidates: cachedCandidates,
+                    paneState: paneState,
+                    candidateSource: "cached"
+                )
             )
         }
+        return (false, nil)
+    }
 
+    private func visibleSessionName(for sessionKey: String) -> String? {
         let visibleSessionNames = Set<String>(
             cachedLocalMetadataByPaneKey.values.compactMap { pane in
                 guard pane.source == "local" else { return nil }
-                guard metadataSessionKey(for: pane) == paneState.sessionKey else { return nil }
+                guard metadataSessionKey(for: pane) == sessionKey else { return nil }
                 return pane.sessionName
             }
         )
         if visibleSessionNames.count > 1 {
             logLocalFetch(
                 "sync-v2 pane change dropped for ambiguous session-key mapping " +
-                "\(paneState.sessionKey)"
+                "\(sessionKey)"
             )
             return nil
         }
-        guard let visibleSessionName = visibleSessionNames.first else {
-            return nil
-        }
+        return visibleSessionNames.first
+    }
 
+    private func inventoryMetadataBasePane(
+        for paneState: AgtmuxSyncV2PaneState,
+        visibleSessionName: String
+    ) -> AgtmuxPane? {
         let inventoryCandidates = lastSuccessfulLocalInventory.filter { pane in
             pane.source == "local"
                 && pane.paneId == paneState.paneId
@@ -783,6 +823,22 @@ final class AppViewModel: ObservableObject {
         }
 
         return nil
+    }
+
+    private func metadataBasePane(for paneState: AgtmuxSyncV2PaneState) -> AgtmuxPane? {
+        let cachedResolution = cachedMetadataBasePane(for: paneState)
+        let cachedBase = cachedResolution.pane
+        let inventoryBase = visibleSessionName(for: paneState.sessionKey).flatMap { visibleSessionName in
+            inventoryMetadataBasePane(for: paneState, visibleSessionName: visibleSessionName)
+        }
+
+        if paneState.presence == .unmanaged {
+            return inventoryBase ?? cachedBase
+        }
+        if cachedResolution.hadCandidates {
+            return cachedBase
+        }
+        return cachedBase ?? inventoryBase
     }
 
     private func applyLocalMetadataChanges(_ payload: AgtmuxSyncV2Changes) -> [String: AgtmuxPane] {
@@ -807,23 +863,13 @@ final class AppViewModel: ObservableObject {
     private func publishLocalMetadataCache(_ metadataByPaneKey: [String: AgtmuxPane]) async {
         cachedLocalMetadataByPaneKey = metadataByPaneKey
         nextLocalMetadataRefreshAt = Date().addingTimeInterval(localMetadataSuccessInterval)
-
-        if !lastSuccessfulLocalInventory.isEmpty {
-            lastSuccessfulPanesBySource["local"] = mergeLocalInventory(
-                inventory: lastSuccessfulLocalInventory,
-                metadataByPaneKey: metadataByPaneKey
-            )
-            await publishFromSnapshotCache()
-        }
+        guard !lastSuccessfulLocalInventory.isEmpty else { return }
+        await publishFromSnapshotCache()
     }
 
     private func clearLocalMetadataCache() async {
         cachedLocalMetadataByPaneKey = [:]
         guard !lastSuccessfulLocalInventory.isEmpty else { return }
-        lastSuccessfulPanesBySource["local"] = mergeLocalInventory(
-            inventory: lastSuccessfulLocalInventory,
-            metadataByPaneKey: [:]
-        )
         await publishFromSnapshotCache()
     }
 
@@ -872,6 +918,9 @@ final class AppViewModel: ObservableObject {
                 if !self.localMetadataSyncPrimed {
                     let bootstrap = try await self.localClient.fetchUIBootstrapV2()
                     try Task.checkCancellation()
+                    if await self.deferBootstrapIfNotReady(bootstrap) {
+                        return
+                    }
                     let metadataByPaneKey = try self.localMetadataMap(from: bootstrap.panes)
                     self.localMetadataSyncPrimed = true
                     self.localDaemonIssue = nil
@@ -893,6 +942,9 @@ final class AppViewModel: ObservableObject {
                     await self.localClient.resetUIChangesV2()
                     let bootstrap = try await self.localClient.fetchUIBootstrapV2()
                     try Task.checkCancellation()
+                    if await self.deferBootstrapIfNotReady(bootstrap) {
+                        return
+                    }
                     let metadataByPaneKey = try self.localMetadataMap(from: bootstrap.panes)
                     self.localMetadataSyncPrimed = true
                     self.localDaemonIssue = nil
@@ -917,6 +969,21 @@ final class AppViewModel: ObservableObject {
         }
     }
 
+    private func deferBootstrapIfNotReady(_ bootstrap: AgtmuxSyncV2Bootstrap) async -> Bool {
+        guard !lastSuccessfulLocalInventory.isEmpty else { return false }
+        guard bootstrap.panes.isEmpty else { return false }
+
+        localMetadataSyncPrimed = false
+        localDaemonIssue = nil
+        nextLocalMetadataRefreshAt = Date().addingTimeInterval(localMetadataBootstrapNotReadyBackoff)
+        await localClient.resetUIChangesV2()
+        await clearLocalMetadataCache()
+        logLocalFetch(
+            "sync-v2 bootstrap not ready; local inventory has \(lastSuccessfulLocalInventory.count) panes but bootstrap returned panes=0"
+        )
+        return true
+    }
+
     private func fetchLocalPanes() async throws -> [AgtmuxPane] {
         let env = ProcessInfo.processInfo.environment
 
@@ -930,7 +997,9 @@ final class AppViewModel: ObservableObject {
         // Live UI tests exercise tmux inventory lifecycle/selection behavior.
         // Running `agtmux json` here can block app responsiveness under XCUITest
         // (metadata collection may require host capabilities not available to tests).
-        if env["AGTMUX_UITEST"] == "1", env["AGTMUX_UITEST_INVENTORY_ONLY"] == "1" {
+        if env["AGTMUX_UITEST"] == "1",
+           env["AGTMUX_UITEST_INVENTORY_ONLY"] == "1",
+           !uiTestMetadataModeEnabled {
             let inventory = try await localInventoryClient.fetchPanes()
             lastSuccessfulLocalInventory = inventory
             return inventory
@@ -940,16 +1009,23 @@ final class AppViewModel: ObservableObject {
         let inventory = try await localInventoryClient.fetchPanes()
         lastSuccessfulLocalInventory = inventory
         scheduleLocalMetadataRefreshIfNeeded()
-        return mergeLocalInventory(inventory: inventory, metadataByPaneKey: cachedLocalMetadataByPaneKey)
+        return inventory
     }
 
     private func knownSources() -> Set<String> {
-        Set(["local"] + remoteClients.map(\.host.hostname))
+        Set(["local"] + remotePaneSources.map(\.source))
     }
 
     private func trimSnapshotCacheToKnownSources() {
         let known = knownSources()
-        lastSuccessfulPanesBySource = lastSuccessfulPanesBySource.filter { known.contains($0.key) }
+        lastSuccessfulRemotePanesBySource = lastSuccessfulRemotePanesBySource.filter { known.contains($0.key) }
+    }
+
+    private func visibleLocalPanes() -> [AgtmuxPane] {
+        mergeLocalInventory(
+            inventory: lastSuccessfulLocalInventory,
+            metadataByPaneKey: cachedLocalMetadataByPaneKey
+        )
     }
 
     private func retainSelection(in normalized: [AgtmuxPane]) {
@@ -959,8 +1035,12 @@ final class AppViewModel: ObservableObject {
 
     private func publishFromSnapshotCache(offlineHosts newOffline: Set<String>? = nil) async {
         trimSnapshotCacheToKnownSources()
-        let merged = sortedSources(lastSuccessfulPanesBySource.keys)
-            .flatMap { lastSuccessfulPanesBySource[$0] ?? [] }
+        var panesBySource = lastSuccessfulRemotePanesBySource
+        if !lastSuccessfulLocalInventory.isEmpty || panesBySource["local"] != nil {
+            panesBySource["local"] = visibleLocalPanes()
+        }
+        let merged = sortedSources(panesBySource.keys)
+            .flatMap { panesBySource[$0] ?? [] }
         let normalized = normalizePanes(merged)
         reconcileSessionOrder(with: normalized)
         panes = normalized
@@ -976,7 +1056,7 @@ final class AppViewModel: ObservableObject {
     /// Fetch from all sources concurrently, merge results, update state.
     /// Internal access so TmuxManager can trigger an immediate refresh.
     func fetchAll() async {
-        var successfulBySource: [String: [AgtmuxPane]] = [:]
+        var successfulRemoteBySource: [String: [AgtmuxPane]] = [:]
         var newOffline: Set<String> = []
 
         await withTaskGroup(of: (source: String, panes: [AgtmuxPane]?, offline: Bool).self) { group in
@@ -990,14 +1070,13 @@ final class AppViewModel: ObservableObject {
                 }
             }
             // Remote hosts
-            for client in self.remoteClients {
+            for source in self.remotePaneSources {
                 group.addTask {
-                    let source = client.host.hostname
                     do {
-                        let panes = try await client.fetchPanes()
-                        return (source, panes, false)
+                        let panes = try await source.fetchPanes()
+                        return (source.source, panes, false)
                     } catch {
-                        return (source, nil, true)
+                        return (source.source, nil, true)
                     }
                 }
             }
@@ -1006,15 +1085,17 @@ final class AppViewModel: ObservableObject {
                 if result.offline {
                     newOffline.insert(result.source)
                 } else if let panes = result.panes {
-                    successfulBySource[result.source] = panes
+                    if result.source != "local" {
+                        successfulRemoteBySource[result.source] = panes
+                    }
                 }
             }
         }
 
         // Update cache only for successful sources. Failed sources keep the previous
         // successful snapshot to avoid sidebar flicker/empty flashes.
-        for (source, panes) in successfulBySource {
-            lastSuccessfulPanesBySource[source] = panes
+        for (source, panes) in successfulRemoteBySource {
+            lastSuccessfulRemotePanesBySource[source] = panes
         }
         if newOffline.contains("local") {
             localMetadataRefreshTask?.cancel()

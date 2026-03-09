@@ -36,7 +36,7 @@ final class AgtmuxDaemonSupervisor {
     private var process: Process?
     private var terminationObserver: NSObjectProtocol?
 
-    init(socketPath: String = AgtmuxBinaryResolver.defaultSocketPath) {
+    init(socketPath: String = AgtmuxBinaryResolver.resolvedSocketPath()) {
         self.socketPath = socketPath
         terminationObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification,
@@ -75,21 +75,53 @@ final class AgtmuxDaemonSupervisor {
     private func startIfNeededLocked() {
         let env = ProcessInfo.processInfo.environment
         if env["AGTMUX_AUTOSTART"] == "0" { return }
-        if env["AGTMUX_UITEST"] == "1" { return }
+        if env["AGTMUX_UITEST"] == "1", env["AGTMUX_UITEST_ENABLE_MANAGED_DAEMON"] != "1" {
+            return
+        }
 
         let candidates = AgtmuxBinaryResolver.candidateBinaryURLs()
-        guard !candidates.isEmpty else { return }
+        guard !candidates.isEmpty else {
+            fputs("AgtmuxTerm: no agtmux daemon binary candidates resolved for managed socket startup.\n", stderr)
+            return
+        }
 
         // Reuse an already-running daemon when available.
-        if candidates.contains(where: { isDaemonReachable(via: $0) }) {
-            return
+        if let reachableBinary = candidates.first(where: { isDaemonReachable(via: $0) }) {
+            if !AgtmuxManagedDaemonRuntime.shouldRestartReachableDaemon(
+                socketPath: socketPath,
+                candidateBinaryURL: reachableBinary
+            ) {
+                let env = ProcessInfo.processInfo.environment
+                var arguments = ["--socket-path", socketPath, "daemon"]
+                arguments.append(contentsOf: LocalTmuxTarget.daemonCLIArguments(from: env))
+                AgtmuxManagedDaemonRuntime.recordLaunch(
+                    socketPath: socketPath,
+                    binaryPath: reachableBinary.path,
+                    arguments: arguments,
+                    environment: env,
+                    reusedExistingRuntime: true
+                )
+                return
+            }
+
+            fputs(
+                "AgtmuxTerm: restarting stale app-managed daemon for \(socketPath) because \(reachableBinary.path) is newer than the current socket runtime.\n",
+                stderr
+            )
+            stopIfOwnedLocked()
+            AgtmuxManagedDaemonRuntime.terminateDaemonProcesses(socketPath: socketPath)
         }
         guard ensureSocketParentDirectoryExists() else { return }
 
         for binary in candidates where FileManager.default.isExecutableFile(atPath: binary.path) {
             if launchDaemon(using: binary), isDaemonReachable(via: binary, retries: 20) {
+                fputs("AgtmuxTerm: started managed daemon for \(socketPath) using \(binary.path).\n", stderr)
                 return
             }
+            fputs(
+                "AgtmuxTerm: managed daemon launch or probe failed for \(socketPath) using \(binary.path).\n",
+                stderr
+            )
             stopIfOwnedLocked()
         }
     }
@@ -120,15 +152,21 @@ final class AgtmuxDaemonSupervisor {
 
         process = nil
         managedDaemonPID = 0
+        AgtmuxManagedDaemonRuntime.clearLaunchRecord(socketPath: socketPath)
     }
 
     private func launchDaemon(using binaryURL: URL) -> Bool {
         let proc = Process()
         proc.executableURL = binaryURL
-        proc.arguments = ["--socket-path", socketPath, "daemon"]
+        let env = ManagedDaemonLaunchEnvironment.normalized(from: ProcessInfo.processInfo.environment)
+        var arguments = ["--socket-path", socketPath, "daemon"]
+        arguments.append(contentsOf: LocalTmuxTarget.daemonCLIArguments(from: env))
+        proc.arguments = arguments
+        proc.environment = env
         proc.standardInput = FileHandle.nullDevice
-        proc.standardOutput = FileHandle.nullDevice
-        proc.standardError = FileHandle.nullDevice
+        let logHandle = managedDaemonLogHandle(env: env, key: "AGTMUX_UITEST_MANAGED_DAEMON_STDERR_PATH")
+        proc.standardOutput = logHandle
+        proc.standardError = logHandle
 
         proc.terminationHandler = { [weak self] finished in
             if managedDaemonPID == finished.processIdentifier {
@@ -146,8 +184,19 @@ final class AgtmuxDaemonSupervisor {
             try proc.run()
             process = proc
             managedDaemonPID = proc.processIdentifier
+            AgtmuxManagedDaemonRuntime.recordLaunch(
+                socketPath: socketPath,
+                binaryPath: binaryURL.path,
+                arguments: arguments,
+                environment: env,
+                reusedExistingRuntime: false
+            )
             return true
         } catch {
+            fputs(
+                "AgtmuxTerm: failed to launch managed daemon \(binaryURL.path) for \(socketPath): \(error)\n",
+                stderr
+            )
             return false
         }
     }
@@ -168,6 +217,7 @@ final class AgtmuxDaemonSupervisor {
         let proc = Process()
         proc.executableURL = binaryURL
         proc.arguments = ["--socket-path", socketPath, "json"]
+        proc.environment = ManagedDaemonLaunchEnvironment.normalized(from: ProcessInfo.processInfo.environment)
         proc.standardInput = FileHandle.nullDevice
         proc.standardOutput = FileHandle.nullDevice
         proc.standardError = FileHandle.nullDevice
@@ -189,5 +239,22 @@ final class AgtmuxDaemonSupervisor {
         }
 
         return proc.terminationStatus == 0
+    }
+
+    private func managedDaemonLogHandle(env: [String: String], key: String) -> Any {
+        guard env["AGTMUX_UITEST"] == "1" else { return FileHandle.nullDevice }
+        guard let path = env[key]?.trimmingCharacters(in: .whitespacesAndNewlines), !path.isEmpty else {
+            return FileHandle.nullDevice
+        }
+
+        let url = URL(fileURLWithPath: path)
+        let directory = url.deletingLastPathComponent()
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: url.path, contents: Data())
+        guard let handle = try? FileHandle(forWritingTo: url) else {
+            return FileHandle.nullDevice
+        }
+        try? handle.truncate(atOffset: 0)
+        return handle
     }
 }

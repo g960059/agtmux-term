@@ -15,7 +15,7 @@ final class ServiceDaemonSupervisor {
     private let queue = DispatchQueue(label: "local.agtmux.term.daemon-service-supervisor")
     private var process: Process?
 
-    init(socketPath: String = AgtmuxBinaryResolver.defaultSocketPath) {
+    init(socketPath: String = AgtmuxBinaryResolver.resolvedSocketPath()) {
         self.socketPath = socketPath
     }
 
@@ -41,8 +41,30 @@ final class ServiceDaemonSupervisor {
         guard !candidates.isEmpty else { return false }
 
         // Already running: don't spawn another daemon.
-        if candidates.contains(where: { isDaemonReachable(via: $0) }) {
-            return true
+        if let reachableBinary = candidates.first(where: { isDaemonReachable(via: $0) }) {
+            if !AgtmuxManagedDaemonRuntime.shouldRestartReachableDaemon(
+                socketPath: socketPath,
+                candidateBinaryURL: reachableBinary
+            ) {
+                let env = ProcessInfo.processInfo.environment
+                var arguments = ["--socket-path", socketPath, "daemon"]
+                arguments.append(contentsOf: LocalTmuxTarget.daemonCLIArguments(from: env))
+                AgtmuxManagedDaemonRuntime.recordLaunch(
+                    socketPath: socketPath,
+                    binaryPath: reachableBinary.path,
+                    arguments: arguments,
+                    environment: env,
+                    reusedExistingRuntime: true
+                )
+                return true
+            }
+
+            fputs(
+                "AgtmuxTerm XPC: restarting stale app-managed daemon for \(socketPath) because \(reachableBinary.path) is newer than the current socket runtime.\n",
+                stderr
+            )
+            stopIfOwnedLocked()
+            AgtmuxManagedDaemonRuntime.terminateDaemonProcesses(socketPath: socketPath)
         }
         if env["AGTMUX_AUTOSTART"] == "0" { return false }
         guard ensureSocketParentDirectoryExists() else { return false }
@@ -81,12 +103,17 @@ final class ServiceDaemonSupervisor {
         }
 
         process = nil
+        AgtmuxManagedDaemonRuntime.clearLaunchRecord(socketPath: socketPath)
     }
 
     private func launchDaemon(using binaryURL: URL) -> Bool {
         let proc = Process()
         proc.executableURL = binaryURL
-        proc.arguments = ["--socket-path", socketPath, "daemon"]
+        let env = ManagedDaemonLaunchEnvironment.normalized(from: ProcessInfo.processInfo.environment)
+        var arguments = ["--socket-path", socketPath, "daemon"]
+        arguments.append(contentsOf: LocalTmuxTarget.daemonCLIArguments(from: env))
+        proc.arguments = arguments
+        proc.environment = env
         proc.standardInput = FileHandle.nullDevice
         proc.standardOutput = FileHandle.nullDevice
         proc.standardError = FileHandle.nullDevice
@@ -103,6 +130,13 @@ final class ServiceDaemonSupervisor {
         do {
             try proc.run()
             process = proc
+            AgtmuxManagedDaemonRuntime.recordLaunch(
+                socketPath: socketPath,
+                binaryPath: binaryURL.path,
+                arguments: arguments,
+                environment: env,
+                reusedExistingRuntime: false
+            )
             return true
         } catch {
             return false
@@ -125,6 +159,7 @@ final class ServiceDaemonSupervisor {
         let proc = Process()
         proc.executableURL = binaryURL
         proc.arguments = ["--socket-path", socketPath, "json"]
+        proc.environment = ManagedDaemonLaunchEnvironment.normalized(from: ProcessInfo.processInfo.environment)
         proc.standardInput = FileHandle.nullDevice
         proc.standardOutput = FileHandle.nullDevice
         proc.standardError = FileHandle.nullDevice

@@ -351,11 +351,11 @@ private struct AgtmuxSyncV2RawPane: Codable, Equatable, Sendable {
         if legacyContainer.contains(.sessionID) {
             throw AgtmuxSyncV2ProtocolError.legacyPaneField(LegacyCodingKeys.sessionID.rawValue)
         }
-        paneId = try container.decode(String.self, forKey: .paneId)
-        sessionName = try container.decode(String.self, forKey: .sessionName)
+        paneId = try Self.decodeRequired(String.self, from: container, forKey: .paneId)
+        sessionName = try Self.decodeRequired(String.self, from: container, forKey: .sessionName)
         sessionKey = try Self.decodeRequired(String.self, from: container, forKey: .sessionKey)
         sessionGroup = try container.decodeIfPresent(String.self, forKey: .sessionGroup)
-        windowId = try container.decode(String.self, forKey: .windowId)
+        windowId = try Self.decodeRequired(String.self, from: container, forKey: .windowId)
         windowIndex = try container.decodeIfPresent(Int.self, forKey: .windowIndex)
         windowName = try container.decodeIfPresent(String.self, forKey: .windowName)
         paneInstanceID = try Self.decodeRequired(

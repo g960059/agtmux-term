@@ -112,6 +112,48 @@ final class AgtmuxSyncV2DecodingTests: XCTestCase {
         }
     }
 
+    func testDecodeBootstrapFailsWhenExactLocationFieldsAreNull() throws {
+        let json = """
+        {
+          "epoch": 7,
+          "snapshot_seq": 41,
+          "panes": [
+            {
+              "pane_id": "%42",
+              "session_name": null,
+              "session_key": "sess-42",
+              "window_id": "@11",
+              "pane_instance_id": {
+                "pane_id": "%42",
+                "generation": 2,
+                "birth_ts": "2026-03-08T16:00:00Z"
+              },
+              "presence": "managed",
+              "activity_state": "Idle",
+              "provider": "Codex",
+              "evidence_mode": "Deterministic",
+              "updated_at": "2026-03-08T16:30:00Z"
+            }
+          ],
+          "sessions": [],
+          "generated_at": "2026-03-08T16:31:00Z",
+          "replay_cursor": {
+            "epoch": 7,
+            "seq": 42
+          }
+        }
+        """
+
+        XCTAssertThrowsError(
+            try decoder().decode(AgtmuxSyncV2Bootstrap.self, from: Data(json.utf8))
+        ) { error in
+            XCTAssertEqual(
+                error as? AgtmuxSyncV2ProtocolError,
+                .missingBootstrapPaneField("session_name")
+            )
+        }
+    }
+
     func testDecodeBootstrapFailsForLegacyDaemonRowsWithSessionIDAndNullExactFields() throws {
         let json = """
         {

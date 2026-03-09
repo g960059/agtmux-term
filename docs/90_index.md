@@ -18,10 +18,11 @@ When rebuilding context, read in this order:
 7. `docs/41_design-workbench.md`
 8. `docs/42_design-cli-bridge.md`
 9. `docs/43_design-companion-surfaces.md`
-10. `docs/30_architecture.md`
-11. `docs/50_plan.md`
-12. `docs/70_progress.md`
-13. `docs/archive/README.md`
+10. `docs/44_design-sync-v3-consumer.md`
+11. `docs/30_architecture.md`
+12. `docs/50_plan.md`
+13. `docs/70_progress.md`
+14. `docs/archive/README.md`
 
 ## Documents
 
@@ -38,6 +39,7 @@ When rebuilding context, read in this order:
 | `docs/41_design-workbench.md` | Design | Workbench / terminal tile / duplicate / restore details |
 | `docs/42_design-cli-bridge.md` | Design | `agt open`, OSC bridge, remote semantics |
 | `docs/43_design-companion-surfaces.md` | Design | browser/document surfaces and future directory extension |
+| `docs/44_design-sync-v3-consumer.md` | Design | term-side sync-v3 consumer foundation and truth/presentation split |
 | `docs/50_plan.md` | Design | V2 implementation phases and risks |
 | `docs/60_tasks.md` | Tracking | active and next tasks |
 | `docs/70_progress.md` | Tracking | recent progress summary |
@@ -76,6 +78,8 @@ Mainline product truth is now:
 
 - `T-090` through `T-094`
   Workbench V2 implementation kickoff track
+- `T-120`
+  sync-v3 consumer foundation is landed locally while daemon-owned fixtures/wire are still being frozen
 - `T-087`
   docs compaction and active-context redesign complete
 - `T-076` through `T-084`

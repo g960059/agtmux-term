@@ -20,7 +20,7 @@ package actor AgtmuxDaemonClient {
     package let socketPath: String
     private var syncV2Session: AgtmuxSyncV2Session?
 
-    package init(socketPath: String = AgtmuxBinaryResolver.defaultSocketPath) {
+    package init(socketPath: String = AgtmuxBinaryResolver.resolvedSocketPath()) {
         self.socketPath = socketPath
     }
 

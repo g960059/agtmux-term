@@ -206,7 +206,10 @@ private extension AgtmuxDaemonClient {
         let pathBytes = socketPath.utf8CString
         let maxLength = MemoryLayout.size(ofValue: address.sun_path)
         guard pathBytes.count <= maxLength else {
-            throw DaemonError.processError(exitCode: -3, stderr: "socket path too long")
+            throw DaemonError.processError(
+                exitCode: -3,
+                stderr: "socket path too long (\(pathBytes.count) > \(maxLength)): \(socketPath)"
+            )
         }
 
         withUnsafeMutablePointer(to: &address.sun_path) { pointer in

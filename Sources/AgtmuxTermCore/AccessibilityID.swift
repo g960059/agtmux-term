@@ -11,6 +11,7 @@ public enum AccessibilityID {
     public static let sidebarFilterToggle = "sidebar.filter.toggle"
     public static let sidebarFilterManaged = "sidebar.filter.managed"
     public static let sidebarFilterAttention = "sidebar.filter.attention"
+    public static let sidebarFilterAttentionBadge = "sidebar.filter.attention.badge"
     public static let sidebarFilterPinned = "sidebar.filter.pinned"
     public static let sidebarEmpty        = "sidebar.emptyState"
     public static let sidebarHealthStrip  = "sidebar.health.strip"
@@ -18,6 +19,8 @@ public enum AccessibilityID {
     public static let sidebarSessionPrefix = "sidebar.session." // + source_session
     public static let sidebarWindowPrefix = "sidebar.window."    // + source_session_windowID
     public static let sidebarPanePrefix   = "sidebar.pane."      // + source_session_paneID
+    public static let sidebarPaneProviderPrefix = "sidebar.pane.provider." // + source_session_paneID
+    public static let sidebarPaneActivityPrefix = "sidebar.pane.activity." // + source_session_paneID
 
     // MARK: - Workspace
     public static let workspaceArea       = "workspace"

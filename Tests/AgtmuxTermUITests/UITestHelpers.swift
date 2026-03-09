@@ -60,8 +60,12 @@ extension XCUIApplication {
             // Avoid `agtmux json` metadata subprocess during UI tests: inventory-only is
             // enough for sidebar/session/window/pane contracts and keeps launch responsive.
             launchEnvironment["AGTMUX_UITEST_INVENTORY_ONLY"] = "1"
+            if launchEnvironment["AGTMUX_UITEST_ENABLE_MANAGED_DAEMON"] != "1" {
+                launchEnvironment.removeValue(forKey: "AGTMUX_UITEST_ENABLE_MANAGED_DAEMON")
+            }
         } else {
             launchEnvironment.removeValue(forKey: "AGTMUX_UITEST_INVENTORY_ONLY")
+            launchEnvironment["AGTMUX_UITEST_ENABLE_MANAGED_DAEMON"] = "1"
         }
         if !launchArguments.contains("-ApplePersistenceIgnoreState") {
             launchArguments += ["-ApplePersistenceIgnoreState", "YES"]

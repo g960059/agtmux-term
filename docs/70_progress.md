@@ -13,6 +13,659 @@ Historical progress detail lives in `docs/archive/progress/2026-02-28_to_2026-03
 
 ## Recent Entries
 
+## 2026-03-09 — T-120 landed: term-side sync-v3 consumer foundation is in place without disturbing the live v2 path
+
+### What landed
+- added new core v3 consumer models in `Sources/AgtmuxTermCore/AgtmuxSyncV3Models.swift`
+  - strict exact identity requirements remain explicit for:
+    - `session_name`
+    - `window_id`
+    - `session_key`
+    - `pane_id`
+    - `pane_instance_id`
+  - the new consumer model now has room for:
+    - `agent.lifecycle`
+    - `thread.lifecycle`
+    - `blocking`
+    - `execution`
+    - `flags`
+    - `turn`
+    - `pending_requests`
+    - `attention`
+    - `freshness`
+    - `provider_raw`
+- added `Sources/AgtmuxTermCore/PanePresentationState.swift`
+  - the term repo now has a local pure presentation derivation layer for v3 snapshots
+  - this keeps future sidebar/titlebar work decoupled from raw daemon wire structs
+  - `attention` is preserved as summary only; request identity truth remains `pending_requests[].request_id`
+- added temporary local fixture-first tests derived from the final design doc:
+  - `Tests/AgtmuxTermCoreTests/AgtmuxSyncV3DecodingTests.swift`
+  - `Tests/AgtmuxTermCoreTests/PanePresentationStateTests.swift`
+  - fixtures are explicitly marked as temporary until daemon-owned canonical fixtures arrive
+- added local design notes in `docs/44_design-sync-v3-consumer.md`
+
+### Verification
+- `swift test -q --filter AgtmuxSyncV3DecodingTests`
+- `swift test -q --filter PanePresentationStateTests`
+- result: both passed
+
+### Boundary notes
+- this slice does not wire v3 into `AppViewModel`
+- it does not remove `ActivityState`
+- it does not alter the live sync-v2 product path
+- the point of this slice is to let daemon-vs-term implementation proceed in parallel:
+  - daemon can keep freezing canonical fixtures and wire shape
+  - term can already build decode/presentation work against the agreed design
+## 2026-03-09 — T-118 narrowed again: fresh desktop daemon shows same-session no-bleed is fixed, but shell demotion still fails when a non-agent child remains under the shell
+
+### Fresh verification
+- updated the term-side live canaries to the current producer contract:
+  - `testLiveCodexActivityTruthReachesExactAppRowWithoutBleed` now accepts current daemon truth after `running` leaves the row
+  - `testLiveClaudeActivityTruthReachesExactAppRowWithoutBleed` does the same for Claude
+  - new thin live canaries now exist for:
+    - exact-row Codex managed-exit demotion
+    - same-session same-provider Codex no-bleed after sibling demotion
+- verification:
+  - `swift test -q --filter AppViewModelA0Tests/testWaitingInputManagedRowSurfacesAttentionCountAndFilterWithoutBleed`
+  - `AGTMUX_LIVE_TEST_BIN=/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/debug/agtmux swift test -q --filter AppViewModelLiveManagedAgentTests`
+  - result: live suite passed with the new managed-exit / no-bleed canaries green and the old Codex `waiting_input` live canary explicitly skipped for recalibration
+
+### Fresh desktop probe after restart
+- launched the normal app path with `AGTMUX_BIN=/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/debug/agtmux swift run AgtmuxTerm`
+- the in-process supervisor now logs:
+  - `restarting stale app-managed daemon ...`
+  - `started managed daemon ...`
+- direct probe against `/Users/virtualmachine/Library/Application Support/AGTMUXDesktop/agtmuxd.sock` is now a fresh oracle again
+- fresh desktop truth is narrower than the original report:
+  - same-session Codex `running` bleed no longer reproduces (`%2=running`, `%5=waiting_input`, `%6=waiting_input`)
+  - but `vm agtmux-term %6` still reports `current_cmd=zsh presence=managed provider=codex activity=waiting_input`
+- tmux process inspection shows `%6` is not agent-owned anymore:
+  - shell pid `35774`
+  - only child process `37202 chezmoi cd`
+- conclusion:
+  - the remaining live desktop mismatch is upstream semantic truth, but only for `shell + non-agent child` demotion
+  - the original same-session no-bleed slice is closed at the term boundary
+
+### Follow-up split
+- `T-119` opened to recalibrate a real-Codex `waiting_input` live canary after the upstream immediate shell-demotion change
+- deterministic consumer coverage for `waiting_input` attention/filter now lives in `AppViewModelA0Tests`
+
+## 2026-03-09 — T-118 narrowed again: upstream fix landed, desktop daemon is stale, and Codex completion oracle must accept shell demotion
+
+### Fresh validation
+- upstream reported producer-side fixes for:
+  - immediate exact-row shell demotion
+  - same-session Codex no-bleed
+  - new upstream online E2E for `managed-exit` and `same-session-codex-no-bleed`
+- direct desktop-owned socket probing still shows the old bad truth:
+  - `vm agtmux-term %6` remains `presence=managed provider=codex activity=Running current_cmd=zsh`
+  - `%2`, `%5`, `%6` still all report `provider=codex activity=Running`
+- the current desktop socket is stale relative to the rebuilt upstream binary:
+  - app-owned socket mtime is older than `/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/debug/agtmux`
+
+### New downstream implication
+- rerunning `AppViewModelLiveManagedAgentTests` against the rebuilt binary shows the Codex canaries are now too strict:
+  - Codex `exec` can complete by immediately demoting back to unmanaged shell truth
+  - existing tests still require managed completion as `waiting_input|idle`
+- this is not evidence that the upstream fix failed; it means the terminal repo now needs to accept `managed completion or shell demotion` for one-shot Codex exec flows and add the exact live canaries that were previously missing
+
+## 2026-03-09 — T-118 reopened immediately after T-116 closeout: direct daemon truth shows stale managed exit and same-session Codex bleed
+
+### Fresh live evidence
+- user reported that:
+  - a Codex/Claude pane can return to `zsh` after `Ctrl-C`, yet the sidebar still shows the pane as managed/provider-tagged
+  - when one Codex pane in the same session becomes `running`, sibling Codex panes can also surface as `running`
+- direct probe against the app-owned daemon socket confirms this is producer truth, not just terminal rendering:
+  - `vm agtmux-term %6` currently reports `presence=managed provider=codex activity=Running current_cmd=zsh`
+  - the same session reports `%2`, `%5`, and `%6` all as `provider=codex activity=Running`
+
+### Coverage gap
+- terminal-repo coverage is not sufficient for these exact live symptoms:
+  - model-layer `managed -> unmanaged` clearing exists
+  - upstream `managed-exit.sh` exists
+  - but there is no terminal-side live canary for exact-row managed-exit demotion
+  - and there is no upstream/downstream live canary for same-session same-provider no-bleed across multiple Codex panes
+
+### Result
+- reopened tracking as `T-118`
+- the issue is handed back upstream as semantic truth / producer correlation, not a row-rendering bug
+
+## 2026-03-09 — T-116 closed on row-level AX surfacing and live plain-zsh Codex proof
+
+### Term-side fix
+- replaced the fragile pane-row AX contract:
+  - pane rows no longer rely on hidden provider/activity overlay descendants beneath a `.combine` wrapper as the primary live-test oracle
+  - the visible row button now carries an explicit accessibility label/value summary with `selection`, `presence`, `provider`, `activity`, and `freshness`
+- kept provider/activity visual rendering on the row and made template-rendered provider icons explicit, so Codex/Copilot marks do not rely on default template coloring
+- added pure regression coverage:
+  - `PaneRowAccessibilityTests`
+  - verifies managed rows expose provider/activity/freshness and unmanaged rows fail closed to `none`
+
+### Live verification
+- reran:
+  - `swift build`
+  - `swift test -q --filter PaneRowAccessibilityTests`
+  - `swift test -q --filter AppViewModelA0Tests`
+  - `AGTMUX_LIVE_TEST_BIN=/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/debug/agtmux swift test -q --filter AppViewModelLiveManagedAgentTests`
+  - `AGTMUX_BIN=/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/debug/agtmux AGTMUX_UITEST_ALLOW_SSH=1 xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -destination 'platform=macOS,arch=arm64' test -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testMetadataEnabledPlainZshCodexPaneSurfacesManagedProviderAndActivity`
+- result:
+  - all focused verification is green
+  - the metadata-enabled plain-zsh Codex UI lane now passes end to end
+  - the UI proof also waits for completion-state freshness on the managed row, covering the prior user-visible “provider mark / updated-at” gap
+
+## 2026-03-09 — T-116 narrowed again: producer truth is green, remaining red is pane-row AX surfacing
+
+### Upstream outcome
+- the explicit-socket app-child producer fix is now landed upstream and green on its own focused repros
+- in the same downstream metadata-enabled plain-zsh Codex UI lane:
+  - live probing sees `ui.bootstrap.v2` surfacing the target row as managed Codex with `running|waiting_input`
+  - the app-side sidebar snapshot also reports the exact target pane as `presence=managed, provider=codex, activity=waiting_input`
+
+### New conclusion
+- the remaining `T-116` failure is no longer daemon truth or bootstrap readiness
+- the current red is terminal-side accessibility surfacing:
+  - the UI proof still times out on `paneProviderMarker` / `paneActivityMarker`
+  - pane rows currently expose those markers as tiny hidden overlay children underneath a `.combine` wrapper on the row button
+  - this makes the AppViewModel/sidebar snapshot green while the XCUITest descendant search still fails
+
+### Next step
+- replace the fragile hidden-marker contract with a stable pane-row accessibility contract on the visible row itself
+- keep the metadata-enabled plain-zsh Codex XCUITest as the live canary that proves the real row exposes provider/activity after promotion
+
+## 2026-03-09 — T-116 root cause corrected again: empty bootstrap is not a ready sync-v2 epoch when inventory already exists
+
+### Live repro
+- reproduced the focused UI failure outside XCUITest with the same essential launch shape:
+  - isolated `tmux -f /dev/null -L <name>`
+  - explicit daemon launch `agtmux --socket-path <custom.sock> daemon --tmux-socket <resolved socket path>`
+  - plain `zsh -l` pane
+  - real `codex exec --json --model gpt-5.4`
+- result:
+  - tick 1: `ui.bootstrap.v2` returned `snapshot_seq=0 panes=[] sessions=[]`
+  - tick 2+: the same isolated daemon/runtime returned the expected pane rows
+  - direct `tmux -S <resolved socket path> list-panes` was healthy throughout, so the transient empty bootstrap was not tmux inventory loss
+
+### Conclusion
+- the remaining T-116 red is not purely “upstream producer still empty forever”
+- term also had a real readiness bug:
+  - `AppViewModel` primed sync-v2 ownership on the first successful bootstrap even when local inventory was already non-empty
+  - an empty bootstrap carries no visible `session_name` / `window_id` mapping, so later exact-row change replay cannot recover managed overlay from that primed epoch
+- next patch is term-side:
+  - do not mark local sync-v2 ready on `inventory present + bootstrap panes=[]`
+  - keep retrying until a non-empty bootstrap arrives
+  - make the focused metadata-enabled XCUITest wait for that non-empty isolated bootstrap before it launches the real Codex proof
+
+## 2026-03-09 — T-116 term-side empty-bootstrap hardening landed; remaining red is upstream app-child daemon bootstrap
+
+### Term-side fix
+- changed `AppViewModel` so `inventory present + ui.bootstrap.v2 panes=[]` is treated as startup-not-ready instead of a primed sync-v2 epoch
+- this explicitly resets sync-v2 ownership, keeps local rows inventory-only, and retries bootstrap later
+- added regression:
+  - `swift test -q --filter AppViewModelA0Tests/testEmptyBootstrapWithLiveInventoryDoesNotPrimeSyncOwnershipAndLaterHealthyBootstrapRecovers`
+  - PASS
+- full focused integration verification:
+  - `swift test -q --filter AppViewModelA0Tests`
+  - PASS (41/41)
+
+### Focused UI rerun
+- reran:
+  - `AGTMUX_BIN=/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/debug/agtmux AGTMUX_UITEST_ALLOW_SSH=1 xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -destination 'platform=macOS,arch=arm64' test -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testMetadataEnabledPlainZshCodexPaneSurfacesManagedProviderAndActivity`
+- result:
+  - the lane now fails before launching the live Codex proof
+  - readiness gate times out with:
+    - `probe=ok total=0 managed=0 probeTarget=nil`
+    - visible app inventory row still present as unmanaged `zsh`
+  - new daemon stdout/stderr capture shows only:
+    - `agtmux daemon starting`
+    - `UDS server listening on /Users/virtualmachine/.agt/uit-<token>.sock`
+  - there is still no app-child bootstrap progress after daemon listen
+  - stronger same-process evidence now also exists:
+    - app-side direct socket probe reports `agtmux-e2e-managed-<token>|@0|%0|zsh`
+    - so the same app process can run `tmux -S <resolved socket path> list-panes` and see the isolated pane
+    - only the app-child daemon stays stuck at `ui.bootstrap.v2 total=0`
+
+### Conclusion
+- term-side readiness bug is fixed
+- remaining T-116 blocker is upstream again:
+  - app process inventory sees the isolated tmux pane
+  - app-child daemon starts and listens on the custom socket
+  - the same daemon never reaches a non-empty `ui.bootstrap.v2` in this metadata-enabled app/XCUITest lane
+
+## 2026-03-09 — T-116 delayed metadata enable fixed the remaining UI harness blockers; red is upstream managed promotion again
+
+### Term-side harness progress
+- changed the plain-zsh metadata-enabled UI lane to launch inventory-only first, then enable metadata/managed-daemon startup explicitly after the app is already foregrounded
+- added a UI-test internal command to enable metadata mode on demand and taught `AppViewModel` to leave inventory-only mode after that switch
+- delayed metadata enable now starts the isolated managed daemon synchronously on the custom socket instead of fire-and-forget background startup
+- focused verification:
+  - `swift build`
+  - `swift test -q --filter AppViewModelA0Tests`
+  - both green
+
+### Focused UI reruns
+- reran:
+  - `AGTMUX_BIN=/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/debug/agtmux AGTMUX_UITEST_ALLOW_SSH=1 xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -destination 'platform=macOS,arch=arm64' test -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testMetadataEnabledPlainZshCodexPaneSurfacesManagedProviderAndActivity`
+- result:
+  - the lane no longer fails at `launch()` with `Running Background`
+  - the lane no longer fails with `managedSocket ... No such file or directory`
+  - the lane now proves the isolated daemon was actually spawned on the custom socket:
+    - `daemonLaunch=spawned:/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/debug/agtmux:--socket-path,/Users/virtualmachine/.agt/uit-<token>.sock,daemon,--tmux-socket,/private/tmp/tmux-501/agtmux-managed-<token>`
+    - `daemonEnv=... TMUX_BIN=/opt/homebrew/bin/tmux ...`
+  - despite that, the same focused lane still fails at the real product assertion with:
+    - `capture-pane` showing a real Codex run completed inside the target plain `zsh` pane
+    - `probe=ok total=0 managed=0`
+    - `probeTarget=nil`
+
+### Conclusion
+- the remaining T-116 red is no longer attributable to:
+  - UI foreground activation
+  - delayed daemon startup
+  - missing custom daemon socket creation
+- the blocker is upstream producer truth again:
+  - explicit `--tmux-socket` app-child daemon is alive on the correct socket
+  - it still promotes zero managed sync-v2 rows for the plain-zsh-launched Codex pane
+
+## 2026-03-08 — T-116 spawn-env hardening landed but did not clear the app-launched empty-bootstrap failure
+
+### Term-side hardening
+- added `ManagedDaemonLaunchEnvironment` and routed both direct/XPC daemon launch plus reachability probes through it
+- managed-daemon child env now:
+  - clears inherited `TMUX` / `TMUX_PANE`
+  - normalizes `HOME`, `USER`, `LOGNAME`, `XDG_CONFIG_HOME`, `CODEX_HOME`, `PATH`
+  - injects explicit `TMUX_BIN` when resolvable
+- focused verification:
+  - `swift test -q --filter RuntimeHardeningTests`
+  - `swift test -q --filter LocalTmuxTargetTests`
+  - `swift test -q --filter AppViewModelLiveManagedAgentTests`
+  - all green
+
+### Focused UI rerun
+- reran:
+  - `AGTMUX_BIN=/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/debug/agtmux AGTMUX_UITEST_ALLOW_SSH=1 xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -destination 'platform=macOS,arch=arm64' test -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testMetadataEnabledPlainZshCodexPaneSurfacesManagedProviderAndActivity`
+- result:
+  - the lane still fails at the real managed-row assertion
+  - `capture-pane` still proves the real Codex run completed in the target app-driven pane
+  - app-side daemon probe still reports `total=0 managed=0 probeTarget=nil`
+  - new diagnostics confirm the child daemon already received:
+    - `TMUX_BIN=/opt/homebrew/bin/tmux`
+    - normalized `HOME/USER/LOGNAME/XDG_CONFIG_HOME/CODEX_HOME/PATH`
+  - interpretation correction:
+    - this proves sync-v2 bootstrap contains zero managed rows
+    - it does not, by itself, prove the daemon's tmux inventory is empty
+
+### Conclusion
+- term-side env normalization was necessary hardening, but it was not sufficient
+- `T-116` remains blocked by upstream `agtmux:T-XTERM-A6`
+- fresh handover should now emphasize:
+  - exact socket handoff is correct
+  - stripped-PATH producer repro is fixed
+  - normalized child-daemon env is also correct
+  - yet the app-launched daemon still returns `ui.bootstrap.v2 total=0`
+
+## 2026-03-08 — T-116 narrowed again after upstream stripped-PATH fix: remaining red is app child-daemon environment hardening
+
+### Upstream verification
+- rebuilt the local producer binary and reran the explicit-`--tmux-socket` stripped-PATH repro:
+  - `cargo build -p agtmux`
+  - `cargo test -p agtmux-tmux-v5`
+  - `bash scripts/tests/e2e/scenarios/explicit-tmux-socket-sanitized-path.sh`
+  - `cargo test -p agtmux`
+- result:
+  - stripped-PATH repro is now green (`explicit --tmux-socket inventory survives stripped PATH`)
+  - upstream `cargo test -p agtmux` is green on the rebuilt binary
+
+### Downstream reruns
+- reran lower-layer term canaries against the rebuilt daemon binary:
+  - `swift test -q --filter LocalTmuxTargetTests`
+  - `swift test -q --filter AppViewModelLiveManagedAgentTests`
+  - all green
+- reran the focused metadata-enabled UI proof:
+  - `AGTMUX_BIN=/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/debug/agtmux AGTMUX_UITEST_ALLOW_SSH=1 xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -destination 'platform=macOS,arch=arm64' test -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testMetadataEnabledPlainZshCodexPaneSurfacesManagedProviderAndActivity`
+- current failure is unchanged in shape but now better isolated:
+  - `capture-pane` proves the real Codex run completed in the target pane
+  - app-side daemon probe still reports `total=0 managed=0 probeTarget=nil`
+  - `daemonArgs` and `bootstrapTmuxSocket` still match exactly
+  - daemon stderr remains empty
+
+### Conclusion
+- `T-XTERM-A6` fixed the producer-side stripped-PATH gap, but the metadata-enabled UI lane still differs from shell repro
+- the remaining hypothesis is the app-launched child-daemon environment itself:
+  - shell repro and lower-layer live canaries are green
+  - focused XCUITest still spawns a daemon that sees an empty tmux universe
+- next term-side slice is to normalize managed-daemon spawn env and pass explicit `TMUX_BIN` so app/XCUITest child launches see the same tmux runtime conditions as shell launches
+
+## 2026-03-08 — T-116 root cause corrected: metadata-enabled UI lane reuses the persistent app-owned daemon socket
+
+### Fresh focused UI evidence
+- reran the focused metadata-enabled plain-zsh Codex UI proof:
+  - `AGTMUX_BIN=/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/debug/agtmux AGTMUX_UITEST_ALLOW_SSH=1 xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -destination 'platform=macOS,arch=arm64' test -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testMetadataEnabledPlainZshCodexPaneSurfacesManagedProviderAndActivity`
+- the lane now enters the assertion body reliably and fails with high-signal diagnostics:
+  - `probe=ok total=5 managed=5`
+  - `probeTarget=nil`
+  - visible target row remains inventory-only (`presence=unmanaged, provider=nil, activity=unknown, current_cmd=zsh`)
+
+### Root cause correction
+- the previous startup-order hypothesis was incomplete
+- direct inspection now shows the real split:
+  - app-driven local inventory targets the isolated `AGTMUX_TMUX_SOCKET_NAME`
+  - the managed daemon client still talks to the persistent app-owned daemon socket at `~/Library/Application Support/AGTMUXDesktop/agtmuxd.sock`
+  - when that socket already has a reachable daemon from a normal app launch, the metadata-enabled UI test reuses daemon truth from the user's normal tmux universe
+- result:
+  - the app-side bootstrap probe is healthy, but it is probing the wrong daemon runtime for the metadata-enabled UI lane
+  - the target app-driven pane is absent from daemon truth even though local inventory sees it
+
+### Remediation direction
+- keep managed-daemon startup off the metadata-enabled launch critical path
+- additionally isolate daemon socket path per metadata-enabled app-driven XCUITest, not just tmux socket name
+- route both `AgtmuxDaemonClient` and the managed-daemon supervisors through one env-resolved socket path so app-side probe and visible sidebar consume the same daemon truth
+
+## 2026-03-08 — T-117 opened: reachable stale app-managed daemon still poisons metadata-enabled truth after AGTMUX_BIN rebuilds
+
+### Fresh live evidence
+- user reran the normal app path with:
+  - `AGTMUX_BIN=/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/debug/agtmux swift run AgtmuxTerm`
+- the current app log again shows strict local sync-v2 failure:
+  - `RPC ui.bootstrap.v2 parse failed: sync-v2 bootstrap pane missing required exact identity field 'session_name'`
+- direct probe of the app-managed socket confirms the producer truth is actually invalid on the live path:
+  - `~/Library/Application Support/AGTMUXDesktop/agtmuxd.sock` currently returns 39 managed rows with `session_name = null` / `window_id = null`
+
+### Root cause refinement
+- the local debug daemon binary was rebuilt later in the day:
+  - `/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/debug/agtmux` mtime: `2026-03-08 18:59:32`
+- but the current daemon process serving the app-owned socket is much older:
+  - PID `1926`
+  - start time `2026-03-08 12:47:30`
+- current `AgtmuxDaemonSupervisor` and `ServiceDaemonSupervisor` only check `agtmux json` reachability.
+- result:
+  - a stale but still reachable daemon is silently reused across local daemon rebuilds
+  - metadata-enabled UI reruns and normal app launches can keep consuming old invalid producer truth even after the daemon repo fix has landed locally
+  - the first hardening pass that compared socket mtime to binary mtime is not sufficient; fresh live repro still hits invalid bootstrap rows because the actual stale invariant is the daemon process start time, not just the socket file timestamp
+
+### Immediate test impact
+- metadata-enabled UI is no longer purely a foreground-activation problem:
+  - `testSidebarHealthStripShowsMixedHealthStates` ✅
+  - `testMetadataEnabledPaneSelectionAndReverseSyncWithRealTmux` ❌ because the expected sidebar pane row never appears under stale invalid metadata
+- this makes daemon freshness the current prerequisite before more `T-116` UI-harness analysis
+
+### Tracking result
+- opened `T-117` for app-managed daemon freshness restart
+- `T-116` remains open, but only after metadata-enabled lanes are running against a fresh daemon runtime again
+- narrowed follow-up: once process-aware freshness is landed, the remaining UI red should be treated as plain-zsh Codex managed-row surfacing, not a generic foreground-activation issue
+
+## 2026-03-08 — T-116 narrowed again: metadata-enabled lane still has a launch-critical managed-daemon startup hazard
+
+### Fresh rerun evidence
+- after the process-aware daemon freshness hardening, `swift run AgtmuxTerm` with the rebuilt local daemon binary now starts a fresh managed daemon and direct `ui.bootstrap.v2` probe on `/Users/virtualmachine/Library/Application Support/AGTMUXDesktop/agtmuxd.sock` returns valid strict rows again
+- however, the focused metadata-enabled XCUITest lane is still unstable before it reaches the managed-row assertion body:
+  - `xcodebuild ... testMetadataEnabledPlainZshCodexPaneSurfacesManagedProviderAndActivity` can fall back to `Failed to activate application ... (current state: Running Background)`
+  - this only happens on the metadata-enabled lane where the app currently performs managed-daemon startup on the launch critical path
+
+### Tracking result
+- `T-116` is now explicitly split into:
+  - launch-path stability for metadata-enabled XCUITest
+  - plain-zsh Codex managed-row surfacing once launch is stable
+- next remediation direction is to move managed-daemon startup off the launch critical path while keeping daemon-truth diagnostics app-side
+
+## 2026-03-08 — T-116 root cause refined: metadata-enabled daemon binds before the app-driven tmux socket exists
+
+### Fresh app-side diagnostics
+- after moving managed-daemon startup off the launch critical path, the focused metadata-enabled plain-zsh Codex UI proof now reaches the managed-row assertion body again
+- the new app-side sidebar snapshot plus direct in-app bootstrap probe show:
+  - `issue=nil`
+  - `probe=ok total=5 managed=5`
+  - `probeTarget=nil`
+  - visible target row remains inventory-only (`presence=unmanaged, provider=nil, activity=unknown`)
+- interpretation:
+  - the daemon itself is healthy inside the app process
+  - but it is not monitoring the isolated tmux server created for the app-driven UI test session
+  - local inventory still sees the target pane, so the split is specifically between inventory and daemon socket binding
+
+### Root cause refinement
+- current metadata-enabled UITest startup order is:
+  1. app starts managed daemon
+  2. `UITestTmuxBridge` creates the isolated tmux socket/server/session
+- in that order, the daemon can bind to the wrong tmux universe before the explicit `AGTMUX_TMUX_SOCKET_NAME` server actually exists
+
+### Tracking result
+- next patch should reverse the ordering for metadata-enabled app-driven tmux tests:
+  - create/bootstrap the isolated tmux server first
+  - then start the managed daemon
+  - then let polling converge managed metadata onto the target row
+
+## 2026-03-08 — T-115 closed on updated daemon truth; T-116 opened for metadata-enabled UI foreground activation
+
+### Upstream state change
+- `agtmux:T-XTERM-A5` is now fixed upstream:
+  - managed rows are explicitly demoted when the pane returns to shell state
+  - Claude follow-up validation is complete on the daemon side
+- user-reported upstream verification:
+  - `cargo test -p agtmux-daemon-v5` ✅
+  - `cargo test -p agtmux` ✅
+  - `PROVIDER=codex bash scripts/tests/e2e/scenarios/managed-exit.sh` ✅
+  - `PROVIDER=claude bash scripts/tests/e2e/scenarios/managed-exit.sh` ✅
+  - `PROVIDER=claude bash scripts/tests/e2e/online/run-all.sh` ✅
+
+### Term-side revalidation
+- reran the exact-row clear regression against the current worktree:
+  - `swift test -q --filter AppViewModelA0Tests/testManagedExitChangeClearsStaleProviderActivityAndTitleOnNextPublish` ✅
+- reran the full live AppViewModel managed-agent canary suite against the updated daemon binary:
+  - `AGTMUX_LIVE_TEST_BIN=/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/debug/agtmux swift test -q --filter AppViewModelLiveManagedAgentTests` ✅
+  - result: 5 tests passed (`Claude`, `Codex`, `waiting_input`, plain-zsh managed launch surfacing)
+
+### Remaining red
+- reran the focused metadata-enabled plain-zsh XCUITest:
+  - `AGTMUX_BIN=/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/debug/agtmux xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -destination 'platform=macOS,arch=arm64' test -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testMetadataEnabledPlainZshCodexPaneSurfacesManagedProviderAndActivity`
+  - current result: the test launches, enters the body, and then fails because `XCUIApplication.launch()` cannot foreground `AgtmuxTerm.app` (`current state: Running Background`)
+
+### Tracking result
+- `T-115` is now closed:
+  - managed entry/exit truth is green at the term boundary against the updated daemon
+  - runner-side Codex auth visibility is no longer the gating issue
+- `T-116` is now the only active blocker:
+  - isolate the metadata-enabled app-driven tmux XCUITest foreground activation failure
+  - do not reopen managed-exit product truth unless lower-layer live canaries go red again
+
+## 2026-03-08 — T-115 narrowed: term-side clearing is green, remaining live managed-exit mismatch is upstream, and the focused XCUITest now fails on activation instead of auth
+
+### Term-side status
+- added exact-row regression coverage for managed -> unmanaged clearing and kept it green:
+  - `swift test -q --filter AppViewModelA0Tests/testManagedExitChangeClearsStaleProviderActivityAndTitleOnNextPublish` ✅
+- refreshed live entry canaries against the updated daemon binary:
+  - `AGTMUX_LIVE_TEST_BIN=/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/debug/agtmux swift test -q --filter AppViewModelLiveManagedAgentTests` ✅
+  - all 5 live tests passed (`Claude`, `Codex`, `waiting_input`, plain-zsh launch surfacing)
+
+### Fresh producer-side managed-exit repro
+- a fresh real tmux + real Codex shell repro now proves the remaining mismatch is upstream semantic truth, not the term-side clear-on-change reducer:
+  - started a fresh daemon on a temp socket plus a fresh tmux server
+  - launched real `codex exec` from a plain `zsh -l` pane
+  - after the pane had returned to `current_cmd=zsh`, `agtmux json` still reported:
+    - `presence=managed`
+    - `provider=codex`
+    - `activity_state=waiting_input`
+    - `evidence_mode=heuristic`
+- this evidence is being handed back to the daemon repo as `T-XTERM-A5`
+- scratch handover: `/tmp/agtmux-managed-exit-semantic-truth-handover-20260308.md`
+
+### XCUITest lane
+- removed the focused UI proof's dependence on sandboxed runner-side `codex login status`; the test no longer skips solely because the runner cannot see the interactive shell auth context
+- fresh targeted rerun:
+  - `AGTMUX_BIN=/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/debug/agtmux AGTMUX_UITEST_ALLOW_SSH=1 xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -destination 'platform=macOS,arch=arm64' test -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testMetadataEnabledPlainZshCodexPaneSurfacesManagedProviderAndActivity`
+  - current result: the test body starts, launches the app, and then fails later with `Failed to activate application ... (current state: Running Background)`
+
+## 2026-03-08 — T-115 opened: managed exit truth and runner-auth visibility are the remaining live gaps
+
+### 事象
+- fresh user evidence says two live problems still remain even after `T-114`:
+  - plain `zsh` panes launching Claude/Codex do not always surface in the sidebar
+  - after agent exit, the pane can return to a no-agent shell while stale provider marks stay visible
+- the metadata-enabled XCUITest lane can now enter the test body after automation permission was granted, but it still skips because the sandboxed runner reports `codex login status: Not logged in`
+
+### 切り分け
+- the runner issue is no longer automation permission; PATH normalization already proved that by moving the failure from `env: node: No such file or directory` to a real auth check
+- the remaining XCUITest blocker is auth visibility:
+  - interactive shell: `codex login status` is logged in
+  - sandboxed `xctrunner`: `codex login status` is not logged in
+- on the product side, term coverage is strong for managed entry but still lacks a dedicated live managed-exit canary
+
+### 方針
+- add integration coverage for exact-row managed -> unmanaged overlay clearing
+- add live E2E proving that a real agent started from plain `zsh` is later cleared back to no-agent shell state in the app consumer
+- inject explicit real-user auth/config context into UITest runner shell helpers instead of depending on the runner container defaults
+
+## 2026-03-08 — T-114 closed: single-writer local overlay plus live managed-filter canary lock the term-side recovery path
+
+### 事象
+- the producer-side daemon fix was already live, but a plain `zsh` pane that launched Claude/Codex could still stay inventory-only in the visible term consumer.
+- the risky structural shape was two local-row writers in `AppViewModel`, which allowed stale inventory-only publishes to clobber newer metadata-derived managed rows.
+
+### 実施内容
+- completed the clean-break consumer refactor:
+  - `fetchAll()` now owns local inventory only
+  - local metadata stays in its own cache
+  - visible local rows are derived at publish time from `inventory + metadata`
+- added a live recurrence canary at the app-consumer boundary:
+  - `testLivePlainZshAgentLaunchSurfacesManagedFilterProviderAndActivity`
+  - the harness starts plain `zsh -l` tmux panes, launches real Claude plus real Codex, waits for daemon-managed truth, then requires `AppViewModel.statusFilter = .managed` to surface both rows with exact provider/activity truth
+- kept the metadata-enabled XCUITest path for the same scenario, with explicit pane-row provider/activity AX markers, but did not depend on it for recurrence closure because the current desktop session still blocks XCTest automation mode before the test body starts
+
+### Verification
+- `swift build` ✅
+- `swift test -q --filter AppViewModelA0Tests` ✅
+- `AGTMUX_LIVE_TEST_BIN=/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/debug/agtmux swift test -q --filter AppViewModelLiveManagedAgentTests` ✅
+  - 5 tests passed
+  - includes the new plain-zsh managed-filter live canary
+- targeted metadata-enabled XCUITest rerun:
+  - `xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -destination 'platform=macOS,arch=arm64' test -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testMetadataEnabledPlainZshCodexPaneSurfacesManagedProviderAndActivity`
+  - current result after permission grant: test body starts, runner PATH normalization is fixed, but the sandboxed `xctrunner` still skips because `codex login status` returns `Not logged in`
+
+### 結果
+- the term-side consumer now has a structural guard against stale inventory-only overwrites
+- the exact user-visible symptom class now has a live recurrence test at the app-consumer layer even when XCUITest automation is unavailable
+- `T-114` is closed
+
+## 2026-03-08 — T-114 implementation started: single-writer local overlay model is in place
+
+### 事象
+- fresh live user evidence still showed plain zsh panes launching Claude/Codex without visible provider/status surfacing, even after the upstream daemon fix was already live.
+- direct socket probes proved daemon truth was already healthy, so the remaining bug moved into the term-side consumer.
+
+### 実施内容
+- narrowed the structural issue in `AppViewModel`:
+  - `fetchAll()` was publishing local merged rows based on whatever metadata cache existed when inventory returned
+  - background sync-v2 refresh could later publish a newer managed overlay
+  - stale inventory-only local rows therefore had a path to overwrite newer metadata-derived local rows
+- landed the clean-break consumer refactor:
+  - local inventory cache and local metadata cache remain separate
+  - `publishFromSnapshotCache()` now derives local visible rows from those two states
+  - `fetchAll()` no longer writes local merged rows back into the shared snapshot cache
+- added focused regressions:
+  - healthy bootstrap recovery after an earlier incompatible bootstrap
+  - slow remote fetch cannot overwrite a newer local managed overlay publish
+- added targeted metadata-enabled UI live proof scaffolding for plain zsh → Codex surfacing:
+  - explicit sidebar pane provider/activity AX markers
+  - a metadata-enabled XCUITest that launches real Codex from a plain zsh pane
+
+### Verification
+- `swift build` ✅
+- `swift test -q --filter AppViewModelA0Tests` ✅
+- `AGTMUX_LIVE_TEST_BIN=/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/debug/agtmux swift test -q --filter AppViewModelLiveManagedAgentTests` ✅
+- targeted UI live proof:
+  - `xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -destination 'platform=macOS,arch=arm64' test -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testMetadataEnabledPlainZshCodexPaneSurfacesManagedProviderAndActivity`
+  - current result: blocked before test start by `Timed out while enabling automation mode.`
+
+### 結果
+- the consumer model is now structurally safer: local inventory refresh cannot silently clobber a newer managed overlay publish
+- recovery + real CLI boundary canaries are green
+- `T-114` remains open only for executed UI live proof on an automation-enabled desktop session
+
+## 2026-03-08 — T-114 opened: local overlay publication is still structurally racy after healthy daemon recovery
+
+### 事象
+- fresh live user evidence says that a plain zsh pane can launch Claude/Codex, yet the visible sidebar still does not show it as a managed/provider/activity row.
+- direct daemon probe on the same machine contradicts the UI:
+  - `ui.bootstrap.v2` already returns `presence=managed` plus provider/activity truth for the affected rows
+  - the bug therefore moved from producer detection to terminal-side publication / recovery
+
+### 根本原因仮説
+- current `AppViewModel` still has two local-row publishers:
+  - `fetchAll()` stores a local merged snapshot using whatever metadata cache existed when inventory returned
+  - background sync-v2 refresh later publishes a newer metadata-derived local snapshot
+- that dual-writer model is structurally unsafe:
+  - a stale inventory-only local snapshot can overwrite a newer managed metadata publish
+  - the daemon can already be healthy while the visible sidebar remains inventory-only
+
+### 方針
+- clean-break the consumer model:
+  - keep local inventory cache and local metadata cache separate
+  - derive visible local rows from those two states at publish time
+  - remove any path where `fetchAll()` writes stale local merged rows back into the shared pane cache
+- add regression coverage for:
+  - incompatible/bootstrap-cleared state recovering to healthy managed overlay without relaunch
+  - no stale inventory-only overwrite after a later metadata publish
+- add live E2E proving a real Claude/Codex process started from a plain zsh pane becomes a managed/provider/activity row in the visible app path
+
+## 2026-03-08 — T-113 closed: persistent app-managed socket is clean after upstream bootstrap fix
+
+### 事象
+- `T-113` was reopened because the shipped app path was still consuming a dirty persistent daemon socket that emitted managed rows with null exact-location fields.
+
+### 実施内容
+- validated the upstream daemon fix now landed in `agtmux` commit `c9807f0` (`Exclude unresolved panes from sync bootstrap`)
+- restarted the app-managed daemon and reprobed the real persistent socket at `/Users/virtualmachine/Library/Application Support/AGTMUXDesktop/agtmuxd.sock`
+- reran the terminal repo's live managed-agent canaries against the updated daemon binary
+
+### Verification
+- direct `ui.bootstrap.v2` probe on the app-managed socket now reports:
+  - 4 panes total
+  - 4 managed panes
+  - 0 rows with null `session_name`
+  - 0 rows with null `window_id`
+- `AGTMUX_LIVE_TEST_BIN=/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/debug/agtmux swift test -q --filter AppViewModelLiveManagedAgentTests` ✅
+  - 4 tests passed
+  - Codex / Claude exact-row live canaries stayed green
+
+### 結果
+- the producer/consumer boundary is aligned again on the normal app-managed socket path
+- `T-113` is closed in this repo
+- remaining dirty-state online E2E expansion belongs upstream in `agtmux`; it is not a blocking terminal-repo task anymore
+
+## 2026-03-08 — T-113 opened: live bootstrap drift on dirty daemon state hides all managed overlays
+
+### 事象
+- fresh live user evidence on Sunday, March 8, 2026 showed that pressing the agents filter no longer surfaces provider badges or updated-at labels even though Codex / Claude panes exist.
+- app log repeatedly reports:
+  - `RPC ui.bootstrap.v2 parse failed: The data couldn’t be read because it is missing.`
+- direct inspection of the app-managed daemon socket then showed the real producer bug:
+  - `ui.bootstrap.v2` currently returns 94 panes
+  - 88 managed panes carry `session_name: null` and `window_id: null`
+  - one invalid managed row is enough for the strict terminal consumer to reject the whole local metadata epoch, so the sidebar falls back to inventory-only rows and loses provider/activity/title overlays.
+
+### なぜ online E2E が素通りしたか
+- the current live canaries in this repo and the daemon repo both start a fresh daemon on a temporary socket with a fresh tmux session.
+- that harness shape proves clean producer truth, but it does not reproduce dirty persistent daemon state with orphan managed rows that no longer have tmux-backed exact location.
+- as a result:
+  - clean-socket online E2E stayed green
+  - the shipped app path using the persistent app-managed socket still failed
+
+### 実施内容
+- hardened terminal-side fail-loud surfacing first:
+  - `AgtmuxSyncV2RawPane` now labels missing exact-location fields explicitly (`pane_id`, `session_name`, `session_key`, `window_id`, `pane_instance_id`) instead of collapsing to a generic missing-data decode error
+- added focused regressions:
+  - core decoding test for null `session_name`
+  - app-level regression using a live March 8 style bootstrap fixture with one valid pane plus one orphan managed pane carrying null exact-location fields
+
+### Verification
+- `swift test -q --filter AgtmuxSyncV2DecodingTests/testDecodeBootstrapFailsWhenExactLocationFieldsAreNull` ✅
+- `swift test -q --filter AppViewModelA0Tests/testLiveMarch8BootstrapSampleWithNullExactLocationFieldsFailsClosedAndSurfacesIncompatibleDaemon` ✅
+
+### 結果
+- terminal-side behavior is now clearer and more defensible:
+  - the app still fails closed to inventory-only truth
+  - but the surfaced error now names the missing exact field instead of hiding behind a generic decode failure
+- product recovery is blocked on a daemon-side fix:
+  - `agtmux` must stop emitting managed sync-v2 panes with null exact-location fields
+  - producer-side online/e2e must add a dirty-state scenario so this class of drift cannot pass unnoticed again
+
 ## 2026-03-08 — T-109 started: rendered-client tmux session switch is not yet reflected in sidebar
 
 ### 事象
@@ -2028,6 +2681,158 @@ Result:
 - `T-108` now has a concrete product root cause for the remaining pane-sync half of the bug.
 - next implementation step is exact-client telemetry plus stronger regression/E2E proof that asserts the rendered client's real pane/window, not just the attach command string.
 
+## 2026-03-08 — T-109 closed, T-110 opened for AppKit IME commit regression
+
+Context:
+- `T-109` is now closed on the shipped mainline: commit `57b0f25` landed the rendered-client `client_tty` session-rebind path and fresh targeted UI proof passed.
+- fresh March 8, 2026 live user evidence opens a new terminal-input regression:
+  - Japanese IME candidate UI appears
+  - pressing Enter does not commit the selected candidate into the terminal input line
+
+What changed:
+- reconciled tracking/current docs:
+  - `T-109` is marked `DONE`
+  - new `T-110` tracks Ghostty/AppKit IME correctness
+- locked the initial root-cause hypothesis before code:
+  - current `GhosttyTerminalView.keyDown` sends `ghostty_surface_key(...)` before `interpretKeyEvents(...)`
+  - that ordering is weaker than Ghostty's own `SurfaceView_AppKit.swift` and can let Enter confirmation get consumed as raw terminal input while marked text is still active
+  - current implementation also lacks explicit preedit-clear synchronization and `doCommand(by:)` handling from the reference path
+- updated terminal-runtime architecture docs to require AppKit IME ordering as the mainline contract
+
+Result:
+- the active bugfix slice is now `T-110`
+- next step is TDD-first coverage for marked-text commit / preedit clear, then product code changes in `GhosttyTerminalView`
+
+## 2026-03-08 — T-110 implemented and verified; T-111 opened for live activity-state mismatch
+
+Context:
+- the active March 8, 2026 terminal-input blocker was Japanese IME commit failure inside the Ghostty-backed terminal surface.
+- fresh user evidence in the same session also reports a separate live sidebar state mismatch: the pane currently running Codex is not surfaced as `running`.
+
+What changed:
+- implemented the AppKit IME fix in `GhosttyTerminalView`:
+  - `keyDown` now runs `interpretKeyEvents(...)` before raw terminal key encoding
+  - committed `insertText(...)` clears marked text and explicitly clears libghostty preedit state
+  - `doCommand(by:)` is handled explicitly so AppKit text commands do not beep or short-circuit the post-IME key path
+  - a small release seam was added so AppKit-focused view tests can run without forcing `GhosttyApp.shared` init during teardown
+- added focused regressions in `GhosttyTerminalViewIMETests` for:
+  - marked-text Enter confirmation preferring IME commit over raw Return
+  - explicit preedit clear when marked text ends
+- fresh verification:
+  - `swift build` ✅
+  - `swift test -q --filter GhosttyTerminalViewIMETests` ✅
+  - `swift test -q --filter WorkbenchStoreV2Tests` ✅
+- opened `T-111` for the separate live activity-state mismatch on the active Codex pane
+
+Result:
+- `T-110` is closed on code and focused regression coverage
+- current active slice is `T-111`, which now needs exact payload capture and a failing regression before any metadata/activity fix
+
+## 2026-03-08 — Cross-repo live E2E ownership locked before T-111 canary work
+
+Context:
+- the next test investment is live activity-state truth, and the same real-provider scenarios can be exercised in both `agtmux` and `agtmux-term`.
+- without an explicit split, the terminal repo risks re-owning daemon semantics instead of validating the daemon-to-sidebar boundary.
+
+What changed:
+- updated spec / architecture / tracking docs so the responsibility split is explicit:
+  - `agtmux` owns producer-side real-CLI semantic truth for provider/presence/activity/title/no-bleed
+  - `agtmux-term` owns thin consumer canaries from exact daemon payload truth to exact visible sidebar row
+- fixed the oracle hierarchy for terminal-repo live tests:
+  1. daemon exact-row payload truth
+  2. app/sidebar visible truth
+  3. tmux capture/transcript only for diagnostics
+- narrowed `T-111` accordingly:
+  - first lane is a Codex live canary that proves `running` and then daemon-reported completion state reach the correct row without bleed
+  - broader semantic matrices remain daemon-owned first and can be mirrored later as small terminal canaries
+
+Result:
+- the docs now prevent duplicated responsibility between the two repos
+- next implementation step is extending `AppViewModelLiveManagedAgentTests` with daemon-truth-first live canaries
+
+## 2026-03-08 — T-111 boundary canary landed: daemon truth now proves running/completion propagation
+
+Context:
+- after locking cross-repo ownership, the next step in `agtmux-term` was not another semantic suite; it was one thin daemon-to-sidebar live canary.
+- the target bug shape is exact-row activity truth for the active Codex pane, plus no bleed onto sibling rows.
+
+What changed:
+- extended `AppViewModelLiveManagedAgentTests` instead of building a second live harness:
+  - kept the existing real tmux + real daemon + real Claude/Codex setup
+  - added helpers that poll daemon `ui.bootstrap.v2` as the primary oracle
+  - added `testLiveCodexActivityTruthReachesExactAppRowWithoutBleed`
+- the new live canary proves:
+  - Codex exact row reaches daemon-reported `running`
+  - the same row later reaches daemon-reported completion (`waiting_input` or `idle`)
+  - `AppViewModel` merged rows match daemon truth for `presence`, `provider`, `activity_state`, `evidence_mode`, `session_key`, and `pane_instance_id`
+  - sibling Claude row keeps its own daemon truth while Codex is active
+- also shortened the live Codex prompt from the older long sleep to a shorter deterministic bash task so the canary stays bounded
+
+Verification:
+- `swift build` ✅
+- `swift test -q --filter AppViewModelLiveManagedAgentTests/testLiveCodexActivityTruthReachesExactAppRowWithoutBleed` ✅
+- `swift test -q --filter AppViewModelLiveManagedAgentTests` ✅
+
+Result:
+- the terminal repo now has a live boundary canary for daemon activity-state propagation
+- if the original user-visible mismatch reappears while this canary remains green, the next investigation target is daemon-side semantic truth or scenario-specific provider behavior, not generic consumer bleed
+
+## 2026-03-08 — T-111 expanded and closed: Claude mirror + Codex attention canary are green
+
+Context:
+- daemon-side online E2E was refreshed with local-built `agtmux`, `claude-sonnet-4-6`, and `gpt-5.4` defaults.
+- after the first thin Codex boundary canary landed in `agtmux-term`, the next useful step was to mirror one more provider lane and one user-visible attention lane, not to duplicate the daemon semantic suite.
+
+What changed:
+- updated the live harness in `AppViewModelLiveManagedAgentTests` to mirror daemon-side defaults more closely:
+  - Claude uses `claude --dangerously-skip-permissions --model claude-sonnet-4-6`
+  - Codex uses `codex exec ... -m gpt-5.4 -c model_reasoning_effort='\"medium\"'`
+  - `CLAUDE_MODEL` / `CODEX_MODEL` env overrides remain available for local account differences
+- added two more terminal-side live canaries:
+  - `testLiveClaudeActivityTruthReachesExactAppRowWithoutBleed`
+  - `testLiveCodexWaitingInputSurfacesAttentionFilter`
+- the new coverage now proves:
+  - Claude exact-row `running -> completion` propagation matches daemon truth without sibling bleed
+  - Codex `waiting_input` reaches `needsAttention`, `attentionCount`, and `.attention` filter surfacing without pulling the sibling Claude row into attention
+
+Verification:
+- `swift test -q --filter AppViewModelLiveManagedAgentTests/testLiveClaudeActivityTruthReachesExactAppRowWithoutBleed` ✅
+- `swift test -q --filter AppViewModelLiveManagedAgentTests/testLiveCodexWaitingInputSurfacesAttentionFilter` ✅
+- `swift test -q --filter AppViewModelLiveManagedAgentTests` ✅ (4 tests)
+
+Result:
+- `T-111` is now closed as a terminal-repo boundary task
+- next terminal-side candidate is `T-112`: daemon-reported `waiting_approval` attention/badge/filter surfacing
+
+## 2026-03-08 — T-112 closeout: waiting-approval consumer surfacing is now covered without daemon-side changes
+
+Context:
+- daemon-side semantic truth for live activity states is already owned and covered in `agtmux`
+- this terminal-repo slice only needed to prove that one daemon-reported `waiting_approval` row reaches the visible consumer surface without sibling bleed
+- no stable real-CLI approval prompt was required for this consumer task, so the repo intentionally used a synthetic producer fixture instead of reopening daemon-side implementation
+
+What changed:
+- added `testWaitingApprovalManagedRowSurfacesAttentionCountAndFilterWithoutBleed` to `AppViewModelA0Tests`
+  - one exact managed row surfaces `waiting_approval`
+  - `attentionCount == 1`
+  - `.attention` filter keeps only that row
+  - managed idle and unmanaged sibling rows do not bleed into attention
+- added `testAttentionFilterShowsOnlyWaitingApprovalPanes` to `AgtmuxTermUITests`
+  - the visible Attention filter exposes a stable badge AX child
+  - selecting the filter keeps the waiting-approval row visible and hides the idle sibling row
+- tightened the titlebar AX contract by exposing the Attention badge through an explicit child identifier instead of relying on macOS button value propagation
+
+Verification:
+- `swift test -q --filter AppViewModelA0Tests/testWaitingApprovalManagedRowSurfacesAttentionCountAndFilterWithoutBleed` ✅
+- `xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -destination 'platform=macOS,arch=arm64' test -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testAttentionFilterShowsOnlyWaitingApprovalPanes` ✅
+
+Result:
+- `T-112` is now closed
+- waiting-approval consumer surfacing is covered at the two right layers:
+  - integration owns count/filter truth
+  - targeted UI owns visible badge/filter surfacing
+- no daemon-side follow-up or handover is required for this specific slice
+
 ## 2026-03-07 — T-108 clean-break correction: same-session retarget must preserve one rendered client
 
 Context:
@@ -2114,3 +2919,51 @@ Result:
 - add failing AppViewModel regressions for valid bootstrap/change payloads where `session_key != session_name`
 - implement the consumer-side correlation fix
 - rerun focused pane-retarget proof on the normal daemon-connected path after the metadata fix, not only on the app-driven UITest harness
+# 2026-03-08 22:20 — Narrowed T-116 from daemon freshness to tmux-runtime handoff
+
+- revalidated `T-117` on the live default app-owned socket:
+  - daemon process on `~/Library/Application Support/AGTMUXDesktop/agtmuxd.sock` started at `2026-03-08 20:53:20`
+  - current local `AGTMUX_BIN` mtime is `2026-03-08 18:59:32`
+  - direct `ui.bootstrap.v2` probe now returns 5 panes with `managed_missing=0`
+- reran the focused metadata-enabled plain-zsh Codex UI proof:
+  - `AGTMUX_BIN=/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/debug/agtmux AGTMUX_UITEST_ALLOW_SSH=1 xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -destination 'platform=macOS,arch=arm64' test -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testMetadataEnabledPlainZshCodexPaneSurfacesManagedProviderAndActivity`
+  - the test now reaches the real product assertion instead of failing on activation
+  - tmux capture proves the app-driven pane really executed Codex and completed the prompt
+  - the sidebar snapshot still reports:
+    - `issue=nil`
+    - `probe=ok total=0 managed=0`
+    - `probeTarget=nil`
+    - visible target row remains inventory-only (`presence=unmanaged, provider=nil, activity=unknown, current_cmd=zsh`)
+- conclusion:
+  - current red is no longer stale daemon reuse or decode incompatibility
+  - inventory and command bridge are operating on the isolated test tmux server
+  - managed-daemon startup is still binding to the wrong tmux universe under metadata-enabled XCUITest
+  - the likely gap is the current launch-time re-resolution of `AGTMUX_TMUX_SOCKET_NAME -> #{socket_path}` inside the supervisor
+- next remediation:
+  - `UITestTmuxBridge` records the exact tmux `#{socket_path}` after bootstrap
+  - managed-daemon startup consumes that runtime value directly instead of performing a second socket-name resolution later
+# 2026-03-08 22:32 — T-116 term-side runtime handoff verified; remaining blocker moved upstream
+
+- implemented the clean-break runtime handoff in `agtmux-term`:
+  - `UITestTmuxBridge` now records the exact bootstrap tmux `#{socket_path}` and publishes it into `AgtmuxManagedDaemonRuntime`
+  - managed-daemon startup consumes that runtime socket path ahead of socket-name re-resolution
+  - focused unit coverage stays green: `swift build`, `swift test -q --filter LocalTmuxTargetTests`
+- added app-side diagnostics so the metadata-enabled UI lane reports:
+  - managed daemon socket path
+  - exact daemon launch record (`binary + args + reused/spawned`)
+  - bootstrap-resolved tmux socket path
+  - daemon stderr tail
+- reran the focused metadata-enabled plain-zsh Codex UI proof:
+  - `AGTMUX_BIN=/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/debug/agtmux AGTMUX_UITEST_ALLOW_SSH=1 xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -destination 'platform=macOS,arch=arm64' test -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testMetadataEnabledPlainZshCodexPaneSurfacesManagedProviderAndActivity`
+  - result is still red, but the term-side launch path is now explicit and verified:
+    - `daemonLaunch=spawned:/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/debug/agtmux:--socket-path,/Users/virtualmachine/.agt/uit-<token>.sock,daemon,--tmux-socket,/private/tmp/tmux-501/agtmux-managed-<token>`
+    - `bootstrapTmuxSocket=/private/tmp/tmux-501/agtmux-managed-<token>`
+    - `capture-pane` proves Codex completed in the app-driven pane
+    - `probe=ok total=0 managed=0`
+    - daemon stderr is empty
+- cross-check:
+  - standalone shell repro using the same binary and exact daemon args (`--socket-path <custom-sock> daemon --tmux-socket <same path>`) sees the managed pane within 3 seconds
+- conclusion:
+  - term-side socket/runtime handoff is no longer the blocker
+  - remaining failure is upstream `agtmux:T-XTERM-A6`: a daemon spawned from the metadata-enabled app/XCUITest context with an explicit `--tmux-socket` still returns empty bootstrap
+  - upstream handover published: `/tmp/agtmux-app-launched-explicit-tmux-socket-handover-20260308.md`

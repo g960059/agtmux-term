@@ -120,8 +120,9 @@ actor TmuxCommandRunner {
                 throw TmuxCommandError.tmuxNotFound(source: source)
             }
             process.executableURL = tmuxURL
+            let configArgs = tmuxConfigArguments(from: originalEnv)
             let socketArgs = LocalTmuxTarget.socketArguments(from: originalEnv)
-            process.arguments = socketArgs + args
+            process.arguments = configArgs + socketArgs + args
             var env = originalEnv
             env["TMUX"] = nil
             env["TMUX_PANE"] = nil
@@ -217,6 +218,15 @@ actor TmuxCommandRunner {
         let stdout = String(data: stdoutData, encoding: .utf8) ?? ""
         let stderr = String(data: stderrData, encoding: .utf8) ?? ""
         return ProcessResult(exitCode: process.terminationStatus, stdout: stdout, stderr: stderr)
+    }
+
+    private func tmuxConfigArguments(from env: [String: String]) -> [String] {
+        guard let path = env["AGTMUX_UITEST_TMUX_CONFIG_PATH"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+            !path.isEmpty else {
+            return []
+        }
+        return ["-f", path]
     }
 }
 

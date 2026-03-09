@@ -6,6 +6,7 @@ import Foundation
 /// 1. `AGTMUX_BIN` environment variable (explicit override)
 /// 2. Bundled binary in app resources (`Resources/Tools/agtmux`)
 public enum AgtmuxBinaryResolver {
+    public static let managedSocketPathEnvKey = "AGTMUX_DAEMON_SOCKET_PATH"
     private static let runtimeDirectoryName = "AGTMUXDesktop"
     public static let defaultSocketURL = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library", isDirectory: true)
@@ -13,6 +14,18 @@ public enum AgtmuxBinaryResolver {
         .appendingPathComponent(runtimeDirectoryName, isDirectory: true)
         .appendingPathComponent("agtmuxd.sock", isDirectory: false)
     public static let defaultSocketPath = defaultSocketURL.path
+
+    public static func resolvedSocketPath(from env: [String: String] = ProcessInfo.processInfo.environment) -> String {
+        if let override = env[managedSocketPathEnvKey]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !override.isEmpty {
+            return override
+        }
+        return defaultSocketPath
+    }
+
+    public static func resolvedSocketURL(from env: [String: String] = ProcessInfo.processInfo.environment) -> URL {
+        URL(fileURLWithPath: resolvedSocketPath(from: env))
+    }
 
     public static func resolveBinaryURL() -> URL? {
         candidateBinaryURLs().first(where: { FileManager.default.isExecutableFile(atPath: $0.path) })

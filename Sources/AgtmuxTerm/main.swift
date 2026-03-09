@@ -28,6 +28,8 @@ final class NonDraggableHostingView<Content: View>: NSHostingView<Content> {
 let isUITest = CommandLine.arguments.contains { $0.hasPrefix("-XCTest") }
     || ProcessInfo.processInfo.environment["AGTMUX_UITEST"] == "1"
 let enableUITestGhosttySurfaces = ProcessInfo.processInfo.environment["AGTMUX_UITEST_ENABLE_GHOSTTY_SURFACES"] == "1"
+let enableUITestPolling = isUITest
+    && ProcessInfo.processInfo.environment["AGTMUX_UITEST_INVENTORY_ONLY"] != "1"
 let requiresGhosttyRuntime = !isUITest || enableUITestGhosttySurfaces
 let xpcDisabled = ProcessInfo.processInfo.environment["AGTMUX_XPC_DISABLED"] == "1"
 let xpcServiceBundled: Bool = {
@@ -78,10 +80,18 @@ if requiresGhosttyRuntime {
 let xpcClient: AgtmuxDaemonXPCClient? = useXPCDaemonService ? AgtmuxDaemonXPCClient() : nil
 let daemonSupervisor: AgtmuxDaemonSupervisor? = useXPCDaemonService ? nil : AgtmuxDaemonSupervisor()
 
-if let xpcClient {
-    Task { try? await xpcClient.startManagedDaemonIfNeeded() }
-} else {
-    daemonSupervisor?.startIfNeededAsync()
+func startManagedDaemonAsyncIfNeeded() {
+    if let xpcClient {
+        Task { try? await xpcClient.startManagedDaemonIfNeeded() }
+    } else {
+        daemonSupervisor?.startIfNeededAsync()
+    }
+}
+
+// Keep normal launches on the existing eager async path, but avoid blocking the
+// metadata-enabled XCUITest launch handshake on daemon startup/probe work.
+if !isUITest {
+    startManagedDaemonAsyncIfNeeded()
 }
 
 let localMetadataClient: any LocalMetadataClient
@@ -97,7 +107,19 @@ let viewModel: AppViewModel = MainActor.assumeIsolated {
 }
 
 let uiTestTmuxBridge: UITestTmuxBridge? = MainActor.assumeIsolated {
-    isUITest ? UITestTmuxBridge(viewModel: viewModel) : nil
+    guard isUITest else { return nil }
+    return UITestTmuxBridge(
+        viewModel: viewModel,
+        enableMetadataMode: {
+            viewModel.enableUITestMetadataMode()
+            if let xpcClient {
+                try? await xpcClient.startManagedDaemonIfNeeded()
+            } else {
+                daemonSupervisor?.startIfNeeded()
+            }
+            viewModel.startPolling()
+        }
+    )
 }
 
 // 4. Create the Workbench V2 store for the normal cockpit path.
@@ -155,10 +177,31 @@ _ = windowChromeController
 
 @MainActor
 func forceForeground(_ app: NSApplication, window: NSWindow) {
+    app.unhide(nil)
+    NSRunningApplication.current.unhide()
     window.makeKeyAndOrderFront(nil)
     window.orderFrontRegardless()
     NSRunningApplication.current.activate(options: [.activateAllWindows])
     app.activate(ignoringOtherApps: true)
+}
+
+@MainActor
+func sustainForegroundForUITest(
+    _ app: NSApplication,
+    window: NSWindow,
+    remainingAttempts: Int = 24
+) {
+    forceForeground(app, window: window)
+    guard remainingAttempts > 0 else { return }
+    guard !app.isActive || !window.isKeyWindow else { return }
+
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+        sustainForegroundForUITest(
+            app,
+            window: window,
+            remainingAttempts: remainingAttempts - 1
+        )
+    }
 }
 
 // 6. Kick async startup once run loop is alive.
@@ -166,11 +209,14 @@ DispatchQueue.main.async {
     Task {
         if let uiTestTmuxBridge {
             await uiTestTmuxBridge.startIfNeeded()
+            if enableUITestPolling {
+                startManagedDaemonAsyncIfNeeded()
+            }
         } else {
             await viewModel.fetchAll()
         }
     }
-    if !isUITest {
+    if !isUITest || enableUITestPolling {
         viewModel.startPolling()
     }
 
@@ -178,12 +224,7 @@ DispatchQueue.main.async {
     // run loop starts so accessibility can attach to a foreground app.
     forceForeground(app, window: window)
     if isUITest {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-            forceForeground(app, window: window)
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.75) {
-            forceForeground(app, window: window)
-        }
+        sustainForegroundForUITest(app, window: window)
     }
 }
 

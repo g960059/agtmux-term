@@ -32,7 +32,7 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         if let surface {
             ghostty_surface_free(surface)
         }
-        GhosttyApp.shared.releaseSurface(for: self)
+        releaseSurfaceFromApp()
     }
 
     /// Free the current surface and nil it out.
@@ -42,7 +42,7 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     func clearSurface() {
         if let s = surface {
             ghostty_surface_free(s)
-            GhosttyApp.shared.releaseSurface(for: self)
+            releaseSurfaceFromApp()
             surface = nil
         }
     }
@@ -54,10 +54,14 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     func attachSurface(_ newSurface: ghostty_surface_t) {
         if let old = surface {
             ghostty_surface_free(old)
-            GhosttyApp.shared.releaseSurface(for: self)
+            releaseSurfaceFromApp()
         }
         surface = newSurface
         needsDisplay = true
+    }
+
+    func releaseSurfaceFromApp() {
+        GhosttyApp.shared.releaseSurface(for: self)
     }
 
     // MARK: - Layout
@@ -110,9 +114,8 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
             str = string as? String ?? ""
         }
         markedText = NSMutableAttributedString(string: str)
-        guard let surface else { return }
-        str.withCString { ptr in
-            ghostty_surface_preedit(surface, ptr, UInt(str.utf8.count))
+        if !inKeyDown {
+            syncPreeditToSurface(clearIfNeeded: true)
         }
     }
 
@@ -123,7 +126,11 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         } else {
             str = string as? String ?? ""
         }
+        let hadMarkedText = markedText.length > 0
         markedText = NSMutableAttributedString()
+        if hadMarkedText {
+            syncPreeditToSurface(clearIfNeeded: true)
+        }
         if inKeyDown {
             // Accumulate during interpretKeyEvents; send after keyDown returns.
             keyTextAccumulator += str
@@ -154,7 +161,11 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
 
     func selectedRange() -> NSRange { NSRange(location: NSNotFound, length: 0) }
 
-    func unmarkText() { markedText = NSMutableAttributedString() }
+    func unmarkText() {
+        guard markedText.length > 0 else { return }
+        markedText = NSMutableAttributedString()
+        syncPreeditToSurface(clearIfNeeded: true)
+    }
 
     func validAttributesForMarkedText() -> [NSAttributedString.Key] { [] }
 
@@ -166,39 +177,86 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     // MARK: - Text helper
 
     private func sendText(_ text: String) {
+        sendTextToSurface(text)
+    }
+
+    func sendKeyToSurface(
+        event: NSEvent,
+        text: String? = nil,
+        composing: Bool = false
+    ) -> Bool {
+        guard let surface else { return false }
+        var key = GhosttyInput.toGhosttyKey(event)
+        key.composing = composing
+
+        if let text, text.isEmpty == false,
+           let first = text.utf8.first,
+           first >= 0x20
+        {
+            return text.withCString { ptr in
+                key.text = ptr
+                return ghostty_surface_key(surface, key)
+            }
+        }
+
+        return ghostty_surface_key(surface, key)
+    }
+
+    func sendTextToSurface(_ text: String) {
         guard let surface else { return }
         text.withCString { ptr in
             ghostty_surface_text(surface, ptr, UInt(text.utf8.count))
         }
     }
 
+    func syncPreeditToSurface(clearIfNeeded: Bool = true) {
+        guard let surface else { return }
+
+        if markedText.length > 0 {
+            let str = markedText.string
+            str.withCString { ptr in
+                ghostty_surface_preedit(surface, ptr, UInt(str.utf8.count))
+            }
+        } else if clearIfNeeded {
+            ghostty_surface_preedit(surface, nil, 0)
+        }
+    }
+
     // MARK: - Keyboard
 
     override func keyDown(with event: NSEvent) {
+        let markedTextBefore = markedText.length > 0
         inKeyDown = true
         keyTextAccumulator = ""
-
-        // ghostty_surface_key returns true when libghostty consumed the key
-        // (e.g. keybinding). In that case we do NOT pass through to IME.
-        var consumed = false
-        if let surface {
-            let key = GhosttyInput.toGhosttyKey(event)
-            consumed = ghostty_surface_key(surface, key)
+        defer {
+            inKeyDown = false
+            keyTextAccumulator = ""
         }
 
-        if !consumed {
-            // Let the IME pipeline produce text via insertText(_:replacementRange:).
-            interpretKeyEvents([event])
-            if !keyTextAccumulator.isEmpty {
-                sendText(keyTextAccumulator)
-            }
+        // AppKit text input must run before terminal key encoding so IME commit
+        // cannot be pre-consumed as a raw Return/Enter key.
+        interpretKeyEvents([event])
+        syncPreeditToSurface(clearIfNeeded: markedTextBefore)
+
+        if !keyTextAccumulator.isEmpty {
+            sendText(keyTextAccumulator)
+            return
         }
 
-        inKeyDown = false
-        keyTextAccumulator = ""
+        _ = sendKeyToSurface(
+            event: event,
+            text: event.characters,
+            composing: markedText.length > 0 || markedTextBefore
+        )
     }
 
     override var acceptsFirstResponder: Bool { true }
+
+    override func doCommand(by selector: Selector) {
+        // `interpretKeyEvents` routes many non-text inputs here. We encode the final
+        // terminal key after IME/text processing in `keyDown`, so this must not beep
+        // or short-circuit composition/commit flows.
+    }
 
     // MARK: - Mouse
 

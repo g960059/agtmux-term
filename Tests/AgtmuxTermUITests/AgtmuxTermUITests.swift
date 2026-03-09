@@ -1,6 +1,7 @@
 import XCTest
 import AgtmuxTermCore
 import CoreGraphics
+import Darwin
 
 /// E2E crash regression tests for agtmux-term.
 ///
@@ -30,6 +31,17 @@ final class AgtmuxTermUITests: XCTestCase {
     private var preExistingSessions: Set<String> = []
     /// Sessions explicitly created by this test via `createTrackedTmuxSession`.
     private var ownedSessions: Set<String> = []
+
+    private func realUserHomeDirectory() -> URL {
+        if let passwd = getpwuid(getuid()), let home = passwd.pointee.pw_dir {
+            return URL(fileURLWithPath: String(cString: home), isDirectory: true)
+        }
+        return URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
+    }
+
+    private func shellQuote(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
 
     // MARK: - setUp / tearDown
 
@@ -1295,6 +1307,78 @@ final class AgtmuxTermUITests: XCTestCase {
                        "Unmanaged pane must NOT appear under 'Managed' filter")
     }
 
+    /// T-E2E-009c: `waiting_approval` rows must surface through the Attention filter without sibling bleed.
+    func testAttentionFilterShowsOnlyWaitingApprovalPanes() throws {
+        let approvalPaneID = "%60"
+        let idlePaneID = "%61"
+        let sessionName = "agtmux-e2e-attention"
+
+        let json = """
+        {"version":1,"panes":[
+          {"pane_id":"\(approvalPaneID)","session_name":"\(sessionName)","window_id":"@3",
+           "window_index":1,"window_name":"claude","activity_state":"waiting_approval",
+           "presence":"managed","provider":"claude","evidence_mode":"deterministic",
+           "conversation_title":"Approve tool call","current_cmd":"node","updated_at":"2026-03-08T00:00:00Z","age_secs":0},
+          {"pane_id":"\(idlePaneID)","session_name":"\(sessionName)","window_id":"@3",
+           "window_index":1,"window_name":"codex","activity_state":"idle",
+           "presence":"managed","provider":"codex","evidence_mode":"deterministic",
+           "conversation_title":"Idle sibling","current_cmd":"node","updated_at":"2026-03-08T00:00:00Z","age_secs":0}
+        ]}
+        """
+
+        app.launchEnvironment["AGTMUX_JSON"] = json
+        app.launchForUITest()
+
+        let approvalKey = AccessibilityID.paneKey(
+            source: "local",
+            sessionName: sessionName,
+            paneID: approvalPaneID
+        )
+        let approvalRow = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier == %@", AccessibilityID.sidebarPanePrefix + approvalKey)
+        ).firstMatch
+        XCTAssertTrue(
+            approvalRow.waitForExistence(timeout: TestConstants.sidebarPopulateTimeout),
+            "waiting_approval pane must appear in 'All' filter"
+        )
+
+        let attentionButton = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier == %@", AccessibilityID.sidebarFilterAttention)
+        ).firstMatch
+        XCTAssertTrue(
+            attentionButton.waitForExistence(timeout: TestConstants.settleTimeout),
+            "'Attention' filter tab must exist"
+        )
+
+        let attentionBadge = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier == %@", AccessibilityID.sidebarFilterAttentionBadge)
+        ).firstMatch
+        XCTAssertTrue(
+            attentionBadge.waitForExistence(timeout: TestConstants.settleTimeout),
+            "Attention filter must surface a stable badge element for the waiting_approval row"
+        )
+        XCTAssertEqual(attentionBadge.label, "1")
+
+        attentionButton.click()
+        Thread.sleep(forTimeInterval: 0.5)
+        XCTAssertTrue(
+            attentionBadge.exists,
+            "Attention badge must remain visible after selecting the filter"
+        )
+
+        XCTAssertTrue(approvalRow.exists, "waiting_approval pane must remain visible under 'Attention' filter")
+
+        let idleKey = AccessibilityID.paneKey(
+            source: "local",
+            sessionName: sessionName,
+            paneID: idlePaneID
+        )
+        let idleRow = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier == %@", AccessibilityID.sidebarPanePrefix + idleKey)
+        ).firstMatch
+        XCTAssertFalse(idleRow.exists, "idle sibling pane must not appear under 'Attention' filter")
+    }
+
     /// T-E2E-009b: Session block drag-and-drop reorders sessions within a source.
     ///
     /// Uses AGTMUX_JSON fixtures so ordering can be asserted deterministically.
@@ -1925,6 +2009,161 @@ final class AgtmuxTermUITests: XCTestCase {
         )
     }
 
+    /// T-E2E-015b: a real Codex process launched from a plain zsh pane must surface
+    /// as a managed/provider/activity row in the visible metadata-enabled app path.
+    func testMetadataEnabledPlainZshCodexPaneSurfacesManagedProviderAndActivity() throws {
+        guard let agtmuxBin = resolveAgtmuxBinaryForUITest() else {
+            throw XCTSkip("AGTMUX_BIN is required for metadata-enabled managed-pane E2E")
+        }
+        let codexPath = "/opt/homebrew/bin/codex"
+        guard FileManager.default.isExecutableFile(atPath: codexPath) else {
+            throw XCTSkip("codex CLI is not installed at \(codexPath)")
+        }
+
+        let token = String(UUID().uuidString.prefix(8)).lowercased()
+        let session = "agtmux-e2e-managed-\(token)"
+        let socket = "agtmux-managed-\(token)"
+        let control = try makeAppTmuxControlPaths(token: token)
+        let scenario = AppTmuxScenario(
+            sessionName: session,
+            windowName: "main",
+            paneCount: 1,
+            shellCommand: "zsh -l"
+        )
+
+        app.launchEnvironment["AGTMUX_BIN"] = agtmuxBin
+        app.launchEnvironment["AGTMUX_UITEST_ENABLE_MANAGED_DAEMON"] = "1"
+        configureAppDrivenTmux(socketName: socket, control: control, scenario: scenario)
+        app.launchForUITest()
+
+        let bootstrap = try waitForAppTmuxBootstrapResult(control: control)
+        guard bootstrap.ok,
+              bootstrap.sessionName == session,
+              let paneID = bootstrap.paneIDs.first else {
+            throw XCTSkip("App-driven tmux bootstrap failed for metadata-enabled managed-pane E2E")
+        }
+
+        let row = paneRow(source: "local", sessionName: session, paneID: paneID)
+        XCTAssertTrue(
+            row.waitForExistence(timeout: TestConstants.sidebarPopulateTimeout),
+            "Plain zsh pane must appear before live managed-pane surfacing proof"
+        )
+
+        try waitForAppShellReady(
+            tmuxTarget: "\(session):main",
+            control: control
+        )
+        try enableAppManagedMetadata(control: control)
+        let bootstrapReadySnapshot = try waitForAppDaemonBootstrapReady(
+            control: control,
+            sessionName: session,
+            paneID: paneID,
+            expectedCurrentCommand: "zsh"
+        )
+        _ = try sendAppTmuxCommand(
+            ["display-message", "-p", "#{session_name}"],
+            refreshInventory: true,
+            control: control,
+            timeout: 2.0
+        )
+
+        let prompt = """
+        Run exactly one bash command and do not run any additional commands. Wait 20 seconds by using sleep 20. \
+        bash -lc 'sleep 20; printf "wait_result=managed\\n"'. Do not simulate, infer, or guess. \
+        Output only one non-empty line. Required output format: wait_result=managed
+        """
+        let effortConfig = #"model_reasoning_effort="medium""#
+        let codexCommand =
+            "cd /tmp && codex exec --dangerously-bypass-approvals-and-sandbox " +
+            "--skip-git-repo-check --json --model gpt-5.4 " +
+            "-c \(shellQuote(effortConfig)) \(shellQuote(prompt))"
+        _ = try sendAppTmuxCommand(
+            ["send-keys", "-t", "\(session):main", "-l", codexCommand],
+            refreshInventory: false,
+            control: control
+        )
+        _ = try sendAppTmuxCommand(
+            ["send-keys", "-t", "\(session):main", "C-m"],
+            refreshInventory: false,
+            control: control
+        )
+
+        let managedButton = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier == %@", AccessibilityID.sidebarFilterManaged)
+        ).firstMatch
+        XCTAssertTrue(
+            managedButton.waitForExistence(timeout: TestConstants.settleTimeout),
+            "Managed filter button must exist for managed-pane surfacing proof"
+        )
+        managedButton.click()
+
+        let deadline = Date().addingTimeInterval(45.0)
+        var surfaced = false
+        var surfacedRowSummary = ""
+        while Date() < deadline {
+            let currentRow = paneRow(source: "local", sessionName: session, paneID: paneID)
+            let summary = paneRowMetadataSummary(currentRow) ?? ""
+            if currentRow.exists,
+               summary.contains("presence=managed"),
+               summary.contains("provider=codex"),
+               ["activity=running", "activity=waiting_input", "activity=idle"].contains(where: summary.contains) {
+                surfaced = true
+                surfacedRowSummary = summary
+                break
+            }
+            Thread.sleep(forTimeInterval: 0.5)
+        }
+
+        let completionDeadline = Date().addingTimeInterval(30.0)
+        var freshnessSurfaced = false
+        var completionRowSummary = surfacedRowSummary
+        while Date() < completionDeadline {
+            let currentRow = paneRow(source: "local", sessionName: session, paneID: paneID)
+            let summary = paneRowMetadataSummary(currentRow) ?? ""
+            if currentRow.exists,
+               summary.contains("presence=managed"),
+               summary.contains("provider=codex"),
+               ["activity=waiting_input", "activity=idle"].contains(where: summary.contains),
+               !summary.contains("freshness=none") {
+                freshnessSurfaced = true
+                completionRowSummary = summary
+                break
+            }
+            if !summary.isEmpty {
+                completionRowSummary = summary
+            }
+            Thread.sleep(forTimeInterval: 0.5)
+        }
+
+        let finalCapture = try? sendAppTmuxCommand(
+            ["capture-pane", "-p", "-t", "\(session):main"],
+            refreshInventory: false,
+            control: control,
+            timeout: 2.0
+        )
+        let sidebarState = try? fetchAppSidebarState(
+            control: control,
+            sessionName: session,
+            paneID: paneID
+        )
+        XCTAssertTrue(
+            surfaced,
+            "A real Codex process launched from a plain zsh pane must surface as a managed sidebar row with provider/activity metadata. " +
+            "row='\(surfacedRowSummary)' " +
+            "bootstrapReady='\(sidebarStateSummary(bootstrapReadySnapshot, sessionName: session, paneID: paneID))' " +
+            "capture='\(finalCapture ?? "")' " +
+            "sidebar='\(sidebarStateSummary(sidebarState, sessionName: session, paneID: paneID))'"
+        )
+        XCTAssertTrue(
+            freshnessSurfaced,
+            "A managed completion row must expose freshness metadata once the live Codex pane settles into waiting_input or idle. " +
+            "row='\(completionRowSummary)' " +
+            "bootstrapReady='\(sidebarStateSummary(bootstrapReadySnapshot, sessionName: session, paneID: paneID))' " +
+            "capture='\(finalCapture ?? "")' " +
+            "sidebar='\(sidebarStateSummary(sidebarState, sessionName: session, paneID: paneID))'"
+        )
+    }
+
     /// T-E2E-016: terminal-originated tmux session switches must rebind the visible
     /// tile/session selection in place instead of leaving the sidebar on the stale session.
     func testTerminalSessionSwitchUpdatesSidebarSelectionWithRealTmux() throws {
@@ -2278,6 +2517,17 @@ final class AgtmuxTermUITests: XCTestCase {
         ).firstMatch
     }
 
+    private func paneRowMetadataSummary(_ row: XCUIElement) -> String? {
+        guard row.waitForExistence(timeout: 0.5) else { return nil }
+        if let value = row.value as? String {
+            return value
+        }
+        if let value = row.value {
+            return String(describing: value)
+        }
+        return nil
+    }
+
     private func paneRowByPaneID(source: String = "local", paneID: String) -> XCUIElement {
         let paneSuffix = paneID.replacingOccurrences(
             of: "[^A-Za-z0-9_]",
@@ -2571,6 +2821,8 @@ final class AgtmuxTermUITests: XCTestCase {
         let commandPath: String
         let commandResultPath: String
         let bootstrapResultPath: String
+        let daemonSocketPath: String
+        let managedDaemonStderrPath: String
     }
 
     private struct AppTmuxBootstrapResult: Decodable {
@@ -2592,6 +2844,48 @@ final class AgtmuxTermUITests: XCTestCase {
         let ok: Bool
         let stdout: String
         let error: String?
+    }
+
+    private struct SidebarStateSnapshot: Decodable {
+        let statusFilter: String
+        let panes: [AgtmuxPane]
+        let filteredPanes: [AgtmuxPane]
+        let localDaemonIssueTitle: String?
+        let localDaemonIssueDetail: String?
+        let bootstrapProbeSummary: BootstrapProbeSummary
+        let bootstrapTargetSummary: BootstrapTargetSummary?
+        let managedDaemonSocketPath: String
+        let tmuxSocketArguments: [String]
+        let daemonCLIArguments: [String]
+        let bootstrapResolvedTmuxSocketPath: String?
+        let appDirectResolvedSocketProbe: String?
+        let appDirectResolvedSocketProbeError: String?
+        let daemonProcessCommands: [String]
+        let daemonLaunchRecord: DaemonLaunchRecordSnapshot?
+        let managedDaemonStderrTail: String?
+    }
+
+    private struct DaemonLaunchRecordSnapshot: Decodable {
+        let binaryPath: String
+        let arguments: [String]
+        let environment: [String: String]
+        let reusedExistingRuntime: Bool
+    }
+
+    private struct BootstrapProbeSummary: Decodable {
+        let ok: Bool
+        let totalPanes: Int?
+        let managedPanes: Int?
+        let error: String?
+    }
+
+    private struct BootstrapTargetSummary: Decodable {
+        let sessionName: String
+        let paneID: String
+        let presence: String
+        let provider: String?
+        let activity: String
+        let currentCommand: String?
     }
 
     private struct AppWorkbenchTerminalTargetSnapshot: Decodable {
@@ -2663,10 +2957,17 @@ final class AgtmuxTermUITests: XCTestCase {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
             .appendingPathComponent("agtmux-term-uitest-\(token)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let daemonSocketDirectory = realUserHomeDirectory()
+            .appendingPathComponent(".agt", isDirectory: true)
+        try FileManager.default.createDirectory(at: daemonSocketDirectory, withIntermediateDirectories: true)
+        let daemonSocketPath = daemonSocketDirectory
+            .appendingPathComponent("uit-\(token).sock", isDirectory: false)
         return AppTmuxControlPaths(
             commandPath: dir.appendingPathComponent("tmux-command.json").path,
             commandResultPath: dir.appendingPathComponent("tmux-command-result.json").path,
-            bootstrapResultPath: dir.appendingPathComponent("tmux-bootstrap-result.json").path
+            bootstrapResultPath: dir.appendingPathComponent("tmux-bootstrap-result.json").path,
+            daemonSocketPath: daemonSocketPath.path,
+            managedDaemonStderrPath: dir.appendingPathComponent("managed-daemon.stderr.log").path
         )
     }
 
@@ -2676,7 +2977,10 @@ final class AgtmuxTermUITests: XCTestCase {
         scenario: AppTmuxScenario?
     ) {
         app.launchEnvironment["AGTMUX_TMUX_SOCKET_NAME"] = socketName
+        app.launchEnvironment[AgtmuxBinaryResolver.managedSocketPathEnvKey] = control.daemonSocketPath
+        app.launchEnvironment["AGTMUX_UITEST_MANAGED_DAEMON_STDERR_PATH"] = control.managedDaemonStderrPath
         app.launchEnvironment["AGTMUX_UITEST_ENABLE_GHOSTTY_SURFACES"] = "1"
+        app.launchEnvironment["AGTMUX_UITEST_TMUX_CONFIG_PATH"] = "/dev/null"
         app.launchEnvironment["AGTMUX_UITEST_TMUX_COMMAND_PATH"] = control.commandPath
         app.launchEnvironment["AGTMUX_UITEST_TMUX_COMMAND_RESULT_PATH"] = control.commandResultPath
         app.launchEnvironment["AGTMUX_UITEST_TMUX_RESULT_PATH"] = control.bootstrapResultPath
@@ -2825,6 +3129,182 @@ final class AgtmuxTermUITests: XCTestCase {
             "Timed out waiting for pane in window '\(windowDescription)' of target '\(tmuxTarget)'; " +
             "latestOutput='\(latestOutput)' latestError='\(latestError ?? "nil")'"
         )
+    }
+
+    private func waitForAppShellReady(
+        tmuxTarget: String,
+        control: AppTmuxControlPaths,
+        timeout: TimeInterval = TestConstants.sidebarPopulateTimeout
+    ) throws {
+        let token = "__agtmux_ready_\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))__"
+        let readinessCommand = "printf '" + token + "\\n'"
+        _ = try sendAppTmuxCommand(
+            ["send-keys", "-t", tmuxTarget, "-l", readinessCommand],
+            refreshInventory: false,
+            control: control
+        )
+        _ = try sendAppTmuxCommand(
+            ["send-keys", "-t", tmuxTarget, "C-m"],
+            refreshInventory: false,
+            control: control
+        )
+
+        let deadline = Date().addingTimeInterval(timeout)
+        var latestOutput = ""
+        while Date() < deadline {
+            latestOutput = try sendAppTmuxCommand(
+                ["capture-pane", "-p", "-t", tmuxTarget],
+                refreshInventory: false,
+                control: control,
+                timeout: 2.0
+            )
+            if latestOutput.contains(token) {
+                return
+            }
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+
+        throw XCTSkip(
+            "Timed out waiting for interactive shell readiness in \(tmuxTarget); latest capture='\(latestOutput)'"
+        )
+    }
+
+    private func fetchAppSidebarState(
+        control: AppTmuxControlPaths,
+        sessionName: String,
+        paneID: String
+    ) throws -> SidebarStateSnapshot {
+        let output = try sendAppTmuxCommand(
+            ["__agtmux_dump_sidebar_state__", sessionName, paneID],
+            refreshInventory: false,
+            control: control,
+            timeout: 2.0
+        )
+        return try JSONDecoder().decode(SidebarStateSnapshot.self, from: Data(output.utf8))
+    }
+
+    private func enableAppManagedMetadata(control: AppTmuxControlPaths) throws {
+        _ = try sendAppTmuxCommand(
+            ["__agtmux_enable_metadata__"],
+            refreshInventory: false,
+            control: control,
+            timeout: 5.0
+        )
+    }
+
+    private func waitForAppDaemonBootstrapReady(
+        control: AppTmuxControlPaths,
+        sessionName: String,
+        paneID: String,
+        expectedCurrentCommand: String,
+        timeout: TimeInterval = 10.0
+    ) throws -> SidebarStateSnapshot {
+        let deadline = Date().addingTimeInterval(timeout)
+        var lastSnapshot: SidebarStateSnapshot?
+
+        while Date() < deadline {
+            if let snapshot = try? fetchAppSidebarState(
+                control: control,
+                sessionName: sessionName,
+                paneID: paneID
+            ) {
+                lastSnapshot = snapshot
+                let probe = snapshot.bootstrapProbeSummary
+                let target = snapshot.bootstrapTargetSummary
+                if probe.ok,
+                   (probe.totalPanes ?? 0) > 0,
+                   target?.sessionName == sessionName,
+                   target?.paneID == paneID,
+                   target?.currentCommand == expectedCurrentCommand {
+                    return snapshot
+                }
+            }
+            Thread.sleep(forTimeInterval: 0.25)
+        }
+
+        XCTFail(
+            "Managed daemon bootstrap never became ready for the app-driven tmux pane. " +
+            "sidebar='\(sidebarStateSummary(lastSnapshot, sessionName: sessionName, paneID: paneID))'"
+        )
+        return try fetchAppSidebarState(control: control, sessionName: sessionName, paneID: paneID)
+    }
+
+    private func sidebarStateSummary(
+        _ snapshot: SidebarStateSnapshot?,
+        sessionName: String,
+        paneID: String
+    ) -> String {
+        guard let snapshot else { return "nil" }
+
+        func summarize(_ pane: AgtmuxPane?) -> String {
+            guard let pane else { return "nil" }
+            return [
+                "presence=\(pane.presence.rawValue)",
+                "provider=\(pane.provider?.rawValue ?? "nil")",
+                "activity=\(pane.activityState.rawValue)",
+                "current_cmd=\(pane.currentCmd ?? "nil")"
+            ].joined(separator: ",")
+        }
+
+        let visiblePane = snapshot.panes.first {
+            $0.source == "local" && $0.sessionName == sessionName && $0.paneId == paneID
+        }
+        let filteredPane = snapshot.filteredPanes.first {
+            $0.source == "local" && $0.sessionName == sessionName && $0.paneId == paneID
+        }
+
+        let issueSummary: String
+        if let title = snapshot.localDaemonIssueTitle {
+            let detail = snapshot.localDaemonIssueDetail ?? ""
+            issueSummary = "\(title):\(detail)"
+        } else {
+            issueSummary = "nil"
+        }
+
+        let probe = snapshot.bootstrapProbeSummary
+        let probeSummary = probe.ok
+            ? "ok total=\(probe.totalPanes ?? -1) managed=\(probe.managedPanes ?? -1)"
+            : "error=\(probe.error ?? "unknown")"
+        let targetSummary: String
+        if let target = snapshot.bootstrapTargetSummary {
+            targetSummary = [
+                "presence=\(target.presence)",
+                "provider=\(target.provider ?? "nil")",
+                "activity=\(target.activity)",
+                "current_cmd=\(target.currentCommand ?? "nil")"
+            ].joined(separator: ",")
+        } else {
+            targetSummary = "nil"
+        }
+        let daemonLaunchSummary = snapshot.daemonLaunchRecord.map {
+            "\($0.reusedExistingRuntime ? "reused" : "spawned"):\($0.binaryPath):\($0.arguments.joined(separator: ","))"
+        } ?? "nil"
+        let daemonEnvSummary = snapshot.daemonLaunchRecord.map { launch in
+            launch.environment
+                .sorted { $0.key < $1.key }
+                .map { "\($0.key)=\($0.value)" }
+                .joined(separator: "|")
+        } ?? "nil"
+
+        return [
+            "filter=\(snapshot.statusFilter)",
+            "issue=\(issueSummary)",
+            "probe=\(probeSummary)",
+            "probeTarget=\(targetSummary)",
+            "managedSocket=\(snapshot.managedDaemonSocketPath)",
+            "tmuxArgs=\(snapshot.tmuxSocketArguments.joined(separator: ","))",
+            "daemonArgs=\(snapshot.daemonCLIArguments.joined(separator: ","))",
+            "bootstrapTmuxSocket=\(snapshot.bootstrapResolvedTmuxSocketPath ?? "nil")",
+            "appDirectSocketProbe=\(snapshot.appDirectResolvedSocketProbe ?? "nil")",
+            "appDirectSocketProbeErr=\(snapshot.appDirectResolvedSocketProbeError ?? "nil")",
+            "daemonProc=\(snapshot.daemonProcessCommands.joined(separator: " || "))",
+            "daemonLaunch=\(daemonLaunchSummary)",
+            "daemonEnv=\(daemonEnvSummary)",
+            "daemonErr=\(snapshot.managedDaemonStderrTail ?? "nil")",
+            "all=\(summarize(visiblePane))",
+            "filtered=\(summarize(filteredPane))",
+            "filteredCount=\(snapshot.filteredPanes.count)"
+        ].joined(separator: " ")
     }
 
     private func waitForSingleWorkbenchV2TerminalTile(
@@ -3089,13 +3569,7 @@ final class AgtmuxTermUITests: XCTestCase {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: args[0])
         process.arguments = Array(args.dropFirst())
-        var env = ProcessInfo.processInfo.environment
-        // Never inherit current tmux client context from the runner shell.
-        // A stale/inaccessible TMUX socket makes `tmux list-sessions` fail and
-        // causes false "socket not accessible" skips.
-        env["TMUX"] = nil
-        env["TMUX_PANE"] = nil
-        process.environment = env
+        process.environment = normalizedRunnerShellEnvironment()
         process.standardInput = FileHandle.nullDevice
         let out = Pipe(), err = Pipe()
         process.standardOutput = out
@@ -3119,10 +3593,7 @@ final class AgtmuxTermUITests: XCTestCase {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: args[0])
         process.arguments = Array(args.dropFirst())
-        var env = ProcessInfo.processInfo.environment
-        env["TMUX"] = nil
-        env["TMUX_PANE"] = nil
-        process.environment = env
+        process.environment = normalizedRunnerShellEnvironment()
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = Pipe()
         process.standardError = Pipe()
@@ -3132,5 +3603,43 @@ final class AgtmuxTermUITests: XCTestCase {
         } catch {
             // Best-effort cleanup must never fail the test body.
         }
+    }
+
+    private func normalizedRunnerShellEnvironment() -> [String: String] {
+        var env = ProcessInfo.processInfo.environment
+        // Never inherit current tmux client context from the runner shell.
+        // A stale/inaccessible TMUX socket makes `tmux list-sessions` fail and
+        // causes false "socket not accessible" skips.
+        env["TMUX"] = nil
+        env["TMUX_PANE"] = nil
+
+        let username = env["USER"] ?? NSUserName()
+        let realUserHome = NSHomeDirectoryForUser(username) ?? "/Users/\(username)"
+        env["HOME"] = realUserHome
+        env["USER"] = username
+        env["LOGNAME"] = username
+        env["XDG_CONFIG_HOME"] = realUserHome + "/.config"
+        env["CODEX_HOME"] = realUserHome + "/.codex"
+
+        let preferredPathSegments = [
+            "/opt/homebrew/bin",
+            "/opt/homebrew/sbin",
+            "/usr/local/bin",
+            "/usr/bin",
+            "/bin",
+            "/usr/sbin",
+            "/sbin",
+        ]
+        let existingPathSegments = (env["PATH"] ?? "")
+            .split(separator: ":")
+            .map(String.init)
+        var mergedSegments: [String] = []
+        for segment in preferredPathSegments + existingPathSegments where !segment.isEmpty {
+            if !mergedSegments.contains(segment) {
+                mergedSegments.append(segment)
+            }
+        }
+        env["PATH"] = mergedSegments.joined(separator: ":")
+        return env
     }
 }

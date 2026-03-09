@@ -91,6 +91,7 @@ struct TitlebarChromeView: View {
                 isActive: viewModel.statusFilter == .attention,
                 action: { toggleFilter(.attention) },
                 accessibilityLabel: "Attention",
+                ignoreAccessibilityChildren: false,
                 accessibilityID: AccessibilityID.sidebarFilterAttention
             ) {
                 ZStack(alignment: .topTrailing) {
@@ -106,6 +107,7 @@ struct TitlebarChromeView: View {
                             .background(Color.accentColor)
                             .clipShape(Capsule(style: .continuous))
                             .offset(x: 7, y: -6)
+                            .accessibilityIdentifier(AccessibilityID.sidebarFilterAttentionBadge)
                     }
                 }
             }
@@ -141,6 +143,7 @@ private struct TitlebarIconButton<Label: View>: View {
     let isActive: Bool
     let action: () -> Void
     let accessibilityLabel: String
+    let ignoreAccessibilityChildren: Bool
     let accessibilityID: String?
     let label: () -> Label
 
@@ -150,12 +153,14 @@ private struct TitlebarIconButton<Label: View>: View {
         isActive: Bool,
         action: @escaping () -> Void,
         accessibilityLabel: String,
+        ignoreAccessibilityChildren: Bool = true,
         accessibilityID: String? = nil,
         @ViewBuilder label: @escaping () -> Label
     ) {
         self.isActive = isActive
         self.action = action
         self.accessibilityLabel = accessibilityLabel
+        self.ignoreAccessibilityChildren = ignoreAccessibilityChildren
         self.accessibilityID = accessibilityID
         self.label = label
     }
@@ -176,7 +181,7 @@ private struct TitlebarIconButton<Label: View>: View {
         .buttonStyle(.plain)
         .onHover { isHovered = $0 }
         .help(accessibilityLabel)
-        .accessibilityElement(children: .ignore)
+        .accessibilityElement(children: ignoreAccessibilityChildren ? .ignore : .contain)
         .accessibilityLabel(accessibilityLabel)
 
         if let accessibilityID {

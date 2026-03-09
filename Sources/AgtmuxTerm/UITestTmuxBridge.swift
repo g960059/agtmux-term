@@ -54,19 +54,70 @@ final class UITestTmuxBridge {
         let renderedSurfaceGeneration: UInt64
     }
 
+    private struct SidebarStateSnapshot: Codable {
+        let statusFilter: String
+        let panes: [AgtmuxPane]
+        let filteredPanes: [AgtmuxPane]
+        let localDaemonIssueTitle: String?
+        let localDaemonIssueDetail: String?
+        let bootstrapProbeSummary: BootstrapProbeSummary
+        let bootstrapTargetSummary: BootstrapTargetSummary?
+        let managedDaemonSocketPath: String
+        let tmuxSocketArguments: [String]
+        let daemonCLIArguments: [String]
+        let bootstrapResolvedTmuxSocketPath: String?
+        let appDirectResolvedSocketProbe: String?
+        let appDirectResolvedSocketProbeError: String?
+        let daemonProcessCommands: [String]
+        let daemonLaunchRecord: DaemonLaunchRecordSnapshot?
+        let managedDaemonStderrTail: String?
+    }
+
+    private struct DaemonLaunchRecordSnapshot: Codable {
+        let binaryPath: String
+        let arguments: [String]
+        let environment: [String: String]
+        let reusedExistingRuntime: Bool
+    }
+
+    private struct BootstrapProbeSummary: Codable {
+        let ok: Bool
+        let totalPanes: Int?
+        let managedPanes: Int?
+        let error: String?
+    }
+
+    private struct BootstrapTargetSummary: Codable {
+        let sessionName: String
+        let paneID: String
+        let presence: String
+        let provider: String?
+        let activity: String
+        let currentCommand: String?
+    }
+
     private let viewModel: AppViewModel
+    private let enableMetadataMode: @MainActor () async -> Void
     private let env: [String: String]
     private var commandLoopTask: Task<Void, Never>?
     private var createdSessions: Set<String> = []
     private let activeTerminalTargetCommand = "__agtmux_dump_active_terminal_target__"
+    private let sidebarStateCommand = "__agtmux_dump_sidebar_state__"
+    private let enableMetadataCommand = "__agtmux_enable_metadata__"
 
-    init(viewModel: AppViewModel, env: [String: String] = ProcessInfo.processInfo.environment) {
+    init(
+        viewModel: AppViewModel,
+        enableMetadataMode: @escaping @MainActor () async -> Void = {},
+        env: [String: String] = ProcessInfo.processInfo.environment
+    ) {
         self.viewModel = viewModel
+        self.enableMetadataMode = enableMetadataMode
         self.env = env
     }
 
     func startIfNeeded() async {
         guard env["AGTMUX_UITEST"] == "1" else { return }
+        AgtmuxManagedDaemonRuntime.setBootstrapResolvedTmuxSocketPath(nil)
 
         startCommandLoopIfNeeded()
 
@@ -83,6 +134,7 @@ final class UITestTmuxBridge {
         commandLoopTask?.cancel()
         _ = await commandLoopTask?.value
         commandLoopTask = nil
+        AgtmuxManagedDaemonRuntime.setBootstrapResolvedTmuxSocketPath(nil)
 
         guard env["AGTMUX_UITEST"] == "1" else { return }
         guard env["AGTMUX_UITEST_TMUX_AUTO_CLEANUP"] == "1" else { return }
@@ -165,6 +217,9 @@ final class UITestTmuxBridge {
             let paneIDs = panesOutput
                 .components(separatedBy: "\n")
                 .filter { !$0.isEmpty }
+
+            let resolvedTmuxSocketPath = try await resolveBootstrapTmuxSocketPath()
+            AgtmuxManagedDaemonRuntime.setBootstrapResolvedTmuxSocketPath(resolvedTmuxSocketPath)
 
             await viewModel.fetchAll()
 
@@ -269,12 +324,94 @@ final class UITestTmuxBridge {
     }
 
     private func handleInternalCommand(_ request: CommandRequest) async -> CommandResponse? {
-        guard request.args.first == activeTerminalTargetCommand else { return nil }
+        guard let firstArg = request.args.first else { return nil }
 
         do {
-            let snapshot = try await activeTerminalTargetSnapshot()
-            let data = try JSONEncoder().encode(snapshot)
-            let stdout = String(decoding: data, as: UTF8.self)
+            let stdout: String
+            switch firstArg {
+            case enableMetadataCommand:
+                await enableMetadataMode()
+                await viewModel.fetchAll()
+                stdout = "ok"
+            case activeTerminalTargetCommand:
+                let snapshot = try await activeTerminalTargetSnapshot()
+                let data = try JSONEncoder().encode(snapshot)
+                stdout = String(decoding: data, as: UTF8.self)
+            case sidebarStateCommand:
+                let bootstrapProbeSummary: BootstrapProbeSummary
+                let bootstrapTargetSummary: BootstrapTargetSummary?
+                let requestedSessionName = request.args.dropFirst().first
+                let requestedPaneID = request.args.dropFirst().dropFirst().first
+                do {
+                    let bootstrap = try await AgtmuxDaemonClient().fetchUIBootstrapV2()
+                    if let requestedSessionName, let requestedPaneID,
+                       let target = bootstrap.panes.first(where: {
+                           $0.sessionName == requestedSessionName && $0.paneId == requestedPaneID
+                       }) {
+                        bootstrapTargetSummary = BootstrapTargetSummary(
+                            sessionName: target.sessionName,
+                            paneID: target.paneId,
+                            presence: target.presence.rawValue,
+                            provider: target.provider?.rawValue,
+                            activity: target.activityState.rawValue,
+                            currentCommand: target.currentCmd
+                        )
+                    } else {
+                        bootstrapTargetSummary = nil
+                    }
+                    bootstrapProbeSummary = BootstrapProbeSummary(
+                        ok: true,
+                        totalPanes: bootstrap.panes.count,
+                        managedPanes: bootstrap.panes.filter { $0.presence == .managed }.count,
+                        error: nil
+                    )
+                } catch {
+                    bootstrapProbeSummary = BootstrapProbeSummary(
+                        ok: false,
+                        totalPanes: nil,
+                        managedPanes: nil,
+                        error: error.localizedDescription
+                    )
+                    bootstrapTargetSummary = nil
+                }
+                let managedSocketPath = AgtmuxBinaryResolver.resolvedSocketPath(from: env)
+                let launchRecord = AgtmuxManagedDaemonRuntime.launchRecord(socketPath: managedSocketPath)
+                let bootstrapResolvedSocketPath = AgtmuxManagedDaemonRuntime.bootstrapResolvedTmuxSocketPath()
+                let directResolvedSocketProbe = appDirectResolvedSocketProbe(
+                    bootstrapResolvedSocketPath
+                )
+                let snapshot = SidebarStateSnapshot(
+                    statusFilter: viewModel.statusFilter.rawValue,
+                    panes: viewModel.panes,
+                    filteredPanes: viewModel.filteredPanes,
+                    localDaemonIssueTitle: viewModel.localDaemonIssue?.bannerTitle,
+                    localDaemonIssueDetail: viewModel.localDaemonIssue?.detail,
+                    bootstrapProbeSummary: bootstrapProbeSummary,
+                    bootstrapTargetSummary: bootstrapTargetSummary,
+                    managedDaemonSocketPath: managedSocketPath,
+                    tmuxSocketArguments: LocalTmuxTarget.socketArguments(from: env),
+                    daemonCLIArguments: LocalTmuxTarget.daemonCLIArguments(from: env),
+                    bootstrapResolvedTmuxSocketPath: bootstrapResolvedSocketPath,
+                    appDirectResolvedSocketProbe: directResolvedSocketProbe.output,
+                    appDirectResolvedSocketProbeError: directResolvedSocketProbe.error,
+                    daemonProcessCommands: AgtmuxManagedDaemonRuntime.daemonProcessCommands(
+                        socketPath: managedSocketPath
+                    ),
+                    daemonLaunchRecord: launchRecord.map {
+                        DaemonLaunchRecordSnapshot(
+                            binaryPath: $0.binaryPath,
+                            arguments: $0.arguments,
+                            environment: $0.environment,
+                            reusedExistingRuntime: $0.reusedExistingRuntime
+                        )
+                    },
+                    managedDaemonStderrTail: managedDaemonStderrTail()
+                )
+                let data = try JSONEncoder().encode(snapshot)
+                stdout = String(decoding: data, as: UTF8.self)
+            default:
+                return nil
+            }
             return CommandResponse(id: request.id, ok: true, stdout: stdout, error: nil)
         } catch {
             return CommandResponse(
@@ -400,5 +537,107 @@ final class UITestTmuxBridge {
         guard args.first == "kill-session" else { return nil }
         guard let idx = args.firstIndex(of: "-t"), args.indices.contains(idx + 1) else { return nil }
         return args[idx + 1]
+    }
+
+    private func resolveBootstrapTmuxSocketPath() async throws -> String {
+        let output = try await TmuxCommandRunner.shared.run(
+            ["display-message", "-p", "#{socket_path}"],
+            source: "local"
+        )
+        let socketPath = output
+            .components(separatedBy: "\n")
+            .first(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let socketPath, !socketPath.isEmpty else {
+            throw NSError(
+                domain: "UITestTmuxBridge",
+                code: 9,
+                userInfo: [NSLocalizedDescriptionKey: "Could not resolve bootstrap tmux socket path"]
+            )
+        }
+        return socketPath
+    }
+
+    private func managedDaemonStderrTail(maxLength: Int = 2048) -> String? {
+        guard let path = env["AGTMUX_UITEST_MANAGED_DAEMON_STDERR_PATH"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+            !path.isEmpty,
+            let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+            !data.isEmpty,
+            let text = String(data: data, encoding: .utf8)
+        else {
+            return nil
+        }
+
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if trimmed.count <= maxLength {
+            return trimmed
+        }
+        return String(trimmed.suffix(maxLength))
+    }
+
+    private func appDirectResolvedSocketProbe(_ socketPath: String?) -> (output: String?, error: String?) {
+        guard let socketPath, !socketPath.isEmpty else {
+            return (nil, "bootstrap tmux socket unresolved")
+        }
+
+        let tmuxPath = ManagedDaemonLaunchEnvironment.normalized(from: env)["TMUX_BIN"]
+            ?? "/opt/homebrew/bin/tmux"
+        guard FileManager.default.isExecutableFile(atPath: tmuxPath) else {
+            return (nil, "tmux executable unavailable at \(tmuxPath)")
+        }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: tmuxPath)
+        var arguments: [String] = []
+        if let configPath = env["AGTMUX_UITEST_TMUX_CONFIG_PATH"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+            !configPath.isEmpty {
+            arguments.append(contentsOf: ["-f", configPath])
+        }
+        arguments.append(contentsOf: [
+            "-S", socketPath,
+            "list-panes",
+            "-a",
+            "-F", "#{session_name}|#{window_id}|#{pane_id}|#{pane_current_command}",
+        ])
+        process.arguments = arguments
+        process.environment = ManagedDaemonLaunchEnvironment.normalized(from: env)
+        process.standardInput = FileHandle.nullDevice
+
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        do {
+            try process.run()
+        } catch {
+            return (nil, error.localizedDescription)
+        }
+
+        let deadline = Date().addingTimeInterval(1.5)
+        while process.isRunning, Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        if process.isRunning {
+            process.terminate()
+            return (nil, "timed out")
+        }
+
+        let stdout = String(
+            data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8
+        )?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let stderr = String(
+            data: stderrPipe.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8
+        )?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if process.terminationStatus == 0 {
+            return (stdout?.isEmpty == true ? nil : stdout, nil)
+        }
+        return (stdout?.isEmpty == true ? nil : stdout, stderr?.isEmpty == true ? "exit \(process.terminationStatus)" : stderr)
     }
 }

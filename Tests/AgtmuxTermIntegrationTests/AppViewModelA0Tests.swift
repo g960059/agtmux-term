@@ -444,6 +444,65 @@ final class AppViewModelA0Tests: XCTestCase {
         """#
     }
 
+    private func makeLiveMarch8BootstrapPayloadWithNullExactLocationFields() -> String {
+        #"""
+        {
+          "epoch": 1,
+          "snapshot_seq": 4332,
+          "generated_at": "2026-03-08T16:05:06Z",
+          "replay_cursor": { "epoch": 1, "seq": 4332 },
+          "sessions": [
+            {
+              "session_key": "59bafe97-9f5b-410b-ba6a-6d21b2d4b8ab",
+              "presence": "managed",
+              "evidence_mode": "deterministic",
+              "activity_state": "idle",
+              "updated_at": "2026-03-08T14:09:32.967Z"
+            }
+          ],
+          "panes": [
+            {
+              "pane_id": "%1",
+              "session_name": "vm agtmux",
+              "session_key": "59bafe97-9f5b-410b-ba6a-6d21b2d4b8ab",
+              "window_id": "@1",
+              "window_name": "node",
+              "pane_instance_id": {
+                "pane_id": "%1",
+                "generation": 0,
+                "birth_ts": "2026-03-07T23:23:32.320609Z"
+              },
+              "activity_state": "Idle",
+              "presence": "managed",
+              "provider": "claude",
+              "evidence_mode": "deterministic",
+              "current_cmd": "node",
+              "current_path": "/Users/virtualmachine/ghq/github.com/g960059/agtmux",
+              "updated_at": "2026-03-08T14:09:32.967Z"
+            },
+            {
+              "pane_id": "%14",
+              "session_name": null,
+              "session_key": "rollout-2026-03-08T07-23-09-019ccdd4-9ff1-7e41-9f13-87a9a7034644",
+              "window_id": null,
+              "window_name": null,
+              "pane_instance_id": {
+                "pane_id": "%14",
+                "generation": 0,
+                "birth_ts": "2026-03-08T14:22:11.039338Z"
+              },
+              "activity_state": "WaitingInput",
+              "presence": "managed",
+              "provider": "codex",
+              "evidence_mode": "heuristic",
+              "conversation_title": "orphan managed row",
+              "updated_at": "2026-03-08T14:23:49.043883Z"
+            }
+          ]
+        }
+        """#
+    }
+
     private func makeDaemonUnavailableError() -> Error {
         DaemonError.daemonUnavailable
     }
@@ -1628,6 +1687,202 @@ final class AppViewModelA0Tests: XCTestCase {
     }
 
     @MainActor
+    func testHealthyBootstrapAfterIncompatibleStateRestoresManagedOverlayWithoutRelaunch() async {
+        let inventoryPane = makeInventoryPane(
+            paneId: "%71",
+            sessionName: "vm agtmux-term",
+            windowId: "@2",
+            windowName: "zsh",
+            currentCmd: "zsh"
+        )
+        let metadataPane = makeManagedMetadataPane(
+            paneId: "%71",
+            sessionName: "vm agtmux-term",
+            windowId: "@2",
+            windowName: "zsh",
+            provider: .codex,
+            activityState: .running,
+            conversationTitle: "managed recovery",
+            metadataSessionKey: "vm agtmux-term",
+            paneInstanceID: AgtmuxSyncV2PaneInstanceID(
+                paneId: "%71",
+                generation: 0,
+                birthTs: Date(timeIntervalSince1970: 1_778_900_100)
+            )
+        )
+        let client = StubMetadataClient(
+            bootstrapSteps: [
+                BootstrapStep(delayMs: 20, result: .failure(makeIncompatibleSyncV2Error())),
+                BootstrapStep(delayMs: 20, result: .success(makeBootstrap(panes: [metadataPane], cursorSeq: 2))),
+            ]
+        )
+
+        let model = AppViewModel(
+            localClient: client,
+            localInventoryClient: StubInventoryClient(panes: [inventoryPane]),
+            hostsConfig: .empty
+        )
+
+        await model.fetchAll()
+
+        let incompatibleSurfaced = await waitUntil {
+            guard case .incompatibleSyncV2? = model.localDaemonIssue else { return false }
+            return model.panes.first?.presence == .unmanaged
+        }
+        XCTAssertTrue(incompatibleSurfaced, "initial incompatible bootstrap must fail closed to inventory-only")
+
+        let recovered = await waitUntilAsync(timeout: 5.0, intervalMs: 100) {
+            await model.fetchAll()
+            guard model.localDaemonIssue == nil else { return false }
+            guard let pane = model.panes.first else { return false }
+            return pane.presence == .managed
+                && pane.provider == .codex
+                && pane.activityState == .running
+                && pane.conversationTitle == "managed recovery"
+        }
+        XCTAssertTrue(recovered, "a later healthy bootstrap must restore managed overlay without app relaunch")
+
+        let resetCount = await client.resets()
+        XCTAssertEqual(resetCount, 1)
+    }
+
+    @MainActor
+    func testEmptyBootstrapWithLiveInventoryDoesNotPrimeSyncOwnershipAndLaterHealthyBootstrapRecovers() async {
+        let inventoryPane = makeInventoryPane(
+            paneId: "%71",
+            sessionName: "vm agtmux-term",
+            windowId: "@2",
+            windowName: "zsh",
+            currentCmd: "zsh"
+        )
+        let metadataPane = makeManagedMetadataPane(
+            paneId: "%71",
+            sessionName: "vm agtmux-term",
+            windowId: "@2",
+            windowName: "zsh",
+            provider: .codex,
+            activityState: .running,
+            conversationTitle: "bootstrap ready",
+            metadataSessionKey: "vm agtmux-term",
+            paneInstanceID: AgtmuxSyncV2PaneInstanceID(
+                paneId: "%71",
+                generation: 0,
+                birthTs: Date(timeIntervalSince1970: 1_778_900_101)
+            )
+        )
+        let client = StubMetadataClient(
+            bootstrapSteps: [
+                BootstrapStep(delayMs: 20, result: .success(makeBootstrap(panes: [], cursorSeq: 0))),
+                BootstrapStep(delayMs: 20, result: .success(makeBootstrap(panes: [metadataPane], cursorSeq: 2))),
+            ]
+        )
+
+        let model = AppViewModel(
+            localClient: client,
+            localInventoryClient: StubInventoryClient(panes: [inventoryPane]),
+            hostsConfig: .empty
+        )
+
+        await model.fetchAll()
+
+        let stayedInventoryOnly = await waitUntil {
+            guard model.localDaemonIssue == nil else { return false }
+            guard let pane = model.panes.first else { return false }
+            return pane.presence == .unmanaged && pane.provider == nil
+        }
+        XCTAssertTrue(
+            stayedInventoryOnly,
+            "inventory-present empty bootstrap must stay inventory-only instead of priming an unrecoverable sync-v2 epoch"
+        )
+
+        let recovered = await waitUntilAsync(timeout: 5.0, intervalMs: 100) {
+            await model.fetchAll()
+            guard model.localDaemonIssue == nil else { return false }
+            guard let pane = model.panes.first else { return false }
+            return pane.presence == .managed
+                && pane.provider == .codex
+                && pane.activityState == .running
+                && pane.conversationTitle == "bootstrap ready"
+        }
+        XCTAssertTrue(
+            recovered,
+            "a later non-empty bootstrap must recover managed overlay after the transient empty bootstrap"
+        )
+
+        let resetCount = await client.resets()
+        XCTAssertEqual(resetCount, 1, "transient empty bootstrap should reset sync-v2 cursor ownership once")
+    }
+
+    @MainActor
+    func testSlowRemoteFetchCannotOverwriteNewerLocalManagedOverlay() async {
+        let inventoryPane = makeInventoryPane(
+            paneId: "%72",
+            sessionName: "vm agtmux",
+            windowId: "@1",
+            windowName: "zsh",
+            currentCmd: "zsh"
+        )
+        let metadataPane = makeManagedMetadataPane(
+            paneId: "%72",
+            sessionName: "vm agtmux",
+            windowId: "@1",
+            windowName: "zsh",
+            provider: .claude,
+            activityState: .idle,
+            conversationTitle: "newer overlay wins",
+            metadataSessionKey: "vm agtmux",
+            paneInstanceID: AgtmuxSyncV2PaneInstanceID(
+                paneId: "%72",
+                generation: 0,
+                birthTs: Date(timeIntervalSince1970: 1_778_900_200)
+            )
+        )
+        let remotePane = AgtmuxPane(
+            source: "slow-host",
+            paneId: "%501",
+            sessionName: "remote-dev",
+            windowId: "@50",
+            windowName: "shell",
+            activityState: .unknown,
+            presence: .unmanaged,
+            evidenceMode: .none,
+            currentCmd: "zsh"
+        )
+        let remoteSource = RemotePaneInventorySource(
+            source: "slow-host",
+            fetchPanes: {
+                try? await Task.sleep(for: .milliseconds(250))
+                return [remotePane]
+            }
+        )
+        let client = StubMetadataClient(
+            bootstrapSteps: [
+                BootstrapStep(delayMs: 20, result: .success(makeBootstrap(panes: [metadataPane], cursorSeq: 1))),
+            ]
+        )
+
+        let model = AppViewModel(
+            localClient: client,
+            localInventoryClient: StubInventoryClient(panes: [inventoryPane]),
+            hostsConfig: .empty,
+            remotePaneSources: [remoteSource]
+        )
+
+        await model.fetchAll()
+
+        let localPane = model.panes.first { $0.source == "local" }
+        XCTAssertEqual(localPane?.presence, .managed, "slow remote fetch must not overwrite the newer local metadata overlay with stale inventory-only rows")
+        XCTAssertEqual(localPane?.provider, .claude)
+        XCTAssertEqual(localPane?.activityState, .idle)
+        XCTAssertEqual(localPane?.conversationTitle, "newer overlay wins")
+
+        let surfacedRemotePane = model.panes.first {
+            $0.source == "slow-host" && $0.paneId == "%501"
+        }
+        XCTAssertNotNil(surfacedRemotePane, "remote rows should still publish after the slow fetch completes")
+    }
+
+    @MainActor
     func testLocalDaemonIssueClearsWhenLocalSourceTransitionsOffline() async {
         let inventoryPane = makeInventoryPane()
         let client = StubMetadataClient(
@@ -1883,6 +2138,51 @@ final class AppViewModelA0Tests: XCTestCase {
             return XCTFail("expected incompatible local daemon issue for live March 7 mixed-era sample")
         }
         XCTAssertTrue(detail.contains("session_id"))
+        let resetCount = await client.resets()
+        XCTAssertEqual(resetCount, 1)
+    }
+
+    @MainActor
+    func testLiveMarch8BootstrapSampleWithNullExactLocationFieldsFailsClosedAndSurfacesIncompatibleDaemon() async {
+        let inventoryPane = makeInventoryPane(
+            paneId: "%1",
+            sessionName: "vm agtmux",
+            windowId: "@1",
+            windowName: "node",
+            activityState: .unknown,
+            currentCmd: "node"
+        )
+        let client = DecodingMetadataClient(
+            bootstrapJSON: makeLiveMarch8BootstrapPayloadWithNullExactLocationFields()
+        )
+
+        let model = AppViewModel(
+            localClient: client,
+            localInventoryClient: StubInventoryClient(panes: [inventoryPane]),
+            hostsConfig: .empty
+        )
+
+        await model.fetchAll()
+
+        let surfaced = await waitUntil {
+            model.localDaemonIssue != nil
+        }
+        XCTAssertTrue(surfaced, "live March 8 bootstrap sample must surface incompatibility")
+
+        XCTAssertEqual(model.panes.count, 1)
+        XCTAssertEqual(model.panes.first?.presence, .unmanaged)
+        XCTAssertNil(model.panes.first?.provider)
+        XCTAssertEqual(model.panes.first?.activityState, .unknown)
+        XCTAssertEqual(model.panes.first?.currentCmd, "node")
+
+        guard case let .incompatibleSyncV2(detail)? = model.localDaemonIssue else {
+            return XCTFail("expected incompatible local daemon issue for null exact-location bootstrap sample")
+        }
+        XCTAssertTrue(detail.contains("ui.bootstrap.v2"))
+        XCTAssertTrue(
+            detail.contains("session_name") || detail.contains("window_id"),
+            "detail must identify the missing exact-location field instead of surfacing only a generic decode failure"
+        )
         let resetCount = await client.resets()
         XCTAssertEqual(resetCount, 1)
     }
@@ -2222,6 +2522,90 @@ final class AppViewModelA0Tests: XCTestCase {
         XCTAssertNil(model.localDaemonIssue)
     }
 
+    /// When daemon truth clears a managed pane back to an unmanaged shell, the next publish
+    /// must not keep stale provider/activity/title decorations alive on that exact row.
+    @MainActor
+    func testManagedExitChangeClearsStaleProviderActivityAndTitleOnNextPublish() async {
+        let sessionKey = "opaque-managed-exit"
+        let birthTs = Date(timeIntervalSince1970: 1_778_822_300)
+        let inventoryPane = makeInventoryPane(
+            paneId: "%303",
+            sessionName: "work",
+            windowId: "@33",
+            activityState: .unknown,
+            currentCmd: "zsh"
+        )
+        let metadataPane = makeManagedMetadataPane(
+            paneId: "%303",
+            sessionName: "work",
+            windowId: "@33",
+            provider: .codex,
+            activityState: .running,
+            conversationTitle: "Managed work",
+            metadataSessionKey: sessionKey,
+            paneInstanceID: AgtmuxSyncV2PaneInstanceID(
+                paneId: "%303",
+                generation: 7,
+                birthTs: birthTs
+            )
+        )
+        let exitChange = makePaneState(
+            paneId: "%303",
+            sessionKey: sessionKey,
+            generation: 7,
+            birthTs: birthTs,
+            presence: .unmanaged,
+            evidenceMode: .none,
+            activityState: .unknown,
+            provider: nil,
+            updatedAt: Date(timeIntervalSince1970: 1_778_822_360)
+        )
+        let client = StubMetadataClient(
+            bootstrapSteps: [
+                BootstrapStep(delayMs: 20, result: .success(makeBootstrap(panes: [metadataPane], cursorSeq: 1)))
+            ],
+            changesSteps: [
+                ChangesStep(delayMs: 20, result: .success(makeChangesResponse(paneState: exitChange, seq: 2)))
+            ]
+        )
+
+        let model = AppViewModel(
+            localClient: client,
+            localInventoryClient: StubInventoryClient(
+                steps: [
+                    .success([inventoryPane]),
+                    .success([inventoryPane]),
+                ]
+            ),
+            hostsConfig: .empty
+        )
+
+        await model.fetchAll()
+        let managedApplied = await waitUntil {
+            model.panes.first?.presence == .managed
+                && model.panes.first?.provider == .codex
+                && model.panes.first?.conversationTitle == "Managed work"
+        }
+        XCTAssertTrue(managedApplied, "sanity check: managed overlay must apply before exit-change regression")
+
+        try? await Task.sleep(for: .milliseconds(1_100))
+        await model.fetchAll()
+
+        let cleared = await waitUntil {
+            guard let pane = model.panes.first else { return false }
+            return pane.presence == .unmanaged
+                && pane.provider == nil
+                && pane.activityState == .unknown
+                && pane.conversationTitle == nil
+                && pane.currentCmd == "zsh"
+        }
+        XCTAssertTrue(
+            cleared,
+            "managed exit changes must clear stale provider/activity/title and restore shell truth on the next publish"
+        )
+        XCTAssertNil(model.localDaemonIssue)
+    }
+
     /// A change whose session_key happens to equal the visible session_name of an inventory
     /// pane must NOT be applied when the bootstrap cache uses a different opaque session_key.
     /// Regression for Bug 2 in metadataBasePane where the inventory fallback incorrectly
@@ -2457,5 +2841,227 @@ final class AppViewModelA0Tests: XCTestCase {
         XCTAssertEqual(vmAgtmuxTermWindowTwo?.activityState, .unknown)
         XCTAssertEqual(vmAgtmuxTermWindowTwo?.currentCmd, "zsh")
         XCTAssertEqual(vmAgtmuxTermWindowTwo?.windowName, "zsh")
+    }
+
+    @MainActor
+    func testWaitingApprovalManagedRowSurfacesAttentionCountAndFilterWithoutBleed() async {
+        let inventory = [
+            makeInventoryPane(
+                paneId: "%50",
+                sessionName: "approval-session",
+                windowId: "@5",
+                windowIndex: 1,
+                windowName: "claude",
+                currentCmd: "node"
+            ),
+            makeInventoryPane(
+                paneId: "%51",
+                sessionName: "approval-session",
+                windowId: "@5",
+                windowIndex: 1,
+                windowName: "codex",
+                currentCmd: "node"
+            ),
+            makeInventoryPane(
+                paneId: "%52",
+                sessionName: "approval-session",
+                windowId: "@6",
+                windowIndex: 2,
+                windowName: "zsh",
+                currentCmd: "zsh"
+            ),
+        ]
+
+        let waitingApprovalPane = makeManagedMetadataPane(
+            paneId: "%50",
+            sessionName: "approval-session",
+            windowId: "@5",
+            windowIndex: 1,
+            windowName: "claude",
+            provider: .claude,
+            activityState: .waitingApproval,
+            conversationTitle: "Approve tool call",
+            metadataSessionKey: "approval-key",
+            paneInstanceID: AgtmuxSyncV2PaneInstanceID(
+                paneId: "%50",
+                generation: 0,
+                birthTs: Date(timeIntervalSince1970: 1_778_900_000)
+            )
+        )
+        let idleManagedPane = makeManagedMetadataPane(
+            paneId: "%51",
+            sessionName: "approval-session",
+            windowId: "@5",
+            windowIndex: 1,
+            windowName: "codex",
+            provider: .codex,
+            activityState: .idle,
+            conversationTitle: "Idle sibling",
+            metadataSessionKey: "idle-key",
+            paneInstanceID: AgtmuxSyncV2PaneInstanceID(
+                paneId: "%51",
+                generation: 0,
+                birthTs: Date(timeIntervalSince1970: 1_778_900_001)
+            )
+        )
+
+        let client = StubMetadataClient(
+            bootstrapSteps: [
+                BootstrapStep(
+                    delayMs: 20,
+                    result: .success(makeBootstrap(panes: [waitingApprovalPane, idleManagedPane], cursorSeq: 5))
+                )
+            ]
+        )
+
+        let model = AppViewModel(
+            localClient: client,
+            localInventoryClient: StubInventoryClient(panes: inventory),
+            hostsConfig: .empty
+        )
+
+        await model.fetchAll()
+
+        let overlayApplied = await waitUntil {
+            model.panes.count == inventory.count
+                && model.panes.contains(where: {
+                    $0.paneId == "%50"
+                        && $0.provider == .claude
+                        && $0.activityState == .waitingApproval
+                        && $0.needsAttention
+                })
+                && model.panes.contains(where: {
+                    $0.paneId == "%51"
+                        && $0.provider == .codex
+                        && $0.activityState == .idle
+                        && !$0.needsAttention
+                })
+        }
+        XCTAssertTrue(overlayApplied, "waiting_approval and idle sibling rows must both reflect exact metadata truth")
+
+        XCTAssertEqual(model.attentionCount, 1, "only the waiting_approval row must contribute to attention count")
+
+        model.statusFilter = .attention
+        let filteredPaneIDs = Set(model.filteredPanes.map(\.paneId))
+        XCTAssertEqual(filteredPaneIDs, Set(["%50"]), "attention filter must keep only the waiting_approval row")
+
+        let panesByID = Dictionary(uniqueKeysWithValues: model.panes.map { ($0.paneId, $0) })
+        XCTAssertEqual(panesByID["%50"]?.activityState, .waitingApproval)
+        XCTAssertTrue(panesByID["%50"]?.needsAttention ?? false)
+        XCTAssertEqual(panesByID["%51"]?.activityState, .idle)
+        XCTAssertFalse(panesByID["%51"]?.needsAttention ?? true)
+        XCTAssertEqual(panesByID["%52"]?.presence, .unmanaged)
+        XCTAssertFalse(panesByID["%52"]?.needsAttention ?? true)
+    }
+
+    @MainActor
+    func testWaitingInputManagedRowSurfacesAttentionCountAndFilterWithoutBleed() async {
+        let inventory = [
+            makeInventoryPane(
+                paneId: "%60",
+                sessionName: "waiting-input-session",
+                windowId: "@7",
+                windowIndex: 1,
+                windowName: "codex",
+                currentCmd: "node"
+            ),
+            makeInventoryPane(
+                paneId: "%61",
+                sessionName: "waiting-input-session",
+                windowId: "@7",
+                windowIndex: 1,
+                windowName: "claude",
+                currentCmd: "node"
+            ),
+            makeInventoryPane(
+                paneId: "%62",
+                sessionName: "waiting-input-session",
+                windowId: "@8",
+                windowIndex: 2,
+                windowName: "zsh",
+                currentCmd: "zsh"
+            ),
+        ]
+
+        let waitingInputPane = makeManagedMetadataPane(
+            paneId: "%60",
+            sessionName: "waiting-input-session",
+            windowId: "@7",
+            windowIndex: 1,
+            windowName: "codex",
+            provider: .codex,
+            activityState: .waitingInput,
+            conversationTitle: "Need more input",
+            metadataSessionKey: "waiting-input-key",
+            paneInstanceID: AgtmuxSyncV2PaneInstanceID(
+                paneId: "%60",
+                generation: 0,
+                birthTs: Date(timeIntervalSince1970: 1_778_900_100)
+            )
+        )
+        let idleSiblingPane = makeManagedMetadataPane(
+            paneId: "%61",
+            sessionName: "waiting-input-session",
+            windowId: "@7",
+            windowIndex: 1,
+            windowName: "claude",
+            provider: .claude,
+            activityState: .idle,
+            conversationTitle: "Idle sibling",
+            metadataSessionKey: "idle-sibling-key",
+            paneInstanceID: AgtmuxSyncV2PaneInstanceID(
+                paneId: "%61",
+                generation: 0,
+                birthTs: Date(timeIntervalSince1970: 1_778_900_101)
+            )
+        )
+
+        let client = StubMetadataClient(
+            bootstrapSteps: [
+                BootstrapStep(
+                    delayMs: 20,
+                    result: .success(makeBootstrap(panes: [waitingInputPane, idleSiblingPane], cursorSeq: 6))
+                )
+            ]
+        )
+
+        let model = AppViewModel(
+            localClient: client,
+            localInventoryClient: StubInventoryClient(panes: inventory),
+            hostsConfig: .empty
+        )
+
+        await model.fetchAll()
+
+        let overlayApplied = await waitUntil {
+            model.panes.count == inventory.count
+                && model.panes.contains(where: {
+                    $0.paneId == "%60"
+                        && $0.provider == .codex
+                        && $0.activityState == .waitingInput
+                        && $0.needsAttention
+                })
+                && model.panes.contains(where: {
+                    $0.paneId == "%61"
+                        && $0.provider == .claude
+                        && $0.activityState == .idle
+                        && !$0.needsAttention
+                })
+        }
+        XCTAssertTrue(overlayApplied, "waiting_input and idle sibling rows must both reflect exact metadata truth")
+
+        XCTAssertEqual(model.attentionCount, 1, "only the waiting_input row must contribute to attention count")
+
+        model.statusFilter = .attention
+        let filteredPaneIDs = Set(model.filteredPanes.map(\.paneId))
+        XCTAssertEqual(filteredPaneIDs, Set(["%60"]), "attention filter must keep only the waiting_input row")
+
+        let panesByID = Dictionary(uniqueKeysWithValues: model.panes.map { ($0.paneId, $0) })
+        XCTAssertEqual(panesByID["%60"]?.activityState, .waitingInput)
+        XCTAssertTrue(panesByID["%60"]?.needsAttention ?? false)
+        XCTAssertEqual(panesByID["%61"]?.activityState, .idle)
+        XCTAssertFalse(panesByID["%61"]?.needsAttention ?? true)
+        XCTAssertEqual(panesByID["%62"]?.presence, .unmanaged)
+        XCTAssertFalse(panesByID["%62"]?.needsAttention ?? true)
     }
 }

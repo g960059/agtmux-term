@@ -6,7 +6,7 @@
 |----|-------------|----------|
 | FR-001 | libghostty surface を NSView として SwiftUI 内に埋め込む | [MVP] |
 | FR-002 | サイドバーに local / remote の **real tmux sessions** を表示し、pane/window 由来の metadata を exact pane row 単位で重ねて表示する | [MVP] |
-| FR-003 | local tmux inventory を1秒間隔で取得し、agtmux daemon の `ui.bootstrap.v2` / `ui.changes.v2` で local metadata overlay を同期する。local metadata の exact identity は `session_key` + `pane_instance_id` を round-trip し、provider / activity の overlay は current inventory 上の exact pane row にだけ適用する。`session_key` は overlay/session identity 用の opaque key であり、visible tmux `session_name` と同一とは仮定しない。bootstrap correlation は `session_name + window_id + pane_id` を使い、change correlation は bootstrap で学習した exact identity を使う。overlay cache は pane location ではなく exact identity で保持し、current daemon epoch が incompatible になった時点で stale cache を残さず即座に inventory-only publish へ切り替える。`session_key` / `pane_instance_id` / `session_name` / `window_id` のいずれかが欠ける local managed row、または legacy identity field `session_id` を含む local sync-v2 pane payload は invalid とみなし、app はその row を採用せず local metadata path 全体を inventory-only に degrade して `daemon incompatible` を surfacing する | [MVP] |
+| FR-003 | local tmux inventory を1秒間隔で取得し、agtmux daemon の `ui.bootstrap.v2` / `ui.changes.v2` で local metadata overlay を同期する。local metadata の exact identity は `session_key` + `pane_instance_id` を round-trip し、provider / activity の overlay は current inventory 上の exact pane row にだけ適用する。`session_key` は overlay/session identity 用の opaque key であり、visible tmux `session_name` と同一とは仮定しない。bootstrap correlation は `session_name + window_id + pane_id` を使い、change correlation は bootstrap で学習した exact identity を使う。overlay cache は pane location ではなく exact identity で保持し、current daemon epoch が incompatible になった時点で stale cache を残さず即座に inventory-only publish へ切り替える。local visible panes は `current local inventory + current local metadata state` から毎回 derive し、background metadata success が先に publish した managed rows を、stale inventory-only local snapshot が後から上書きしてはならない。daemon truth が同じ exact row を `presence=unmanaged` / `provider=nil` に戻したら、app は次 publish で stale provider/activity/title mark を残さず clear しなければならない。`session_key` / `pane_instance_id` / `session_name` / `window_id` のいずれかが欠ける local managed row、または legacy identity field `session_id` を含む local sync-v2 pane payload は invalid とみなし、app はその row を採用せず local metadata path 全体を inventory-only に degrade して `daemon incompatible` を surfacing する | [MVP] |
 | FR-004 | pane の activity_state を色・アイコンで表示する（running / idle / waiting_approval / waiting_input / error / unknown） | [MVP] |
 | FR-005 | 会話タイトル（conversation_title）をサイドバーに表示する | [MVP] |
 | FR-006 | StatusFilter: All / Managed / Attention / Pinned を提供する（Pinned は UI 準備のみでも可） | [MVP] |
@@ -192,17 +192,45 @@ Visible error states:
   - exact-identity field が欠ける row は managed/provider/activity overlay 対象にしない
   - local sync-v2 pane payload に legacy identity field `session_id` が混ざる場合、app は additive compatibility とみなさず payload 全体を incompatible として reject する
   - bootstrap / changes payload に exact-identity field 欠落がある場合、app は stale overlay cache を保持せず inventory-only に degrade し、`daemon incompatible` として surfacing する
+  - local inventory cache と local metadata cache は別 state として保持し、visible local rows は publish 時に derive する
+  - `fetchAll()` が stale local merged rows を snapshot cache に直接書く設計は禁止する
+  - daemon recovery 後の healthy bootstrap は、同じ app instance 上で provider / activity / updated-at surfacing を relaunch なしで回復させなければならない
+  - daemon changes が exact row を unmanaged shell に戻したら、app は stale provider / activity / conversation title surfacing を次 publish で clear しなければならない
 - cursor ownership:
   - app process は raw cursor を保持しない
   - bundled XPC service もしくは in-process `AgtmuxSyncV2Session` が cursor owner になる
 - daemon ownership:
   - packaged app は app bundle `Contents/Resources/Tools/agtmux` を正とする
   - local daemon socket は `~/Library/Application Support/AGTMUXDesktop/agtmuxd.sock` を使い、global `/tmp/agtmux-$USER/agtmuxd.sock` は共有しない
+  - metadata-enabled app-driven XCUITest は `tmux` socket だけでなく daemon socket も per-test isolated path に切り替え、persistent app-owned daemon socket を再利用しない
   - 開発時は `AGTMUX_BIN=/abs/path/to/source/build/agtmux` で source build override を行う
 - incompatibility handling:
   - bundled daemon が存在せず、かつ `AGTMUX_BIN` override も無い場合、term は managed local daemon runtime unavailable として明示 surfacing する
   - daemon が `ui.bootstrap.v2` / `ui.changes.v2` を実装していない場合、term はその daemon を互換対象とみなさない
   - 表示は fail-loudly とし、missing runtime は `daemon unavailable`、old protocol は `daemon incompatible` として区別して surfacing する
+
+## Cross-repo live E2E ownership
+
+- `agtmux` repo is the semantic source of truth for real-CLI online scenarios:
+  - provider detection
+  - presence detection
+  - `running` / `idle` / `waiting_input` / `waiting_approval` / `error` / `unknown`
+  - conversation title extraction
+  - no-bleed at the daemon payload layer
+- `agtmux-term` repo owns the daemon-to-terminal consumer boundary:
+  - strict sync-v2 decode
+  - exact-row overlay correlation
+  - inventory-only fallback から healthy metadata への recovery correctness
+  - fail-closed incompatible-daemon surfacing
+  - sidebar / filter / badge / selection rendering
+  - terminal <-> sidebar reverse-sync
+- the same real-provider scenario may exist in both repos, but the assertion surface differs:
+  - daemon repo asserts payload truth
+  - terminal repo asserts that the exact daemon truth reaches the correct visible row without bleed
+- terminal-repo live canaries use this oracle hierarchy:
+  1. exact-row daemon payload truth
+  2. app/sidebar visible truth
+  3. tmux capture / transcript only as diagnostics
 
 ## Local health-strip contract
 
