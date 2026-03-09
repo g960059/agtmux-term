@@ -71,6 +71,13 @@
   - intentional deferral remains:
     - full titlebar and broader sidebar cutover are still deferred
     - the targeted waiting-approval XCUITest is still blocked by `Failed to activate application ... (current state: Running Background)`
+- `T-125` is now closed:
+  - titlebar remains on the shared presentation-derived `attentionCount` / filter path introduced by the sidebar-first cutover
+  - the remaining low-risk UI-adjacent consumer path is now presentation-aware too:
+    - UI-harness sidebar state dumps prefer local presentation-derived summaries over raw legacy row fields
+  - additional helper coverage now locks degraded freshness and error surfacing for downstream UI consumers
+  - intentional deferral remains:
+    - targeted waiting-approval XCUITest still fails at foreground activation before the product assertion body
 - `T-116` is now open:
   - metadata-enabled health-strip UI and pane-sync UI both reach their real assertions
   - upstream producer truth is now present in the same failing plain-zsh Codex lane:
@@ -160,6 +167,7 @@
   - local v3-backed rows keep a parallel `PanePresentationState` cache
   - sidebar row provider/activity/freshness surfacing plus `managed` / `attention` filter-count derivation prefer that cache
   - broader render surfaces still intentionally defer to legacy row state
+- titlebar continues to inherit the same presentation-derived attention/filter state through shared `AppViewModel` helpers; this slice did not introduce a separate titlebar-only state path
 - same-session multi-view is out of MVP
 
 ## Locked MVP Decisions

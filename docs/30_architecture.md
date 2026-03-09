@@ -90,6 +90,7 @@ Planned sync-v3 consumer split:
   - local v3-backed rows keep a parallel `PanePresentationState` cache
   - sidebar row provider/activity/freshness surfacing plus `managed` / `attention` filter-count derivation now prefer that presentation cache
   - broader render surfaces still intentionally defer to legacy state in the current slice
+- titlebar stays on the shared presentation-derived `attentionCount` / filter path; the next low-risk consumer step is to align diagnostics/UI harness summaries with the same local presentation layer
 
 ### 2. Terminal Runtime
 

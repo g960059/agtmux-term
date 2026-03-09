@@ -152,3 +152,11 @@ This keeps the cutover reviewable:
 - daemon remains the truth source
 - term only adapts into a local presentation model
 - broader UI surfaces are deferred until the sidebar-first slice is stable
+
+## Next Small Consumer Slice
+
+The next small cutover after sidebar rows/filter/count stays deliberately narrow.
+
+- titlebar continues to consume shared presentation-derived `attentionCount` / filter state from `AppViewModel`
+- UI-harness / diagnostic sidebar summaries should also prefer the same presentation-derived state when available
+- this avoids a split world where visible UI uses `PanePresentationState` but diagnostics still report only legacy `ActivityState`

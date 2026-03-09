@@ -3284,6 +3284,78 @@ final class AppViewModelA0Tests: XCTestCase {
     }
 
     @MainActor
+    func testBootstrapV3FreshnessDegradedFeedsFreshnessLabelWithoutAttention() async throws {
+        let bootstrap = try loadSyncV3Fixture(named: "freshness-degraded")
+        let inventoryPane = makeInventoryPane(
+            paneId: "%67",
+            sessionName: "workbench",
+            windowId: "@12",
+            activityState: .unknown,
+            currentCmd: "zsh"
+        )
+        let client = StubMetadataClient(
+            bootstrapV3Steps: [
+                BootstrapV3Step(delayMs: 20, result: .success(bootstrap))
+            ],
+            bootstrapSteps: []
+        )
+        let model = AppViewModel(
+            localClient: client,
+            localInventoryClient: StubInventoryClient(panes: [inventoryPane]),
+            hostsConfig: .empty
+        )
+
+        await model.fetchAll()
+
+        let presentationApplied = await waitUntil {
+            guard let pane = model.panes.first else { return false }
+            return model.panePrimaryState(for: pane) == .running
+                && model.paneFreshnessText(for: pane) == "degraded"
+                && model.paneNeedsAttention(pane) == false
+        }
+
+        XCTAssertTrue(presentationApplied, "freshness-degraded daemon truth must feed the local freshness label path without inflating attention")
+        XCTAssertEqual(model.attentionCount, 0)
+        XCTAssertNil(model.localDaemonIssue)
+    }
+
+    @MainActor
+    func testBootstrapV3ErrorFeedsPrimaryStateAndAttentionWithoutLegacyGuessing() async throws {
+        let bootstrap = try loadSyncV3Fixture(named: "error")
+        let inventoryPane = makeInventoryPane(
+            paneId: "%56",
+            sessionName: "incident",
+            windowId: "@11",
+            activityState: .unknown,
+            currentCmd: "zsh"
+        )
+        let client = StubMetadataClient(
+            bootstrapV3Steps: [
+                BootstrapV3Step(delayMs: 20, result: .success(bootstrap))
+            ],
+            bootstrapSteps: []
+        )
+        let model = AppViewModel(
+            localClient: client,
+            localInventoryClient: StubInventoryClient(panes: [inventoryPane]),
+            hostsConfig: .empty
+        )
+
+        await model.fetchAll()
+
+        let presentationApplied = await waitUntil {
+            guard let pane = model.panes.first else { return false }
+            return model.paneProviderForSidebar(pane) == .codex
+                && model.panePrimaryState(for: pane) == .error
+                && model.paneNeedsAttention(pane)
+        }
+
+        XCTAssertTrue(presentationApplied, "error daemon truth must reach the local presentation helpers without reconstructing state from legacy activity guesses")
+        XCTAssertEqual(model.attentionCount, 1)
+        XCTAssertNil(model.localDaemonIssue)
+    }
+
+    @MainActor
     func testBootstrapV3MethodNotFoundFallsBackToSyncV2BootstrapWithoutBreakingOverlay() async {
         let inventoryPane = makeInventoryPane(
             paneId: "%303",

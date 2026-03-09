@@ -57,7 +57,10 @@ final class UITestTmuxBridge {
     private struct SidebarStateSnapshot: Codable {
         let statusFilter: String
         let panes: [AgtmuxPane]
+        let panePresentations: [SidebarPanePresentationSnapshot]
         let filteredPanes: [AgtmuxPane]
+        let filteredPanePresentations: [SidebarPanePresentationSnapshot]
+        let attentionCount: Int
         let localDaemonIssueTitle: String?
         let localDaemonIssueDetail: String?
         let bootstrapProbeSummary: BootstrapProbeSummary
@@ -71,6 +74,19 @@ final class UITestTmuxBridge {
         let daemonProcessCommands: [String]
         let daemonLaunchRecord: DaemonLaunchRecordSnapshot?
         let managedDaemonStderrTail: String?
+    }
+
+    private struct SidebarPanePresentationSnapshot: Codable {
+        let source: String
+        let sessionName: String
+        let paneID: String
+        let presence: String
+        let provider: String?
+        let activity: String
+        let freshness: String?
+        let currentCommand: String?
+        let isManaged: Bool
+        let needsAttention: Bool
     }
 
     private struct DaemonLaunchRecordSnapshot: Codable {
@@ -383,7 +399,10 @@ final class UITestTmuxBridge {
                 let snapshot = SidebarStateSnapshot(
                     statusFilter: viewModel.statusFilter.rawValue,
                     panes: viewModel.panes,
+                    panePresentations: viewModel.panes.map(sidebarPanePresentationSnapshot(for:)),
                     filteredPanes: viewModel.filteredPanes,
+                    filteredPanePresentations: viewModel.filteredPanes.map(sidebarPanePresentationSnapshot(for:)),
+                    attentionCount: viewModel.attentionCount,
                     localDaemonIssueTitle: viewModel.localDaemonIssue?.bannerTitle,
                     localDaemonIssueDetail: viewModel.localDaemonIssue?.detail,
                     bootstrapProbeSummary: bootstrapProbeSummary,
@@ -421,6 +440,22 @@ final class UITestTmuxBridge {
                 error: error.localizedDescription
             )
         }
+    }
+
+    private func sidebarPanePresentationSnapshot(for pane: AgtmuxPane) -> SidebarPanePresentationSnapshot {
+        let presence = viewModel.panePresentation(for: pane)?.presence.rawValue ?? pane.presence.rawValue
+        return SidebarPanePresentationSnapshot(
+            source: pane.source,
+            sessionName: pane.sessionName,
+            paneID: pane.paneId,
+            presence: presence,
+            provider: viewModel.paneProviderForSidebar(pane)?.rawValue,
+            activity: viewModel.panePrimaryState(for: pane).rawValue,
+            freshness: viewModel.paneFreshnessText(for: pane),
+            currentCommand: pane.currentCmd,
+            isManaged: viewModel.paneIsManaged(pane),
+            needsAttention: viewModel.paneNeedsAttention(pane)
+        )
     }
 
     private func activeTerminalTargetSnapshot() async throws -> ActiveTerminalTargetSnapshot {

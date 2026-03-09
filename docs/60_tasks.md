@@ -155,6 +155,21 @@ Commit closeout is clear; next implementation proceeds on the new Workbench path
 
 ## Recently Closed
 
+### T-125 — titlebar-adjacent and UI-harness presentation consumer cutover
+- **Status**: DONE
+- **Priority**: P1
+- **Depends**: T-124
+- **Owner**: term implementation agent
+- **Description**:
+  - Land the next small presentation cutover slice without broad UI rewrite.
+  - Keep titlebar on the shared presentation-derived count/filter path and cut over remaining low-risk UI-adjacent consumers such as test/diagnostic sidebar summaries.
+- **Acceptance Criteria**:
+  - [x] shared `attentionCount` / filter derivation continues to serve titlebar through `PanePresentationState`
+  - [x] UI-harness sidebar summaries no longer depend only on raw legacy `AgtmuxPane` fields when a presentation-derived summary is available
+  - [x] focused integration coverage locks freshness/error helper behavior for low-risk UI consumers
+  - [x] targeted UI-test build compiles with the additive summary changes
+  - [ ] targeted XCUITest rerun is green; current result is still blocked by `Failed to activate application ... (current state: Running Background)`
+
 ### T-124 — first sync-v3 UI cutover for sidebar row presentation and filter/count
 - **Status**: DONE
 - **Priority**: P1

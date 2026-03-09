@@ -2849,7 +2849,10 @@ final class AgtmuxTermUITests: XCTestCase {
     private struct SidebarStateSnapshot: Decodable {
         let statusFilter: String
         let panes: [AgtmuxPane]
+        let panePresentations: [SidebarPanePresentationSnapshot]?
         let filteredPanes: [AgtmuxPane]
+        let filteredPanePresentations: [SidebarPanePresentationSnapshot]?
+        let attentionCount: Int?
         let localDaemonIssueTitle: String?
         let localDaemonIssueDetail: String?
         let bootstrapProbeSummary: BootstrapProbeSummary
@@ -2863,6 +2866,19 @@ final class AgtmuxTermUITests: XCTestCase {
         let daemonProcessCommands: [String]
         let daemonLaunchRecord: DaemonLaunchRecordSnapshot?
         let managedDaemonStderrTail: String?
+    }
+
+    private struct SidebarPanePresentationSnapshot: Decodable {
+        let source: String
+        let sessionName: String
+        let paneID: String
+        let presence: String
+        let provider: String?
+        let activity: String
+        let freshness: String?
+        let currentCommand: String?
+        let isManaged: Bool
+        let needsAttention: Bool
     }
 
     private struct DaemonLaunchRecordSnapshot: Decodable {
@@ -3246,12 +3262,33 @@ final class AgtmuxTermUITests: XCTestCase {
             ].joined(separator: ",")
         }
 
+        func summarize(_ pane: SidebarPanePresentationSnapshot?) -> String {
+            guard let pane else { return "nil" }
+            return [
+                "presence=\(pane.presence)",
+                "provider=\(pane.provider ?? "nil")",
+                "activity=\(pane.activity)",
+                "freshness=\(pane.freshness ?? "nil")",
+                "managed=\(pane.isManaged)",
+                "attention=\(pane.needsAttention)",
+                "current_cmd=\(pane.currentCommand ?? "nil")"
+            ].joined(separator: ",")
+        }
+
         let visiblePane = snapshot.panes.first {
             $0.source == "local" && $0.sessionName == sessionName && $0.paneId == paneID
         }
         let filteredPane = snapshot.filteredPanes.first {
             $0.source == "local" && $0.sessionName == sessionName && $0.paneId == paneID
         }
+        let visiblePresentation = snapshot.panePresentations?.first {
+            $0.source == "local" && $0.sessionName == sessionName && $0.paneID == paneID
+        }
+        let filteredPresentation = snapshot.filteredPanePresentations?.first {
+            $0.source == "local" && $0.sessionName == sessionName && $0.paneID == paneID
+        }
+        let visibleSummary = visiblePresentation.map(summarize) ?? summarize(visiblePane)
+        let filteredSummary = filteredPresentation.map(summarize) ?? summarize(filteredPane)
 
         let issueSummary: String
         if let title = snapshot.localDaemonIssueTitle {
@@ -3288,6 +3325,7 @@ final class AgtmuxTermUITests: XCTestCase {
 
         return [
             "filter=\(snapshot.statusFilter)",
+            "attentionCount=\(snapshot.attentionCount ?? -1)",
             "issue=\(issueSummary)",
             "probe=\(probeSummary)",
             "probeTarget=\(targetSummary)",
@@ -3301,8 +3339,8 @@ final class AgtmuxTermUITests: XCTestCase {
             "daemonLaunch=\(daemonLaunchSummary)",
             "daemonEnv=\(daemonEnvSummary)",
             "daemonErr=\(snapshot.managedDaemonStderrTail ?? "nil")",
-            "all=\(summarize(visiblePane))",
-            "filtered=\(summarize(filteredPane))",
+            "all=\(visibleSummary)",
+            "filtered=\(filteredSummary)",
             "filteredCount=\(snapshot.filteredPanes.count)"
         ].joined(separator: " ")
     }

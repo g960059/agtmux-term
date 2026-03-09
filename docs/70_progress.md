@@ -3100,3 +3100,22 @@ Result:
     - current failure is not a product assertion mismatch
     - runner reaches build + test launch, then times out with `Failed to activate application ... (current state: Running Background)`
     - this remains an XCUITest foreground-activation harness blocker for the current slice
+
+# 2026-03-09 08:57 — T-125 landed: titlebar-adjacent and UI-harness presentation consumer cutover
+
+- kept the slice small and reviewable:
+  - no broad titlebar rewrite was needed because titlebar already consumes shared `attentionCount` / filter state from `AppViewModel`
+  - instead, the remaining low-risk UI-adjacent consumer path was cut over:
+    - `UITestTmuxBridge` sidebar state dumps now include presentation-derived pane summaries
+    - UI test diagnostics now prefer those summaries over raw legacy `AgtmuxPane` fields when available
+- added helper-focused coverage for downstream UI consumers:
+  - degraded freshness fixture now proves `paneFreshnessText` stays presentation-derived without inflating attention
+  - error fixture now proves `panePrimaryState` / `paneNeedsAttention` / provider helper behavior without relying on legacy guesswork
+- focused verification:
+  - `swift build` ✅
+  - `swift test -q --filter AppViewModelA0Tests` ✅
+  - `xcodegen generate` ✅
+  - `xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -destination 'platform=macOS,arch=arm64' build-for-testing -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testAttentionFilterShowsOnlyWaitingApprovalPanes` ✅
+  - targeted `xcodebuild ... testAttentionFilterShowsOnlyWaitingApprovalPanes` ❌
+    - same foreground-activation harness blocker remains:
+    - `Failed to activate application ... (current state: Running Background)`
