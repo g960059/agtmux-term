@@ -16,6 +16,28 @@ Historical progress detail lives in `docs/archive/progress/2026-02-28_to_2026-03
 
 ## Recent Entries
 
+## 2026-03-09 — T-116 launch/activation blocker cleared; remaining red is managed surfacing after provider launch
+
+### What landed
+- added a narrow UITest foreground stabilization step immediately after `XCUIApplication.launch()` so the metadata-enabled plain-zsh Codex lane no longer dies in `UITestHelpers.launch()`
+- kept the pre-launch bootstrap truth fix intact:
+  - before Codex launch, the exact row must still be unmanaged sync-v3 shell truth
+  - after launch, the same test now reaches the real managed surfacing assertion body
+
+### Evidence
+- reran the same targeted executed XCUITest:
+  - `testMetadataEnabledPlainZshCodexPaneSurfacesManagedProviderAndActivity` no longer fails at `Failed to activate application ... (current state: Running Background)`
+  - the failure stage is now substantive:
+    - `capture-pane` shows `codex exec ... sleep 20 ... wait_result=managed` completed in the app-driven pane
+    - bootstrap diagnostics still report `probe=ok transport=sync-v3 total=1 managed=0`
+    - the exact target row remains `presence=unmanaged, provider=nil, primary=idle, freshness=down`
+- the held attention-filter lane stays deferred because the primary metadata-enabled lane is still red at managed-provider surfacing
+
+### Verification
+- `xcodegen generate`
+- `xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -destination 'platform=macOS,arch=arm64' test -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testMetadataEnabledPlainZshCodexPaneSurfacesManagedProviderAndActivity`
+- result: launch/activation no longer blocks; the same targeted test now fails later at the substantive managed surfacing assertion
+
 ## 2026-03-09 — T-116 pre-launch bootstrap mismatch fixed; remaining red is post-launch app activation
 
 ### What landed

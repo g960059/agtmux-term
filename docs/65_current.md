@@ -156,9 +156,11 @@
   - metadata-enabled plain-zsh Codex UI reruns now pass the pre-launch bootstrap gate with the correct sync-v3 truth:
     - before provider launch, the app-driven pane is expected to remain `presence=unmanaged, provider=nil, primary=idle`
     - the targeted helper now asserts that pre-provider state instead of requiring managed truth too early
-  - the remaining red is now a later UI harness blocker:
-    - after the pre-launch gate passes and Codex launch is sent, the targeted XCUITest reproducibly fails at `UITestHelpers.launch()` with `Failed to activate application ... (current state: Running Background)`
-    - the held attention-filter lane has not been rerun yet because the primary metadata-enabled lane is still blocked there
+  - the `Running Background` activation blocker is now cleared in the primary targeted lane:
+    - the same executed XCUITest reaches the managed-provider assertion body after Codex launch
+  - the remaining red is now substantive managed surfacing:
+    - after Codex launch completes, the targeted XCUITest still reports `probe=ok transport=sync-v3 total=1 managed=0`
+    - the exact row remains `presence=unmanaged, provider=nil, primary=idle`, so the held attention-filter lane is still deferred behind this primary failure
   - March 9, 2026 term-side readiness hardening remains valid:
     - `inventory present + bootstrap panes=[]` no longer primes sync-v2 ownership
     - live AppViewModel managed entry/exit canaries stay green against the updated daemon binary

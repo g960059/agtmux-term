@@ -123,7 +123,7 @@ Mainline product truth is now:
 - `T-119`
   live product Codex completion no longer expects `waiting_input`; sync-v3 truth is `completed_idle` without attention unless pending requests explicitly exist
 - `T-116`
-  metadata-enabled plain-zsh Codex UI proof now uses the correct pre-provider unmanaged bootstrap truth; the remaining blocker is post-launch `Running Background` activation in the executed XCUITest lane
+  metadata-enabled plain-zsh Codex UI proof now uses the correct pre-provider unmanaged bootstrap truth; the post-launch `Running Background` activation blocker is cleared, and the remaining red is substantive managed-provider surfacing after Codex launch
 - `T-087`
   docs compaction and active-context redesign complete
 - `T-076` through `T-084`

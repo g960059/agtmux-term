@@ -18,6 +18,26 @@ enum TestConstants {
 }
 
 extension XCUIApplication {
+    private func stabilizeForegroundForUITest(
+        bundleID: String = "local.agtmux.term.app",
+        timeout: TimeInterval = 5.0
+    ) {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if state == .runningForeground {
+                return
+            }
+            let running = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
+            if let app = running.first {
+                _ = app.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+                if app.isActive {
+                    return
+                }
+            }
+            Thread.sleep(forTimeInterval: 0.2)
+        }
+    }
+
     /// Launch with UITest environment.
     ///
     /// Waits for any stale AgtmuxTerm process to fully exit before calling launch().
@@ -119,5 +139,6 @@ extension XCUIApplication {
         Thread.sleep(forTimeInterval: 0.5)
 
         launch()
+        stabilizeForegroundForUITest(bundleID: bundleID)
     }
 }

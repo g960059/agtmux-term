@@ -93,9 +93,12 @@ Commit closeout is clear; next implementation proceeds on the new Workbench path
     - before Codex is sent, sync-v3 bootstrap should still report the app-driven pane as plain unmanaged `shell:%pane`
     - the targeted UI helper now asserts that correct pre-provider truth instead of requiring a managed row too early
   - focused reruns now pass that pre-launch bootstrap gate and only then launch Codex into the pane
+  - the post-launch app-activation harness blocker is now cleared in the targeted lane:
+    - `UITestHelpers.launch()` no longer dies at `Failed to activate application ... (current state: Running Background)`
+    - the same executed XCUITest now reaches the real managed surfacing assertion body
   - the remaining red has shifted again:
-    - after the pre-launch gate passes, the same targeted XCUITest now reproducibly fails later at `UITestHelpers.launch()` with `Failed to activate application ... (current state: Running Background)` after about 61 seconds
-    - this is currently a post-launch app-activation harness blocker, not the earlier producer/bootstrap mismatch
+    - after Codex launch completes inside the app-driven pane, the targeted XCUITest still sees `probe=ok transport=sync-v3 total=1 managed=0`
+    - the exact target row remains `presence=unmanaged, provider=nil, primary=idle, freshness=down`, so the current blocker is substantive managed-provider surfacing after provider launch
   - daemon freshness is now revalidated on the normal app-owned socket; the current focused red is no longer attributed to stale daemon reuse
   - targeted metadata-enabled `xcodebuild` now reaches the real managed-row assertions and fails with:
     - `capture-pane` proving a real Codex run completed inside the app-driven `zsh` pane
@@ -157,7 +160,7 @@ Commit closeout is clear; next implementation proceeds on the new Workbench path
   - [x] lower-layer live Codex/Claude canaries remain green against the updated daemon binary
   - [x] docs/current/progress isolate daemon socket/runtime handoff as the current harness prerequisite instead of blaming managed-exit product truth
   - [x] targeted metadata-enabled bootstrap now asserts the correct pre-provider unmanaged sync-v3 truth before launching Codex
-  - [ ] targeted executed metadata-enabled XCUITest is green after the pre-launch gate; current reruns still fail later at `Failed to activate application ... (current state: Running Background)`
+  - [ ] targeted executed metadata-enabled XCUITest is green after provider launch; current reruns now fail later at the managed-provider surfacing assertion with bootstrap still reporting the exact row as unmanaged `shell:%pane`
 
 ## Recently Closed
 
