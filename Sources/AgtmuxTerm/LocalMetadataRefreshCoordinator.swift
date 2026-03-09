@@ -19,12 +19,12 @@ struct LocalMetadataRefreshExecution: Equatable {
 }
 
 final class LocalMetadataRefreshCoordinator {
-    private let client: any LocalMetadataClient
+    private let client: any ProductLocalMetadataClient
     private let transportBridge: LocalMetadataTransportBridge
     private let now: () -> Date
 
     init(
-        client: any LocalMetadataClient,
+        client: any ProductLocalMetadataClient,
         transportBridge: LocalMetadataTransportBridge,
         now: @escaping () -> Date = Date.init
     ) {

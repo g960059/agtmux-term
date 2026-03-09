@@ -41,7 +41,8 @@ final class AppViewModelA0Tests: XCTestCase {
         private var changesSteps: [ChangesStep]
         private var healthSteps: [HealthStep]
         private var lastBootstrapV3: AgtmuxSyncV3Bootstrap?
-        private(set) var resetCount = 0
+        private(set) var resetV2Count = 0
+        private(set) var resetV3Count = 0
         private(set) var healthFetchCount = 0
         private(set) var bootstrapV3CallCount = 0
         private(set) var bootstrapV2CallCount = 0
@@ -188,15 +189,19 @@ final class AppViewModelA0Tests: XCTestCase {
         }
 
         func resetUIChangesV2() async {
-            resetCount += 1
+            resetV2Count += 1
         }
 
         func resetUIChangesV3() async {
-            resetCount += 1
+            resetV3Count += 1
         }
 
         func resets() -> Int {
-            resetCount
+            resetV2Count + resetV3Count
+        }
+
+        func resetCounts() -> (v2: Int, v3: Int) {
+            (resetV2Count, resetV3Count)
         }
 
         func healthFetches() -> Int {
@@ -244,7 +249,8 @@ final class AppViewModelA0Tests: XCTestCase {
 
     private actor DecodingMetadataClient: LocalMetadataClient {
         private let bootstrapJSON: String
-        private(set) var resetCount = 0
+        private(set) var resetV2Count = 0
+        private(set) var resetV3Count = 0
 
         init(bootstrapJSON: String) {
             self.bootstrapJSON = bootstrapJSON
@@ -289,15 +295,19 @@ final class AppViewModelA0Tests: XCTestCase {
         }
 
         func resetUIChangesV2() async {
-            resetCount += 1
+            resetV2Count += 1
         }
 
         func resetUIChangesV3() async {
-            resetCount += 1
+            resetV3Count += 1
         }
 
         func resets() -> Int {
-            resetCount
+            resetV2Count + resetV3Count
+        }
+
+        func resetCounts() -> (v2: Int, v3: Int) {
+            (resetV2Count, resetV3Count)
         }
     }
 
@@ -3919,10 +3929,13 @@ final class AppViewModelA0Tests: XCTestCase {
                 && model.panePresentation(for: pane) == nil
         }
         let resetCount = await client.resets()
+        let resetCounts = await client.resetCounts()
         let counts = await client.metadataCallCounts()
 
         XCTAssertTrue(incompatibleSurfaced, "bootstrap-v3 method-not-found must surface daemon incompatibility and keep inventory-only rows")
         XCTAssertEqual(resetCount, 1)
+        XCTAssertEqual(resetCounts.v2, 0)
+        XCTAssertEqual(resetCounts.v3, 1)
         XCTAssertEqual(counts.bootstrapV3, 1)
         XCTAssertEqual(counts.bootstrapV2, 0)
         XCTAssertEqual(counts.changesV3, 0)
@@ -4087,10 +4100,13 @@ final class AppViewModelA0Tests: XCTestCase {
         }
 
         let resetCount = await client.resets()
+        let resetCounts = await client.resetCounts()
         let counts = await client.metadataCallCounts()
 
         XCTAssertTrue(incompatibleSurfaced, "unsupported ui.changes.v3 must clear overlay state and surface daemon incompatibility instead of falling back to sync-v2")
         XCTAssertEqual(resetCount, 1)
+        XCTAssertEqual(resetCounts.v2, 0)
+        XCTAssertEqual(resetCounts.v3, 1)
         XCTAssertEqual(counts.bootstrapV3, 1)
         XCTAssertEqual(counts.bootstrapV2, 0)
         XCTAssertEqual(counts.changesV3, 1)

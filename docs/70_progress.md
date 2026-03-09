@@ -16,6 +16,19 @@ Historical progress detail lives in `docs/archive/progress/2026-02-28_to_2026-03
 
 ## Recent Entries
 
+## 2026-03-09 — T-143 landed: product metadata reset path is now sync-v3-only
+
+### What landed
+- introduced a narrower `ProductLocalMetadataClient` abstraction for the product refresh path
+- `AppViewModel`, `LocalMetadataTransportBridge`, and `LocalMetadataRefreshCoordinator` now depend on the v3-only product abstraction
+- removed direct `resetUIChangesV2()` calls from the product AppViewModel path while leaving low-level sync-v2 reset APIs intact for compatibility-only surfaces
+
+### Verification
+- `swift build`
+- `swift test -q --filter AppViewModelA0Tests/testBootstrapV3MethodNotFoundSurfacesIncompatibleDaemonWithoutFallingBackToSyncV2`
+- `swift test -q --filter AppViewModelA0Tests/testChangesV3MethodNotFoundSurfacesIncompatibleDaemonWithoutFallingBackToSyncV2`
+- result: all passed
+
 ## 2026-03-09 — T-142 landed: incompatible metadata detail is now protocol-accurate
 
 ### What landed

@@ -281,7 +281,7 @@ final class AppViewModel: ObservableObject {
 
     // MARK: - Clients
 
-    private let localClient: any LocalMetadataClient
+    private let localClient: any ProductLocalMetadataClient
     private let localHealthClient: (any LocalHealthClient)?
     private let localInventoryClient: any LocalPaneInventoryClient
     private var remotePaneSources: [RemotePaneInventorySource] = []
@@ -535,7 +535,7 @@ final class AppViewModel: ObservableObject {
 
     // MARK: - Init
 
-    init(localClient: any LocalMetadataClient = AgtmuxDaemonClient(),
+    init(localClient: any ProductLocalMetadataClient = AgtmuxDaemonClient(),
          localInventoryClient: any LocalPaneInventoryClient = LocalTmuxInventoryClient(),
          hostsConfig: HostsConfig? = nil,
          remotePaneSources: [RemotePaneInventorySource]? = nil) {
@@ -591,7 +591,6 @@ final class AppViewModel: ObservableObject {
         localMetadataTransportVersion = nil
         nextLocalHealthRefreshAt = .distantPast
         Task {
-            await localClient.resetUIChangesV2()
             await localClient.resetUIChangesV3()
         }
     }
@@ -779,10 +778,10 @@ final class AppViewModel: ObservableObject {
 
         for version in execution.replayResetVersions {
             switch version {
-            case .v2:
-                await localClient.resetUIChangesV2()
             case .v3:
                 await localClient.resetUIChangesV3()
+            case .v2:
+                break
             }
         }
 
@@ -976,7 +975,6 @@ final class AppViewModel: ObservableObject {
             localMetadataSyncPrimed = false
             localMetadataTransportVersion = nil
             localDaemonIssue = nil
-            await localClient.resetUIChangesV2()
             await localClient.resetUIChangesV3()
         }
         await publishFromSnapshotCache(offlineHosts: newOffline)

@@ -17,16 +17,19 @@ protocol LocalHealthClient {
     func fetchUIHealthV1() async throws -> AgtmuxUIHealthV1
 }
 
-protocol LocalMetadataClient: LocalSnapshotClient {
+protocol ProductLocalMetadataClient: LocalSnapshotClient {
     func fetchUIBootstrapV3() async throws -> AgtmuxSyncV3Bootstrap
     func fetchUIChangesV3(limit: Int) async throws -> AgtmuxSyncV3ChangesResponse
-    func fetchUIBootstrapV2() async throws -> AgtmuxSyncV2Bootstrap
-    func fetchUIChangesV2(limit: Int) async throws -> AgtmuxSyncV2ChangesResponse
-    func resetUIChangesV2() async
     func resetUIChangesV3() async
 }
 
-extension LocalMetadataClient {
+protocol LocalMetadataClient: ProductLocalMetadataClient {
+    func fetchUIBootstrapV2() async throws -> AgtmuxSyncV2Bootstrap
+    func fetchUIChangesV2(limit: Int) async throws -> AgtmuxSyncV2ChangesResponse
+    func resetUIChangesV2() async
+}
+
+extension ProductLocalMetadataClient {
     func fetchUIBootstrapV3() async throws -> AgtmuxSyncV3Bootstrap {
         throw LocalMetadataClientError.unsupportedMethod("ui.bootstrap.v3")
     }

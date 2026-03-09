@@ -108,6 +108,8 @@ Mainline product truth is now:
   stale freshness/accessibility helper drift is removed; `sidebar.pane.activity.*` is now documented as a stable legacy identifier with primary-state semantics
 - `T-142`
   product-facing incompatible metadata detail is protocol-accurate and no longer treats raw `sync-v2 bootstrap` wording as product truth
+- `T-143`
+  product metadata reset/orchestration now depends on a v3-only abstraction; sync-v2 reset survives only on compat surfaces
 - `T-087`
   docs compaction and active-context redesign complete
 - `T-076` through `T-084`

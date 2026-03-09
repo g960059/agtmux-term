@@ -374,6 +374,19 @@ Commit closeout is clear; next implementation proceeds on the new Workbench path
   - [x] factual failing RPC names like `ui.bootstrap.v2` remain visible where they are the actual failing method or payload source
   - [x] focused product tests cover the updated detail wording
 
+### T-143 — remove sync-v2 reset usage from product metadata path
+- **Status**: DONE
+- **Priority**: P3
+- **Depends**: T-132
+- **Owner**: term implementation agent
+- **Description**:
+  - Narrow the product-facing metadata abstraction so `AppViewModel` only resets sync-v3 replay state.
+  - Keep low-level sync-v2 reset APIs alive only on compatibility-layer surfaces that still need them.
+- **Acceptance Criteria**:
+  - [x] `AppViewModel` no longer calls `resetUIChangesV2()`
+  - [x] product-facing metadata abstraction no longer requires sync-v2 reset
+  - [x] focused no-fallback product tests assert reset-v2 stayed unused
+
 ### T-126 — thin live canary for sync-v3 bootstrap/changes exact-row lane
 - **Status**: DONE
 - **Priority**: P1

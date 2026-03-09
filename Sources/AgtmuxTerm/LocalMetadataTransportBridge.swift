@@ -25,7 +25,7 @@ enum LocalMetadataBootstrapSnapshot {
 /// Product code no longer consumes any sync-v2 fallback selector here.
 /// `AppViewModel` requires sync-v3 and surfaces incompatibility explicitly.
 final class LocalMetadataTransportBridge {
-    func fetchRequiredBootstrapV3(using client: any LocalMetadataClient) async throws -> AgtmuxSyncV3Bootstrap {
+    func fetchRequiredBootstrapV3(using client: any ProductLocalMetadataClient) async throws -> AgtmuxSyncV3Bootstrap {
         try await client.fetchUIBootstrapV3()
     }
 }

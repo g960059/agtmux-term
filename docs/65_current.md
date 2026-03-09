@@ -133,6 +133,9 @@
 - `T-142` is now closed:
   - product-facing incompatible metadata detail now speaks in terms of metadata protocol / exact-identity failures rather than treating raw `sync-v2 bootstrap` wording as product truth
   - factual failing RPC names like `ui.bootstrap.v2` can still appear in detail when they are the actual failing method or payload source
+- `T-143` is now closed:
+  - product `AppViewModel` now resets only sync-v3 replay state
+  - sync-v2 reset remains compatibility-only on lower transport/service-boundary surfaces and is no longer part of the product metadata abstraction
 - `T-116` is now open:
   - metadata-enabled health-strip UI and pane-sync UI both reach their real assertions
   - upstream producer truth is now present in the same failing plain-zsh Codex lane:

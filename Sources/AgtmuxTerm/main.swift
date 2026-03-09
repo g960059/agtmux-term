@@ -94,7 +94,7 @@ if !isUITest {
     startManagedDaemonAsyncIfNeeded()
 }
 
-let localMetadataClient: any LocalMetadataClient
+let localMetadataClient: any ProductLocalMetadataClient
 if let xpcClient {
     localMetadataClient = xpcClient
 } else {
