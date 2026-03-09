@@ -16,6 +16,20 @@ Historical progress detail lives in `docs/archive/progress/2026-02-28_to_2026-03
 
 ## Recent Entries
 
+## 2026-03-09 — T-139 landed: UI sidebar diagnostics are now presentation-first
+
+### What landed
+- removed raw `AgtmuxPane` / `filteredPanes` arrays from the `UITestTmuxBridge` sidebar dump payload
+- introduced a shared `UITestSidebarStateSnapshot` / `sidebarStateSummary(...)` path so bridge payloads and UI assertions describe the same presentation-first shape
+- bootstrap-ready polling now resolves the exact local row from presentation snapshots and only uses `current_cmd` as the shell-readiness proof
+
+### Verification
+- `swift build`
+- `swift test -q --filter UITestSidebarDiagnosticsTests`
+- `xcodegen generate`
+- `xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -destination 'platform=macOS,arch=arm64' build-for-testing -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testMetadataEnabledPlainZshCodexPaneSurfacesManagedProviderAndActivity`
+- result: all passed; targeted UI execution remains separately blocked by automation mode before entering the test body
+
 ## 2026-03-09 — T-138 landed: live Codex UI proof now asserts sync-v3 presentation semantics
 
 ### What landed

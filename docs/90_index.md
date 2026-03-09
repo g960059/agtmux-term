@@ -100,6 +100,8 @@ Mainline product truth is now:
   UI test bridge sidebar/bootstrap diagnostics now use sync-v3 truth and presentation-derived summaries
 - `T-138`
   remaining live Codex UI proof now asserts `primary=...` semantics and accepts `completed_idle`
+- `T-139`
+  UI sidebar dump payloads and summary helpers are presentation-first; raw pane arrays are no longer part of the product-facing diagnostics path
 - `T-087`
   docs compaction and active-context redesign complete
 - `T-076` through `T-084`

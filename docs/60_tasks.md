@@ -322,6 +322,19 @@ Commit closeout is clear; next implementation proceeds on the new Workbench path
   - [x] completion assertions accept `completed_idle` alongside `waiting_user_input` and `idle`
   - [x] focused compile/build verification remains green while the automation-mode execution blocker stays documented separately
 
+### T-139 — make UI sidebar diagnostics presentation-first
+- **Status**: DONE
+- **Priority**: P2
+- **Depends**: T-137, T-138
+- **Owner**: term implementation agent
+- **Description**:
+  - Remove the remaining raw `AgtmuxPane` fallback arrays from the UI test sidebar dump payload and make summary/polling paths consume presentation snapshots first.
+  - Keep exact-row targeting strict through session/pane identity plus `current_cmd` where shell readiness still needs inventory-derived proof.
+- **Acceptance Criteria**:
+  - [x] `UITestTmuxBridge` sidebar dump payload no longer requires raw pane arrays for the product-facing summary path
+  - [x] `AgtmuxTermUITests` bootstrap-ready polling and `sidebarStateSummary(...)` consume presentation snapshots first
+  - [x] deterministic integration coverage locks the presentation-first sidebar summary shape
+
 ### T-126 — thin live canary for sync-v3 bootstrap/changes exact-row lane
 - **Status**: DONE
 - **Priority**: P1

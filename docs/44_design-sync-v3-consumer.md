@@ -301,3 +301,6 @@ The broad `AppViewModelA0Tests` suite now treats sync-v3 as the only product met
 - visible row summaries still include inventory-derived `current_cmd` when needed for shell readiness, but they no longer treat raw sync-v2 `activity_state` as daemon truth
 - deterministic coverage for that diagnostic contract now lives in `UITestSidebarDiagnosticsTests`; targeted metadata-enabled XCUITest execution remains a foreground/automation harness concern rather than the primary verification lane
 - the remaining live Codex UI proof now also consumes `primary=...` semantics and allows `completed_idle` as the canonical completion label
+- UI sidebar dump payloads are now presentation-first:
+  - bridge payloads carry `panePresentations` / `filteredPanePresentations` plus sync-v3 bootstrap summaries, not raw `AgtmuxPane` arrays
+  - sidebar summary helpers and bootstrap-ready polling resolve exact rows from presentation snapshots and use `current_cmd` only as the final shell-readiness gate

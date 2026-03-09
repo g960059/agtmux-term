@@ -121,11 +121,14 @@
 - `T-138` is now closed:
   - the metadata-enabled plain-zsh Codex UI proof no longer relies on raw `activity=...` labels
   - live Codex row assertions now use `primary=...` semantics and accept `completed_idle` as a canonical completion state
+- `T-139` is now closed:
+  - UI test sidebar dump payloads are presentation-first and no longer depend on raw `AgtmuxPane` arrays for summary output
+  - bootstrap-ready polling now uses presentation snapshots plus `current_cmd` only where it still proves exact-row shell targeting
 - `T-116` is now open:
   - metadata-enabled health-strip UI and pane-sync UI both reach their real assertions
   - upstream producer truth is now present in the same failing plain-zsh Codex lane:
-    - the app-side bootstrap probe sees managed Codex rows on `ui.bootstrap.v2`
-    - the app-side sidebar snapshot reports the target pane as `presence=managed, provider=codex, activity=waiting_input`
+    - the app-side bootstrap probe sees managed Codex rows on `ui.bootstrap.v3`
+    - the app-side sidebar snapshot reports the target pane via presentation-first diagnostics (`presence=managed, provider=codex, primary=...`)
   - the remaining red is now term-side UI/accessibility surfacing:
     - the targeted XCUITest still times out on provider/activity marker detection
     - current pane-row accessibility uses tiny overlay children under a `.combine` wrapper, so XCUITest cannot rely on those descendants even when the visible row already carries managed truth

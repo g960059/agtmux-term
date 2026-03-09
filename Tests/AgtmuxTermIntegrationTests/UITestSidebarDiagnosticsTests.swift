@@ -119,6 +119,90 @@ final class UITestSidebarDiagnosticsTests: XCTestCase {
         XCTAssertEqual(summary.currentCommand, "zsh")
     }
 
+    func testSidebarStateSummaryUsesPresentationSnapshotsWithoutRawPaneFallback() {
+        let pane = AgtmuxPane(
+            source: "local",
+            paneId: "%1",
+            sessionName: "alpha",
+            windowId: "@1",
+            activityState: .running,
+            presence: .managed,
+            provider: .claude,
+            evidenceMode: .heuristic,
+            currentCmd: "zsh",
+            updatedAt: now
+        )
+        let display = PaneDisplayState(
+            pane: pane,
+            presentation: PanePresentationState(
+                snapshot: makeSnapshot(
+                    sessionName: "alpha",
+                    windowID: "@1",
+                    sessionKey: "codex:%1",
+                    paneID: "%1",
+                    provider: .codex,
+                    presence: .managed,
+                    threadLifecycle: .idle,
+                    blocking: .none,
+                    execution: .none,
+                    freshness: .init(snapshot: .stale, blocking: .fresh, execution: .fresh)
+                )
+            )
+        )
+        let presentation = UITestSidebarDiagnostics.panePresentationSnapshot(for: pane, display: display)
+        let snapshot = UITestSidebarStateSnapshot(
+            statusFilter: "all",
+            panePresentations: [presentation],
+            filteredPanePresentations: [presentation],
+            attentionCount: 0,
+            localDaemonIssueTitle: nil,
+            localDaemonIssueDetail: nil,
+            bootstrapProbeSummary: UITestBootstrapProbeSummary(
+                ok: true,
+                transportVersion: "sync-v3",
+                totalPanes: 1,
+                managedPanes: 1,
+                error: nil
+            ),
+            bootstrapTargetSummary: UITestBootstrapTargetSummary(
+                sessionName: "alpha",
+                paneID: "%1",
+                presence: "managed",
+                provider: "codex",
+                primaryState: PanePresentationPrimaryState.completedIdle.rawValue,
+                freshness: PanePresentationFreshnessState.degraded.rawValue,
+                sessionKey: "codex:%1",
+                paneInstanceID: "AgtmuxSyncV3PaneInstanceID(paneId: \"%1\", generation: 1, birthTs: \(now))"
+            ),
+            managedDaemonSocketPath: "/tmp/agtmuxd.sock",
+            tmuxSocketArguments: ["-L", "alpha"],
+            daemonCLIArguments: ["--socket", "/tmp/agtmuxd.sock"],
+            bootstrapResolvedTmuxSocketPath: "/tmp/tmux.sock",
+            appDirectResolvedSocketProbe: "ok",
+            appDirectResolvedSocketProbeError: nil,
+            daemonProcessCommands: ["agtmux daemon"],
+            daemonLaunchRecord: UITestDaemonLaunchRecordSnapshot(
+                binaryPath: "/tmp/agtmux",
+                arguments: ["daemon"],
+                environment: ["PATH": "/usr/bin"],
+                reusedExistingRuntime: false
+            ),
+            managedDaemonStderrTail: nil
+        )
+
+        let summary = UITestSidebarDiagnostics.sidebarStateSummary(
+            snapshot,
+            sessionName: "alpha",
+            paneID: "%1"
+        )
+
+        XCTAssertTrue(summary.contains("all=presence=managed,provider=codex,primary=completed_idle"))
+        XCTAssertTrue(summary.contains("filtered=presence=managed,provider=codex,primary=completed_idle"))
+        XCTAssertTrue(summary.contains("current_cmd=zsh"))
+        XCTAssertFalse(summary.contains("activity="))
+        XCTAssertTrue(summary.contains("filteredCount=1"))
+    }
+
     private func makeSnapshot(
         sessionName: String,
         windowID: String,

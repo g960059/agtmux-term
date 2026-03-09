@@ -33,6 +33,33 @@ struct UITestBootstrapTargetSummary: Codable, Equatable {
     let paneInstanceID: String
 }
 
+struct UITestDaemonLaunchRecordSnapshot: Codable, Equatable {
+    let binaryPath: String
+    let arguments: [String]
+    let environment: [String: String]
+    let reusedExistingRuntime: Bool
+}
+
+struct UITestSidebarStateSnapshot: Codable, Equatable {
+    let statusFilter: String
+    let panePresentations: [UITestSidebarPanePresentationSnapshot]
+    let filteredPanePresentations: [UITestSidebarPanePresentationSnapshot]
+    let attentionCount: Int
+    let localDaemonIssueTitle: String?
+    let localDaemonIssueDetail: String?
+    let bootstrapProbeSummary: UITestBootstrapProbeSummary
+    let bootstrapTargetSummary: UITestBootstrapTargetSummary?
+    let managedDaemonSocketPath: String
+    let tmuxSocketArguments: [String]
+    let daemonCLIArguments: [String]
+    let bootstrapResolvedTmuxSocketPath: String?
+    let appDirectResolvedSocketProbe: String?
+    let appDirectResolvedSocketProbeError: String?
+    let daemonProcessCommands: [String]
+    let daemonLaunchRecord: UITestDaemonLaunchRecordSnapshot?
+    let managedDaemonStderrTail: String?
+}
+
 enum UITestSidebarDiagnostics {
     static func panePresentationSnapshot(
         for pane: AgtmuxPane,
@@ -98,5 +125,91 @@ enum UITestSidebarDiagnostics {
             sessionKey: target.sessionKey,
             paneInstanceID: String(describing: target.paneInstanceID)
         )
+    }
+
+    static func sidebarStateSummary(
+        _ snapshot: UITestSidebarStateSnapshot?,
+        sessionName: String,
+        paneID: String
+    ) -> String {
+        guard let snapshot else { return "nil" }
+
+        func summarize(_ pane: UITestSidebarPanePresentationSnapshot?) -> String {
+            guard let pane else { return "nil" }
+            return [
+                "presence=\(pane.presence)",
+                "provider=\(pane.provider ?? "nil")",
+                "primary=\(pane.primaryState)",
+                "freshness=\(pane.freshness ?? "nil")",
+                "managed=\(pane.isManaged)",
+                "attention=\(pane.needsAttention)",
+                "current_cmd=\(pane.currentCommand ?? "nil")"
+            ].joined(separator: ",")
+        }
+
+        let visiblePresentation = snapshot.panePresentations.first {
+            $0.source == "local" && $0.sessionName == sessionName && $0.paneID == paneID
+        }
+        let filteredPresentation = snapshot.filteredPanePresentations.first {
+            $0.source == "local" && $0.sessionName == sessionName && $0.paneID == paneID
+        }
+        let visibleSummary = summarize(visiblePresentation)
+        let filteredSummary = summarize(filteredPresentation)
+
+        let issueSummary: String
+        if let title = snapshot.localDaemonIssueTitle {
+            let detail = snapshot.localDaemonIssueDetail ?? ""
+            issueSummary = "\(title):\(detail)"
+        } else {
+            issueSummary = "nil"
+        }
+
+        let probe = snapshot.bootstrapProbeSummary
+        let probeSummary = probe.ok
+            ? "ok transport=\(probe.transportVersion ?? "nil") total=\(probe.totalPanes ?? -1) managed=\(probe.managedPanes ?? -1)"
+            : "error=\(probe.error ?? "unknown")"
+        let targetSummary: String
+        if let target = snapshot.bootstrapTargetSummary {
+            targetSummary = [
+                "presence=\(target.presence)",
+                "provider=\(target.provider ?? "nil")",
+                "primary=\(target.primaryState)",
+                "freshness=\(target.freshness ?? "nil")",
+                "session_key=\(target.sessionKey)",
+                "pane_instance=\(target.paneInstanceID)"
+            ].joined(separator: ",")
+        } else {
+            targetSummary = "nil"
+        }
+        let daemonLaunchSummary = snapshot.daemonLaunchRecord.map {
+            "\($0.reusedExistingRuntime ? "reused" : "spawned"):\($0.binaryPath):\($0.arguments.joined(separator: ","))"
+        } ?? "nil"
+        let daemonEnvSummary = snapshot.daemonLaunchRecord.map { launch in
+            launch.environment
+                .sorted { $0.key < $1.key }
+                .map { "\($0.key)=\($0.value)" }
+                .joined(separator: "|")
+        } ?? "nil"
+
+        return [
+            "filter=\(snapshot.statusFilter)",
+            "attentionCount=\(snapshot.attentionCount)",
+            "issue=\(issueSummary)",
+            "probe=\(probeSummary)",
+            "probeTarget=\(targetSummary)",
+            "managedSocket=\(snapshot.managedDaemonSocketPath)",
+            "tmuxArgs=\(snapshot.tmuxSocketArguments.joined(separator: ","))",
+            "daemonArgs=\(snapshot.daemonCLIArguments.joined(separator: ","))",
+            "bootstrapTmuxSocket=\(snapshot.bootstrapResolvedTmuxSocketPath ?? "nil")",
+            "appDirectSocketProbe=\(snapshot.appDirectResolvedSocketProbe ?? "nil")",
+            "appDirectSocketProbeErr=\(snapshot.appDirectResolvedSocketProbeError ?? "nil")",
+            "daemonProc=\(snapshot.daemonProcessCommands.joined(separator: " || "))",
+            "daemonLaunch=\(daemonLaunchSummary)",
+            "daemonEnv=\(daemonEnvSummary)",
+            "daemonErr=\(snapshot.managedDaemonStderrTail ?? "nil")",
+            "all=\(visibleSummary)",
+            "filtered=\(filteredSummary)",
+            "filteredCount=\(snapshot.filteredPanePresentations.count)"
+        ].joined(separator: " ")
     }
 }

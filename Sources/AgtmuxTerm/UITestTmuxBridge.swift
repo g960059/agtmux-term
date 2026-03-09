@@ -54,35 +54,6 @@ final class UITestTmuxBridge {
         let renderedSurfaceGeneration: UInt64
     }
 
-    private struct SidebarStateSnapshot: Codable {
-        let statusFilter: String
-        let panes: [AgtmuxPane]
-        let panePresentations: [UITestSidebarPanePresentationSnapshot]
-        let filteredPanes: [AgtmuxPane]
-        let filteredPanePresentations: [UITestSidebarPanePresentationSnapshot]
-        let attentionCount: Int
-        let localDaemonIssueTitle: String?
-        let localDaemonIssueDetail: String?
-        let bootstrapProbeSummary: UITestBootstrapProbeSummary
-        let bootstrapTargetSummary: UITestBootstrapTargetSummary?
-        let managedDaemonSocketPath: String
-        let tmuxSocketArguments: [String]
-        let daemonCLIArguments: [String]
-        let bootstrapResolvedTmuxSocketPath: String?
-        let appDirectResolvedSocketProbe: String?
-        let appDirectResolvedSocketProbeError: String?
-        let daemonProcessCommands: [String]
-        let daemonLaunchRecord: DaemonLaunchRecordSnapshot?
-        let managedDaemonStderrTail: String?
-    }
-
-    private struct DaemonLaunchRecordSnapshot: Codable {
-        let binaryPath: String
-        let arguments: [String]
-        let environment: [String: String]
-        let reusedExistingRuntime: Bool
-    }
-
     private let viewModel: AppViewModel
     private let enableMetadataMode: @MainActor () async -> Void
     private let env: [String: String]
@@ -347,11 +318,9 @@ final class UITestTmuxBridge {
                 let directResolvedSocketProbe = appDirectResolvedSocketProbe(
                     bootstrapResolvedSocketPath
                 )
-                let snapshot = SidebarStateSnapshot(
+                let snapshot = UITestSidebarStateSnapshot(
                     statusFilter: viewModel.statusFilter.rawValue,
-                    panes: viewModel.panes,
                     panePresentations: viewModel.panes.map(sidebarPanePresentationSnapshot(for:)),
-                    filteredPanes: viewModel.filteredPanes,
                     filteredPanePresentations: viewModel.filteredPanes.map(sidebarPanePresentationSnapshot(for:)),
                     attentionCount: viewModel.attentionCount,
                     localDaemonIssueTitle: viewModel.localDaemonIssue?.bannerTitle,
@@ -368,7 +337,7 @@ final class UITestTmuxBridge {
                         socketPath: managedSocketPath
                     ),
                     daemonLaunchRecord: launchRecord.map {
-                        DaemonLaunchRecordSnapshot(
+                        UITestDaemonLaunchRecordSnapshot(
                             binaryPath: $0.binaryPath,
                             arguments: $0.arguments,
                             environment: $0.environment,
