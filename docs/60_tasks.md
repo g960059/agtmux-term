@@ -155,6 +155,20 @@ Commit closeout is clear; next implementation proceeds on the new Workbench path
 
 ## Recently Closed
 
+### T-130 — extract local metadata refresh state-transition boundary
+- **Status**: DONE
+- **Priority**: P1
+- **Depends**: T-129
+- **Owner**: Orchestrator (direct implementation)
+- **Description**:
+  - Narrow AppViewModel's direct ownership of local metadata refresh state transitions without changing semantics.
+  - Extract bootstrap-not-ready classification plus publish/clear state transitions into one helper while leaving the async refresh loop in place.
+- **Acceptance Criteria**:
+  - [x] bootstrap-not-ready handling for sync-v2 and sync-v3 no longer lives directly in `AppViewModel`
+  - [x] publish/clear cache state transitions are shaped by one helper boundary
+  - [x] exact-row replay/cache semantics remain unchanged because replay still flows through `LocalMetadataOverlayStore`
+  - [x] focused state-transition tests are green alongside the existing AppViewModel fallback/exact-row regressions
+
 ### T-129 — extract local metadata overlay/replay application behind one helper
 - **Status**: DONE
 - **Priority**: P1

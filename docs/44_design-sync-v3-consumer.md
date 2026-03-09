@@ -224,3 +224,25 @@ This keeps the remaining compatibility boundary explicit:
 - transport selection remains in `LocalMetadataTransportBridge`
 - overlay/replay semantics now live in one helper
 - broader sync-v2/v3 compatibility and publish orchestration are still intentionally in `AppViewModel`
+
+## Local Metadata Refresh Boundary
+
+The next narrowed holdout after overlay/replay extraction is refresh-state transition handling.
+
+- `LocalMetadataRefreshBoundary` now owns:
+  - bootstrap-not-ready defer classification for `ui.bootstrap.v2` / `ui.bootstrap.v3`
+  - shaping of bootstrap metadata payload/result before the async loop applies it
+  - publish-state transitions after successful bootstrap/replay
+  - clear-state transitions after refresh failure
+  - sync-primed / transport-version / daemon-issue / next-refresh updates tied to those outcomes
+- `AppViewModel` still owns:
+  - the async refresh task loop and scheduling guards
+  - replay reset calls against the daemon client
+  - snapshot publication orchestration
+
+This keeps the remaining seam explicit:
+
+- transport selection remains in `LocalMetadataTransportBridge`
+- exact-row replay/cache construction remains in `LocalMetadataOverlayStore`
+- refresh-state shaping now lives in `LocalMetadataRefreshBoundary`
+- the main async orchestration still intentionally lives in `AppViewModel`

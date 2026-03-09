@@ -82,6 +82,10 @@
   - exact-row local metadata bootstrap-cache construction and v2/v3 replay application now live in `LocalMetadataOverlayStore`
   - `AppViewModel` keeps publish/clear timing and task orchestration, but no longer open-codes the overlay/replay seam itself
   - exact-row v3 live lane stays on the same helper-backed cache/update path; sync-v2 fallback remains intact
+- `T-130` is now closed:
+  - bootstrap-not-ready defer handling and publish/clear cache state transitions now live in `LocalMetadataRefreshBoundary`
+  - `AppViewModel` keeps the async refresh loop, replay resets, and snapshot publication orchestration, but no longer open-codes that refresh-state seam
+  - the proven v3 bootstrap/changes live lane still flows through the same bridge + overlay store + refresh boundary stack
 - `T-116` is now open:
   - metadata-enabled health-strip UI and pane-sync UI both reach their real assertions
   - upstream producer truth is now present in the same failing plain-zsh Codex lane:
@@ -242,6 +246,8 @@
   `LocalMetadataTransportBridge` isolates bootstrap transport/fallback selection (`DONE`)
 - `T-129`
   `LocalMetadataOverlayStore` isolates bootstrap-cache construction and v2/v3 replay application (`DONE`)
+- `T-130`
+  `LocalMetadataRefreshBoundary` isolates bootstrap-not-ready and publish/clear state transitions (`DONE`)
 - `T-114`
   single-writer local overlay recovery and live managed-pane surfacing (`DONE`)
 - `T-115`

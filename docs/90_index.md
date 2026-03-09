@@ -82,6 +82,8 @@ Mainline product truth is now:
   sync-v3 consumer foundation, daemon-owned fixture ingest, additive bridge, first UI cutover, thin live canary, shared display-adapter isolation, and local transport-bridge extraction are landed
 - `T-129`
   local metadata overlay/replay cache application is now isolated behind one helper while publish/clear orchestration still remains in `AppViewModel`
+- `T-130`
+  local metadata refresh state transitions are now isolated behind one helper while the async loop still remains in `AppViewModel`
 - `T-087`
   docs compaction and active-context redesign complete
 - `T-076` through `T-084`

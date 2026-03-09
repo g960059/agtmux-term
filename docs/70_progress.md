@@ -13,6 +13,34 @@ Historical progress detail lives in `docs/archive/progress/2026-02-28_to_2026-03
 
 ## Recent Entries
 
+## 2026-03-09 — T-130 landed: local metadata refresh state transitions are isolated behind one boundary
+
+### What landed
+- extracted `LocalMetadataRefreshBoundary`
+- the new boundary now owns:
+  - bootstrap-not-ready defer classification for `ui.bootstrap.v2` and `ui.bootstrap.v3`
+  - shaping of bootstrap metadata payload/result for the `AppViewModel` refresh loop
+  - publish-state transitions after successful bootstrap/replay
+  - clear-state transitions after refresh failure
+  - sync-primed / transport-version / next-refresh / daemon-issue state updates tied to those outcomes
+- `AppViewModel` now applies a refresh plan instead of open-coding those state transitions inline
+
+### What did not move yet
+- the async refresh loop / scheduling remains in `AppViewModel`
+- replay reset calls still happen in `AppViewModel`
+- snapshot publication orchestration still happens in `AppViewModel`
+- transport selection remains in `LocalMetadataTransportBridge`
+- exact-row replay/cache construction remains in `LocalMetadataOverlayStore`
+
+### Verification
+- `swift build`
+- `swift test -q --filter LocalMetadataRefreshBoundaryTests`
+- `swift test -q --filter AppViewModelA0Tests/testBootstrapV3MethodNotFoundFallsBackToSyncV2BootstrapWithoutBreakingOverlay`
+- `swift test -q --filter AppViewModelA0Tests/testChangesV3MethodNotFoundFallsBackToSyncV2AfterBootstrapV3`
+- `swift test -q --filter AppViewModelA0Tests/testBootstrapV3ChangesV3UpsertUpdatesExactRowWithoutWeakeningIdentity`
+- `swift test -q --filter AppViewModelA0Tests/testEmptyBootstrapWithLiveInventoryDoesNotPrimeSyncOwnershipAndLaterHealthyBootstrapRecovers`
+- result: all passed
+
 ## 2026-03-09 — T-129 landed: local metadata overlay/replay application is isolated behind one helper
 
 ### What landed
