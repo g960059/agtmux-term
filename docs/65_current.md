@@ -168,6 +168,10 @@
   - sidebar row provider/activity/freshness surfacing plus `managed` / `attention` filter-count derivation prefer that cache
   - broader render surfaces still intentionally defer to legacy row state
 - titlebar continues to inherit the same presentation-derived attention/filter state through shared `AppViewModel` helpers; this slice did not introduce a separate titlebar-only state path
+- a thin live sync-v3 gate canary now exists below XCUITest:
+  - it uses a real daemon/runtime lane
+  - it proves `AppViewModel` bootstraps on `ui.bootstrap.v3`, polls `ui.changes.v3`, and updates the same exact local row through `PanePresentationState`
+  - sync-v2 remains intact as the fallback path if daemon support disappears
 - same-session multi-view is out of MVP
 
 ## Locked MVP Decisions
@@ -213,6 +217,8 @@
   additive bootstrap-v3 consumer bridge in AppViewModel/XPC path (`DONE`)
 - `T-123`
   additive changes-v3 consumer bridge in AppViewModel/XPC path (`DONE`)
+- `T-126`
+  thin live sync-v3 bootstrap/changes exact-row canary (`DONE`)
 - `T-114`
   single-writer local overlay recovery and live managed-pane surfacing (`DONE`)
 - `T-115`

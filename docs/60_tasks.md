@@ -155,6 +155,19 @@ Commit closeout is clear; next implementation proceeds on the new Workbench path
 
 ## Recently Closed
 
+### T-126 — thin live canary for sync-v3 bootstrap/changes exact-row lane
+- **Status**: DONE
+- **Priority**: P1
+- **Depends**: T-125
+- **Owner**: term implementation agent
+- **Description**:
+  - Add one narrow live canary that proves the term app consumes daemon `ui.bootstrap.v3` plus `ui.changes.v3` and updates the same exact local row without falling back to sync-v2.
+- **Acceptance Criteria**:
+  - [x] one live integration canary exercises real daemon bootstrap-v3 plus changes-v3 through `AppViewModel`
+  - [x] the canary proves the same exact local row is updated from v3 truth rather than recreated through a weakened identity match
+  - [x] the canary records that `AppViewModel` used `fetchUIBootstrapV3()` and `fetchUIChangesV3()` while leaving sync-v2 fallback untouched
+  - [x] current XCUITest foreground-activation blocker remains explicitly deferred instead of being stretched into this slice
+
 ### T-125 — titlebar-adjacent and UI-harness presentation consumer cutover
 - **Status**: DONE
 - **Priority**: P1

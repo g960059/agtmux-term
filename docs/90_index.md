@@ -78,8 +78,8 @@ Mainline product truth is now:
 
 - `T-090` through `T-094`
   Workbench V2 implementation kickoff track
-- `T-120`
-  sync-v3 consumer foundation is landed locally while daemon-owned fixtures/wire are still being frozen
+- `T-120` through `T-126`
+  sync-v3 consumer foundation, daemon-owned fixture ingest, additive bridge, first UI cutover, and thin live canary are landed
 - `T-087`
   docs compaction and active-context redesign complete
 - `T-076` through `T-084`

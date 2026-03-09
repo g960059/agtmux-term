@@ -17,6 +17,66 @@ final class AppViewModelLiveManagedAgentTests: XCTestCase {
         }
     }
 
+    private struct MetadataCallCounts {
+        let bootstrapV3Calls: Int
+        let changesV3Calls: Int
+        let bootstrapV2Calls: Int
+        let changesV2Calls: Int
+    }
+
+    private actor RecordingMetadataClient: LocalMetadataClient {
+        private let base: AgtmuxDaemonClient
+        private var bootstrapV3Calls = 0
+        private var changesV3Calls = 0
+        private var bootstrapV2Calls = 0
+        private var changesV2Calls = 0
+
+        init(socketPath: String) {
+            self.base = AgtmuxDaemonClient(socketPath: socketPath)
+        }
+
+        func fetchSnapshot() async throws -> AgtmuxSnapshot {
+            try await base.fetchSnapshot()
+        }
+
+        func fetchUIBootstrapV3() async throws -> AgtmuxSyncV3Bootstrap {
+            bootstrapV3Calls += 1
+            return try await base.fetchUIBootstrapV3()
+        }
+
+        func fetchUIChangesV3(limit: Int) async throws -> AgtmuxSyncV3ChangesResponse {
+            changesV3Calls += 1
+            return try await base.fetchUIChangesV3(limit: limit)
+        }
+
+        func fetchUIBootstrapV2() async throws -> AgtmuxSyncV2Bootstrap {
+            bootstrapV2Calls += 1
+            return try await base.fetchUIBootstrapV2()
+        }
+
+        func fetchUIChangesV2(limit: Int) async throws -> AgtmuxSyncV2ChangesResponse {
+            changesV2Calls += 1
+            return try await base.fetchUIChangesV2(limit: limit)
+        }
+
+        func resetUIChangesV2() async {
+            await base.resetUIChangesV2()
+        }
+
+        func resetUIChangesV3() async {
+            await base.resetUIChangesV3()
+        }
+
+        func counts() -> MetadataCallCounts {
+            MetadataCallCounts(
+                bootstrapV3Calls: bootstrapV3Calls,
+                changesV3Calls: changesV3Calls,
+                bootstrapV2Calls: bootstrapV2Calls,
+                changesV2Calls: changesV2Calls
+            )
+        }
+    }
+
     private struct ShellResult {
         let status: Int32
         let stdout: String
@@ -756,6 +816,125 @@ final class AppViewModelLiveManagedAgentTests: XCTestCase {
             .joined(separator: ", ")
     }
 
+    private func legacyPaneInstanceID(from paneInstanceID: AgtmuxSyncV3PaneInstanceID) -> AgtmuxSyncV2PaneInstanceID {
+        AgtmuxSyncV2PaneInstanceID(
+            paneId: paneInstanceID.paneId,
+            generation: paneInstanceID.generation,
+            birthTs: paneInstanceID.birthTs
+        )
+    }
+
+    private func changeSummary(_ change: AgtmuxSyncV3PaneChange?) -> String {
+        guard let change else { return "missing" }
+        let fieldGroups = change.fieldGroups.map(\.rawValue).joined(separator: ",")
+        switch change.kind {
+        case .remove:
+            return "remove session_key=\(change.sessionKey) pane_id=\(change.paneInstanceID.paneId) field_groups=\(fieldGroups)"
+        case .upsert:
+            guard let pane = change.pane else {
+                return "upsert missing-pane session_key=\(change.sessionKey) pane_id=\(change.paneInstanceID.paneId)"
+            }
+            let presentation = PanePresentationState(snapshot: pane)
+            return [
+                "upsert",
+                "session_key=\(pane.sessionKey)",
+                "pane_id=\(pane.paneID)",
+                "provider=\(pane.provider?.rawValue ?? "nil")",
+                "presence=\(pane.presence.rawValue)",
+                "primary=\(presentation.primaryState.rawValue)",
+                "field_groups=\(fieldGroups)"
+            ].joined(separator: " ")
+        }
+    }
+
+    private func waitForV3BootstrapPane(
+        socketPath: String,
+        paneID: String,
+        provider: Provider,
+        expectedPrimaryState: PanePresentationPrimaryState,
+        timeout: TimeInterval = 45.0
+    ) async throws -> AgtmuxSyncV3PaneSnapshot {
+        let client = AgtmuxDaemonClient(socketPath: socketPath)
+        let deadline = Date().addingTimeInterval(timeout)
+        var lastSummary = "no bootstrap"
+
+        while Date() < deadline {
+            do {
+                let bootstrap = try await client.fetchUIBootstrapV3()
+                if let pane = bootstrap.panes.first(where: { $0.paneID == paneID }) {
+                    let presentation = PanePresentationState(snapshot: pane)
+                    lastSummary = "\(pane.paneID)=\(pane.provider?.rawValue ?? "nil")/\(pane.presence.rawValue)/\(presentation.primaryState.rawValue)"
+                    if pane.provider == provider,
+                       pane.presence == .managed,
+                       presentation.primaryState == expectedPrimaryState {
+                        return pane
+                    }
+                } else {
+                    lastSummary = "pane \(paneID) missing from bootstrap"
+                }
+            } catch {
+                lastSummary = String(describing: error)
+            }
+            try? await Task.sleep(for: .milliseconds(500))
+        }
+
+        throw NSError(
+            domain: "AppViewModelLiveManagedAgentTests",
+            code: 8,
+            userInfo: [
+                NSLocalizedDescriptionKey:
+                    "sync-v3 bootstrap did not surface pane \(paneID) as \(provider.rawValue)/\(expectedPrimaryState.rawValue); last=\(lastSummary)"
+            ]
+        )
+    }
+
+    private func waitForV3ChangeForPane(
+        client: AgtmuxDaemonClient,
+        paneID: String,
+        ignoringPrimaryState: PanePresentationPrimaryState,
+        timeout: TimeInterval = 120.0
+    ) async throws -> AgtmuxSyncV3PaneChange {
+        let deadline = Date().addingTimeInterval(timeout)
+        var lastChange: AgtmuxSyncV3PaneChange?
+
+        while Date() < deadline {
+            do {
+                let response = try await client.fetchUIChangesV3(limit: 64)
+                switch response {
+                case let .changes(payload):
+                    if let relevant = payload.changes.first(where: { change in
+                        guard change.paneInstanceID.paneId == paneID else { return false }
+                        switch change.kind {
+                        case .remove:
+                            return true
+                        case .upsert:
+                            guard let pane = change.pane else { return false }
+                            return PanePresentationState(snapshot: pane).primaryState != ignoringPrimaryState
+                        }
+                    }) {
+                        return relevant
+                    }
+                    lastChange = payload.changes.last(where: { $0.paneInstanceID.paneId == paneID })
+                case .resyncRequired:
+                    await client.resetUIChangesV3()
+                    _ = try await client.fetchUIBootstrapV3()
+                }
+            } catch {
+                lastChange = nil
+            }
+            try? await Task.sleep(for: .milliseconds(500))
+        }
+
+        throw NSError(
+            domain: "AppViewModelLiveManagedAgentTests",
+            code: 9,
+            userInfo: [
+                NSLocalizedDescriptionKey:
+                    "sync-v3 changes did not produce a relevant exact-row update for pane \(paneID); last=\(changeSummary(lastChange))"
+            ]
+        )
+    }
+
     private func waitForDaemonPaneActivity(
         socketPath: String,
         paneID: String,
@@ -1021,6 +1200,99 @@ final class AppViewModelLiveManagedAgentTests: XCTestCase {
             userInfo: [
                 NSLocalizedDescriptionKey:
                     "app row \(paneID) did not surface daemon activity \(expectedActivity.rawValue); daemon=\(paneSummary(lastDaemon)) app=\(paneSummary(lastApp))"
+            ]
+        )
+    }
+
+    @MainActor
+    private func waitForAppPanePresentationToMatchSnapshot(
+        model: AppViewModel,
+        client: RecordingMetadataClient,
+        inventoryPane: AgtmuxPane,
+        snapshot: AgtmuxSyncV3PaneSnapshot,
+        requireChangesV3: Bool,
+        timeout: TimeInterval = 25.0
+    ) async throws -> AgtmuxPane {
+        let expectedPresentation = PanePresentationState(snapshot: snapshot)
+        let expectedPaneInstanceID = legacyPaneInstanceID(from: snapshot.paneInstanceID)
+        let deadline = Date().addingTimeInterval(timeout)
+        var lastPane: AgtmuxPane?
+        var lastPresentation: PanePresentationState?
+        var lastCounts = await client.counts()
+
+        while Date() < deadline {
+            await model.fetchAll()
+            lastCounts = await client.counts()
+            lastPane = model.panes.first(where: {
+                $0.paneId == inventoryPane.paneId
+                    && $0.sessionName == inventoryPane.sessionName
+                    && $0.windowId == inventoryPane.windowId
+            })
+            lastPresentation = lastPane.flatMap { model.panePresentation(for: $0) }
+
+            if let pane = lastPane,
+               let presentation = lastPresentation,
+               (!requireChangesV3 || lastCounts.changesV3Calls > 0),
+               pane.provider == snapshot.provider,
+               pane.presence == (snapshot.presence == .managed ? .managed : .unmanaged),
+               pane.metadataSessionKey == snapshot.sessionKey,
+               pane.paneInstanceID == expectedPaneInstanceID,
+               presentation == expectedPresentation {
+                return pane
+            }
+
+            try? await Task.sleep(for: .milliseconds(500))
+        }
+
+        throw NSError(
+            domain: "AppViewModelLiveManagedAgentTests",
+            code: 10,
+            userInfo: [
+                NSLocalizedDescriptionKey:
+                    "app row did not match sync-v3 snapshot for \(inventoryPane.paneId); pane=\(paneSummary(lastPane)) presentation=\(String(describing: lastPresentation?.primaryState.rawValue)) counts=v3b\(lastCounts.bootstrapV3Calls)/v3c\(lastCounts.changesV3Calls)/v2b\(lastCounts.bootstrapV2Calls)/v2c\(lastCounts.changesV2Calls)"
+            ]
+        )
+    }
+
+    @MainActor
+    private func waitForAppPaneToClearV3Overlay(
+        model: AppViewModel,
+        client: RecordingMetadataClient,
+        inventoryPane: AgtmuxPane,
+        timeout: TimeInterval = 25.0
+    ) async throws -> AgtmuxPane {
+        let deadline = Date().addingTimeInterval(timeout)
+        var lastPane: AgtmuxPane?
+        var lastCounts = await client.counts()
+
+        while Date() < deadline {
+            await model.fetchAll()
+            lastCounts = await client.counts()
+            lastPane = model.panes.first(where: {
+                $0.paneId == inventoryPane.paneId
+                    && $0.sessionName == inventoryPane.sessionName
+                    && $0.windowId == inventoryPane.windowId
+            })
+
+            if let pane = lastPane,
+               lastCounts.changesV3Calls > 0,
+               pane.provider == nil,
+               pane.presence == .unmanaged,
+               pane.activityState == .unknown,
+               pane.metadataSessionKey == nil,
+               model.panePresentation(for: pane) == nil {
+                return pane
+            }
+
+            try? await Task.sleep(for: .milliseconds(500))
+        }
+
+        throw NSError(
+            domain: "AppViewModelLiveManagedAgentTests",
+            code: 11,
+            userInfo: [
+                NSLocalizedDescriptionKey:
+                    "app row did not clear sync-v3 overlay for \(inventoryPane.paneId); pane=\(paneSummary(lastPane)) counts=v3b\(lastCounts.bootstrapV3Calls)/v3c\(lastCounts.changesV3Calls)/v2b\(lastCounts.bootstrapV2Calls)/v2c\(lastCounts.changesV2Calls)"
             ]
         )
     }
@@ -1438,5 +1710,80 @@ final class AppViewModelLiveManagedAgentTests: XCTestCase {
             "Real Codex waiting_input via codex exec is not yet calibrated after immediate shell demotion; tracked by T-119. " +
             "Deterministic waiting_input attention coverage remains in AppViewModelA0Tests."
         )
+    }
+
+    @MainActor
+    func testLiveSyncV3BootstrapAndChangesUpdateExactCodexRowWithoutFallingBackToV2() async throws {
+        let harness = try startLiveHarness()
+        defer { stopLiveHarness(harness) }
+
+        _ = try await waitForManagedProviders(
+            socketPath: harness.daemonSocketPath,
+            paneIDs: [harness.claudePaneID, harness.codexPaneID]
+        )
+
+        let codexInventoryPane = try XCTUnwrap(
+            harness.inventoryPanes.first(where: { $0.paneId == harness.codexPaneID })
+        )
+        let initialSnapshot = try await waitForV3BootstrapPane(
+            socketPath: harness.daemonSocketPath,
+            paneID: harness.codexPaneID,
+            provider: .codex,
+            expectedPrimaryState: .running,
+            timeout: 45.0
+        )
+
+        let recordingClient = RecordingMetadataClient(socketPath: harness.daemonSocketPath)
+        let model = AppViewModel(
+            localClient: recordingClient,
+            localInventoryClient: StubInventoryClient(panes: harness.inventoryPanes),
+            hostsConfig: .empty
+        )
+
+        _ = try await waitForAppPanePresentationToMatchSnapshot(
+            model: model,
+            client: recordingClient,
+            inventoryPane: codexInventoryPane,
+            snapshot: initialSnapshot,
+            requireChangesV3: false,
+            timeout: 25.0
+        )
+
+        let initialCounts = await recordingClient.counts()
+        XCTAssertGreaterThan(initialCounts.bootstrapV3Calls, 0, "AppViewModel must bootstrap from sync-v3 in the live canary lane")
+        XCTAssertEqual(initialCounts.bootstrapV2Calls, 0, "sync-v2 bootstrap fallback must stay unused when daemon exposes sync-v3")
+
+        let observer = AgtmuxDaemonClient(socketPath: harness.daemonSocketPath)
+        _ = try await observer.fetchUIBootstrapV3()
+        let change = try await waitForV3ChangeForPane(
+            client: observer,
+            paneID: harness.codexPaneID,
+            ignoringPrimaryState: .running,
+            timeout: 120.0
+        )
+
+        switch change.kind {
+        case .upsert:
+            let updatedSnapshot = try XCTUnwrap(change.pane)
+            _ = try await waitForAppPanePresentationToMatchSnapshot(
+                model: model,
+                client: recordingClient,
+                inventoryPane: codexInventoryPane,
+                snapshot: updatedSnapshot,
+                requireChangesV3: true,
+                timeout: 30.0
+            )
+        case .remove:
+            _ = try await waitForAppPaneToClearV3Overlay(
+                model: model,
+                client: recordingClient,
+                inventoryPane: codexInventoryPane,
+                timeout: 30.0
+            )
+        }
+
+        let finalCounts = await recordingClient.counts()
+        XCTAssertGreaterThan(finalCounts.changesV3Calls, 0, "AppViewModel must poll sync-v3 changes after bootstrap in the live canary lane")
+        XCTAssertEqual(finalCounts.changesV2Calls, 0, "sync-v2 changes fallback must remain unused while sync-v3 stays healthy")
     }
 }

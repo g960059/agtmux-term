@@ -134,6 +134,17 @@ Remaining rollout steps:
 2. live/UI coverage for the additive v3 delta lane
 3. removal of active v2-only presentation dependencies
 
+## Thin Live Gate
+
+The first live gate for the additive v3 lane is intentionally not a broad XCUITest rewrite.
+
+- use one real-daemon integration canary first
+- prove:
+  - `ui.bootstrap.v3` establishes the local presentation cache
+  - `ui.changes.v3` updates the same exact local row
+  - sync-v2 fallback stays unused while the daemon advertises sync-v3
+- keep the existing XCUITest foreground-activation blocker as a separate harness deferral instead of folding it into the v3 consumer gate
+
 ## First UI Cutover Slice
 
 The first UI cutover is intentionally small and additive.

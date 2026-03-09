@@ -13,6 +13,35 @@ Historical progress detail lives in `docs/archive/progress/2026-02-28_to_2026-03
 
 ## Recent Entries
 
+## 2026-03-09 — T-126 landed: a thin live canary now proves the sync-v3 bootstrap/changes lane updates one exact local row without falling back to sync-v2
+
+### What landed
+- added one narrow real-daemon canary in `AppViewModelLiveManagedAgentTests`
+- the new lane uses:
+  - real tmux
+  - real Codex lifecycle activity
+  - live daemon `ui.bootstrap.v3`
+  - live daemon `ui.changes.v3`
+  - the existing term-side `PanePresentationState` adapter
+- the canary asserts three things only:
+  - `AppViewModel` bootstraps from `sync-v3`
+  - `AppViewModel` later polls `changes-v3`
+  - the same exact local row updates through the v3 presentation cache without touching the sync-v2 fallback path
+
+### Why this slice stayed thin
+- this is a gate-validation slice, not another broad UI rewrite
+- the existing XCUITest harness still has a foreground-activation blocker (`Running Background`) on the targeted lane, so the credible product gate for this step is a live integration canary rather than a larger UI slice
+- the canary keeps daemon semantics authoritative:
+  - it does not restate producer truth
+  - it only checks that term consumes the daemon-owned v3 lane and applies it to the exact local row
+
+### Verification
+- `swift build`
+- `cargo build -p agtmux` in the sibling daemon repo so the local binary matched daemon commit `f37b5ad71c617e9396d71068de6b355d9afa1e28`
+- `AGTMUX_LIVE_TEST_BIN=/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/debug/agtmux swift test -q --filter AppViewModelLiveManagedAgentTests/testLiveSyncV3BootstrapAndChangesUpdateExactCodexRowWithoutFallingBackToV2`
+- `swift test -q --filter AppViewModelA0Tests/testBootstrapV3ChangesV3UpsertUpdatesExactRowWithoutWeakeningIdentity`
+- result: all passed
+
 ## 2026-03-09 — T-123 landed: additive `ui.changes.v3` consumer path now keeps the exact local row current without cutting over the live render path
 
 ### What landed
