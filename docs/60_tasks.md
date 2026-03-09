@@ -309,6 +309,19 @@ Commit closeout is clear; next implementation proceeds on the new Workbench path
   - [x] deterministic non-UI verification locks the sync-v3 diagnostic shape
   - [x] focused metadata-enabled UI execution blocker remains documented as an automation harness defer, not a product failure
 
+### T-138 — migrate live Codex UI proof off raw activity labels
+- **Status**: DONE
+- **Priority**: P2
+- **Depends**: T-137
+- **Owner**: term implementation agent
+- **Description**:
+  - Align the metadata-enabled plain-zsh Codex UI proof with sync-v3 presentation semantics.
+  - Replace remaining raw `activity=...` checks in the live Codex UI test with `primary=...` checks and allow the canonical `completed_idle` completion state.
+- **Acceptance Criteria**:
+  - [x] the live Codex UI proof asserts `primary=...` instead of raw `activity=...`
+  - [x] completion assertions accept `completed_idle` alongside `waiting_user_input` and `idle`
+  - [x] focused compile/build verification remains green while the automation-mode execution blocker stays documented separately
+
 ### T-126 — thin live canary for sync-v3 bootstrap/changes exact-row lane
 - **Status**: DONE
 - **Priority**: P1

@@ -118,6 +118,9 @@
   - deterministic integration coverage now locks the migrated diagnostic shape in `UITestSidebarDiagnosticsTests`
   - the targeted metadata-enabled plain-zsh Codex UI execution remains a harness-only defer:
     - `xcodebuild ... testMetadataEnabledPlainZshCodexPaneSurfacesManagedProviderAndActivity` currently times out while enabling automation mode before entering the test body
+- `T-138` is now closed:
+  - the metadata-enabled plain-zsh Codex UI proof no longer relies on raw `activity=...` labels
+  - live Codex row assertions now use `primary=...` semantics and accept `completed_idle` as a canonical completion state
 - `T-116` is now open:
   - metadata-enabled health-strip UI and pane-sync UI both reach their real assertions
   - upstream producer truth is now present in the same failing plain-zsh Codex lane:

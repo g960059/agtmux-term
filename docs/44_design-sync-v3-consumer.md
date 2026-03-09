@@ -300,3 +300,4 @@ The broad `AppViewModelA0Tests` suite now treats sync-v3 as the only product met
 - bootstrap target summaries expose sync-v3 presentation/identity fields (`primary state`, `freshness`, `session_key`, `pane_instance_id`)
 - visible row summaries still include inventory-derived `current_cmd` when needed for shell readiness, but they no longer treat raw sync-v2 `activity_state` as daemon truth
 - deterministic coverage for that diagnostic contract now lives in `UITestSidebarDiagnosticsTests`; targeted metadata-enabled XCUITest execution remains a foreground/automation harness concern rather than the primary verification lane
+- the remaining live Codex UI proof now also consumes `primary=...` semantics and allows `completed_idle` as the canonical completion label

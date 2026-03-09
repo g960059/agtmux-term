@@ -2106,7 +2106,7 @@ final class AgtmuxTermUITests: XCTestCase {
             if currentRow.exists,
                summary.contains("presence=managed"),
                summary.contains("provider=codex"),
-               ["activity=running", "activity=waiting_input", "activity=idle"].contains(where: summary.contains) {
+               ["primary=running", "primary=waiting_user_input", "primary=idle", "primary=completed_idle"].contains(where: summary.contains) {
                 surfaced = true
                 surfacedRowSummary = summary
                 break
@@ -2123,7 +2123,7 @@ final class AgtmuxTermUITests: XCTestCase {
             if currentRow.exists,
                summary.contains("presence=managed"),
                summary.contains("provider=codex"),
-               ["activity=waiting_input", "activity=idle"].contains(where: summary.contains),
+               ["primary=waiting_user_input", "primary=idle", "primary=completed_idle"].contains(where: summary.contains),
                !summary.contains("freshness=none") {
                 freshnessSurfaced = true
                 completionRowSummary = summary
@@ -2148,7 +2148,7 @@ final class AgtmuxTermUITests: XCTestCase {
         )
         XCTAssertTrue(
             surfaced,
-            "A real Codex process launched from a plain zsh pane must surface as a managed sidebar row with provider/activity metadata. " +
+            "A real Codex process launched from a plain zsh pane must surface as a managed sidebar row with provider/presentation metadata. " +
             "row='\(surfacedRowSummary)' " +
             "bootstrapReady='\(sidebarStateSummary(bootstrapReadySnapshot, sessionName: session, paneID: paneID))' " +
             "capture='\(finalCapture ?? "")' " +
@@ -2156,7 +2156,7 @@ final class AgtmuxTermUITests: XCTestCase {
         )
         XCTAssertTrue(
             freshnessSurfaced,
-            "A managed completion row must expose freshness metadata once the live Codex pane settles into waiting_input or idle. " +
+            "A managed completion row must expose freshness metadata once the live Codex pane settles into waiting_user_input, idle, or completed_idle. " +
             "row='\(completionRowSummary)' " +
             "bootstrapReady='\(sidebarStateSummary(bootstrapReadySnapshot, sessionName: session, paneID: paneID))' " +
             "capture='\(finalCapture ?? "")' " +

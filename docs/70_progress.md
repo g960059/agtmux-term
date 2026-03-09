@@ -16,6 +16,20 @@ Historical progress detail lives in `docs/archive/progress/2026-02-28_to_2026-03
 
 ## Recent Entries
 
+## 2026-03-09 — T-138 landed: live Codex UI proof now asserts sync-v3 presentation semantics
+
+### What landed
+- migrated the remaining metadata-enabled plain-zsh Codex UI proof off raw `activity=...` labels
+- managed surfacing now accepts `primary=running`, `primary=waiting_user_input`, `primary=idle`, or `primary=completed_idle`
+- completion/freshness assertions now accept the canonical `completed_idle` completion label alongside `waiting_user_input` and `idle`
+- failure text now describes provider/presentation semantics rather than raw provider/activity collapse
+
+### Verification
+- `swift build`
+- `swift test -q --filter UITestSidebarDiagnosticsTests`
+- `xcodegen generate`
+- `xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -destination 'platform=macOS,arch=arm64' build-for-testing -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testMetadataEnabledPlainZshCodexPaneSurfacesManagedProviderAndActivity`
+- result: all passed; targeted UI execution remains separately blocked by automation mode before entering the test body
 ## 2026-03-09 — T-137 landed: UI test bridge bootstrap/sidebar diagnostics now consume sync-v3 truth
 
 ### What landed
