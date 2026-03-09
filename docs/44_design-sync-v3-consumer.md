@@ -307,3 +307,4 @@ The broad `AppViewModelA0Tests` suite now treats sync-v3 as the only product met
 - pane row accessibility summaries now match that same vocabulary:
   - row `accessibilityValue` uses `primary=...` labels from `PanePresentationPrimaryState`
   - raw `activity=...` wording is no longer the product-facing accessibility summary term
+  - the AX identifier name `sidebar.pane.activity.*` stays stable for existing selectors even though the marker label/value now carries primary-state semantics

@@ -348,6 +348,19 @@ Commit closeout is clear; next implementation proceeds on the new Workbench path
   - [x] focused accessibility summary tests reflect the presentation-first terminology
   - [x] stale no-presentation overload is removed if it no longer serves product code
 
+### T-141 — remove stale freshness/accessibility wording drift
+- **Status**: DONE
+- **Priority**: P3
+- **Depends**: T-140
+- **Owner**: term implementation agent
+- **Description**:
+  - Remove the unused `FreshnessLabel(ageSecs:)` helper and tighten wording around the legacy-stable `sidebarPaneActivityPrefix`.
+  - Keep the identifier string unchanged while making docs/comments explicit that the marker now carries sync-v3 primary-state semantics.
+- **Acceptance Criteria**:
+  - [x] `FreshnessLabel(ageSecs:)` is removed if unused
+  - [x] accessibility/docs wording explains that `sidebar.pane.activity.*` is a stable identifier name with primary-state semantics
+  - [x] focused verification remains green
+
 ### T-126 — thin live canary for sync-v3 bootstrap/changes exact-row lane
 - **Status**: DONE
 - **Priority**: P1

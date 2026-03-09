@@ -902,10 +902,6 @@ struct FreshnessLabel: View {
         self.text = text
     }
 
-    init(ageSecs: Int) {
-        self.text = PaneDisplayState.legacyFreshnessText(ageSecs: ageSecs, activityState: .idle) ?? "none"
-    }
-
     var body: some View {
         Text(text)
             .font(.system(size: 11, weight: .regular, design: .rounded).monospacedDigit())

@@ -33,7 +33,8 @@ Accessibility contracts for E2E:
 3. window row AX identifier: `sidebar.window.<source_session_window>`
 4. session row AX identifier: `sidebar.session.<source_session>`
 5. managed pane provider marker AX identifier: `sidebar.pane.provider.<source_session_pane>`
-6. managed pane activity marker AX identifier: `sidebar.pane.activity.<source_session_pane>`
+6. managed pane primary-state marker AX identifier: `sidebar.pane.activity.<source_session_pane>`
+   identifier string stays legacy/stable; label/value now carries sync-v3 `primary` semantics
 
 ## Required rules for new tests
 

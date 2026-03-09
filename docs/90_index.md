@@ -104,6 +104,8 @@ Mainline product truth is now:
   UI sidebar dump payloads and summary helpers are presentation-first; raw pane arrays are no longer part of the product-facing diagnostics path
 - `T-140`
   pane row accessibility summaries now use `primary=...` terminology and no longer expose stale raw `activity=...` wording
+- `T-141`
+  stale freshness/accessibility helper drift is removed; `sidebar.pane.activity.*` is now documented as a stable legacy identifier with primary-state semantics
 - `T-087`
   docs compaction and active-context redesign complete
 - `T-076` through `T-084`

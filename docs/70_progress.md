@@ -16,6 +16,17 @@ Historical progress detail lives in `docs/archive/progress/2026-02-28_to_2026-03
 
 ## Recent Entries
 
+## 2026-03-09 — T-141 landed: removed stale freshness/accessibility wording drift
+
+### What landed
+- removed the unused `FreshnessLabel(ageSecs:)` initializer
+- clarified in source/docs that `sidebar.pane.activity.*` is a legacy-stable AX identifier whose label/value now carries sync-v3 primary-state semantics
+- updated the UITest README and current-state wording to stop implying raw activity is the product truth for that marker
+
+### Verification
+- `swift build`
+- result: passed
+
 ## 2026-03-09 — T-140 landed: pane row accessibility summaries now speak sync-v3 presentation
 
 ### What landed

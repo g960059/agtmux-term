@@ -20,6 +20,8 @@ public enum AccessibilityID {
     public static let sidebarWindowPrefix = "sidebar.window."    // + source_session_windowID
     public static let sidebarPanePrefix   = "sidebar.pane."      // + source_session_paneID
     public static let sidebarPaneProviderPrefix = "sidebar.pane.provider." // + source_session_paneID
+    // Keep the legacy "activity" identifier stable for existing XCUITest selectors.
+    // The marker label/value now carries sync-v3 primary-state semantics.
     public static let sidebarPaneActivityPrefix = "sidebar.pane.activity." // + source_session_paneID
 
     // MARK: - Workspace

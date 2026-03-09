@@ -127,13 +127,16 @@
 - `T-140` is now closed:
   - pane row accessibility summaries now emit `primary=...` terminology instead of raw `activity=...`
   - `PaneRowAccessibility` no longer carries the stale pane-only overload that product code stopped using
+- `T-141` is now closed:
+  - the unused `FreshnessLabel(ageSecs:)` helper is gone
+  - docs/comments now make it explicit that `sidebar.pane.activity.*` remains a stable AX identifier name while its label/value carries primary-state semantics
 - `T-116` is now open:
   - metadata-enabled health-strip UI and pane-sync UI both reach their real assertions
   - upstream producer truth is now present in the same failing plain-zsh Codex lane:
     - the app-side bootstrap probe sees managed Codex rows on `ui.bootstrap.v3`
     - the app-side sidebar snapshot reports the target pane via presentation-first diagnostics (`presence=managed, provider=codex, primary=...`)
   - the remaining red is now term-side UI/accessibility surfacing:
-    - the targeted XCUITest still times out on provider/activity marker detection
+    - the targeted XCUITest still times out on provider/primary-state marker detection
     - current pane-row accessibility uses tiny overlay children under a `.combine` wrapper, so XCUITest cannot rely on those descendants even when the visible row already carries managed truth
   - March 9, 2026 term-side readiness hardening remains valid:
     - `inventory present + bootstrap panes=[]` no longer primes sync-v2 ownership
