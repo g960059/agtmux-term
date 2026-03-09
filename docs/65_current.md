@@ -64,6 +64,13 @@
   - sync-v2 remains the intact fallback path when bootstrap-v3 or changes-v3 is unsupported
   - intentional deferral remains:
     - current sidebar/titlebar/filter/count rendering still flows through legacy `AgtmuxPane` / `ActivityState`
+- `T-124` is now closed:
+  - the first sync-v3 UI cutover slice landed on top of the additive v3 bridge
+  - sidebar row presentation now prefers local `PanePresentationState` for provider/activity/freshness/AX surfacing when a v3-backed local overlay exists
+  - sidebar `managed` / `attention` filter and count derivation now use the same local presentation layer instead of only legacy `ActivityState`
+  - intentional deferral remains:
+    - full titlebar and broader sidebar cutover are still deferred
+    - the targeted waiting-approval XCUITest is still blocked by `Failed to activate application ... (current state: Running Background)`
 - `T-116` is now open:
   - metadata-enabled health-strip UI and pane-sync UI both reach their real assertions
   - upstream producer truth is now present in the same failing plain-zsh Codex lane:
@@ -149,6 +156,10 @@
   - metadata-enabled pane-sync is green on a fresh daemon runtime
   - plain-zsh Codex managed-row surfacing remains the target product proof
   - but the metadata-enabled launch path can still regress to `Running Background` before the proof body when managed-daemon startup stays synchronous on launch
+- first sync-v3 UI cutover is now sidebar-first:
+  - local v3-backed rows keep a parallel `PanePresentationState` cache
+  - sidebar row provider/activity/freshness surfacing plus `managed` / `attention` filter-count derivation prefer that cache
+  - broader render surfaces still intentionally defer to legacy row state
 - same-session multi-view is out of MVP
 
 ## Locked MVP Decisions

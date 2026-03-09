@@ -86,6 +86,10 @@ Planned sync-v3 consumer split:
 - additive v3 consumer wiring now prefers `ui.bootstrap.v3` in the daemon client / AppViewModel bootstrap path and consumes `ui.changes.v3` for live replay when available
 - sync-v2 remains the intact fallback path whenever bootstrap-v3 or changes-v3 is unsupported
 - the current v2 / `ActivityState` render path remains live until the v3 presentation cutover lands
+- the first presentation cutover slice is now sidebar-first:
+  - local v3-backed rows keep a parallel `PanePresentationState` cache
+  - sidebar row provider/activity/freshness surfacing plus `managed` / `attention` filter-count derivation now prefer that presentation cache
+  - broader render surfaces still intentionally defer to legacy state in the current slice
 
 ### 2. Terminal Runtime
 

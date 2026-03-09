@@ -3,20 +3,56 @@ import AgtmuxTermCore
 
 enum PaneRowAccessibility {
     static func summary(for pane: AgtmuxPane, isSelected: Bool) -> String {
+        summary(for: pane, presentation: nil, isSelected: isSelected)
+    }
+
+    static func summary(for pane: AgtmuxPane, presentation: PanePresentationState?, isSelected: Bool) -> String {
         let selection = isSelected ? "selected" : "unselected"
-        let provider = pane.provider?.rawValue ?? "none"
-        let freshness = formattedFreshness(ageSecs: pane.ageSecs, activityState: pane.activityState)
+        let provider = presentation?.provider?.rawValue ?? pane.provider?.rawValue ?? "none"
+        let presence = presentation?.presence.rawValue ?? pane.presence.rawValue
+        let activity = presentation?.primaryState.rawValue ?? pane.activityState.rawValue
+        let freshness = formattedFreshness(
+            ageSecs: pane.ageSecs,
+            activityState: pane.activityState,
+            presentation: presentation
+        )
 
         return [
             "selection=\(selection)",
-            "presence=\(pane.presence.rawValue)",
+            "presence=\(presence)",
             "provider=\(provider)",
-            "activity=\(pane.activityState.rawValue)",
+            "activity=\(activity)",
             "freshness=\(freshness)",
         ].joined(separator: ", ")
     }
 
     static func formattedFreshness(ageSecs: Int?, activityState: ActivityState) -> String {
+        formattedFreshness(ageSecs: ageSecs, activityState: activityState, presentation: nil)
+    }
+
+    static func formattedFreshness(
+        ageSecs: Int?,
+        activityState: ActivityState,
+        presentation: PanePresentationState?
+    ) -> String {
+        if let presentation {
+            switch presentation.freshnessState {
+            case .down:
+                return "down"
+            case .degraded:
+                return "degraded"
+            case .fresh:
+                break
+            }
+            if presentation.primaryState == .running {
+                return "none"
+            }
+        }
+
+        return formattedLegacyFreshness(ageSecs: ageSecs, activityState: activityState)
+    }
+
+    static func formattedLegacyFreshness(ageSecs: Int?, activityState: ActivityState) -> String {
         guard activityState != .running, let ageSecs else { return "none" }
         switch ageSecs {
         case 0..<60:

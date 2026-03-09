@@ -513,7 +513,13 @@ struct WindowBlockView: View {
             )
         )
         .accessibilityLabel(Text(viewModel.paneDisplayTitle(for: pane)))
-        .accessibilityValue(Text(PaneRowAccessibility.summary(for: pane, isSelected: isSelected)))
+        .accessibilityValue(Text(
+            PaneRowAccessibility.summary(
+                for: pane,
+                presentation: viewModel.panePresentation(for: pane),
+                isSelected: isSelected
+            )
+        ))
         .accessibilityAddTraits(.isButton)
         .id(paneScrollRowID(pane))
         .overlay(alignment: .trailing) {
@@ -567,6 +573,10 @@ struct PaneRowView: View {
             paneID: pane.paneId
         )
     }
+    private var provider: Provider? { viewModel.paneProviderForSidebar(pane) }
+    private var primaryState: PanePresentationPrimaryState { viewModel.panePrimaryState(for: pane) }
+    private var freshnessText: String? { viewModel.paneFreshnessText(for: pane) }
+    private var isManaged: Bool { viewModel.paneIsManaged(pane) }
 
     var body: some View {
         HStack(spacing: 10) {
@@ -579,20 +589,19 @@ struct PaneRowView: View {
                 .font(.system(size: 13, weight: isSelected ? .semibold : .regular, design: .rounded))
                 .lineLimit(1)
                 .truncationMode(.tail)
-                .foregroundStyle(pane.isManaged ? Color.white.opacity(0.95) : Color.white.opacity(0.82))
+                .foregroundStyle(isManaged ? Color.white.opacity(0.95) : Color.white.opacity(0.82))
 
             Spacer()
 
             // Provider icon (managed panes only)
-            if let provider = pane.provider {
+            if let provider {
                 ProviderIcon(provider: provider)
             }
 
             // Elapsed time since last state change (idle/waiting/error only)
-            if pane.isManaged,
-               let age = pane.ageSecs,
-               pane.activityState != .running {
-                FreshnessLabel(ageSecs: age)
+            if isManaged,
+               let freshnessText {
+                FreshnessLabel(text: freshnessText)
             }
         }
         .padding(.horizontal, 10)
@@ -676,7 +685,7 @@ struct PaneRowView: View {
     @ViewBuilder
     private var accessibilityMetadataMarkers: some View {
         HStack(spacing: 0) {
-            if let provider = pane.provider {
+            if let provider {
                 Color.clear
                     .frame(width: 1, height: 1)
                     .allowsHitTesting(false)
@@ -685,13 +694,13 @@ struct PaneRowView: View {
                     .accessibilityLabel(provider.rawValue)
             }
 
-            if pane.isManaged {
+            if isManaged {
                 Color.clear
                     .frame(width: 1, height: 1)
                     .allowsHitTesting(false)
                     .accessibilityElement()
                     .accessibilityIdentifier(AccessibilityID.sidebarPaneActivityPrefix + paneAXKey)
-                    .accessibilityLabel(pane.activityState.rawValue)
+                    .accessibilityLabel(primaryState.rawValue)
             }
         }
     }
@@ -711,18 +720,18 @@ struct PaneRowView: View {
     ///   waitingApproval → orange raised-hand icon
     ///   waitingInput    → yellow ellipsis-circle icon
     ///   error           → red xmark-circle icon
-    ///   idle / unknown / unmanaged → empty
+    ///   completed-idle / idle / inactive / unmanaged → empty
     @ViewBuilder
     private var stateIndicator: some View {
-        if pane.isManaged {
-            switch pane.activityState {
+        if isManaged {
+            switch primaryState {
             case .running:
                 SpinnerView(color: .green, size: 11)
             case .waitingApproval:
                 Image(systemName: "hand.raised.fill")
                     .font(.system(size: 10))
                     .foregroundColor(.orange)
-            case .waitingInput:
+            case .waitingUserInput:
                 Image(systemName: "ellipsis.circle.fill")
                     .font(.system(size: 11))
                     .foregroundColor(.yellow)
@@ -730,7 +739,7 @@ struct PaneRowView: View {
                 Image(systemName: "xmark.circle.fill")
                     .font(.system(size: 11))
                     .foregroundColor(.red)
-            case .idle, .unknown:
+            case .completedIdle, .idle, .inactive:
                 Color.clear
             }
         } else {
@@ -762,13 +771,14 @@ struct PaneRowView: View {
 /// Compact badge row for running/attention counts within a window or session.
 struct WindowStateBadge: View {
     let panes: [AgtmuxPane]
+    @EnvironmentObject private var viewModel: AppViewModel
 
     private var runningCount: Int {
-        panes.filter { $0.activityState == .running }.count
+        panes.filter { viewModel.panePrimaryState(for: $0) == .running }.count
     }
 
     private var attentionCount: Int {
-        panes.filter { $0.needsAttention }.count
+        panes.filter { viewModel.paneNeedsAttention($0) }.count
     }
 
     var body: some View {
@@ -885,16 +895,20 @@ private extension Provider {
 
 /// Elapsed time since last daemon update.
 struct FreshnessLabel: View {
-    let ageSecs: Int
+    let text: String
 
-    var body: some View {
-        Text(formatted)
-            .font(.system(size: 11, weight: .regular, design: .rounded).monospacedDigit())
-            .foregroundStyle(Color.white.opacity(0.56))
+    init(text: String) {
+        self.text = text
     }
 
-    private var formatted: String {
-        PaneRowAccessibility.formattedFreshness(ageSecs: ageSecs, activityState: .idle)
+    init(ageSecs: Int) {
+        self.text = PaneRowAccessibility.formattedLegacyFreshness(ageSecs: ageSecs, activityState: .idle)
+    }
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: 11, weight: .regular, design: .rounded).monospacedDigit())
+            .foregroundStyle(Color.white.opacity(0.56))
     }
 }
 

@@ -3079,3 +3079,24 @@ Result:
   - `swift test -q --filter AgtmuxDaemonXPCClientTests` ✅
   - `swift test -q --filter AgtmuxDaemonXPCServiceBoundaryTests` ✅
   - `swift test -q --filter 'AppViewModelA0Tests/testBootstrapV3(ManagedFixtureOverlaysExactRowAndRetainsOpaqueSessionKey|WaitingApprovalMapsToLegacyAttentionOnExactRow|MethodNotFoundFallsBackToSyncV2BootstrapWithoutBreakingOverlay)'` ✅
+
+# 2026-03-09 08:47 — T-124 landed: first sidebar-only sync-v3 presentation cutover
+
+- implemented a small UI cutover on top of the additive v3 bridge:
+  - `AppViewModel` now keeps a parallel local `PanePresentationState` cache for v3-backed local overlays
+  - bootstrap-v3 and changes-v3 update/remove that presentation cache in lockstep with the legacy local metadata overlay cache
+  - sync-v2 bootstrap/changes fallback still clears the v3 presentation cache so stale v3 UI state cannot leak forward
+- sidebar consumer behavior changed without big-bang rewrite:
+  - row AX summaries now prefer `PanePresentationState`
+  - row provider/activity/freshness surfacing now prefers `PanePresentationState`
+  - sidebar `managed` / `attention` filter and count derivation now prefer `PanePresentationState`
+  - broader UI surfaces still intentionally defer to legacy `AgtmuxPane` / `ActivityState`
+- focused verification:
+  - `swift build` ✅
+  - `swift test -q --filter PaneRowAccessibilityTests` ✅
+  - `swift test -q --filter AppViewModelA0Tests` ✅
+  - `xcodegen generate` ✅
+  - targeted `xcodebuild -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testAttentionFilterShowsOnlyWaitingApprovalPanes` ❌
+    - current failure is not a product assertion mismatch
+    - runner reaches build + test launch, then times out with `Failed to activate application ... (current state: Running Background)`
+    - this remains an XCUITest foreground-activation harness blocker for the current slice

@@ -3244,6 +3244,46 @@ final class AppViewModelA0Tests: XCTestCase {
     }
 
     @MainActor
+    func testBootstrapV3CompletedIdleFeedsPresentationWithoutAttention() async throws {
+        let bootstrap = try loadSyncV3Fixture(named: "codex-completed-idle")
+        let inventoryPane = makeInventoryPane(
+            paneId: "%12",
+            sessionName: "workbench",
+            windowId: "@5",
+            activityState: .unknown,
+            currentCmd: "zsh"
+        )
+        let client = StubMetadataClient(
+            bootstrapV3Steps: [
+                BootstrapV3Step(delayMs: 20, result: .success(bootstrap))
+            ],
+            bootstrapSteps: []
+        )
+        let model = AppViewModel(
+            localClient: client,
+            localInventoryClient: StubInventoryClient(panes: [inventoryPane]),
+            hostsConfig: .empty
+        )
+
+        await model.fetchAll()
+
+        let presentationApplied = await waitUntil {
+            guard let pane = model.panes.first else { return false }
+            return model.panePresentation(for: pane)?.primaryState == .completedIdle
+                && model.panePrimaryState(for: pane) == .completedIdle
+                && model.paneNeedsAttention(pane) == false
+        }
+
+        XCTAssertTrue(presentationApplied, "bootstrap-v3 completed+idle truth must remain in local presentation state without inflating attention")
+        XCTAssertEqual(model.attentionCount, 0)
+        model.statusFilter = .attention
+        XCTAssertTrue(model.filteredPanes.isEmpty)
+        model.statusFilter = .managed
+        XCTAssertEqual(model.filteredPanes.count, 1)
+        XCTAssertNil(model.localDaemonIssue)
+    }
+
+    @MainActor
     func testBootstrapV3MethodNotFoundFallsBackToSyncV2BootstrapWithoutBreakingOverlay() async {
         let inventoryPane = makeInventoryPane(
             paneId: "%303",
@@ -3344,6 +3384,7 @@ final class AppViewModelA0Tests: XCTestCase {
                 && pane.provider == .codex
                 && pane.activityState == .waitingApproval
                 && pane.needsAttention
+                && model.panePresentation(for: pane)?.primaryState == .waitingApproval
         }
 
         XCTAssertTrue(updateApplied, "changes-v3 upsert must update the existing exact row without weakening identity requirements")
@@ -3398,6 +3439,7 @@ final class AppViewModelA0Tests: XCTestCase {
                 && visiblePane.activityState == .unknown
                 && visiblePane.metadataSessionKey == nil
                 && visiblePane.currentCmd == "zsh"
+                && model.panePresentation(for: visiblePane) == nil
         }
 
         XCTAssertTrue(overlayCleared, "changes-v3 remove must drop the cached overlay and return to inventory-only truth")
@@ -3462,6 +3504,7 @@ final class AppViewModelA0Tests: XCTestCase {
             return pane.provider == .codex
                 && pane.activityState == .waitingApproval
                 && pane.metadataSessionKey == "opaque-v2-after-v3"
+                && model.panePresentation(for: pane) == nil
         }
 
         let resetCount = await client.resets()

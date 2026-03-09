@@ -154,7 +154,7 @@ final class AppViewModel: ObservableObject {
     }
 
     /// Count of panes currently needing attention (across all sources, unfiltered).
-    var attentionCount: Int { panes.filter { $0.needsAttention }.count }
+    var attentionCount: Int { panes.filter { paneNeedsAttention($0) }.count }
 
     // MARK: - Filtered panes
 
@@ -162,8 +162,8 @@ final class AppViewModel: ObservableObject {
         let visible = panes
         switch statusFilter {
         case .all:       return visible
-        case .managed:   return visible.filter { $0.isManaged }
-        case .attention: return visible.filter { $0.needsAttention }
+        case .managed:   return visible.filter { paneIsManaged($0) }
+        case .attention: return visible.filter { paneNeedsAttention($0) }
         case .pinned:    return visible.filter { isPanePinned($0) }
         }
     }
@@ -233,6 +233,74 @@ final class AppViewModel: ObservableObject {
         paneIdentityKey(for: lhs) == paneIdentityKey(for: rhs)
     }
 
+    func panePresentation(for pane: AgtmuxPane) -> PanePresentationState? {
+        guard pane.source == "local" else { return nil }
+        return cachedLocalPresentationByPaneKey[paneMetadataKey(for: pane)]
+    }
+
+    func panePrimaryState(for pane: AgtmuxPane) -> PanePresentationPrimaryState {
+        if let presentation = panePresentation(for: pane) {
+            return presentation.primaryState
+        }
+        switch pane.activityState {
+        case .running:
+            return .running
+        case .waitingApproval:
+            return .waitingApproval
+        case .waitingInput:
+            return .waitingUserInput
+        case .error:
+            return .error
+        case .idle:
+            return .idle
+        case .unknown:
+            return .inactive
+        }
+    }
+
+    func paneIsManaged(_ pane: AgtmuxPane) -> Bool {
+        panePresentation(for: pane)?.presence == .managed || pane.isManaged
+    }
+
+    func paneNeedsAttention(_ pane: AgtmuxPane) -> Bool {
+        if let presentation = panePresentation(for: pane) {
+            switch presentation.primaryState {
+            case .waitingApproval, .waitingUserInput, .error:
+                return true
+            case .running, .completedIdle, .idle, .inactive:
+                return false
+            }
+        }
+        return pane.needsAttention
+    }
+
+    func paneProviderForSidebar(_ pane: AgtmuxPane) -> Provider? {
+        panePresentation(for: pane)?.provider ?? pane.provider
+    }
+
+    func paneFreshnessText(for pane: AgtmuxPane) -> String? {
+        if let presentation = panePresentation(for: pane) {
+            switch presentation.freshnessState {
+            case .fresh:
+                guard presentation.primaryState != .running,
+                      let ageSecs = pane.ageSecs else { return nil }
+                return PaneRowAccessibility.formattedLegacyFreshness(ageSecs: ageSecs, activityState: .idle)
+            case .degraded:
+                if presentation.primaryState != .running, let ageSecs = pane.ageSecs {
+                    return PaneRowAccessibility.formattedLegacyFreshness(ageSecs: ageSecs, activityState: .idle)
+                }
+                return "degraded"
+            case .down:
+                return "down"
+            }
+        }
+
+        guard pane.isManaged,
+              let ageSecs = pane.ageSecs,
+              pane.activityState != .running else { return nil }
+        return PaneRowAccessibility.formattedLegacyFreshness(ageSecs: ageSecs, activityState: .idle)
+    }
+
     // MARK: - Selection
 
     func selectPane(_ pane: AgtmuxPane) {
@@ -271,6 +339,7 @@ final class AppViewModel: ObservableObject {
     private var lastSuccessfulRemotePanesBySource: [String: [AgtmuxPane]] = [:]
     private var lastSuccessfulLocalInventory: [AgtmuxPane] = []
     private var cachedLocalMetadataByPaneKey: [String: AgtmuxPane] = [:]
+    private var cachedLocalPresentationByPaneKey: [String: PanePresentationState] = [:]
     private var localMetadataRefreshTask: Task<Void, Never>?
     private var localHealthRefreshTask: Task<Void, Never>?
     private var localMetadataSyncPrimed = false
@@ -640,9 +709,20 @@ final class AppViewModel: ObservableObject {
         let paneInstanceID: AgtmuxSyncV2PaneInstanceID
     }
 
+    private struct LocalBootstrapMetadataPayload {
+        let metadataByPaneKey: [String: AgtmuxPane]
+        let presentationByPaneKey: [String: PanePresentationState]
+        let transportVersion: LocalMetadataTransportVersion
+    }
+
     private enum LocalBootstrapMetadataResult {
-        case metadata([String: AgtmuxPane], LocalMetadataTransportVersion)
+        case metadata(LocalBootstrapMetadataPayload)
         case deferred
+    }
+
+    private struct LocalV3MetadataOverlay {
+        let pane: AgtmuxPane
+        let presentation: PanePresentationState
     }
 
     private func resolveBootstrapMetadataPane(
@@ -685,15 +765,36 @@ final class AppViewModel: ObservableObject {
         return metadataByPaneKey
     }
 
-    private func localMetadataMap(from bootstrap: AgtmuxSyncV3Bootstrap) throws -> [String: AgtmuxPane] {
-        try localMetadataMap(
-            from: bootstrap.panes.map(localMetadataPane(from:))
-        )
+    private func localMetadataCaches(
+        from bootstrap: AgtmuxSyncV3Bootstrap
+    ) throws -> (metadataByPaneKey: [String: AgtmuxPane], presentationByPaneKey: [String: PanePresentationState]) {
+        let grouped = Dictionary(grouping: bootstrap.panes.map(localMetadataOverlay(from:))) {
+            paneMetadataKey(for: $0.pane)
+        }
+        var metadataByPaneKey: [String: AgtmuxPane] = [:]
+        var presentationByPaneKey: [String: PanePresentationState] = [:]
+
+        for (metadataKey, overlays) in grouped {
+            let resolvedPane = try resolveBootstrapMetadataPane(
+                candidates: overlays.map(\.pane),
+                metadataKey: metadataKey
+            )
+            guard let overlay = overlays.first(where: {
+                $0.pane.metadataSessionKey == resolvedPane.metadataSessionKey
+                    && $0.pane.paneInstanceID == resolvedPane.paneInstanceID
+            }) else {
+                throw LocalMetadataOverlayError.ambiguousBootstrapLocation(metadataKey)
+            }
+            metadataByPaneKey[metadataKey] = resolvedPane
+            presentationByPaneKey[metadataKey] = overlay.presentation
+        }
+
+        return (metadataByPaneKey, presentationByPaneKey)
     }
 
-    private func localMetadataPane(from snapshot: AgtmuxSyncV3PaneSnapshot) -> AgtmuxPane {
+    private func localMetadataOverlay(from snapshot: AgtmuxSyncV3PaneSnapshot) -> LocalV3MetadataOverlay {
         let presentation = PanePresentationState(snapshot: snapshot)
-        return AgtmuxPane(
+        let pane = AgtmuxPane(
             source: "local",
             paneId: snapshot.paneID,
             sessionName: snapshot.sessionName,
@@ -706,6 +807,7 @@ final class AppViewModel: ObservableObject {
             metadataSessionKey: snapshot.sessionKey,
             paneInstanceID: legacyPaneInstanceID(from: snapshot.paneInstanceID)
         )
+        return LocalV3MetadataOverlay(pane: pane, presentation: presentation)
     }
 
     private func legacyPaneInstanceID(from paneInstanceID: AgtmuxSyncV3PaneInstanceID) -> AgtmuxSyncV2PaneInstanceID {
@@ -959,8 +1061,11 @@ final class AppViewModel: ObservableObject {
             && pane.paneInstanceID == legacyPaneInstanceID(from: paneInstanceID)
     }
 
-    private func applyLocalMetadataChanges(_ payload: AgtmuxSyncV3Changes) -> [String: AgtmuxPane] {
+    private func applyLocalMetadataChanges(
+        _ payload: AgtmuxSyncV3Changes
+    ) -> (metadataByPaneKey: [String: AgtmuxPane], presentationByPaneKey: [String: PanePresentationState]) {
         var metadataByPaneKey = cachedLocalMetadataByPaneKey
+        var presentationByPaneKey = cachedLocalPresentationByPaneKey
 
         for change in payload.changes {
             let matchingKeys = metadataByPaneKey.compactMap { key, pane in
@@ -972,6 +1077,7 @@ final class AppViewModel: ObservableObject {
             }
             for key in matchingKeys {
                 metadataByPaneKey.removeValue(forKey: key)
+                presentationByPaneKey.removeValue(forKey: key)
             }
 
             switch change.kind {
@@ -979,16 +1085,22 @@ final class AppViewModel: ObservableObject {
                 continue
             case .upsert:
                 guard let paneSnapshot = change.pane else { continue }
-                let pane = localMetadataPane(from: paneSnapshot)
-                metadataByPaneKey[paneMetadataKey(for: pane)] = pane
+                let overlay = localMetadataOverlay(from: paneSnapshot)
+                let key = paneMetadataKey(for: overlay.pane)
+                metadataByPaneKey[key] = overlay.pane
+                presentationByPaneKey[key] = overlay.presentation
             }
         }
 
-        return metadataByPaneKey
+        return (metadataByPaneKey, presentationByPaneKey)
     }
 
-    private func publishLocalMetadataCache(_ metadataByPaneKey: [String: AgtmuxPane]) async {
+    private func publishLocalMetadataCache(
+        _ metadataByPaneKey: [String: AgtmuxPane],
+        presentationByPaneKey: [String: PanePresentationState] = [:]
+    ) async {
         cachedLocalMetadataByPaneKey = metadataByPaneKey
+        cachedLocalPresentationByPaneKey = presentationByPaneKey
         nextLocalMetadataRefreshAt = Date().addingTimeInterval(localMetadataSuccessInterval)
         guard !lastSuccessfulLocalInventory.isEmpty else { return }
         await publishFromSnapshotCache()
@@ -996,6 +1108,7 @@ final class AppViewModel: ObservableObject {
 
     private func clearLocalMetadataCache() async {
         cachedLocalMetadataByPaneKey = [:]
+        cachedLocalPresentationByPaneKey = [:]
         guard !lastSuccessfulLocalInventory.isEmpty else { return }
         await publishFromSnapshotCache()
     }
@@ -1060,13 +1173,16 @@ final class AppViewModel: ObservableObject {
                 if !self.localMetadataSyncPrimed {
                     let bootstrapResult = try await self.fetchLocalBootstrapMetadataByPaneKey()
                     try Task.checkCancellation()
-                    guard case let .metadata(metadataByPaneKey, transportVersion) = bootstrapResult else {
+                    guard case let .metadata(payload) = bootstrapResult else {
                         return
                     }
-                    self.localMetadataTransportVersion = transportVersion
+                    self.localMetadataTransportVersion = payload.transportVersion
                     self.localMetadataSyncPrimed = true
                     self.localDaemonIssue = nil
-                    await self.publishLocalMetadataCache(metadataByPaneKey)
+                    await self.publishLocalMetadataCache(
+                        payload.metadataByPaneKey,
+                        presentationByPaneKey: payload.presentationByPaneKey
+                    )
                     return
                 }
 
@@ -1086,13 +1202,16 @@ final class AppViewModel: ObservableObject {
                         await self.localClient.resetUIChangesV2()
                         let bootstrapResult = try await self.fetchLocalBootstrapMetadataByPaneKey()
                         try Task.checkCancellation()
-                        guard case let .metadata(metadataByPaneKey, transportVersion) = bootstrapResult else {
+                        guard case let .metadata(payload) = bootstrapResult else {
                             return
                         }
-                        self.localMetadataTransportVersion = transportVersion
+                        self.localMetadataTransportVersion = payload.transportVersion
                         self.localMetadataSyncPrimed = true
                         self.localDaemonIssue = nil
-                        await self.publishLocalMetadataCache(metadataByPaneKey)
+                        await self.publishLocalMetadataCache(
+                            payload.metadataByPaneKey,
+                            presentationByPaneKey: payload.presentationByPaneKey
+                        )
                     }
                 case .v3:
                     do {
@@ -1100,9 +1219,12 @@ final class AppViewModel: ObservableObject {
                         try Task.checkCancellation()
                         switch response {
                         case let .changes(payload):
-                            let metadataByPaneKey = self.applyLocalMetadataChanges(payload)
+                            let cache = self.applyLocalMetadataChanges(payload)
                             self.localDaemonIssue = nil
-                            await self.publishLocalMetadataCache(metadataByPaneKey)
+                            await self.publishLocalMetadataCache(
+                                cache.metadataByPaneKey,
+                                presentationByPaneKey: cache.presentationByPaneKey
+                            )
                         case let .resyncRequired(payload):
                             self.logLocalFetch(
                                 "sync-v3 resync required; reason=\(payload.reason) latest_snapshot_seq=\(payload.latestSnapshotSeq)"
@@ -1110,13 +1232,16 @@ final class AppViewModel: ObservableObject {
                             await self.localClient.resetUIChangesV3()
                             let bootstrapResult = try await self.fetchLocalBootstrapMetadataByPaneKey()
                             try Task.checkCancellation()
-                            guard case let .metadata(metadataByPaneKey, transportVersion) = bootstrapResult else {
+                            guard case let .metadata(payload) = bootstrapResult else {
                                 return
                             }
-                            self.localMetadataTransportVersion = transportVersion
+                            self.localMetadataTransportVersion = payload.transportVersion
                             self.localMetadataSyncPrimed = true
                             self.localDaemonIssue = nil
-                            await self.publishLocalMetadataCache(metadataByPaneKey)
+                            await self.publishLocalMetadataCache(
+                                payload.metadataByPaneKey,
+                                presentationByPaneKey: payload.presentationByPaneKey
+                            )
                         }
                     } catch {
                         guard self.shouldFallbackToSyncV2FromV3Error(error) else {
@@ -1128,13 +1253,16 @@ final class AppViewModel: ObservableObject {
                         self.localMetadataSyncPrimed = false
                         let bootstrapResult = try await self.fetchLocalBootstrapMetadataByPaneKey()
                         try Task.checkCancellation()
-                        guard case let .metadata(metadataByPaneKey, transportVersion) = bootstrapResult else {
+                        guard case let .metadata(payload) = bootstrapResult else {
                             return
                         }
-                        self.localMetadataTransportVersion = transportVersion
+                        self.localMetadataTransportVersion = payload.transportVersion
                         self.localMetadataSyncPrimed = true
                         self.localDaemonIssue = nil
-                        await self.publishLocalMetadataCache(metadataByPaneKey)
+                        await self.publishLocalMetadataCache(
+                            payload.metadataByPaneKey,
+                            presentationByPaneKey: payload.presentationByPaneKey
+                        )
                     }
                 }
             } catch is CancellationError {
@@ -1165,7 +1293,14 @@ final class AppViewModel: ObservableObject {
                 if await deferBootstrapIfNotReady(bootstrap) {
                     return .deferred
                 }
-                return .metadata(try localMetadataMap(from: bootstrap), .v3)
+                let cache = try localMetadataCaches(from: bootstrap)
+                return .metadata(
+                    LocalBootstrapMetadataPayload(
+                        metadataByPaneKey: cache.metadataByPaneKey,
+                        presentationByPaneKey: cache.presentationByPaneKey,
+                        transportVersion: .v3
+                    )
+                )
             } catch {
                 guard shouldFallbackToSyncV2FromV3Error(error) else {
                     throw error
@@ -1179,7 +1314,13 @@ final class AppViewModel: ObservableObject {
         if await deferBootstrapIfNotReady(bootstrap) {
             return .deferred
         }
-        return .metadata(try localMetadataMap(from: bootstrap.panes), .v2)
+        return .metadata(
+            LocalBootstrapMetadataPayload(
+                metadataByPaneKey: try localMetadataMap(from: bootstrap.panes),
+                presentationByPaneKey: [:],
+                transportVersion: .v2
+            )
+        )
     }
 
     private func shouldFallbackToSyncV2FromV3Error(_ error: any Error) -> Bool {

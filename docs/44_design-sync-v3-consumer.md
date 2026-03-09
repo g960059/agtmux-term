@@ -130,6 +130,25 @@ That means:
 
 Remaining rollout steps:
 
-1. presentation cutover onto `PanePresentationState`
+1. extend the first sidebar-only presentation cutover into the remaining titlebar / broader UI paths
 2. live/UI coverage for the additive v3 delta lane
 3. removal of active v2-only presentation dependencies
+
+## First UI Cutover Slice
+
+The first UI cutover is intentionally small and additive.
+
+- `AppViewModel` now keeps a parallel local `PanePresentationState` cache for v3-backed local overlays
+- sidebar row presentation prefers that presentation cache for:
+  - provider surfacing
+  - primary activity state surfacing
+  - freshness surfacing
+  - AX row summary
+- sidebar `managed` / `attention` filter and badge/count derivation also prefer the presentation cache
+- sync-v2 remains the live fallback, and non-v3-backed rows still use legacy `AgtmuxPane` / `ActivityState`
+
+This keeps the cutover reviewable:
+
+- daemon remains the truth source
+- term only adapts into a local presentation model
+- broader UI surfaces are deferred until the sidebar-first slice is stable

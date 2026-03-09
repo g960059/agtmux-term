@@ -155,6 +155,23 @@ Commit closeout is clear; next implementation proceeds on the new Workbench path
 
 ## Recently Closed
 
+### T-124 — first sync-v3 UI cutover for sidebar row presentation and filter/count
+- **Status**: DONE
+- **Priority**: P1
+- **Depends**: T-123
+- **Owner**: term implementation agent
+- **Description**:
+  - Land the first small UI cutover onto `PanePresentationState` without removing the legacy render model.
+  - Scope is limited to sidebar row presentation plus sidebar filter/count derivation.
+- **Acceptance Criteria**:
+  - [x] sidebar row AX summary can consume `PanePresentationState` instead of only legacy `AgtmuxPane`
+  - [x] sidebar row provider/activity/freshness surfacing prefers local presentation state when a v3-backed overlay exists
+  - [x] sidebar filter/count derivation (`managed` / `attention`) uses `PanePresentationState` when present and falls back to legacy state otherwise
+  - [x] exact-row presentation cache is updated/cleared alongside additive bootstrap-v3 / changes-v3 overlay state
+  - [x] focused tests cover presentation-aware row summary plus AppViewModel presentation/filter/count behavior
+  - [x] current v2 / `ActivityState` render path remains otherwise intact
+  - [ ] targeted XCUITest rerun is green; current result is still blocked by `Failed to activate application ... (current state: Running Background)`
+
 ### T-123 — additive changes-v3 consumer bridge in AppViewModel/XPC path
 - **Status**: DONE
 - **Priority**: P1
