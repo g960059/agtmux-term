@@ -16,6 +16,18 @@ Historical progress detail lives in `docs/archive/progress/2026-02-28_to_2026-03
 
 ## Recent Entries
 
+## 2026-03-09 — T-140 landed: pane row accessibility summaries now speak sync-v3 presentation
+
+### What landed
+- renamed pane row accessibility summary output from `activity=...` to `primary=...`
+- removed the stale pane-only `PaneRowAccessibility.summary(for:isSelected:)` overload and kept the presentation-aware path as the single entry point
+- focused accessibility assertions now validate `PanePresentationPrimaryState` labels directly
+
+### Verification
+- `swift build`
+- `swift test -q --filter PaneRowAccessibilityTests`
+- result: all passed
+
 ## 2026-03-09 — T-139 landed: UI sidebar diagnostics are now presentation-first
 
 ### What landed

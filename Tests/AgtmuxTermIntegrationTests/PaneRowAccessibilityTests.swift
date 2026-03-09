@@ -17,8 +17,8 @@ final class PaneRowAccessibilityTests: XCTestCase {
         )
 
         XCTAssertEqual(
-            PaneRowAccessibility.summary(for: pane, isSelected: true),
-            "selection=selected, presence=managed, provider=codex, activity=waiting_user_input, freshness=12s"
+            PaneRowAccessibility.summary(for: pane, presentation: nil, isSelected: true),
+            "selection=selected, presence=managed, provider=codex, primary=waiting_user_input, freshness=12s"
         )
     }
 
@@ -36,8 +36,8 @@ final class PaneRowAccessibilityTests: XCTestCase {
         )
 
         XCTAssertEqual(
-            PaneRowAccessibility.summary(for: pane, isSelected: false),
-            "selection=unselected, presence=unmanaged, provider=none, activity=inactive, freshness=none"
+            PaneRowAccessibility.summary(for: pane, presentation: nil, isSelected: false),
+            "selection=unselected, presence=unmanaged, provider=none, primary=inactive, freshness=none"
         )
     }
 
@@ -98,7 +98,7 @@ final class PaneRowAccessibilityTests: XCTestCase {
 
         XCTAssertEqual(
             PaneRowAccessibility.summary(for: pane, presentation: presentation, isSelected: true),
-            "selection=selected, presence=managed, provider=codex, activity=completed_idle, freshness=degraded"
+            "selection=selected, presence=managed, provider=codex, primary=completed_idle, freshness=degraded"
         )
     }
 }

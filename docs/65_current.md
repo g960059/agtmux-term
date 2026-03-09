@@ -124,6 +124,9 @@
 - `T-139` is now closed:
   - UI test sidebar dump payloads are presentation-first and no longer depend on raw `AgtmuxPane` arrays for summary output
   - bootstrap-ready polling now uses presentation snapshots plus `current_cmd` only where it still proves exact-row shell targeting
+- `T-140` is now closed:
+  - pane row accessibility summaries now emit `primary=...` terminology instead of raw `activity=...`
+  - `PaneRowAccessibility` no longer carries the stale pane-only overload that product code stopped using
 - `T-116` is now open:
   - metadata-enabled health-strip UI and pane-sync UI both reach their real assertions
   - upstream producer truth is now present in the same failing plain-zsh Codex lane:

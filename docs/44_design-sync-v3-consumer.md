@@ -304,3 +304,6 @@ The broad `AppViewModelA0Tests` suite now treats sync-v3 as the only product met
 - UI sidebar dump payloads are now presentation-first:
   - bridge payloads carry `panePresentations` / `filteredPanePresentations` plus sync-v3 bootstrap summaries, not raw `AgtmuxPane` arrays
   - sidebar summary helpers and bootstrap-ready polling resolve exact rows from presentation snapshots and use `current_cmd` only as the final shell-readiness gate
+- pane row accessibility summaries now match that same vocabulary:
+  - row `accessibilityValue` uses `primary=...` labels from `PanePresentationPrimaryState`
+  - raw `activity=...` wording is no longer the product-facing accessibility summary term

@@ -335,6 +335,19 @@ Commit closeout is clear; next implementation proceeds on the new Workbench path
   - [x] `AgtmuxTermUITests` bootstrap-ready polling and `sidebarStateSummary(...)` consume presentation snapshots first
   - [x] deterministic integration coverage locks the presentation-first sidebar summary shape
 
+### T-140 — align pane row accessibility summaries with sync-v3 presentation semantics
+- **Status**: DONE
+- **Priority**: P2
+- **Depends**: T-139
+- **Owner**: term implementation agent
+- **Description**:
+  - Replace the remaining `activity=...` terminology in pane row accessibility summaries with `primary=...`.
+  - Keep accessibility identifiers stable while aligning row metadata text with `PanePresentationPrimaryState`.
+- **Acceptance Criteria**:
+  - [x] `PaneRowAccessibility` emits `primary=...` instead of `activity=...`
+  - [x] focused accessibility summary tests reflect the presentation-first terminology
+  - [x] stale no-presentation overload is removed if it no longer serves product code
+
 ### T-126 — thin live canary for sync-v3 bootstrap/changes exact-row lane
 - **Status**: DONE
 - **Priority**: P1
