@@ -10,26 +10,18 @@ final class LocalMetadataRefreshCoordinatorTests: XCTestCase {
 
     private let now = Date(timeIntervalSince1970: 1_700_000_000)
 
-    private actor StubMetadataClient: LocalMetadataClient {
+    private actor StubMetadataClient: ProductLocalMetadataClient {
         private var bootstrapV3Results: [Result<AgtmuxSyncV3Bootstrap, Error>]
-        private var bootstrapV2Results: [Result<AgtmuxSyncV2Bootstrap, Error>]
         private var changesV3Results: [Result<AgtmuxSyncV3ChangesResponse, Error>]
-        private var changesV2Results: [Result<AgtmuxSyncV2ChangesResponse, Error>]
         private(set) var bootstrapV3Calls = 0
-        private(set) var bootstrapV2Calls = 0
         private(set) var changesV3Calls = 0
-        private(set) var changesV2Calls = 0
 
         init(
             bootstrapV3Results: [Result<AgtmuxSyncV3Bootstrap, Error>] = [],
-            bootstrapV2Results: [Result<AgtmuxSyncV2Bootstrap, Error>] = [],
-            changesV3Results: [Result<AgtmuxSyncV3ChangesResponse, Error>] = [],
-            changesV2Results: [Result<AgtmuxSyncV2ChangesResponse, Error>] = []
+            changesV3Results: [Result<AgtmuxSyncV3ChangesResponse, Error>] = []
         ) {
             self.bootstrapV3Results = bootstrapV3Results
-            self.bootstrapV2Results = bootstrapV2Results
             self.changesV3Results = changesV3Results
-            self.changesV2Results = changesV2Results
         }
 
         func fetchSnapshot() async throws -> AgtmuxSnapshot {
@@ -42,17 +34,6 @@ final class LocalMetadataRefreshCoordinatorTests: XCTestCase {
                 throw LocalMetadataClientError.unsupportedMethod("ui.bootstrap.v3")
             }
             switch bootstrapV3Results.removeFirst() {
-            case .success(let value):
-                return value
-            case .failure(let error):
-                throw error
-            }
-        }
-
-        func fetchUIBootstrapV2() async throws -> AgtmuxSyncV2Bootstrap {
-            bootstrapV2Calls += 1
-            guard !bootstrapV2Results.isEmpty else { throw StubError.exhausted }
-            switch bootstrapV2Results.removeFirst() {
             case .success(let value):
                 return value
             case .failure(let error):
@@ -73,22 +54,10 @@ final class LocalMetadataRefreshCoordinatorTests: XCTestCase {
             }
         }
 
-        func fetchUIChangesV2(limit: Int) async throws -> AgtmuxSyncV2ChangesResponse {
-            changesV2Calls += 1
-            guard !changesV2Results.isEmpty else { throw StubError.exhausted }
-            switch changesV2Results.removeFirst() {
-            case .success(let value):
-                return value
-            case .failure(let error):
-                throw error
-            }
-        }
-
-        func resetUIChangesV2() async {}
         func resetUIChangesV3() async {}
 
-        func callCounts() -> (bootstrapV3: Int, bootstrapV2: Int, changesV3: Int, changesV2: Int) {
-            (bootstrapV3Calls, bootstrapV2Calls, changesV3Calls, changesV2Calls)
+        func callCounts() -> (bootstrapV3: Int, changesV3: Int) {
+            (bootstrapV3Calls, changesV3Calls)
         }
     }
 
@@ -151,13 +120,11 @@ final class LocalMetadataRefreshCoordinatorTests: XCTestCase {
         XCTAssertEqual(execution.plan.logMessage, "sync-v3 bootstrap not ready; local inventory has 2 panes but bootstrap returned panes=0")
         let counts = await client.callCounts()
         XCTAssertEqual(counts.bootstrapV3, 1)
-        XCTAssertEqual(counts.bootstrapV2, 0)
     }
 
     func testRunStepThrowsWhenBootstrapV3IsUnsupportedInsteadOfFallingBackToV2() async {
         let client = StubMetadataClient(
-            bootstrapV3Results: [.failure(LocalMetadataClientError.unsupportedMethod("ui.bootstrap.v3"))],
-            bootstrapV2Results: [.success(makeBootstrapV2())]
+            bootstrapV3Results: [.failure(LocalMetadataClientError.unsupportedMethod("ui.bootstrap.v3"))]
         )
         let bridge = LocalMetadataTransportBridge()
         let coordinator = LocalMetadataRefreshCoordinator(
@@ -183,15 +150,12 @@ final class LocalMetadataRefreshCoordinatorTests: XCTestCase {
 
         let counts = await client.callCounts()
         XCTAssertEqual(counts.bootstrapV3, 1)
-        XCTAssertEqual(counts.bootstrapV2, 0)
         XCTAssertEqual(counts.changesV3, 0)
-        XCTAssertEqual(counts.changesV2, 0)
     }
 
     func testRunStepThrowsWhenChangesV3IsUnsupportedInsteadOfFallingBackToV2() async {
         let client = StubMetadataClient(
-            changesV3Results: [.failure(LocalMetadataClientError.unsupportedMethod("ui.changes.v3"))],
-            changesV2Results: [.success(.changes(makeChangesV2()))]
+            changesV3Results: [.failure(LocalMetadataClientError.unsupportedMethod("ui.changes.v3"))]
         )
         let bridge = LocalMetadataTransportBridge()
         let coordinator = LocalMetadataRefreshCoordinator(
@@ -217,9 +181,7 @@ final class LocalMetadataRefreshCoordinatorTests: XCTestCase {
 
         let counts = await client.callCounts()
         XCTAssertEqual(counts.bootstrapV3, 0)
-        XCTAssertEqual(counts.bootstrapV2, 0)
         XCTAssertEqual(counts.changesV3, 1)
-        XCTAssertEqual(counts.changesV2, 0)
     }
 
     func testFailureExecutionAlwaysUsesV3ReplayResetVersionForProductPath() {

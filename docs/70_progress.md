@@ -16,6 +16,20 @@ Historical progress detail lives in `docs/archive/progress/2026-02-28_to_2026-03
 
 ## Recent Entries
 
+## 2026-03-09 — T-144 landed: product-facing metadata client surface is now v3-only
+
+### What landed
+- narrowed product-facing tests and stubs from `LocalMetadataClient` to `ProductLocalMetadataClient`
+- updated `AgtmuxDaemonClient` / `AgtmuxDaemonXPCClient` facing wording so product metadata means snapshot + sync-v3 + health
+- left sync-v2 helper methods and RPC coverage intact on compat-only low-level/client tests
+
+### Verification
+- `swift build`
+- `swift test -q --filter LocalMetadataTransportBridgeTests`
+- `swift test -q --filter LocalMetadataRefreshCoordinatorTests`
+- `swift test -q --filter AppViewModelA0Tests`
+- result: all passed
+
 ## 2026-03-09 — T-143 landed: product metadata reset path is now sync-v3-only
 
 ### What landed

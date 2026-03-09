@@ -20,16 +20,12 @@ final class AppViewModelLiveManagedAgentTests: XCTestCase {
     private struct MetadataCallCounts {
         let bootstrapV3Calls: Int
         let changesV3Calls: Int
-        let bootstrapV2Calls: Int
-        let changesV2Calls: Int
     }
 
-    private actor RecordingMetadataClient: LocalMetadataClient {
+    private actor RecordingMetadataClient: ProductLocalMetadataClient {
         private let base: AgtmuxDaemonClient
         private var bootstrapV3Calls = 0
         private var changesV3Calls = 0
-        private var bootstrapV2Calls = 0
-        private var changesV2Calls = 0
 
         init(socketPath: String) {
             self.base = AgtmuxDaemonClient(socketPath: socketPath)
@@ -49,20 +45,6 @@ final class AppViewModelLiveManagedAgentTests: XCTestCase {
             return try await base.fetchUIChangesV3(limit: limit)
         }
 
-        func fetchUIBootstrapV2() async throws -> AgtmuxSyncV2Bootstrap {
-            bootstrapV2Calls += 1
-            return try await base.fetchUIBootstrapV2()
-        }
-
-        func fetchUIChangesV2(limit: Int) async throws -> AgtmuxSyncV2ChangesResponse {
-            changesV2Calls += 1
-            return try await base.fetchUIChangesV2(limit: limit)
-        }
-
-        func resetUIChangesV2() async {
-            await base.resetUIChangesV2()
-        }
-
         func resetUIChangesV3() async {
             await base.resetUIChangesV3()
         }
@@ -70,9 +52,7 @@ final class AppViewModelLiveManagedAgentTests: XCTestCase {
         func counts() -> MetadataCallCounts {
             MetadataCallCounts(
                 bootstrapV3Calls: bootstrapV3Calls,
-                changesV3Calls: changesV3Calls,
-                bootstrapV2Calls: bootstrapV2Calls,
-                changesV2Calls: changesV2Calls
+                changesV3Calls: changesV3Calls
             )
         }
     }
@@ -1039,7 +1019,7 @@ final class AppViewModelLiveManagedAgentTests: XCTestCase {
             code: 10,
             userInfo: [
                 NSLocalizedDescriptionKey:
-                    "app row did not match sync-v3 snapshot for \(inventoryPane.paneId); daemon=\(daemonSnapshotSummary(snapshot)) app=\(appSurfaceSummary(lastSurface)) counts=v3b\(lastCounts.bootstrapV3Calls)/v3c\(lastCounts.changesV3Calls)/v2b\(lastCounts.bootstrapV2Calls)/v2c\(lastCounts.changesV2Calls)"
+                    "app row did not match sync-v3 snapshot for \(inventoryPane.paneId); daemon=\(daemonSnapshotSummary(snapshot)) app=\(appSurfaceSummary(lastSurface)) counts=v3b\(lastCounts.bootstrapV3Calls)/v3c\(lastCounts.changesV3Calls)"
             ]
         )
     }
@@ -1081,7 +1061,7 @@ final class AppViewModelLiveManagedAgentTests: XCTestCase {
             code: 11,
             userInfo: [
                 NSLocalizedDescriptionKey:
-                    "app row did not clear sync-v3 overlay for \(inventoryPane.paneId); app=\(appSurfaceSummary(lastSurface)) counts=v3b\(lastCounts.bootstrapV3Calls)/v3c\(lastCounts.changesV3Calls)/v2b\(lastCounts.bootstrapV2Calls)/v2c\(lastCounts.changesV2Calls)"
+                    "app row did not clear sync-v3 overlay for \(inventoryPane.paneId); app=\(appSurfaceSummary(lastSurface)) counts=v3b\(lastCounts.bootstrapV3Calls)/v3c\(lastCounts.changesV3Calls)"
             ]
         )
     }
@@ -1126,7 +1106,6 @@ final class AppViewModelLiveManagedAgentTests: XCTestCase {
 
         let counts = await recordingClient.counts()
         XCTAssertGreaterThan(counts.bootstrapV3Calls, 0, "live product path must bootstrap through sync-v3")
-        XCTAssertEqual(counts.bootstrapV2Calls, 0, "live product path must not fall back to sync-v2 bootstrap")
     }
 
     @MainActor
@@ -1189,11 +1168,7 @@ final class AppViewModelLiveManagedAgentTests: XCTestCase {
             "Codex row display state must follow sync-v3 presentation truth under the managed filter"
         )
         let counts = await recordingClient.counts()
-        XCTAssertEqual(
-            counts.bootstrapV2Calls,
-            0,
-            "managed-filter product path must not consume sync-v2 bootstrap"
-        )
+        XCTAssertGreaterThan(counts.bootstrapV3Calls, 0, "managed-filter product path must bootstrap through sync-v3")
     }
 
     @MainActor
@@ -1644,7 +1619,6 @@ final class AppViewModelLiveManagedAgentTests: XCTestCase {
 
         let initialCounts = await recordingClient.counts()
         XCTAssertGreaterThan(initialCounts.bootstrapV3Calls, 0, "AppViewModel must bootstrap from sync-v3 in the live canary lane")
-        XCTAssertEqual(initialCounts.bootstrapV2Calls, 0, "sync-v2 bootstrap fallback must stay unused when daemon exposes sync-v3")
 
         let observer = AgtmuxDaemonClient(socketPath: harness.daemonSocketPath)
         _ = try await observer.fetchUIBootstrapV3()
@@ -1677,6 +1651,5 @@ final class AppViewModelLiveManagedAgentTests: XCTestCase {
 
         let finalCounts = await recordingClient.counts()
         XCTAssertGreaterThan(finalCounts.changesV3Calls, 0, "AppViewModel must poll sync-v3 changes after bootstrap in the live canary lane")
-        XCTAssertEqual(finalCounts.changesV2Calls, 0, "sync-v2 changes fallback must remain unused while sync-v3 stays healthy")
     }
 }

@@ -8,10 +8,9 @@ final class LocalMetadataTransportBridgeTests: XCTestCase {
         case sentinel
     }
 
-    private actor StubMetadataClient: LocalMetadataClient {
+    private actor StubMetadataClient: ProductLocalMetadataClient {
         private var bootstrapV3Results: [Result<AgtmuxSyncV3Bootstrap, Error>]
         private(set) var bootstrapV3Calls = 0
-        private(set) var bootstrapV2Calls = 0
 
         init(bootstrapV3Results: [Result<AgtmuxSyncV3Bootstrap, Error>] = []) {
             self.bootstrapV3Results = bootstrapV3Results
@@ -34,24 +33,13 @@ final class LocalMetadataTransportBridgeTests: XCTestCase {
             }
         }
 
-        func fetchUIBootstrapV2() async throws -> AgtmuxSyncV2Bootstrap {
-            bootstrapV2Calls += 1
-            throw StubError.exhausted
-        }
-
         func fetchUIChangesV3(limit: Int) async throws -> AgtmuxSyncV3ChangesResponse {
             throw StubError.exhausted
         }
-
-        func fetchUIChangesV2(limit: Int) async throws -> AgtmuxSyncV2ChangesResponse {
-            throw StubError.exhausted
-        }
-
-        func resetUIChangesV2() async {}
         func resetUIChangesV3() async {}
 
-        func callCounts() -> (bootstrapV3: Int, bootstrapV2: Int) {
-            (bootstrapV3Calls, bootstrapV2Calls)
+        func callCounts() -> Int {
+            bootstrapV3Calls
         }
     }
 
@@ -115,8 +103,7 @@ final class LocalMetadataTransportBridgeTests: XCTestCase {
         XCTAssertEqual(bootstrap.panes.first?.provider, .codex)
         XCTAssertEqual(bootstrap.panes.first?.sessionKey, "codex:%12")
         let counts = await client.callCounts()
-        XCTAssertEqual(counts.bootstrapV3, 1)
-        XCTAssertEqual(counts.bootstrapV2, 0)
+        XCTAssertEqual(counts, 1)
     }
 
     func testFetchRequiredBootstrapV3PropagatesUnsupportedMethodWithoutFallback() async {
@@ -138,7 +125,6 @@ final class LocalMetadataTransportBridgeTests: XCTestCase {
         }
 
         let counts = await client.callCounts()
-        XCTAssertEqual(counts.bootstrapV3, 1)
-        XCTAssertEqual(counts.bootstrapV2, 0)
+        XCTAssertEqual(counts, 1)
     }
 }

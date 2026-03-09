@@ -34,20 +34,17 @@ final class AppViewModelA0Tests: XCTestCase {
         let result: Result<AgtmuxUIHealthV1, Error>
     }
 
-    private actor StubMetadataClient: LocalMetadataClient, LocalHealthClient {
+    private actor StubMetadataClient: ProductLocalMetadataClient, LocalHealthClient {
         private var bootstrapV3Steps: [BootstrapV3Step]
         private var bootstrapSteps: [BootstrapStep]
         private var changesV3Steps: [ChangesV3Step]
         private var changesSteps: [ChangesStep]
         private var healthSteps: [HealthStep]
         private var lastBootstrapV3: AgtmuxSyncV3Bootstrap?
-        private(set) var resetV2Count = 0
         private(set) var resetV3Count = 0
         private(set) var healthFetchCount = 0
         private(set) var bootstrapV3CallCount = 0
-        private(set) var bootstrapV2CallCount = 0
         private(set) var changesV3CallCount = 0
-        private(set) var changesV2CallCount = 0
 
         init(bootstrapV3Steps: [BootstrapV3Step] = [],
              bootstrapSteps: [BootstrapStep],
@@ -101,21 +98,6 @@ final class AppViewModelA0Tests: XCTestCase {
             return empty
         }
 
-        func fetchUIBootstrapV2() async throws -> AgtmuxSyncV2Bootstrap {
-            bootstrapV2CallCount += 1
-            guard !bootstrapSteps.isEmpty else { throw StubError.exhausted }
-            let step = bootstrapSteps.removeFirst()
-            if step.delayMs > 0 {
-                try? await Task.sleep(for: .milliseconds(step.delayMs))
-            }
-            switch step.result {
-            case let .success(snapshot):
-                return snapshot
-            case let .failure(error):
-                throw error
-            }
-        }
-
         func fetchUIChangesV3(limit: Int) async throws -> AgtmuxSyncV3ChangesResponse {
             changesV3CallCount += 1
             if !changesV3Steps.isEmpty {
@@ -155,21 +137,6 @@ final class AppViewModelA0Tests: XCTestCase {
             return empty
         }
 
-        func fetchUIChangesV2(limit: Int) async throws -> AgtmuxSyncV2ChangesResponse {
-            changesV2CallCount += 1
-            guard !changesSteps.isEmpty else { throw StubError.exhausted }
-            let step = changesSteps.removeFirst()
-            if step.delayMs > 0 {
-                try? await Task.sleep(for: .milliseconds(step.delayMs))
-            }
-            switch step.result {
-            case let .success(response):
-                return response
-            case let .failure(error):
-                throw error
-            }
-        }
-
         func fetchUIHealthV1() async throws -> AgtmuxUIHealthV1 {
             healthFetchCount += 1
             guard !healthSteps.isEmpty else {
@@ -188,28 +155,20 @@ final class AppViewModelA0Tests: XCTestCase {
             }
         }
 
-        func resetUIChangesV2() async {
-            resetV2Count += 1
-        }
-
         func resetUIChangesV3() async {
             resetV3Count += 1
         }
 
         func resets() -> Int {
-            resetV2Count + resetV3Count
-        }
-
-        func resetCounts() -> (v2: Int, v3: Int) {
-            (resetV2Count, resetV3Count)
+            resetV3Count
         }
 
         func healthFetches() -> Int {
             healthFetchCount
         }
 
-        func metadataCallCounts() -> (bootstrapV3: Int, bootstrapV2: Int, changesV3: Int, changesV2: Int) {
-            (bootstrapV3CallCount, bootstrapV2CallCount, changesV3CallCount, changesV2CallCount)
+        func metadataCallCounts() -> (bootstrapV3: Int, changesV3: Int) {
+            (bootstrapV3CallCount, changesV3CallCount)
         }
 
         private func apply(_ response: AgtmuxSyncV3ChangesResponse) {
@@ -247,9 +206,8 @@ final class AppViewModelA0Tests: XCTestCase {
         }
     }
 
-    private actor DecodingMetadataClient: LocalMetadataClient {
+    private actor DecodingMetadataClient: ProductLocalMetadataClient {
         private let bootstrapJSON: String
-        private(set) var resetV2Count = 0
         private(set) var resetV3Count = 0
 
         init(bootstrapJSON: String) {
@@ -275,27 +233,8 @@ final class AppViewModelA0Tests: XCTestCase {
             }
         }
 
-        func fetchUIBootstrapV2() async throws -> AgtmuxSyncV2Bootstrap {
-            let data = Data(bootstrapJSON.utf8)
-            let decoder = JSONDecoder()
-            decoder.dateDecodingStrategy = .iso8601
-            do {
-                return try decoder.decode(AgtmuxSyncV2Bootstrap.self, from: data)
-            } catch {
-                throw DaemonError.parseError("RPC ui.bootstrap.v2 parse failed: \(error.localizedDescription)")
-            }
-        }
-
-        func fetchUIChangesV2(limit: Int) async throws -> AgtmuxSyncV2ChangesResponse {
-            throw StubError.exhausted
-        }
-
         func fetchUIChangesV3(limit: Int) async throws -> AgtmuxSyncV3ChangesResponse {
             throw StubError.exhausted
-        }
-
-        func resetUIChangesV2() async {
-            resetV2Count += 1
         }
 
         func resetUIChangesV3() async {
@@ -303,11 +242,7 @@ final class AppViewModelA0Tests: XCTestCase {
         }
 
         func resets() -> Int {
-            resetV2Count + resetV3Count
-        }
-
-        func resetCounts() -> (v2: Int, v3: Int) {
-            (resetV2Count, resetV3Count)
+            resetV3Count
         }
     }
 
@@ -1078,12 +1013,12 @@ final class AppViewModelA0Tests: XCTestCase {
     }
 
     func testDefaultDirectLocalClientParticipatesInLocalHealthClient() {
-        let client: any LocalMetadataClient = AgtmuxDaemonClient()
+        let client: any ProductLocalMetadataClient = AgtmuxDaemonClient()
         XCTAssertNotNil(client as? any LocalHealthClient)
     }
 
     func testDefaultXPCClientParticipatesInLocalHealthClient() {
-        let client: any LocalMetadataClient = AgtmuxDaemonXPCClient(serviceName: "test.agtmux.xpc")
+        let client: any ProductLocalMetadataClient = AgtmuxDaemonXPCClient(serviceName: "test.agtmux.xpc")
         XCTAssertNotNil(client as? any LocalHealthClient)
     }
 
@@ -3929,17 +3864,12 @@ final class AppViewModelA0Tests: XCTestCase {
                 && model.panePresentation(for: pane) == nil
         }
         let resetCount = await client.resets()
-        let resetCounts = await client.resetCounts()
         let counts = await client.metadataCallCounts()
 
         XCTAssertTrue(incompatibleSurfaced, "bootstrap-v3 method-not-found must surface daemon incompatibility and keep inventory-only rows")
         XCTAssertEqual(resetCount, 1)
-        XCTAssertEqual(resetCounts.v2, 0)
-        XCTAssertEqual(resetCounts.v3, 1)
         XCTAssertEqual(counts.bootstrapV3, 1)
-        XCTAssertEqual(counts.bootstrapV2, 0)
         XCTAssertEqual(counts.changesV3, 0)
-        XCTAssertEqual(counts.changesV2, 0)
     }
 
     @MainActor
@@ -4100,16 +4030,11 @@ final class AppViewModelA0Tests: XCTestCase {
         }
 
         let resetCount = await client.resets()
-        let resetCounts = await client.resetCounts()
         let counts = await client.metadataCallCounts()
 
         XCTAssertTrue(incompatibleSurfaced, "unsupported ui.changes.v3 must clear overlay state and surface daemon incompatibility instead of falling back to sync-v2")
         XCTAssertEqual(resetCount, 1)
-        XCTAssertEqual(resetCounts.v2, 0)
-        XCTAssertEqual(resetCounts.v3, 1)
         XCTAssertEqual(counts.bootstrapV3, 1)
-        XCTAssertEqual(counts.bootstrapV2, 0)
         XCTAssertEqual(counts.changesV3, 1)
-        XCTAssertEqual(counts.changesV2, 0)
     }
 }

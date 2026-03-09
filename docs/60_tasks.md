@@ -387,6 +387,18 @@ Commit closeout is clear; next implementation proceeds on the new Workbench path
   - [x] product-facing metadata abstraction no longer requires sync-v2 reset
   - [x] focused no-fallback product tests assert reset-v2 stayed unused
 
+### T-144 — narrow product-facing metadata client surface to sync-v3
+- **Status**: DONE
+- **Priority**: P3
+- **Depends**: T-143
+- **Owner**: term implementation agent
+- **Description**:
+  - Keep product code on a v3-only metadata client/protocol surface while leaving sync-v2 helpers on compat-only low-level clients and tests.
+- **Acceptance Criteria**:
+  - [x] product-facing tests and stubs now depend on `ProductLocalMetadataClient`
+  - [x] product-facing client wording now describes snapshot + sync-v3 metadata + health instead of generic sync-v2-era metadata
+  - [x] focused verification stays green without widening sync-v2 RPC deletion scope
+
 ### T-126 — thin live canary for sync-v3 bootstrap/changes exact-row lane
 - **Status**: DONE
 - **Priority**: P1

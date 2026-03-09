@@ -136,6 +136,9 @@
 - `T-143` is now closed:
   - product `AppViewModel` now resets only sync-v3 replay state
   - sync-v2 reset remains compatibility-only on lower transport/service-boundary surfaces and is no longer part of the product metadata abstraction
+- `T-144` is now closed:
+  - product-facing tests and injected metadata stubs now type against `ProductLocalMetadataClient`
+  - `LocalMetadataClient` is now an explicit compat-only surface for low-level sync-v2 coverage
 - `T-116` is now open:
   - metadata-enabled health-strip UI and pane-sync UI both reach their real assertions
   - upstream producer truth is now present in the same failing plain-zsh Codex lane:

@@ -62,7 +62,7 @@ Primary modules:
 
 - `LocalTmuxInventoryClient`
 - `RemoteTmuxClient`
-- `LocalMetadataClient` / XPC-backed daemon client
+- `ProductLocalMetadataClient` / XPC-backed daemon client
 - `AppViewModel`
 - `SidebarView`
 
@@ -261,9 +261,9 @@ LocalTmuxInventoryClient
   → inventory rows (session / window / pane existence)
   → AppViewModel inventory merge
 
-LocalMetadataClient
+ProductLocalMetadataClient
   → app-owned daemon socket
-  → ui.bootstrap.v2 / ui.changes.v2
+  → ui.bootstrap.v3 / ui.changes.v3
   → pane metadata overlay
   → derive local visible rows from `inventory + metadata state`
   → AppViewModel sidebar model

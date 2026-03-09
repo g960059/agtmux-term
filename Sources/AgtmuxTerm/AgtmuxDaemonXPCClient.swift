@@ -12,7 +12,7 @@ enum XPCClientError: Error {
 #if AGTMUX_STANDALONE_XPCCLIENT
 private protocol AgtmuxDaemonXPCClientMetadataConformance {}
 #else
-private typealias AgtmuxDaemonXPCClientMetadataConformance = LocalMetadataClient
+private typealias AgtmuxDaemonXPCClientMetadataConformance = ProductLocalMetadataClient
 #endif
 
 actor AgtmuxDaemonXPCClient: AgtmuxDaemonXPCClientMetadataConformance {
@@ -93,26 +93,6 @@ actor AgtmuxDaemonXPCClient: AgtmuxDaemonXPCClientMetadataConformance {
         }
     }
 
-    func fetchUIBootstrapV2() async throws -> AgtmuxSyncV2Bootstrap {
-        try await startManagedDaemonIfNeeded()
-
-        let payload: Data = try await invoke(timeout: 5.0, operation: "fetchUIBootstrapV2") { proxy, done in
-            proxy.fetchUIBootstrapV2 { data, errorText in
-                if let errorText {
-                    done(.failure(XPCClientError.remote(errorText as String)))
-                    return
-                }
-                guard let data else {
-                    done(.failure(XPCClientError.remote("no bootstrap payload")))
-                    return
-                }
-                done(.success(data as Data))
-            }
-        }
-
-        return try decode(AgtmuxSyncV2Bootstrap.self, from: payload)
-    }
-
     func fetchUIBootstrapV3() async throws -> AgtmuxSyncV3Bootstrap {
         try await startManagedDaemonIfNeeded()
 
@@ -151,6 +131,28 @@ actor AgtmuxDaemonXPCClient: AgtmuxDaemonXPCClientMetadataConformance {
         }
 
         return try decode(AgtmuxSyncV3ChangesResponse.self, from: payload)
+    }
+
+    // MARK: - Compatibility-only sync-v2 metadata convenience
+
+    func fetchUIBootstrapV2() async throws -> AgtmuxSyncV2Bootstrap {
+        try await startManagedDaemonIfNeeded()
+
+        let payload: Data = try await invoke(timeout: 5.0, operation: "fetchUIBootstrapV2") { proxy, done in
+            proxy.fetchUIBootstrapV2 { data, errorText in
+                if let errorText {
+                    done(.failure(XPCClientError.remote(errorText as String)))
+                    return
+                }
+                guard let data else {
+                    done(.failure(XPCClientError.remote("no bootstrap payload")))
+                    return
+                }
+                done(.success(data as Data))
+            }
+        }
+
+        return try decode(AgtmuxSyncV2Bootstrap.self, from: payload)
     }
 
     func fetchUIChangesV2(limit: Int = 256) async throws -> AgtmuxSyncV2ChangesResponse {

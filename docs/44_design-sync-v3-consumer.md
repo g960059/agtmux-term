@@ -121,6 +121,7 @@ The current term rollout is additive bootstrap-v3 plus additive changes-v3.
 - the product-facing issue identity for that path is now `LocalDaemonIssue.incompatibleMetadataProtocol`, not the older `incompatibleSyncV2` naming
 - surfaced detail for that issue should describe metadata protocol / exact-identity failures first; factual RPC names may still appear when they are the real failing surface
 - the product-facing metadata abstraction now also resets only sync-v3 replay state; sync-v2 reset APIs remain compatibility-only below that boundary
+- the product-facing client/protocol surface is now explicitly `ProductLocalMetadataClient`; `LocalMetadataClient` remains a compat-only surface for low-level sync-v2 transport/XPC coverage
 - remaining sync-v2 transport/service-boundary/workbench code is compatibility-only
 - the current product UI still renders through legacy `AgtmuxPane` / `ActivityState`
 

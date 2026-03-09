@@ -15,7 +15,8 @@ package enum DaemonError: Error {
 
 // MARK: - AgtmuxDaemonClient
 
-/// Local daemon client for snapshot, sync-v2 metadata, and health APIs.
+/// Local daemon client for snapshot, sync-v3 metadata, and health APIs.
+/// Low-level sync-v2 transport helpers remain below the product-facing term boundary.
 package actor AgtmuxDaemonClient {
     package let socketPath: String
     private var syncV2Session: AgtmuxSyncV2Session?
@@ -58,15 +59,27 @@ package actor AgtmuxDaemonClient {
         throw lastError ?? DaemonError.daemonUnavailable
     }
 
-    package func fetchUIBootstrapV2() async throws -> AgtmuxSyncV2Bootstrap {
-        try ensureManagedRuntimeConfigured(forInlineOverrideKeys: ["AGTMUX_UI_BOOTSTRAP_V2_JSON"])
-        let session = syncV2SessionInstance()
-        return try await session.bootstrap()
-    }
-
     package func fetchUIBootstrapV3() async throws -> AgtmuxSyncV3Bootstrap {
         try ensureManagedRuntimeConfigured(forInlineOverrideKeys: ["AGTMUX_UI_BOOTSTRAP_V3_JSON"])
         let session = syncV3SessionInstance()
+        return try await session.bootstrap()
+    }
+
+    package func fetchUIChangesV3(limit: Int = 256) async throws -> AgtmuxSyncV3ChangesResponse {
+        try ensureManagedRuntimeConfigured(forInlineOverrideKeys: ["AGTMUX_UI_CHANGES_V3_JSON"])
+        let session = syncV3SessionInstance()
+        return try await session.pollChanges(limit: limit)
+    }
+
+    package func resetUIChangesV3() async {
+        syncV3Session = nil
+    }
+
+    // MARK: - Compatibility-only sync-v2 metadata convenience
+
+    package func fetchUIBootstrapV2() async throws -> AgtmuxSyncV2Bootstrap {
+        try ensureManagedRuntimeConfigured(forInlineOverrideKeys: ["AGTMUX_UI_BOOTSTRAP_V2_JSON"])
+        let session = syncV2SessionInstance()
         return try await session.bootstrap()
     }
 
@@ -76,18 +89,8 @@ package actor AgtmuxDaemonClient {
         return try await session.pollChanges(limit: limit)
     }
 
-    package func fetchUIChangesV3(limit: Int = 256) async throws -> AgtmuxSyncV3ChangesResponse {
-        try ensureManagedRuntimeConfigured(forInlineOverrideKeys: ["AGTMUX_UI_CHANGES_V3_JSON"])
-        let session = syncV3SessionInstance()
-        return try await session.pollChanges(limit: limit)
-    }
-
     package func resetUIChangesV2() async {
         syncV2Session = nil
-    }
-
-    package func resetUIChangesV3() async {
-        syncV3Session = nil
     }
 
     private func runJSON(binaryURL agtmuxURL: URL) throws -> AgtmuxSnapshot {
