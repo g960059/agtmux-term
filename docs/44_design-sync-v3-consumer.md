@@ -107,10 +107,28 @@ Local negative tests that assert consumer fail-closed behavior may still use inl
 
 ## Current Limit
 
-This slice does not wire `sync-v3` into `AppViewModel` or replace the current v2 / `ActivityState` product path.
+The current term rollout is bootstrap-only.
 
-That cutover will happen later in three steps:
+- `AppViewModel` now prefers `ui.bootstrap.v3` when the daemon exposes it
+- exact-row bootstrap correlation still remains strict on:
+  - `session_name`
+  - `window_id`
+  - `session_key`
+  - `pane_id`
+  - `pane_instance_id`
+- the live delta path is still `ui.changes.v2`
+- the current product UI still renders through legacy `AgtmuxPane` / `ActivityState`
 
-1. daemon-owned fixtures and wire contract freeze
-2. term-side adapter/cutover onto v3 snapshot
-3. removal of active v2-only presentation dependencies
+The v3 bridge deliberately adapts daemon truth into the existing term-local row model without cutting views over yet.
+That means:
+
+- bootstrap-v3 improves initial exact-row truth
+- `attention` remains a summary input, not request identity
+- the full sidebar/titlebar/filter/count cutover waits for daemon `changes-v3`
+
+Remaining rollout steps:
+
+1. additive bootstrap-v3 adapter and exact-row AppViewModel bridge
+2. additive `changes-v3` consumer path
+3. presentation cutover onto `PanePresentationState`
+4. removal of active v2-only presentation dependencies

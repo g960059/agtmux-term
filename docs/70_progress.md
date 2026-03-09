@@ -3007,3 +3007,29 @@ Result:
   - term-side socket/runtime handoff is no longer the blocker
   - remaining failure is upstream `agtmux:T-XTERM-A6`: a daemon spawned from the metadata-enabled app/XCUITest context with an explicit `--tmux-socket` still returns empty bootstrap
   - upstream handover published: `/tmp/agtmux-app-launched-explicit-tmux-socket-handover-20260308.md`
+
+# 2026-03-09 08:05 — T-122 landed: additive bootstrap-v3 consumer bridge is live without v2 delta cutover
+
+- implemented additive bootstrap-v3 consumer wiring in term:
+  - `LocalMetadataClient` now exposes additive `fetchUIBootstrapV3()` with an explicit unsupported-method default
+  - bundled XPC contract/service/client now carry `ui.bootstrap.v3` across the packaged-app boundary
+  - `AppViewModel` bootstrap/resync path now prefers `ui.bootstrap.v3` and falls back to `ui.bootstrap.v2` only when v3 is unsupported
+- exact-row correlation remains strict in the adapter:
+  - bootstrap-v3 rows are bridged into the existing local overlay cache using daemon truth for
+    - `session_name`
+    - `window_id`
+    - `session_key`
+    - `pane_id`
+    - `pane_instance_id`
+  - no weakening to visible-session-name fallback was introduced
+- intentionally deferred:
+  - live delta replay still uses `ui.changes.v2`
+  - current product rendering still consumes legacy `AgtmuxPane` / `ActivityState`
+  - full `PanePresentationState` UI cutover waits for additive `changes-v3`
+- focused verification:
+  - `swift build` ✅
+  - `swift test -q --filter 'AgtmuxSyncV3DecodingTests|PanePresentationStateTests'` ✅
+  - `swift test -q --filter RuntimeHardeningTests/testDaemonClientFetchUIBootstrapV3DecodesDaemonOwnedFixtureFromInlineOverride` ✅
+  - `swift test -q --filter AgtmuxDaemonXPCClientTests` ✅
+  - `swift test -q --filter AgtmuxDaemonXPCServiceBoundaryTests` ✅
+  - `swift test -q --filter 'AppViewModelA0Tests/testBootstrapV3(ManagedFixtureOverlaysExactRowAndRetainsOpaqueSessionKey|WaitingApprovalMapsToLegacyAttentionOnExactRow|MethodNotFoundFallsBackToSyncV2BootstrapWithoutBreakingOverlay)'` ✅

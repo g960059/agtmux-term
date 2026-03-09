@@ -113,6 +113,26 @@ actor AgtmuxDaemonXPCClient: AgtmuxDaemonXPCClientMetadataConformance {
         return try decode(AgtmuxSyncV2Bootstrap.self, from: payload)
     }
 
+    func fetchUIBootstrapV3() async throws -> AgtmuxSyncV3Bootstrap {
+        try await startManagedDaemonIfNeeded()
+
+        let payload: Data = try await invoke(timeout: 5.0, operation: "fetchUIBootstrapV3") { proxy, done in
+            proxy.fetchUIBootstrapV3 { data, errorText in
+                if let errorText {
+                    done(.failure(XPCClientError.remote(errorText as String)))
+                    return
+                }
+                guard let data else {
+                    done(.failure(XPCClientError.remote("no bootstrap v3 payload")))
+                    return
+                }
+                done(.success(data as Data))
+            }
+        }
+
+        return try decode(AgtmuxSyncV3Bootstrap.self, from: payload)
+    }
+
     func fetchUIChangesV2(limit: Int = 256) async throws -> AgtmuxSyncV2ChangesResponse {
         try await startManagedDaemonIfNeeded()
 

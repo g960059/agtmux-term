@@ -623,6 +623,11 @@ final class AppViewModel: ObservableObject {
         let paneInstanceID: AgtmuxSyncV2PaneInstanceID
     }
 
+    private enum LocalBootstrapMetadataResult {
+        case metadata([String: AgtmuxPane])
+        case deferred
+    }
+
     private func resolveBootstrapMetadataPane(
         candidates: [AgtmuxPane],
         metadataKey: String
@@ -661,6 +666,73 @@ final class AppViewModel: ObservableObject {
             )
         }
         return metadataByPaneKey
+    }
+
+    private func localMetadataMap(from bootstrap: AgtmuxSyncV3Bootstrap) throws -> [String: AgtmuxPane] {
+        try localMetadataMap(
+            from: bootstrap.panes.map(localMetadataPane(from:))
+        )
+    }
+
+    private func localMetadataPane(from snapshot: AgtmuxSyncV3PaneSnapshot) -> AgtmuxPane {
+        let presentation = PanePresentationState(snapshot: snapshot)
+        return AgtmuxPane(
+            source: "local",
+            paneId: snapshot.paneID,
+            sessionName: snapshot.sessionName,
+            windowId: snapshot.windowID,
+            activityState: legacyActivityState(from: presentation),
+            presence: legacyPresence(from: snapshot.presence),
+            provider: snapshot.provider,
+            evidenceMode: legacyEvidenceMode(from: snapshot),
+            updatedAt: snapshot.updatedAt,
+            metadataSessionKey: snapshot.sessionKey,
+            paneInstanceID: legacyPaneInstanceID(from: snapshot.paneInstanceID)
+        )
+    }
+
+    private func legacyPaneInstanceID(from paneInstanceID: AgtmuxSyncV3PaneInstanceID) -> AgtmuxSyncV2PaneInstanceID {
+        AgtmuxSyncV2PaneInstanceID(
+            paneId: paneInstanceID.paneId,
+            generation: paneInstanceID.generation,
+            birthTs: paneInstanceID.birthTs
+        )
+    }
+
+    private func legacyPresence(from presence: AgtmuxSyncV3Presence) -> PanePresence {
+        switch presence {
+        case .managed:
+            return .managed
+        case .unmanaged, .missing:
+            return .unmanaged
+        }
+    }
+
+    private func legacyActivityState(from presentation: PanePresentationState) -> ActivityState {
+        switch presentation.primaryState {
+        case .running:
+            return .running
+        case .waitingApproval:
+            return .waitingApproval
+        case .waitingUserInput:
+            return .waitingInput
+        case .error:
+            return .error
+        case .completedIdle, .idle:
+            return .idle
+        case .inactive:
+            return .unknown
+        }
+    }
+
+    private func legacyEvidenceMode(from snapshot: AgtmuxSyncV3PaneSnapshot) -> EvidenceMode {
+        guard snapshot.presence == .managed else { return .none }
+        let levels = [
+            snapshot.freshness.snapshot,
+            snapshot.freshness.blocking,
+            snapshot.freshness.execution,
+        ]
+        return levels.contains(where: { $0 != .fresh }) ? .heuristic : .deterministic
     }
 
     /// Merge local tmux inventory with daemon metadata overlay.
@@ -916,12 +988,11 @@ final class AppViewModel: ObservableObject {
 
             do {
                 if !self.localMetadataSyncPrimed {
-                    let bootstrap = try await self.localClient.fetchUIBootstrapV2()
+                    let bootstrapResult = try await self.fetchLocalBootstrapMetadataByPaneKey()
                     try Task.checkCancellation()
-                    if await self.deferBootstrapIfNotReady(bootstrap) {
+                    guard case let .metadata(metadataByPaneKey) = bootstrapResult else {
                         return
                     }
-                    let metadataByPaneKey = try self.localMetadataMap(from: bootstrap.panes)
                     self.localMetadataSyncPrimed = true
                     self.localDaemonIssue = nil
                     await self.publishLocalMetadataCache(metadataByPaneKey)
@@ -940,12 +1011,11 @@ final class AppViewModel: ObservableObject {
                         "sync-v2 resync required; reason=\(payload.reason) epoch=\(payload.currentEpoch) snapshot_seq=\(payload.latestSnapshotSeq)"
                     )
                     await self.localClient.resetUIChangesV2()
-                    let bootstrap = try await self.localClient.fetchUIBootstrapV2()
+                    let bootstrapResult = try await self.fetchLocalBootstrapMetadataByPaneKey()
                     try Task.checkCancellation()
-                    if await self.deferBootstrapIfNotReady(bootstrap) {
+                    guard case let .metadata(metadataByPaneKey) = bootstrapResult else {
                         return
                     }
-                    let metadataByPaneKey = try self.localMetadataMap(from: bootstrap.panes)
                     self.localMetadataSyncPrimed = true
                     self.localDaemonIssue = nil
                     await self.publishLocalMetadataCache(metadataByPaneKey)
@@ -969,6 +1039,66 @@ final class AppViewModel: ObservableObject {
         }
     }
 
+    private func fetchLocalBootstrapMetadataByPaneKey() async throws -> LocalBootstrapMetadataResult {
+        do {
+            let bootstrap = try await localClient.fetchUIBootstrapV3()
+            try Task.checkCancellation()
+            if await deferBootstrapIfNotReady(bootstrap) {
+                return .deferred
+            }
+            return .metadata(try localMetadataMap(from: bootstrap))
+        } catch {
+            guard shouldFallbackToSyncV2Bootstrap(from: error) else {
+                throw error
+            }
+        }
+
+        let bootstrap = try await localClient.fetchUIBootstrapV2()
+        try Task.checkCancellation()
+        if await deferBootstrapIfNotReady(bootstrap) {
+            return .deferred
+        }
+        return .metadata(try localMetadataMap(from: bootstrap.panes))
+    }
+
+    private func shouldFallbackToSyncV2Bootstrap(from error: any Error) -> Bool {
+        if let metadataError = error as? LocalMetadataClientError {
+            if case let .unsupportedMethod(method) = metadataError, method == "ui.bootstrap.v3" {
+                return true
+            }
+        }
+
+        if let daemonError = error as? DaemonError {
+            switch daemonError {
+            case .daemonUnavailable:
+                break
+            case let .processError(_, stderr):
+                if DaemonError.decodeUIErrorEnvelope(from: stderr)?.code == DaemonUIErrorCode.syncV3MethodNotFound.rawValue {
+                    return true
+                }
+            case let .parseError(message):
+                if DaemonError.decodeUIErrorEnvelope(from: message)?.code == DaemonUIErrorCode.syncV3MethodNotFound.rawValue {
+                    return true
+                }
+            }
+        }
+
+        if let xpcError = error as? XPCClientError {
+            switch xpcError {
+            case .unavailable, .proxyUnavailable:
+                break
+            case let .remote(message), let .decode(message), let .timeout(message):
+                if DaemonError.decodeUIErrorEnvelope(from: message)?.code == DaemonUIErrorCode.syncV3MethodNotFound.rawValue {
+                    return true
+                }
+            }
+        }
+
+        let normalized = String(describing: error).lowercased()
+        return normalized.contains("ui.bootstrap.v3")
+            && (normalized.contains("-32601") || normalized.contains("method not found"))
+    }
+
     private func deferBootstrapIfNotReady(_ bootstrap: AgtmuxSyncV2Bootstrap) async -> Bool {
         guard !lastSuccessfulLocalInventory.isEmpty else { return false }
         guard bootstrap.panes.isEmpty else { return false }
@@ -980,6 +1110,21 @@ final class AppViewModel: ObservableObject {
         await clearLocalMetadataCache()
         logLocalFetch(
             "sync-v2 bootstrap not ready; local inventory has \(lastSuccessfulLocalInventory.count) panes but bootstrap returned panes=0"
+        )
+        return true
+    }
+
+    private func deferBootstrapIfNotReady(_ bootstrap: AgtmuxSyncV3Bootstrap) async -> Bool {
+        guard !lastSuccessfulLocalInventory.isEmpty else { return false }
+        guard bootstrap.panes.isEmpty else { return false }
+
+        localMetadataSyncPrimed = false
+        localDaemonIssue = nil
+        nextLocalMetadataRefreshAt = Date().addingTimeInterval(localMetadataBootstrapNotReadyBackoff)
+        await localClient.resetUIChangesV2()
+        await clearLocalMetadataCache()
+        logLocalFetch(
+            "sync-v3 bootstrap not ready; local inventory has \(lastSuccessfulLocalInventory.count) panes but bootstrap returned panes=0"
         )
         return true
     }

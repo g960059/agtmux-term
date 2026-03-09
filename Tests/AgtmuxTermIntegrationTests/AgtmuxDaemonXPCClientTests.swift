@@ -5,10 +5,12 @@ import AgtmuxTermCore
 final class AgtmuxDaemonXPCClientTests: XCTestCase {
     private final class ProxyStub: NSObject, AgtmuxDaemonServiceXPCProtocol {
         var startManagedDaemonResult: (Bool, String?) = (true, nil)
+        var bootstrapV3Reply: (Data?, String?) = (nil, nil)
         var bootstrapReply: (Data?, String?) = (nil, nil)
         var changesReply: (Data?, String?) = (nil, nil)
         var healthReply: (Data?, String?) = (nil, nil)
         private(set) var startManagedDaemonCalls = 0
+        private(set) var fetchUIBootstrapV3Calls = 0
         private(set) var fetchUIBootstrapV2Calls = 0
         private(set) var fetchUIChangesV2Calls = 0
         private(set) var fetchUIHealthV1Calls = 0
@@ -21,6 +23,11 @@ final class AgtmuxDaemonXPCClientTests: XCTestCase {
 
         func fetchSnapshot(_ reply: @escaping (NSData?, NSString?) -> Void) {
             reply(nil, "unexpected fetchSnapshot call" as NSString)
+        }
+
+        func fetchUIBootstrapV3(_ reply: @escaping (NSData?, NSString?) -> Void) {
+            fetchUIBootstrapV3Calls += 1
+            reply(bootstrapV3Reply.0.map { $0 as NSData }, bootstrapV3Reply.1.map { $0 as NSString })
         }
 
         func fetchUIBootstrapV2(_ reply: @escaping (NSData?, NSString?) -> Void) {
@@ -67,6 +74,27 @@ final class AgtmuxDaemonXPCClientTests: XCTestCase {
         XCTAssertEqual(proxy.startManagedDaemonCalls, 1)
         XCTAssertEqual(proxy.fetchUIBootstrapV2Calls, 1)
         XCTAssertEqual(proxy.fetchUIChangesV2Calls, 0)
+    }
+
+    func testFetchUIBootstrapV3DecodesBootstrapPayloadFromInjectedXPCProxy() async throws {
+        let expected = makeBootstrapV3()
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+
+        let proxy = ProxyStub()
+        proxy.bootstrapV3Reply = (try encoder.encode(expected), nil)
+
+        let client = AgtmuxDaemonXPCClient(
+            serviceName: "test.agtmux.xpc",
+            proxyProviderOverride: { _ in proxy }
+        )
+
+        let actual = try await client.fetchUIBootstrapV3()
+
+        XCTAssertEqual(actual, expected)
+        XCTAssertEqual(proxy.startManagedDaemonCalls, 1)
+        XCTAssertEqual(proxy.fetchUIBootstrapV3Calls, 1)
+        XCTAssertEqual(proxy.fetchUIBootstrapV2Calls, 0)
     }
 
     func testFetchUIChangesV2DecodesPayloadAndForwardsLimitFromInjectedXPCProxy() async throws {
@@ -246,6 +274,68 @@ final class AgtmuxDaemonXPCClientTests: XCTestCase {
             ],
             generatedAt: generatedAt,
             replayCursor: replayCursor
+        )
+    }
+
+    private func makeBootstrapV3() -> AgtmuxSyncV3Bootstrap {
+        let generatedAt = ISO8601DateFormatter().date(from: "2026-03-09T20:11:04Z")!
+        return AgtmuxSyncV3Bootstrap(
+            version: 3,
+            epoch: nil,
+            snapshotSeq: nil,
+            panes: [
+                AgtmuxSyncV3PaneSnapshot(
+                    sessionName: "workbench",
+                    windowID: "@5",
+                    sessionKey: "codex:%12",
+                    paneID: "%12",
+                    paneInstanceID: AgtmuxSyncV3PaneInstanceID(
+                        paneId: "%12",
+                        generation: 7,
+                        birthTs: ISO8601DateFormatter().date(from: "2026-03-09T20:09:54Z")
+                    ),
+                    provider: .codex,
+                    presence: .managed,
+                    agent: AgtmuxSyncV3AgentState(lifecycle: .running),
+                    thread: AgtmuxSyncV3ThreadState(
+                        lifecycle: .active,
+                        blocking: .none,
+                        execution: .thinking,
+                        flags: AgtmuxSyncV3ThreadFlags(reviewMode: false, subagentActive: false),
+                        turn: AgtmuxSyncV3TurnState(
+                            outcome: .none,
+                            sequence: 42,
+                            startedAt: ISO8601DateFormatter().date(from: "2026-03-09T20:10:00Z"),
+                            completedAt: nil
+                        )
+                    ),
+                    pendingRequests: [],
+                    attention: AgtmuxSyncV3AttentionSummary(
+                        activeKinds: [],
+                        highestPriority: .none,
+                        unresolvedCount: 0,
+                        generation: 0,
+                        latestAt: nil
+                    ),
+                    freshness: AgtmuxSyncV3FreshnessSummary(
+                        snapshot: .fresh,
+                        blocking: .fresh,
+                        execution: .fresh
+                    ),
+                    providerRaw: AgtmuxSyncV3ProviderRaw(
+                        valuesByProvider: [
+                            "codex": .init(
+                                .object([
+                                    "thread_status_type": .init(.string("active"))
+                                ])
+                            )
+                        ]
+                    ),
+                    updatedAt: generatedAt
+                )
+            ],
+            generatedAt: generatedAt,
+            replayCursor: nil
         )
     }
 

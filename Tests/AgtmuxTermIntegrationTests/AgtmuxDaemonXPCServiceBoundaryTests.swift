@@ -33,6 +33,28 @@ private actor EnvironmentMutationGate {
 }
 
 final class AgtmuxDaemonXPCServiceBoundaryTests: XCTestCase {
+    func testFetchUIBootstrapV3DecodesPayloadAcrossXPCServiceBoundary() async throws {
+        let expected = AgtmuxXPCHealthTestSupport.makeBootstrapV3()
+
+        let host = AnonymousXPCServiceHost(
+            exportedObject: BootstrapV3ServiceBridge {
+                AgtmuxDaemonClient()
+            }
+        )
+        defer { host.invalidate() }
+
+        let client = AgtmuxDaemonXPCClient(listenerEndpointOverride: host.endpoint)
+        defer { Task { await client.invalidate() } }
+
+        try await AgtmuxXPCHealthTestSupport.withEnvironment([
+            "AGTMUX_BIN": nil,
+            "AGTMUX_UI_BOOTSTRAP_V3_JSON": try AgtmuxXPCHealthTestSupport.encodeJSON(expected)
+        ]) {
+            let actual = try await client.fetchUIBootstrapV3()
+            XCTAssertEqual(actual, expected)
+        }
+    }
+
     func testFetchUIBootstrapV2DecodesPayloadAcrossXPCServiceBoundary() async throws {
         let expected = AgtmuxXPCHealthTestSupport.makeBootstrap(
             replayCursor: AgtmuxSyncV2Cursor(epoch: 6, seq: 21)
@@ -441,6 +463,68 @@ private enum AgtmuxXPCHealthTestSupport {
         )
     }
 
+    static func makeBootstrapV3() -> AgtmuxSyncV3Bootstrap {
+        let generatedAt = ISO8601DateFormatter().date(from: "2026-03-09T20:11:04Z")!
+        return AgtmuxSyncV3Bootstrap(
+            version: 3,
+            epoch: nil,
+            snapshotSeq: nil,
+            panes: [
+                AgtmuxSyncV3PaneSnapshot(
+                    sessionName: "workbench",
+                    windowID: "@5",
+                    sessionKey: "codex:%12",
+                    paneID: "%12",
+                    paneInstanceID: AgtmuxSyncV3PaneInstanceID(
+                        paneId: "%12",
+                        generation: 7,
+                        birthTs: ISO8601DateFormatter().date(from: "2026-03-09T20:09:54Z")
+                    ),
+                    provider: .codex,
+                    presence: .managed,
+                    agent: AgtmuxSyncV3AgentState(lifecycle: .running),
+                    thread: AgtmuxSyncV3ThreadState(
+                        lifecycle: .active,
+                        blocking: .none,
+                        execution: .thinking,
+                        flags: AgtmuxSyncV3ThreadFlags(reviewMode: false, subagentActive: false),
+                        turn: AgtmuxSyncV3TurnState(
+                            outcome: .none,
+                            sequence: 42,
+                            startedAt: ISO8601DateFormatter().date(from: "2026-03-09T20:10:00Z"),
+                            completedAt: nil
+                        )
+                    ),
+                    pendingRequests: [],
+                    attention: AgtmuxSyncV3AttentionSummary(
+                        activeKinds: [],
+                        highestPriority: .none,
+                        unresolvedCount: 0,
+                        generation: 0,
+                        latestAt: nil
+                    ),
+                    freshness: AgtmuxSyncV3FreshnessSummary(
+                        snapshot: .fresh,
+                        blocking: .fresh,
+                        execution: .fresh
+                    ),
+                    providerRaw: AgtmuxSyncV3ProviderRaw(
+                        valuesByProvider: [
+                            "codex": .init(
+                                .object([
+                                    "thread_status_type": .init(.string("active"))
+                                ])
+                            )
+                        ]
+                    ),
+                    updatedAt: generatedAt
+                )
+            ],
+            generatedAt: generatedAt,
+            replayCursor: nil
+        )
+    }
+
     static func makeChangesResponse(
         nextCursor: AgtmuxSyncV2Cursor
     ) -> AgtmuxSyncV2ChangesResponse {
@@ -556,6 +640,10 @@ private final class HealthServiceBridge: NSObject, AgtmuxDaemonServiceXPCProtoco
         reply(nil, "unexpected fetchSnapshot call" as NSString)
     }
 
+    func fetchUIBootstrapV3(_ reply: @escaping (NSData?, NSString?) -> Void) {
+        reply(nil, "unexpected fetchUIBootstrapV3 call" as NSString)
+    }
+
     func fetchUIBootstrapV2(_ reply: @escaping (NSData?, NSString?) -> Void) {
         reply(nil, "unexpected fetchUIBootstrapV2 call" as NSString)
     }
@@ -604,6 +692,10 @@ private final class SyncV2ServiceBridge: NSObject, AgtmuxDaemonServiceXPCProtoco
         reply(nil, "unexpected fetchSnapshot call" as NSString)
     }
 
+    func fetchUIBootstrapV3(_ reply: @escaping (NSData?, NSString?) -> Void) {
+        reply(nil, "unexpected fetchUIBootstrapV3 call" as NSString)
+    }
+
     func fetchUIBootstrapV2(_ reply: @escaping (NSData?, NSString?) -> Void) {
         Task {
             do {
@@ -649,6 +741,58 @@ private final class SyncV2ServiceBridge: NSObject, AgtmuxDaemonServiceXPCProtoco
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         return try encoder.encode(value)
+    }
+}
+
+private final class BootstrapV3ServiceBridge: NSObject, AgtmuxDaemonServiceXPCProtocol {
+    private let daemonClientProvider: () -> AgtmuxDaemonClient
+
+    init(daemonClientProvider: @escaping () -> AgtmuxDaemonClient) {
+        self.daemonClientProvider = daemonClientProvider
+    }
+
+    func startManagedDaemon(_ reply: @escaping (Bool, NSString?) -> Void) {
+        reply(true, nil)
+    }
+
+    func fetchSnapshot(_ reply: @escaping (NSData?, NSString?) -> Void) {
+        reply(nil, "unexpected fetchSnapshot call" as NSString)
+    }
+
+    func fetchUIBootstrapV3(_ reply: @escaping (NSData?, NSString?) -> Void) {
+        let daemonClient = daemonClientProvider()
+        Task {
+            do {
+                let encoder = JSONEncoder()
+                encoder.dateEncodingStrategy = .iso8601
+                let bootstrap = try await daemonClient.fetchUIBootstrapV3()
+                reply(try encoder.encode(bootstrap) as NSData, nil)
+            } catch let error as DaemonError {
+                reply(nil, error.uiSurfaceText as NSString)
+            } catch {
+                reply(nil, error.localizedDescription as NSString)
+            }
+        }
+    }
+
+    func fetchUIBootstrapV2(_ reply: @escaping (NSData?, NSString?) -> Void) {
+        reply(nil, "unexpected fetchUIBootstrapV2 call" as NSString)
+    }
+
+    func fetchUIChangesV2(_ limit: NSNumber, reply: @escaping (NSData?, NSString?) -> Void) {
+        reply(nil, "unexpected fetchUIChangesV2 call" as NSString)
+    }
+
+    func fetchUIHealthV1(_ reply: @escaping (NSData?, NSString?) -> Void) {
+        reply(nil, "unexpected fetchUIHealthV1 call" as NSString)
+    }
+
+    func resetUIChangesV2(_ reply: @escaping () -> Void) {
+        reply()
+    }
+
+    func stopManagedDaemon(_ reply: @escaping () -> Void) {
+        reply()
     }
 }
 

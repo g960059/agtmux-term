@@ -83,7 +83,8 @@ Planned sync-v3 consumer split:
 - term keeps exact-row correlation strict and derives a local presentation model from the raw v3 snapshot before views consume it
 - `attention` is treated as a daemon-generated summary, not as request-identity truth; request identity remains `pending_requests[].request_id`
 - daemon-owned canonical fixture truth currently comes from `agtmux` commit `cb198cca7226666fbb26df34d4e17582a208c3e6` under `fixtures/sync-v3/`
-- the current v2 / `ActivityState` render path remains live until the v3 adapter cutover lands
+- additive bootstrap-v3 consumer wiring now prefers `ui.bootstrap.v3` in the daemon client / AppViewModel bootstrap path while preserving strict exact-row correlation and leaving `ui.changes.v2` live
+- the current v2 / `ActivityState` render path remains live until the v3 presentation cutover lands
 
 ### 2. Terminal Runtime
 

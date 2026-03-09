@@ -52,6 +52,12 @@
   - term-side v3 consumer tests now ingest daemon-owned canonical fixtures directly from sibling repo truth
   - current fixture truth source is `agtmux` commit `cb198cca7226666fbb26df34d4e17582a208c3e6`
   - the term repo also has an additive `fetchUIBootstrapV3()` decode surface, but no live app wiring yet
+- `T-122` is now closed:
+  - AppViewModel bootstrap/resync now prefers daemon `ui.bootstrap.v3` truth and adapts it into the existing local overlay cache without weakening exact-row identity
+  - bundled XPC service/client expose the same additive bootstrap-v3 surface, so packaged app and direct daemon paths stay aligned
+  - intentional deferral remains:
+    - live delta replay is still `ui.changes.v2`
+    - current sidebar/titlebar/filter/count rendering still flows through legacy `AgtmuxPane` / `ActivityState`
 - `T-116` is now open:
   - metadata-enabled health-strip UI and pane-sync UI both reach their real assertions
   - upstream producer truth is now present in the same failing plain-zsh Codex lane:
@@ -178,6 +184,8 @@
   sync-v3 term consumer foundation and presentation scaffolding (`DONE`)
 - `T-121`
   daemon-owned sync-v3 fixture ingestion and additive bootstrap decode surface (`DONE`)
+- `T-122`
+  additive bootstrap-v3 consumer bridge in AppViewModel/XPC path (`DONE`)
 - `T-114`
   single-writer local overlay recovery and live managed-pane surfacing (`DONE`)
 - `T-115`

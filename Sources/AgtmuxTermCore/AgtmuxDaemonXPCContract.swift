@@ -10,6 +10,7 @@ public enum AgtmuxDaemonXPC {
 ///
 /// Wire format:
 /// - `fetchSnapshot`: UTF-8 JSON encoded `AgtmuxSnapshot` (ISO8601 dates)
+/// - `fetchUIBootstrapV3`: UTF-8 JSON encoded `AgtmuxSyncV3Bootstrap` (ISO8601 dates)
 /// - `fetchUIBootstrapV2`: UTF-8 JSON encoded `AgtmuxSyncV2Bootstrap` (ISO8601 dates)
 /// - `fetchUIChangesV2`: UTF-8 JSON encoded `AgtmuxSyncV2ChangesResponse` (ISO8601 dates)
 /// - `fetchUIHealthV1`: UTF-8 JSON encoded `AgtmuxUIHealthV1` (ISO8601 dates)
@@ -17,6 +18,7 @@ public enum AgtmuxDaemonXPC {
 @objc public protocol AgtmuxDaemonServiceXPCProtocol {
     func startManagedDaemon(_ reply: @escaping (Bool, NSString?) -> Void)
     func fetchSnapshot(_ reply: @escaping (NSData?, NSString?) -> Void)
+    func fetchUIBootstrapV3(_ reply: @escaping (NSData?, NSString?) -> Void)
     func fetchUIBootstrapV2(_ reply: @escaping (NSData?, NSString?) -> Void)
     func fetchUIChangesV2(_ limit: NSNumber, reply: @escaping (NSData?, NSString?) -> Void)
     func fetchUIHealthV1(_ reply: @escaping (NSData?, NSString?) -> Void)

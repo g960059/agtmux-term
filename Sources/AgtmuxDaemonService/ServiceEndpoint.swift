@@ -247,6 +247,21 @@ final class AgtmuxDaemonServiceEndpoint: NSObject, AgtmuxDaemonServiceXPCProtoco
         }
     }
 
+    func fetchUIBootstrapV3(_ reply: @escaping (NSData?, NSString?) -> Void) {
+        guard supervisor.startIfNeeded() else {
+            reply(nil, "agtmux daemon unavailable" as NSString)
+            return
+        }
+        Task {
+            do {
+                let bootstrap = try await daemonClient.fetchUIBootstrapV3()
+                reply(try encode(bootstrap) as NSData, nil)
+            } catch {
+                reply(nil, errorText(for: error) as NSString)
+            }
+        }
+    }
+
     func fetchUIChangesV2(_ limit: NSNumber, reply: @escaping (NSData?, NSString?) -> Void) {
         guard supervisor.startIfNeeded() else {
             reply(nil, "agtmux daemon unavailable" as NSString)

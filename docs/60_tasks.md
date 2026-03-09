@@ -155,6 +155,26 @@ Commit closeout is clear; next implementation proceeds on the new Workbench path
 
 ## Recently Closed
 
+### T-122 — additive bootstrap-v3 consumer bridge in AppViewModel/XPC path
+- **Status**: DONE
+- **Priority**: P1
+- **Depends**: T-121
+- **Owner**: term implementation agent
+- **Description**:
+  - Consume daemon `ui.bootstrap.v3` additively in the term bootstrap path without cutting over the live v2 delta/render path yet.
+  - Keep exact-row correlation strict and bridge v3 truth into the existing term-local row model only as far as needed for bootstrap.
+- **Acceptance Criteria**:
+  - [x] the daemon client and bundled XPC service expose additive `fetchUIBootstrapV3()` support
+  - [x] `AppViewModel` bootstrap/resync path prefers `ui.bootstrap.v3` and falls back to `ui.bootstrap.v2` only when v3 is unsupported
+  - [x] bootstrap-v3 overlay mapping preserves strict correlation identity:
+    - `session_name`
+    - `window_id`
+    - `session_key`
+    - `pane_id`
+    - `pane_instance_id`
+  - [x] focused tests cover bootstrap-v3 decode through direct/XPC clients plus exact-row AppViewModel mapping
+  - [x] `ui.changes.v2` and current sidebar/titlebar/filter/count product paths remain live by design
+
 ### T-121 — daemon-owned sync-v3 fixture ingestion in term consumer tests
 - **Status**: DONE
 - **Priority**: P1

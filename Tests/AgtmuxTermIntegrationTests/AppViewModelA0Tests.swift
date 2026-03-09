@@ -14,6 +14,11 @@ final class AppViewModelA0Tests: XCTestCase {
         let result: Result<AgtmuxSyncV2Bootstrap, Error>
     }
 
+    private struct BootstrapV3Step {
+        let delayMs: UInt64
+        let result: Result<AgtmuxSyncV3Bootstrap, Error>
+    }
+
     private struct ChangesStep {
         let delayMs: UInt64
         let result: Result<AgtmuxSyncV2ChangesResponse, Error>
@@ -25,15 +30,18 @@ final class AppViewModelA0Tests: XCTestCase {
     }
 
     private actor StubMetadataClient: LocalMetadataClient, LocalHealthClient {
+        private var bootstrapV3Steps: [BootstrapV3Step]
         private var bootstrapSteps: [BootstrapStep]
         private var changesSteps: [ChangesStep]
         private var healthSteps: [HealthStep]
         private(set) var resetCount = 0
         private(set) var healthFetchCount = 0
 
-        init(bootstrapSteps: [BootstrapStep],
+        init(bootstrapV3Steps: [BootstrapV3Step] = [],
+             bootstrapSteps: [BootstrapStep],
              changesSteps: [ChangesStep] = [],
              healthSteps: [HealthStep] = []) {
+            self.bootstrapV3Steps = bootstrapV3Steps
             self.bootstrapSteps = bootstrapSteps
             self.changesSteps = changesSteps
             self.healthSteps = healthSteps
@@ -41,6 +49,22 @@ final class AppViewModelA0Tests: XCTestCase {
 
         func fetchSnapshot() async throws -> AgtmuxSnapshot {
             throw StubError.unexpectedSnapshotCall
+        }
+
+        func fetchUIBootstrapV3() async throws -> AgtmuxSyncV3Bootstrap {
+            guard !bootstrapV3Steps.isEmpty else {
+                throw LocalMetadataClientError.unsupportedMethod("ui.bootstrap.v3")
+            }
+            let step = bootstrapV3Steps.removeFirst()
+            if step.delayMs > 0 {
+                try? await Task.sleep(for: .milliseconds(step.delayMs))
+            }
+            switch step.result {
+            case let .success(snapshot):
+                return snapshot
+            case let .failure(error):
+                throw error
+            }
         }
 
         func fetchUIBootstrapV2() async throws -> AgtmuxSyncV2Bootstrap {
@@ -3063,5 +3087,155 @@ final class AppViewModelA0Tests: XCTestCase {
         XCTAssertFalse(panesByID["%61"]?.needsAttention ?? true)
         XCTAssertEqual(panesByID["%62"]?.presence, .unmanaged)
         XCTAssertFalse(panesByID["%62"]?.needsAttention ?? true)
+    }
+
+    private func loadSyncV3Fixture(named name: String) throws -> AgtmuxSyncV3Bootstrap {
+        let fixtureRoot: URL
+        if let override = ProcessInfo.processInfo.environment["AGTMUX_SYNC_V3_FIXTURES_ROOT"],
+           !override.isEmpty {
+            fixtureRoot = URL(fileURLWithPath: override, isDirectory: true)
+        } else {
+            fixtureRoot = URL(fileURLWithPath: #filePath, isDirectory: false)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent("agtmux", isDirectory: true)
+                .appendingPathComponent("fixtures", isDirectory: true)
+                .appendingPathComponent("sync-v3", isDirectory: true)
+        }
+        let data = try Data(contentsOf: fixtureRoot.appendingPathComponent("\(name).json"))
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try decoder.decode(AgtmuxSyncV3Bootstrap.self, from: data)
+    }
+
+    @MainActor
+    func testBootstrapV3ManagedFixtureOverlaysExactRowAndRetainsOpaqueSessionKey() async throws {
+        let bootstrap = try loadSyncV3Fixture(named: "codex-running")
+        let inventoryPane = makeInventoryPane(
+            paneId: "%12",
+            sessionName: "workbench",
+            windowId: "@5",
+            activityState: .unknown,
+            currentCmd: "zsh"
+        )
+        let client = StubMetadataClient(
+            bootstrapV3Steps: [
+                BootstrapV3Step(delayMs: 20, result: .success(bootstrap))
+            ],
+            bootstrapSteps: []
+        )
+        let model = AppViewModel(
+            localClient: client,
+            localInventoryClient: StubInventoryClient(panes: [inventoryPane]),
+            hostsConfig: .empty
+        )
+
+        await model.fetchAll()
+
+        let overlayApplied = await waitUntil {
+            guard let pane = model.panes.first else { return false }
+            return pane.paneId == "%12"
+                && pane.sessionName == "workbench"
+                && pane.windowId == "@5"
+                && pane.provider == .codex
+                && pane.presence == .managed
+                && pane.activityState == .running
+                && pane.metadataSessionKey == "codex:%12"
+                && pane.paneInstanceID?.generation == 7
+                && pane.currentCmd == "zsh"
+        }
+        XCTAssertTrue(overlayApplied, "bootstrap-v3 must overlay the exact local row and preserve the opaque session_key for later delta correlation")
+        XCTAssertNil(model.localDaemonIssue)
+    }
+
+    @MainActor
+    func testBootstrapV3WaitingApprovalMapsToLegacyAttentionOnExactRow() async throws {
+        let bootstrap = try loadSyncV3Fixture(named: "codex-waiting-approval")
+        let inventoryPane = makeInventoryPane(
+            paneId: "%12",
+            sessionName: "workbench",
+            windowId: "@5",
+            activityState: .unknown,
+            currentCmd: "zsh"
+        )
+        let client = StubMetadataClient(
+            bootstrapV3Steps: [
+                BootstrapV3Step(delayMs: 20, result: .success(bootstrap))
+            ],
+            bootstrapSteps: []
+        )
+        let model = AppViewModel(
+            localClient: client,
+            localInventoryClient: StubInventoryClient(panes: [inventoryPane]),
+            hostsConfig: .empty
+        )
+
+        await model.fetchAll()
+
+        let approvalApplied = await waitUntil {
+            guard let pane = model.panes.first else { return false }
+            return pane.provider == .codex
+                && pane.presence == .managed
+                && pane.activityState == .waitingApproval
+                && pane.needsAttention
+        }
+        XCTAssertTrue(approvalApplied, "bootstrap-v3 waiting_approval truth must bridge to the exact local row and preserve legacy attention semantics until full v3 presentation cutover")
+        XCTAssertEqual(model.attentionCount, 1)
+        XCTAssertNil(model.localDaemonIssue)
+    }
+
+    @MainActor
+    func testBootstrapV3MethodNotFoundFallsBackToSyncV2BootstrapWithoutBreakingOverlay() async {
+        let inventoryPane = makeInventoryPane(
+            paneId: "%303",
+            sessionName: "work",
+            windowId: "@33",
+            activityState: .unknown,
+            currentCmd: "zsh"
+        )
+        let metadataPane = makeManagedMetadataPane(
+            paneId: "%303",
+            sessionName: "work",
+            windowId: "@33",
+            provider: .codex,
+            activityState: .running,
+            conversationTitle: "Fallback to v2",
+            metadataSessionKey: "opaque-v2-fallback",
+            paneInstanceID: AgtmuxSyncV2PaneInstanceID(
+                paneId: "%303",
+                generation: 9,
+                birthTs: Date(timeIntervalSince1970: 1_778_930_000)
+            )
+        )
+        let client = StubMetadataClient(
+            bootstrapV3Steps: [
+                BootstrapV3Step(
+                    delayMs: 20,
+                    result: .failure(LocalMetadataClientError.unsupportedMethod("ui.bootstrap.v3"))
+                )
+            ],
+            bootstrapSteps: [
+                BootstrapStep(delayMs: 20, result: .success(makeBootstrap(panes: [metadataPane], cursorSeq: 1)))
+            ]
+        )
+        let model = AppViewModel(
+            localClient: client,
+            localInventoryClient: StubInventoryClient(panes: [inventoryPane]),
+            hostsConfig: .empty
+        )
+
+        await model.fetchAll()
+
+        let overlayApplied = await waitUntil {
+            guard let pane = model.panes.first else { return false }
+            return pane.provider == .codex
+                && pane.presence == .managed
+                && pane.activityState == .running
+                && pane.metadataSessionKey == "opaque-v2-fallback"
+        }
+        XCTAssertTrue(overlayApplied, "bootstrap-v3 method-not-found must fall back to the intact sync-v2 bootstrap path")
+        XCTAssertNil(model.localDaemonIssue)
     }
 }
