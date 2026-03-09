@@ -24,7 +24,8 @@
   - marked-text commit and preedit clear behavior are locked by focused AppKit-hosted regression tests
 - T-111 is now closed on thin boundary coverage:
   - daemon-vs-term ownership split is locked
-  - the terminal repo now carries daemon-truth-first live canaries for Codex running/completion, Claude running/completion, and Codex `waiting_input` attention surfacing
+  - the terminal repo now carries daemon-truth-first live canaries for Codex running/completion and Claude running/completion
+  - deterministic `waiting_input` attention/filter truth remains anchored in `AppViewModelA0Tests`; live product Codex completion now expects `completed_idle` without attention unless pending requests explicitly exist
   - if the original user-visible mismatch persists while these canaries stay green, validate daemon payload truth first before reopening the terminal consumer
 - `T-112` is now closed:
   - daemon-reported `waiting_approval` reaches exact visible row attention/badge/filter surfacing without bleed
@@ -289,7 +290,9 @@
 - `T-118`
   producer-side shell demotion with a non-agent child process still leaves a stale managed Codex row on the fresh desktop daemon
 - `T-119`
-  real-Codex `waiting_input` live calibration is split from the fixed managed-exit/no-bleed slice
+  stale live Codex `waiting_input` expectation is retired:
+  - sync-v3 product truth emits `completed_idle` without attention for plain live Codex completion unless a pending user-input request exists
+  - deterministic `waiting_input` attention/filter coverage remains canonical in `AppViewModelA0Tests`
 
 ### Done
 

@@ -120,6 +120,8 @@ Mainline product truth is now:
   `PaneDisplayState` now reads legacy `ActivityState` → `needsAttention` collapse through explicit compat helper `PaneDisplayCompatFallback`
 - `T-148`
   `AgtmuxPane.needsAttention` now delegates to `PaneDisplayCompatFallback`; duplicated legacy attention collapse is gone from `CoreModels`
+- `T-119`
+  live product Codex completion no longer expects `waiting_input`; sync-v3 truth is `completed_idle` without attention unless pending requests explicitly exist
 - `T-087`
   docs compaction and active-context redesign complete
 - `T-076` through `T-084`

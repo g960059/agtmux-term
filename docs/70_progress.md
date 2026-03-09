@@ -16,6 +16,24 @@ Historical progress detail lives in `docs/archive/progress/2026-02-28_to_2026-03
 
 ## Recent Entries
 
+## 2026-03-09 — T-119 closed: live Codex completion uses `completed_idle`, not implicit attention
+
+### What landed
+- retired the stale live expectation that a plain real-Codex completion must surface `waiting_input` in the product path
+- replaced the skipped live canary with a sync-v3 product-truth lane that expects `completed_idle` without attention unless pending requests explicitly exist
+- kept deterministic `waiting_input` attention/filter proof in `AppViewModelA0Tests` as the canonical consumer check
+
+### Evidence
+- fresh upstream result confirmed the same exact Codex task can remain `waiting_input` on sync-v2/list/json while `ui.bootstrap.v3` intentionally emits `completed_idle` with no pending input request
+- the product live suite now treats sync-v3 snapshot truth as canonical instead of trying to reconcile the legacy sync-v2/list view into UI expectations
+
+### Verification
+- `swift build`
+- `swift test -q --filter AppViewModelA0Tests/testWaitingInputManagedRowSurfacesAttentionCountAndFilterWithoutBleed`
+- `AGTMUX_LIVE_TEST_BIN=/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/debug/agtmux swift test -q --filter AppViewModelLiveManagedAgentTests/testLiveCodexCompletedIdleWithoutPendingRequestDoesNotSurfaceAttentionFilter`
+- `AGTMUX_LIVE_TEST_BIN=/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/debug/agtmux swift test -q --filter AppViewModelLiveManagedAgentTests`
+- result: all passed
+
 ## 2026-03-09 — T-148 landed: pane attention compat property now delegates
 
 ### What landed

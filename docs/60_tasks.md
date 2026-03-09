@@ -10,21 +10,18 @@ Commit closeout is clear; next implementation proceeds on the new Workbench path
 
 ## Active / Next
 
-### T-119 — Live Codex `waiting_input` calibration after immediate shell demotion
-- **Status**: TODO
+### T-119 — Retire stale live Codex `waiting_input` expectation
+- **Status**: DONE
 - **Priority**: P1
 - **Depends**: T-118
 - **Owner**: Orchestrator (direct implementation)
 - **Description**:
-  - `codex exec` no longer guarantees a stable post-completion `waiting_input` window after the upstream immediate shell-demotion fix.
-  - The term repo still needs a real-CLI canary for `waiting_input` / attention surfacing, but it must use a calibrated prompt or interactive harness instead of assuming the old one-shot exec flow will hold the row in `waiting_input`.
-- **Plan**:
-  - keep `waiting_input` / attention consumer truth covered deterministically in `AppViewModelA0Tests`
-  - design a real-Codex live prompt or interactive lane that yields a reproducible `waiting_input` window
-  - re-enable the live canary only after that prompt/harness is proven stable
+  - Upstream confirmed the apparent mismatch is intentional product truth: sync-v2/list/json can keep reporting `waiting_input`, but sync-v3 product metadata emits `completed_idle` unless there is an explicit pending user-input request.
+  - The terminal repo must stop expecting a real live Codex completion lane to surface `waiting_input` attention by default.
 - **Acceptance Criteria**:
-  - [ ] deterministic integration coverage proves `waiting_input` contributes to attention count/filter without sibling bleed
-  - [ ] a real-Codex live canary for `waiting_input` is calibrated and re-enabled without relying on stale final-state assumptions
+  - [x] deterministic integration coverage remains the canonical proof that `waiting_input` contributes to attention count/filter without sibling bleed
+  - [x] the product-facing live Codex lane now asserts `completed_idle` without attention unless `pending_requests` explicitly require input
+  - [x] tracking/docs no longer imply that a plain real-Codex completion should surface live `waiting_input` in the product path
 
 ### T-118 — Reopen: producer-side managed demotion and same-session activity bleed
 - **Status**: IN_PROGRESS

@@ -89,6 +89,11 @@ final class AppViewModelLiveManagedAgentTests: XCTestCase {
         let daemonProcess: Process
     }
 
+    private enum CodexLaunchMode {
+        case exec
+        case interactive
+    }
+
     private static let claudeLifecyclePrompt = """
     Step 1: use bash to run 'sleep 12'.
     Step 2: use bash to count lines in /etc/hosts.
@@ -99,6 +104,12 @@ final class AppViewModelLiveManagedAgentTests: XCTestCase {
     Step 1: use bash to run 'sleep 12'.
     Step 2: use bash to count lines in /etc/hosts.
     Step 3: reply with the count only.
+    """
+
+    private static let codexCompletedIdlePrompt = """
+    Ask me exactly one short yes/no question about this repository and then wait for my answer.
+    Do not run tools.
+    Do not continue until I reply.
     """
 
     private func waitUntil(
@@ -417,7 +428,8 @@ final class AppViewModelLiveManagedAgentTests: XCTestCase {
 
     private func startLiveHarness(
         claudePrompt: String? = nil,
-        codexPrompt: String? = nil
+        codexPrompt: String? = nil,
+        codexLaunchMode: CodexLaunchMode = .exec
     ) throws -> LiveHarness {
         let tmuxPath = "/opt/homebrew/bin/tmux"
         let claudePath = "/opt/homebrew/bin/claude"
@@ -543,11 +555,17 @@ final class AppViewModelLiveManagedAgentTests: XCTestCase {
             .isEmpty == false
             ? codexPrompt!.trimmingCharacters(in: .whitespacesAndNewlines)
             : Self.codexLifecyclePrompt
+        let codexCommand: String = switch codexLaunchMode {
+        case .exec:
+            "codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --json -m \(shellQuote(codexModel)) -c model_reasoning_effort='\"medium\"' \(shellQuote(resolvedCodexPrompt))"
+        case .interactive:
+            "codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox -m \(shellQuote(codexModel)) -c model_reasoning_effort='\"medium\"' \(shellQuote(resolvedCodexPrompt))"
+        }
         try tmuxSendLine(
             path: tmuxPath,
             socketName: socketName,
             paneID: codexPaneID,
-            text: "codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --json -m \(shellQuote(codexModel)) -c model_reasoning_effort='\"medium\"' \(shellQuote(resolvedCodexPrompt))"
+            text: codexCommand
         )
 
         return LiveHarness(
@@ -1573,11 +1591,105 @@ final class AppViewModelLiveManagedAgentTests: XCTestCase {
     }
 
     @MainActor
-    func testLiveCodexWaitingInputSurfacesAttentionFilter() async throws {
-        throw XCTSkip(
-            "Real Codex waiting_input via codex exec is not yet calibrated after immediate shell demotion; tracked by T-119. " +
-            "Deterministic waiting_input attention coverage remains in AppViewModelA0Tests."
+    func testLiveCodexCompletedIdleWithoutPendingRequestDoesNotSurfaceAttentionFilter() async throws {
+        let harness = try startLiveHarness(
+            claudePrompt: Self.claudeLifecyclePrompt,
+            codexPrompt: Self.codexCompletedIdlePrompt,
+            codexLaunchMode: .interactive
         )
+        defer { stopLiveHarness(harness) }
+
+        _ = try await waitForManagedProviders(
+            socketPath: harness.daemonSocketPath,
+            paneIDs: [harness.claudePaneID, harness.codexPaneID]
+        )
+        let claudeInventoryPane = try XCTUnwrap(
+            harness.inventoryPanes.first(where: { $0.paneId == harness.claudePaneID })
+        )
+        let codexInventoryPane = try XCTUnwrap(
+            harness.inventoryPanes.first(where: { $0.paneId == harness.codexPaneID })
+        )
+        let codexCompletedSnapshot = try await waitForV3BootstrapPane(
+            socketPath: harness.daemonSocketPath,
+            paneID: harness.codexPaneID,
+            provider: .codex,
+            expectedPrimaryState: .completedIdle,
+            timeout: 45.0
+        )
+
+        let recordingClient = RecordingMetadataClient(socketPath: harness.daemonSocketPath)
+        let model = AppViewModel(
+            localClient: recordingClient,
+            localInventoryClient: StubInventoryClient(panes: harness.inventoryPanes),
+            hostsConfig: .empty
+        )
+
+        let codexPane = try await waitForAppPanePresentationToMatchSnapshot(
+            model: model,
+            client: recordingClient,
+            inventoryPane: codexInventoryPane,
+            snapshot: codexCompletedSnapshot,
+            requireChangesV3: false,
+            timeout: 25.0
+        )
+        try waitForTmuxCurrentCommand(
+            path: harness.tmuxPath,
+            socketName: harness.socketName,
+            paneID: harness.codexPaneID,
+            expected: "node",
+            timeout: 20.0
+        )
+
+        let codexSurface = try XCTUnwrap(appPaneSurface(model: model, inventoryPane: codexInventoryPane))
+        let claudeSurface: AppPaneSurface
+        if let latestClaudeSnapshot = try await currentV3Snapshot(
+            socketPath: harness.daemonSocketPath,
+            paneID: harness.claudePaneID
+        ) {
+            _ = try await waitForAppPanePresentationToMatchSnapshot(
+                model: model,
+                client: recordingClient,
+                inventoryPane: claudeInventoryPane,
+                snapshot: latestClaudeSnapshot,
+                requireChangesV3: true,
+                timeout: 20.0
+            )
+            claudeSurface = try XCTUnwrap(appPaneSurface(model: model, inventoryPane: claudeInventoryPane))
+            XCTAssertEqual(
+                claudeSurface.display.primaryState,
+                PanePresentationState(snapshot: latestClaudeSnapshot).primaryState
+            )
+        } else {
+            claudeSurface = try XCTUnwrap(appPaneSurface(model: model, inventoryPane: claudeInventoryPane))
+        }
+
+        XCTAssertEqual(codexPane.provider, .codex)
+        XCTAssertEqual(codexPane.presence, .managed)
+        XCTAssertEqual(codexSurface.pane.metadataSessionKey, codexCompletedSnapshot.sessionKey)
+        XCTAssertEqual(
+            codexSurface.pane.paneInstanceID,
+            legacyPaneInstanceID(from: codexCompletedSnapshot.paneInstanceID)
+        )
+        XCTAssertEqual(codexSurface.display.primaryState, .completedIdle)
+        XCTAssertFalse(codexSurface.display.needsAttention)
+        let codexPresentation = try XCTUnwrap(codexSurface.presentation)
+        XCTAssertEqual(codexPresentation.primaryState, .completedIdle)
+        XCTAssertEqual(codexPresentation.pendingRequestIDs, [])
+        XCTAssertFalse(codexPresentation.needsUserAction)
+        if codexPresentation.showsAttentionSummary {
+            XCTAssertEqual(codexPresentation.attentionSummary.highestPriority, .completion)
+        }
+
+        XCTAssertFalse(
+            claudeSurface.display.needsAttention,
+            "sibling Claude row must not bleed into the attention filter while Codex is merely completed_idle"
+        )
+
+        XCTAssertEqual(model.attentionCount, 0)
+        model.statusFilter = .attention
+        XCTAssertTrue(model.filteredPanes.isEmpty)
+        let counts = await recordingClient.counts()
+        XCTAssertGreaterThan(counts.bootstrapV3Calls, 0, "completed_idle live lane must bootstrap through sync-v3")
     }
 
     @MainActor
