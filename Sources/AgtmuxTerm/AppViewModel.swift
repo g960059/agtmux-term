@@ -62,17 +62,6 @@ enum LocalDaemonIssue: Equatable {
     }
 }
 
-private enum LocalMetadataOverlayError: LocalizedError {
-    case ambiguousBootstrapLocation(String)
-
-    var errorDescription: String? {
-        switch self {
-        case .ambiguousBootstrapLocation(let metadataKey):
-            return "RPC ui.bootstrap.v2 parse failed: sync-v2 bootstrap ambiguous exact pane location \(metadataKey)"
-        }
-    }
-}
-
 struct RemotePaneInventorySource {
     let source: String
     let fetchPanes: @Sendable () async throws -> [AgtmuxPane]
@@ -235,7 +224,7 @@ final class AppViewModel: ObservableObject {
 
     func panePresentation(for pane: AgtmuxPane) -> PanePresentationState? {
         guard pane.source == "local" else { return nil }
-        return cachedLocalPresentationByPaneKey[paneMetadataKey(for: pane)]
+        return cachedLocalPresentationByPaneKey[LocalMetadataOverlayStore.paneMetadataKey(for: pane)]
     }
 
     func paneDisplayState(for pane: AgtmuxPane) -> PaneDisplayState {
@@ -653,19 +642,6 @@ final class AppViewModel: ObservableObject {
         return score(rhs) > score(lhs) ? rhs : lhs
     }
 
-    private func paneMetadataKey(for pane: AgtmuxPane) -> String {
-        "\(pane.source):\(pane.sessionName):\(pane.windowId):\(pane.paneId)"
-    }
-
-    private func metadataSessionKey(for pane: AgtmuxPane) -> String {
-        pane.metadataSessionKey ?? pane.sessionName
-    }
-
-    private struct BootstrapMetadataIdentity: Hashable {
-        let sessionKey: String
-        let paneInstanceID: AgtmuxSyncV2PaneInstanceID
-    }
-
     private struct LocalBootstrapMetadataPayload {
         let metadataByPaneKey: [String: AgtmuxPane]
         let presentationByPaneKey: [String: PanePresentationState]
@@ -677,138 +653,13 @@ final class AppViewModel: ObservableObject {
         case deferred
     }
 
-    private struct LocalV3MetadataOverlay {
-        let pane: AgtmuxPane
-        let presentation: PanePresentationState
-    }
-
-    private func resolveBootstrapMetadataPane(
-        candidates: [AgtmuxPane],
-        metadataKey: String
-    ) throws -> AgtmuxPane {
-        guard let first = candidates.first else {
-            throw LocalMetadataOverlayError.ambiguousBootstrapLocation(metadataKey)
-        }
-
-        let grouped = Dictionary(grouping: candidates) { pane in
-            BootstrapMetadataIdentity(
-                sessionKey: metadataSessionKey(for: pane),
-                paneInstanceID: pane.paneInstanceID ?? AgtmuxSyncV2PaneInstanceID(
-                    paneId: pane.paneId,
-                    generation: nil,
-                    birthTs: nil
-                )
-            )
-        }
-
-        guard candidates.count == 1, grouped.count == 1 else {
-            throw LocalMetadataOverlayError.ambiguousBootstrapLocation(metadataKey)
-        }
-
-        return first
-    }
-
-    private func localMetadataMap(from metadata: [AgtmuxPane]) throws -> [String: AgtmuxPane] {
-        let grouped = Dictionary(grouping: metadata.filter { $0.source == "local" }) {
-            paneMetadataKey(for: $0)
-        }
-        var metadataByPaneKey: [String: AgtmuxPane] = [:]
-        for (metadataKey, panes) in grouped {
-            metadataByPaneKey[metadataKey] = try resolveBootstrapMetadataPane(
-                candidates: panes,
-                metadataKey: metadataKey
-            )
-        }
-        return metadataByPaneKey
-    }
-
-    private func localMetadataCaches(
-        from bootstrap: AgtmuxSyncV3Bootstrap
-    ) throws -> (metadataByPaneKey: [String: AgtmuxPane], presentationByPaneKey: [String: PanePresentationState]) {
-        let grouped = Dictionary(grouping: bootstrap.panes.map(localMetadataOverlay(from:))) {
-            paneMetadataKey(for: $0.pane)
-        }
-        var metadataByPaneKey: [String: AgtmuxPane] = [:]
-        var presentationByPaneKey: [String: PanePresentationState] = [:]
-
-        for (metadataKey, overlays) in grouped {
-            let resolvedPane = try resolveBootstrapMetadataPane(
-                candidates: overlays.map(\.pane),
-                metadataKey: metadataKey
-            )
-            guard let overlay = overlays.first(where: {
-                $0.pane.metadataSessionKey == resolvedPane.metadataSessionKey
-                    && $0.pane.paneInstanceID == resolvedPane.paneInstanceID
-            }) else {
-                throw LocalMetadataOverlayError.ambiguousBootstrapLocation(metadataKey)
-            }
-            metadataByPaneKey[metadataKey] = resolvedPane
-            presentationByPaneKey[metadataKey] = overlay.presentation
-        }
-
-        return (metadataByPaneKey, presentationByPaneKey)
-    }
-
-    private func localMetadataOverlay(from snapshot: AgtmuxSyncV3PaneSnapshot) -> LocalV3MetadataOverlay {
-        let presentation = PanePresentationState(snapshot: snapshot)
-        let pane = AgtmuxPane(
-            source: "local",
-            paneId: snapshot.paneID,
-            sessionName: snapshot.sessionName,
-            windowId: snapshot.windowID,
-            activityState: legacyActivityState(from: presentation),
-            presence: legacyPresence(from: snapshot.presence),
-            provider: snapshot.provider,
-            evidenceMode: legacyEvidenceMode(from: snapshot),
-            updatedAt: snapshot.updatedAt,
-            metadataSessionKey: snapshot.sessionKey,
-            paneInstanceID: legacyPaneInstanceID(from: snapshot.paneInstanceID)
+    private func makeLocalMetadataOverlayStore() -> LocalMetadataOverlayStore {
+        LocalMetadataOverlayStore(
+            inventory: lastSuccessfulLocalInventory,
+            metadataByPaneKey: cachedLocalMetadataByPaneKey,
+            presentationByPaneKey: cachedLocalPresentationByPaneKey,
+            log: logLocalFetch
         )
-        return LocalV3MetadataOverlay(pane: pane, presentation: presentation)
-    }
-
-    private func legacyPaneInstanceID(from paneInstanceID: AgtmuxSyncV3PaneInstanceID) -> AgtmuxSyncV2PaneInstanceID {
-        AgtmuxSyncV2PaneInstanceID(
-            paneId: paneInstanceID.paneId,
-            generation: paneInstanceID.generation,
-            birthTs: paneInstanceID.birthTs
-        )
-    }
-
-    private func legacyPresence(from presence: AgtmuxSyncV3Presence) -> PanePresence {
-        switch presence {
-        case .managed:
-            return .managed
-        case .unmanaged, .missing:
-            return .unmanaged
-        }
-    }
-
-    private func legacyActivityState(from presentation: PanePresentationState) -> ActivityState {
-        switch presentation.primaryState {
-        case .running:
-            return .running
-        case .waitingApproval:
-            return .waitingApproval
-        case .waitingUserInput:
-            return .waitingInput
-        case .error:
-            return .error
-        case .completedIdle, .idle:
-            return .idle
-        case .inactive:
-            return .unknown
-        }
-    }
-
-    private func legacyEvidenceMode(from snapshot: AgtmuxSyncV3PaneSnapshot) -> EvidenceMode {
-        guard snapshot.presence == .managed else { return .none }
-        let levels = [
-            snapshot.freshness.snapshot,
-            snapshot.freshness.blocking,
-            snapshot.freshness.execution,
-        ]
-        return levels.contains(where: { $0 != .fresh }) ? .heuristic : .deterministic
     }
 
     /// Merge local tmux inventory with daemon metadata overlay.
@@ -821,7 +672,7 @@ final class AppViewModel: ObservableObject {
         metadataByPaneKey: [String: AgtmuxPane]
     ) -> [AgtmuxPane] {
         return inventory.map { inventoryPane in
-            let key = paneMetadataKey(for: inventoryPane)
+            let key = LocalMetadataOverlayStore.paneMetadataKey(for: inventoryPane)
             guard let metadataPane = metadataByPaneKey[key] else { return inventoryPane }
             // session_key is opaque daemon identity and must not be compared to the visible
             // session_name. Correlation is already guaranteed by the paneMetadataKey lookup
@@ -850,206 +701,6 @@ final class AppViewModel: ObservableObject {
                 paneInstanceID: metadataPane.paneInstanceID
             )
         }
-    }
-
-    private func overlayLocalMetadata(_ paneState: AgtmuxSyncV2PaneState, onto basePane: AgtmuxPane) -> AgtmuxPane {
-        let isManaged = paneState.presence == .managed
-        return AgtmuxPane(
-            source: basePane.source,
-            paneId: basePane.paneId,
-            sessionName: basePane.sessionName,
-            sessionGroup: basePane.sessionGroup,
-            windowId: basePane.windowId,
-            windowIndex: basePane.windowIndex,
-            windowName: basePane.windowName,
-            activityState: paneState.activityState,
-            presence: paneState.presence,
-            provider: paneState.provider,
-            evidenceMode: paneState.evidenceMode,
-            conversationTitle: isManaged ? basePane.conversationTitle : nil,
-            currentPath: basePane.currentPath,
-            gitBranch: isManaged ? basePane.gitBranch : nil,
-            currentCmd: basePane.currentCmd,
-            updatedAt: paneState.updatedAt,
-            ageSecs: basePane.ageSecs,
-            metadataSessionKey: paneState.sessionKey,
-            paneInstanceID: paneState.paneInstanceID
-        )
-    }
-
-    private func resolveMetadataBaseCandidate(
-        candidates: [AgtmuxPane],
-        paneState: AgtmuxSyncV2PaneState,
-        candidateSource: String
-    ) -> AgtmuxPane? {
-        guard !candidates.isEmpty else { return nil }
-
-        let paneInstanceID = paneState.paneInstanceID
-        let exactMatches = candidates.filter { $0.paneInstanceID == paneInstanceID }
-        if exactMatches.count == 1 {
-            return exactMatches[0]
-        }
-        if exactMatches.count > 1 {
-            logLocalFetch(
-                "sync-v2 pane change dropped for ambiguous exact \(candidateSource) pane " +
-                "\(paneState.sessionKey)/\(paneState.paneId)"
-            )
-            return nil
-        }
-
-        if candidates.contains(where: { $0.paneInstanceID != nil }) {
-            logLocalFetch(
-                "sync-v2 pane change dropped for mismatched pane instance " +
-                "\(paneState.sessionKey)/\(paneState.paneId)"
-            )
-            return nil
-        }
-
-        if candidates.count == 1 {
-            return candidates[0]
-        }
-
-        logLocalFetch(
-            "sync-v2 pane change dropped for ambiguous \(candidateSource) pane " +
-            "\(paneState.sessionKey)/\(paneState.paneId)"
-        )
-        return nil
-    }
-
-    private func cachedMetadataBasePane(for paneState: AgtmuxSyncV2PaneState) -> (hadCandidates: Bool, pane: AgtmuxPane?) {
-        let cachedCandidates = cachedLocalMetadataByPaneKey.values.filter { pane in
-            pane.source == "local"
-                && pane.paneId == paneState.paneId
-                && metadataSessionKey(for: pane) == paneState.sessionKey
-        }
-        if !cachedCandidates.isEmpty {
-            return (
-                true,
-                resolveMetadataBaseCandidate(
-                    candidates: cachedCandidates,
-                    paneState: paneState,
-                    candidateSource: "cached"
-                )
-            )
-        }
-        return (false, nil)
-    }
-
-    private func visibleSessionName(for sessionKey: String) -> String? {
-        let visibleSessionNames = Set<String>(
-            cachedLocalMetadataByPaneKey.values.compactMap { pane in
-                guard pane.source == "local" else { return nil }
-                guard metadataSessionKey(for: pane) == sessionKey else { return nil }
-                return pane.sessionName
-            }
-        )
-        if visibleSessionNames.count > 1 {
-            logLocalFetch(
-                "sync-v2 pane change dropped for ambiguous session-key mapping " +
-                "\(sessionKey)"
-            )
-            return nil
-        }
-        return visibleSessionNames.first
-    }
-
-    private func inventoryMetadataBasePane(
-        for paneState: AgtmuxSyncV2PaneState,
-        visibleSessionName: String
-    ) -> AgtmuxPane? {
-        let inventoryCandidates = lastSuccessfulLocalInventory.filter { pane in
-            pane.source == "local"
-                && pane.paneId == paneState.paneId
-                && pane.sessionName == visibleSessionName
-        }
-        if let inventory = resolveMetadataBaseCandidate(
-            candidates: inventoryCandidates,
-            paneState: paneState,
-            candidateSource: "inventory"
-        ) {
-            return inventory
-        }
-
-        return nil
-    }
-
-    private func metadataBasePane(for paneState: AgtmuxSyncV2PaneState) -> AgtmuxPane? {
-        let cachedResolution = cachedMetadataBasePane(for: paneState)
-        let cachedBase = cachedResolution.pane
-        let inventoryBase = visibleSessionName(for: paneState.sessionKey).flatMap { visibleSessionName in
-            inventoryMetadataBasePane(for: paneState, visibleSessionName: visibleSessionName)
-        }
-
-        if paneState.presence == .unmanaged {
-            return inventoryBase ?? cachedBase
-        }
-        if cachedResolution.hadCandidates {
-            return cachedBase
-        }
-        return cachedBase ?? inventoryBase
-    }
-
-    private func applyLocalMetadataChanges(_ payload: AgtmuxSyncV2Changes) -> [String: AgtmuxPane] {
-        var metadataByPaneKey = cachedLocalMetadataByPaneKey
-
-        for change in payload.changes {
-            guard let paneState = change.pane else { continue }
-            guard let basePane = metadataBasePane(for: paneState) else {
-                logLocalFetch(
-                    "sync-v2 pane change dropped for unknown exact pane " +
-                    "\(paneState.sessionKey)/\(paneState.paneId)"
-                )
-                continue
-            }
-            let key = paneMetadataKey(for: basePane)
-            metadataByPaneKey[key] = overlayLocalMetadata(paneState, onto: basePane)
-        }
-
-        return metadataByPaneKey
-    }
-
-    private func matchesV3ExactIdentity(
-        _ pane: AgtmuxPane,
-        sessionKey: String,
-        paneInstanceID: AgtmuxSyncV3PaneInstanceID
-    ) -> Bool {
-        pane.source == "local"
-            && metadataSessionKey(for: pane) == sessionKey
-            && pane.paneInstanceID == legacyPaneInstanceID(from: paneInstanceID)
-    }
-
-    private func applyLocalMetadataChanges(
-        _ payload: AgtmuxSyncV3Changes
-    ) -> (metadataByPaneKey: [String: AgtmuxPane], presentationByPaneKey: [String: PanePresentationState]) {
-        var metadataByPaneKey = cachedLocalMetadataByPaneKey
-        var presentationByPaneKey = cachedLocalPresentationByPaneKey
-
-        for change in payload.changes {
-            let matchingKeys = metadataByPaneKey.compactMap { key, pane in
-                matchesV3ExactIdentity(
-                    pane,
-                    sessionKey: change.sessionKey,
-                    paneInstanceID: change.paneInstanceID
-                ) ? key : nil
-            }
-            for key in matchingKeys {
-                metadataByPaneKey.removeValue(forKey: key)
-                presentationByPaneKey.removeValue(forKey: key)
-            }
-
-            switch change.kind {
-            case .remove:
-                continue
-            case .upsert:
-                guard let paneSnapshot = change.pane else { continue }
-                let overlay = localMetadataOverlay(from: paneSnapshot)
-                let key = paneMetadataKey(for: overlay.pane)
-                metadataByPaneKey[key] = overlay.pane
-                presentationByPaneKey[key] = overlay.presentation
-            }
-        }
-
-        return (metadataByPaneKey, presentationByPaneKey)
     }
 
     private func publishLocalMetadataCache(
@@ -1149,7 +800,7 @@ final class AppViewModel: ObservableObject {
                     try Task.checkCancellation()
                     switch response {
                     case let .changes(payload):
-                        let metadataByPaneKey = self.applyLocalMetadataChanges(payload)
+                        let metadataByPaneKey = self.makeLocalMetadataOverlayStore().apply(payload)
                         self.localDaemonIssue = nil
                         await self.publishLocalMetadataCache(metadataByPaneKey)
                     case let .resyncRequired(payload):
@@ -1176,7 +827,7 @@ final class AppViewModel: ObservableObject {
                         try Task.checkCancellation()
                         switch response {
                         case let .changes(payload):
-                            let cache = self.applyLocalMetadataChanges(payload)
+                            let cache = self.makeLocalMetadataOverlayStore().apply(payload)
                             self.localDaemonIssue = nil
                             await self.publishLocalMetadataCache(
                                 cache.metadataByPaneKey,
@@ -1250,7 +901,7 @@ final class AppViewModel: ObservableObject {
             if await deferBootstrapIfNotReady(snapshot) {
                 return .deferred
             }
-            let cache = try localMetadataCaches(from: snapshot)
+            let cache = try makeLocalMetadataOverlayStore().bootstrapCaches(from: snapshot)
             return .metadata(
                 LocalBootstrapMetadataPayload(
                     metadataByPaneKey: cache.metadataByPaneKey,
@@ -1264,7 +915,7 @@ final class AppViewModel: ObservableObject {
             }
             return .metadata(
                 LocalBootstrapMetadataPayload(
-                    metadataByPaneKey: try localMetadataMap(from: snapshot.panes),
+                    metadataByPaneKey: try makeLocalMetadataOverlayStore().bootstrapMetadataMap(from: snapshot.panes),
                     presentationByPaneKey: [:],
                     transportVersion: bootstrap.transportVersion
                 )

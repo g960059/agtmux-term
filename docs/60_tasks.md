@@ -155,6 +155,21 @@ Commit closeout is clear; next implementation proceeds on the new Workbench path
 
 ## Recently Closed
 
+### T-129 — extract local metadata overlay/replay application behind one helper
+- **Status**: DONE
+- **Priority**: P1
+- **Depends**: T-128
+- **Owner**: Orchestrator (direct implementation)
+- **Description**:
+  - Narrow AppViewModel's direct ownership of local metadata overlay cache construction and replay application without changing semantics.
+  - Extract the exact-row bootstrap cache builder, v2/v3 replay application, and base-pane resolution helpers into one pure helper/store.
+  - Leave transport selection in `LocalMetadataTransportBridge`, and leave publish/clear scheduling plus task orchestration in `AppViewModel`.
+- **Acceptance Criteria**:
+  - [x] the overlay/replay seam no longer lives directly inside `AppViewModel.swift`
+  - [x] exact-row v2 base-pane resolution and v3 upsert/remove behavior remain unchanged
+  - [x] focused helper tests cover v3 bootstrap cache build plus v2/v3 replay application
+  - [x] existing AppViewModel fallback/exact-row regressions stay green
+
 ### T-128 — isolate local metadata transport/fallback selection behind a small bridge
 - **Status**: DONE
 - **Priority**: P1

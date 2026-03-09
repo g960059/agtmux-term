@@ -203,3 +203,24 @@ The next narrowed holdout is the transport-selection layer inside `AppViewModel`
   - cache publish / clear timing
 
 This keeps the next extraction target explicit without pretending the compatibility layer is already removed.
+
+## Local Metadata Overlay Boundary
+
+The next narrowed holdout after transport selection is the overlay/replay seam itself.
+
+- `LocalMetadataOverlayStore` now owns:
+  - strict bootstrap cache construction for `ui.bootstrap.v3`
+  - strict pane-map construction for `ui.bootstrap.v2`
+  - exact-row v2 replay application and base-pane resolution
+  - exact-row v3 upsert/remove replay application
+  - synchronized metadata-cache and presentation-cache mutation for v3 changes
+- `AppViewModel` still owns:
+  - bootstrap-not-ready defer / retry timing
+  - publish / clear scheduling
+  - task orchestration and replay reset flow
+
+This keeps the remaining compatibility boundary explicit:
+
+- transport selection remains in `LocalMetadataTransportBridge`
+- overlay/replay semantics now live in one helper
+- broader sync-v2/v3 compatibility and publish orchestration are still intentionally in `AppViewModel`

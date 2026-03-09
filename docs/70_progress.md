@@ -13,6 +13,41 @@ Historical progress detail lives in `docs/archive/progress/2026-02-28_to_2026-03
 
 ## Recent Entries
 
+## 2026-03-09 — T-129 landed: local metadata overlay/replay application is isolated behind one helper
+
+### What landed
+- extracted `LocalMetadataOverlayStore`
+- the new helper now owns:
+  - exact-row bootstrap cache construction for daemon `ui.bootstrap.v3`
+  - local `ui.bootstrap.v2` pane-map construction through the same strict bootstrap-location resolver
+  - v2 replay application (`ui.changes.v2`) including:
+    - exact-row cached base-pane resolution
+    - visible-session-name fallback for inventory-backed unmanaged demotion
+    - exact-row unknown-pane drop behavior
+  - v3 replay application (`ui.changes.v3`) including:
+    - exact-row upsert replacement
+    - exact-row remove handling
+    - synchronized metadata/presentation cache updates
+- `AppViewModel` now instantiates the helper and keeps only:
+  - transport selection via `LocalMetadataTransportBridge`
+  - bootstrap-not-ready defer logic
+  - publish / clear timing
+  - task orchestration and replay reset flow
+
+### What did not move yet
+- publish/clear scheduling still lives in `AppViewModel`
+- live replay task orchestration still lives in `AppViewModel`
+- transport/service-boundary/workbench compatibility and sync-v2 fallback remain intact
+- this slice is extraction only, not a semantic rewrite or v2 deletion
+
+### Verification
+- `swift build`
+- `swift test -q --filter LocalMetadataOverlayStoreTests`
+- `swift test -q --filter AppViewModelA0Tests/testBootstrapV3MethodNotFoundFallsBackToSyncV2BootstrapWithoutBreakingOverlay`
+- `swift test -q --filter AppViewModelA0Tests/testChangesV3MethodNotFoundFallsBackToSyncV2AfterBootstrapV3`
+- `swift test -q --filter AppViewModelA0Tests/testBootstrapV3ChangesV3UpsertUpdatesExactRowWithoutWeakeningIdentity`
+- result: all passed
+
 ## 2026-03-09 — T-128 landed: AppViewModel no longer open-codes sync-v3 bootstrap fallback selection
 
 ### What landed
