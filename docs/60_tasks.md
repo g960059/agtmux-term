@@ -281,6 +281,20 @@ Commit closeout is clear; next implementation proceeds on the new Workbench path
   - [x] banner / empty-state text and restore-path mappings use the renamed product issue identity consistently
   - [x] focused tests and current tracking docs no longer present the product issue as specifically a sync-v2 incompatibility
 
+### T-136 — migrate live product managed-agent suite to sync-v3 truth
+- **Status**: DONE
+- **Priority**: P1
+- **Depends**: T-135
+- **Owner**: term implementation agent
+- **Description**:
+  - Migrate `AppViewModelLiveManagedAgentTests` off sync-v2 and raw `ActivityState` assumptions so the live product suite matches the current sync-v3-only metadata path.
+  - Keep the live suite anchored in sync-v3 exact-row identity and presentation/display semantics while preserving compat-only coverage elsewhere.
+- **Acceptance Criteria**:
+  - [x] live managed-agent tests bootstrap and observe daemon truth through `ui.bootstrap.v3` / `ui.changes.v3`
+  - [x] live product assertions prefer `PanePresentationState` / `PaneDisplayState` over raw legacy `ActivityState` where the product path already does
+  - [x] product live assertions explicitly prove sync-v2 bootstrap/changes fallback stays unused
+  - [x] managed-exit and same-session no-bleed live cases stay green after the sync-v3 migration
+
 ### T-126 — thin live canary for sync-v3 bootstrap/changes exact-row lane
 - **Status**: DONE
 - **Priority**: P1

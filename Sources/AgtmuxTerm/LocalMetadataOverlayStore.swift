@@ -141,7 +141,8 @@ struct LocalMetadataOverlayStore {
                 if let existingPane = nextMetadataByPaneKey[key],
                    existingPane.source == "local",
                    (Self.metadataSessionKey(for: existingPane) != Self.metadataSessionKey(for: overlay.pane)
-                    || existingPane.paneInstanceID != overlay.pane.paneInstanceID) {
+                    || existingPane.paneInstanceID != overlay.pane.paneInstanceID),
+                   !allowsVisibleRowReplacement(existingPane: existingPane, incomingPane: overlay.pane) {
                     log(
                         "sync-v3 pane upsert dropped for conflicting exact pane " +
                         "\(change.sessionKey)/\(change.paneID)"
@@ -331,6 +332,16 @@ struct LocalMetadataOverlayStore {
             return cachedBase
         }
         return cachedBase ?? inventoryBase
+    }
+
+    private func allowsVisibleRowReplacement(existingPane: AgtmuxPane, incomingPane: AgtmuxPane) -> Bool {
+        existingPane.source == "local"
+            && incomingPane.source == "local"
+            && existingPane.paneId == incomingPane.paneId
+            && existingPane.sessionName == incomingPane.sessionName
+            && existingPane.windowId == incomingPane.windowId
+            && incomingPane.presence == .unmanaged
+            && incomingPane.provider == nil
     }
 
     private func matchesV3ExactIdentity(

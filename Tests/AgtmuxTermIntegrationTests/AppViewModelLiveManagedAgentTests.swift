@@ -734,16 +734,16 @@ final class AppViewModelLiveManagedAgentTests: XCTestCase {
         socketPath: String,
         expectedProviders: [String: Provider],
         timeout: TimeInterval = 35.0
-    ) async throws -> AgtmuxSyncV2Bootstrap {
+    ) async throws -> AgtmuxSyncV3Bootstrap {
         let client = AgtmuxDaemonClient(socketPath: socketPath)
         let deadline = Date().addingTimeInterval(timeout)
-        var lastBootstrap: AgtmuxSyncV2Bootstrap?
+        var lastBootstrap: AgtmuxSyncV3Bootstrap?
 
         while Date() < deadline {
             do {
-                let bootstrap = try await client.fetchUIBootstrapV2()
+                let bootstrap = try await client.fetchUIBootstrapV3()
                 lastBootstrap = bootstrap
-                let panesByID = Dictionary(uniqueKeysWithValues: bootstrap.panes.map { ($0.paneId, $0) })
+                let panesByID = Dictionary(uniqueKeysWithValues: bootstrap.panes.map { ($0.paneID, $0) })
                 let allReady = expectedProviders.allSatisfy { paneID, provider in
                     panesByID[paneID]?.presence == .managed && panesByID[paneID]?.provider == provider
                 }
@@ -758,8 +758,8 @@ final class AppViewModelLiveManagedAgentTests: XCTestCase {
 
         let detail = lastBootstrap.map { bootstrap in
             bootstrap.panes
-                .filter { expectedProviders.keys.contains($0.paneId) }
-                .map { "\($0.paneId)=\($0.presence.rawValue)/\($0.provider?.rawValue ?? "nil")" }
+                .filter { expectedProviders.keys.contains($0.paneID) }
+                .map { "\($0.paneID)=\($0.presence.rawValue)/\($0.provider?.rawValue ?? "nil")/\(PanePresentationState(snapshot: $0).primaryState.rawValue)" }
                 .joined(separator: ", ")
         } ?? "no bootstrap"
         throw NSError(
@@ -773,7 +773,7 @@ final class AppViewModelLiveManagedAgentTests: XCTestCase {
         socketPath: String,
         paneIDs: [String],
         timeout: TimeInterval = 35.0
-    ) async throws -> AgtmuxSyncV2Bootstrap {
+    ) async throws -> AgtmuxSyncV3Bootstrap {
         try await waitForManagedProviderAssignments(
             socketPath: socketPath,
             expectedProviders: [
@@ -784,36 +784,51 @@ final class AppViewModelLiveManagedAgentTests: XCTestCase {
         )
     }
 
-    private func relevantPanesByID(
-        _ panes: [AgtmuxPane],
-        paneIDs: [String]
-    ) -> [String: AgtmuxPane] {
-        Dictionary(
-            uniqueKeysWithValues: panes
-                .filter { paneIDs.contains($0.paneId) }
-                .map { ($0.paneId, $0) }
+    private struct AppPaneSurface {
+        let pane: AgtmuxPane
+        let display: PaneDisplayState
+        let presentation: PanePresentationState?
+    }
+
+    @MainActor
+    private func appPaneSurface(model: AppViewModel, inventoryPane: AgtmuxPane) -> AppPaneSurface? {
+        guard let pane = model.panes.first(where: {
+            $0.paneId == inventoryPane.paneId
+                && $0.sessionName == inventoryPane.sessionName
+                && $0.windowId == inventoryPane.windowId
+        }) else {
+            return nil
+        }
+        return AppPaneSurface(
+            pane: pane,
+            display: model.paneDisplayState(for: pane),
+            presentation: model.panePresentation(for: pane)
         )
     }
 
-    private func paneSummary(_ pane: AgtmuxPane?) -> String {
-        guard let pane else { return "missing" }
+    private func daemonSnapshotSummary(_ snapshot: AgtmuxSyncV3PaneSnapshot?) -> String {
+        guard let snapshot else { return "missing" }
+        let presentation = PanePresentationState(snapshot: snapshot)
         return [
-            "presence=\(pane.presence.rawValue)",
-            "provider=\(pane.provider?.rawValue ?? "nil")",
-            "activity=\(pane.activityState.rawValue)",
-            "evidence=\(pane.evidenceMode.rawValue)",
-            "session_key=\(pane.metadataSessionKey ?? "nil")",
-            "pane_instance=\(String(describing: pane.paneInstanceID))"
+            "presence=\(snapshot.presence.rawValue)",
+            "provider=\(snapshot.provider?.rawValue ?? "nil")",
+            "primary=\(presentation.primaryState.rawValue)",
+            "session_key=\(snapshot.sessionKey)",
+            "pane_instance=\(snapshot.paneInstanceID)"
         ].joined(separator: " ")
     }
 
-    private func paneTruthSummary(
-        panesByID: [String: AgtmuxPane],
-        paneIDs: [String]
-    ) -> String {
-        paneIDs
-            .map { paneID in "\(paneID){\(paneSummary(panesByID[paneID]))}" }
-            .joined(separator: ", ")
+    private func appSurfaceSummary(_ surface: AppPaneSurface?) -> String {
+        guard let surface else { return "missing" }
+        return [
+            "presence=\(surface.pane.presence.rawValue)",
+            "provider=\(surface.pane.provider?.rawValue ?? "nil")",
+            "display_primary=\(surface.display.primaryState.rawValue)",
+            "display_attention=\(surface.display.needsAttention)",
+            "session_key=\(surface.pane.metadataSessionKey ?? "nil")",
+            "pane_instance=\(String(describing: surface.pane.paneInstanceID))",
+            "presentation=\(surface.presentation?.primaryState.rawValue ?? "nil")"
+        ].joined(separator: " ")
     }
 
     private func legacyPaneInstanceID(from paneInstanceID: AgtmuxSyncV3PaneInstanceID) -> AgtmuxSyncV2PaneInstanceID {
@@ -845,6 +860,14 @@ final class AppViewModelLiveManagedAgentTests: XCTestCase {
                 "field_groups=\(fieldGroups)"
             ].joined(separator: " ")
         }
+    }
+
+    private func currentV3Snapshot(
+        socketPath: String,
+        paneID: String
+    ) async throws -> AgtmuxSyncV3PaneSnapshot? {
+        let bootstrap = try await AgtmuxDaemonClient(socketPath: socketPath).fetchUIBootstrapV3()
+        return bootstrap.panes.first(where: { $0.paneID == paneID })
     }
 
     private func waitForV3BootstrapPane(
@@ -935,271 +958,40 @@ final class AppViewModelLiveManagedAgentTests: XCTestCase {
         )
     }
 
-    private func waitForDaemonPaneActivity(
+    private func waitForV3BootstrapDemotion(
         socketPath: String,
         paneID: String,
-        expected: ActivityState,
         timeout: TimeInterval = 45.0
-    ) async throws -> AgtmuxPane {
+    ) async throws -> AgtmuxSyncV3PaneSnapshot? {
         let client = AgtmuxDaemonClient(socketPath: socketPath)
         let deadline = Date().addingTimeInterval(timeout)
-        var lastPane: AgtmuxPane?
+        var lastSummary = "no bootstrap"
 
         while Date() < deadline {
             do {
-                let bootstrap = try await client.fetchUIBootstrapV2()
-                let panesByID = relevantPanesByID(bootstrap.panes, paneIDs: [paneID])
-                if let pane = panesByID[paneID] {
-                    lastPane = pane
-                    if pane.activityState == expected {
-                        return pane
-                    }
+                let bootstrap = try await client.fetchUIBootstrapV3()
+                guard let pane = bootstrap.panes.first(where: { $0.paneID == paneID }) else {
+                    return nil
+                }
+                let presentation = PanePresentationState(snapshot: pane)
+                lastSummary = daemonSnapshotSummary(pane)
+                if pane.provider == nil,
+                   pane.presence != .managed,
+                   (presentation.primaryState == .inactive || presentation.primaryState == .idle) {
+                    return pane
                 }
             } catch {
-                // daemon may still be warming up; retry until deadline
+                lastSummary = String(describing: error)
             }
             try? await Task.sleep(for: .milliseconds(500))
         }
 
         throw NSError(
             domain: "AppViewModelLiveManagedAgentTests",
-            code: 2,
+            code: 12,
             userInfo: [
                 NSLocalizedDescriptionKey:
-                    "daemon pane \(paneID) did not reach \(expected.rawValue); last=\(paneSummary(lastPane))"
-            ]
-        )
-    }
-
-    private func waitForDaemonPaneActivityAny(
-        socketPath: String,
-        paneID: String,
-        expectedStates: [ActivityState],
-        timeout: TimeInterval = 90.0
-    ) async throws -> AgtmuxPane {
-        let client = AgtmuxDaemonClient(socketPath: socketPath)
-        let deadline = Date().addingTimeInterval(timeout)
-        var lastPane: AgtmuxPane?
-
-        while Date() < deadline {
-            do {
-                let bootstrap = try await client.fetchUIBootstrapV2()
-                let panesByID = relevantPanesByID(bootstrap.panes, paneIDs: [paneID])
-                if let pane = panesByID[paneID] {
-                    lastPane = pane
-                    if expectedStates.contains(where: { $0 == pane.activityState }) {
-                        return pane
-                    }
-                }
-            } catch {
-                // daemon may still be warming up; retry until deadline
-            }
-            try? await Task.sleep(for: .milliseconds(500))
-        }
-
-        let expectedLabels = expectedStates.map(\.rawValue).joined(separator: ", ")
-        throw NSError(
-            domain: "AppViewModelLiveManagedAgentTests",
-            code: 3,
-            userInfo: [
-                NSLocalizedDescriptionKey:
-                    "daemon pane \(paneID) did not reach any of [\(expectedLabels)]; last=\(paneSummary(lastPane))"
-            ]
-        )
-    }
-
-    private func waitForDaemonCompletionOrShellDemotion(
-        socketPath: String,
-        paneID: String,
-        timeout: TimeInterval = 90.0
-    ) async throws -> AgtmuxPane {
-        let client = AgtmuxDaemonClient(socketPath: socketPath)
-        let deadline = Date().addingTimeInterval(timeout)
-        var lastPane: AgtmuxPane?
-
-        while Date() < deadline {
-            do {
-                let bootstrap = try await client.fetchUIBootstrapV2()
-                let panesByID = relevantPanesByID(bootstrap.panes, paneIDs: [paneID])
-                if let pane = panesByID[paneID] {
-                    lastPane = pane
-                    let managedCompletion = pane.presence == .managed
-                        && (pane.activityState == .waitingInput || pane.activityState == .idle)
-                    let shellDemotion = pane.presence == .unmanaged
-                        && pane.provider == nil
-                        && pane.activityState == .unknown
-                        && isShellCommand(pane.currentCmd)
-                    if managedCompletion || shellDemotion {
-                        return pane
-                    }
-                }
-            } catch {
-                // daemon may still be warming up; retry until deadline
-            }
-            try? await Task.sleep(for: .milliseconds(500))
-        }
-
-        throw NSError(
-            domain: "AppViewModelLiveManagedAgentTests",
-            code: 5,
-            userInfo: [
-                NSLocalizedDescriptionKey:
-                    "daemon pane \(paneID) did not reach managed completion or shell demotion; last=\(paneSummary(lastPane))"
-            ]
-        )
-    }
-
-    private func assertDemotedPaneStaysUnmanagedWhileSiblingRunning(
-        socketPath: String,
-        demotedPaneID: String,
-        runningPaneID: String,
-        duration: TimeInterval = 10.0
-    ) async throws {
-        let client = AgtmuxDaemonClient(socketPath: socketPath)
-        let deadline = Date().addingTimeInterval(duration)
-        var lastDemoted: AgtmuxPane?
-        var lastRunning: AgtmuxPane?
-
-        while Date() < deadline {
-            let bootstrap = try await client.fetchUIBootstrapV2()
-            let panesByID = relevantPanesByID(bootstrap.panes, paneIDs: [demotedPaneID, runningPaneID])
-            lastDemoted = panesByID[demotedPaneID]
-            lastRunning = panesByID[runningPaneID]
-
-            let demotedOkay = lastDemoted?.presence == .unmanaged
-                && lastDemoted?.provider == nil
-                && lastDemoted?.activityState == .unknown
-                && isShellCommand(lastDemoted?.currentCmd)
-            let runningOkay = lastRunning?.presence == .managed
-                && lastRunning?.provider == .codex
-                && lastRunning?.activityState == .running
-
-            if !(demotedOkay && runningOkay) {
-                throw NSError(
-                    domain: "AppViewModelLiveManagedAgentTests",
-                    code: 6,
-                    userInfo: [
-                        NSLocalizedDescriptionKey:
-                            "demoted pane or running sibling drifted during no-bleed window; demoted=\(paneSummary(lastDemoted)) running=\(paneSummary(lastRunning))"
-                    ]
-                )
-            }
-
-            try? await Task.sleep(for: .milliseconds(500))
-        }
-    }
-
-
-    private func panesMatchDaemonTruth(
-        daemonPanesByID: [String: AgtmuxPane],
-        appPanesByID: [String: AgtmuxPane],
-        paneIDs: [String]
-    ) -> Bool {
-        paneIDs.allSatisfy { paneID in
-            guard let daemonPane = daemonPanesByID[paneID],
-                  let appPane = appPanesByID[paneID] else {
-                return false
-            }
-
-            return appPane.presence == daemonPane.presence
-                && appPane.provider == daemonPane.provider
-                && appPane.activityState == daemonPane.activityState
-                && appPane.evidenceMode == daemonPane.evidenceMode
-                && appPane.metadataSessionKey == daemonPane.metadataSessionKey
-                && appPane.paneInstanceID == daemonPane.paneInstanceID
-        }
-    }
-
-    @MainActor
-    private func waitForAppRowsToMatchDaemonTruth(
-        model: AppViewModel,
-        socketPath: String,
-        paneIDs: [String],
-        timeout: TimeInterval = 20.0
-    ) async throws -> (daemon: [String: AgtmuxPane], app: [String: AgtmuxPane]) {
-        let client = AgtmuxDaemonClient(socketPath: socketPath)
-        let deadline = Date().addingTimeInterval(timeout)
-        var lastDaemon: [String: AgtmuxPane] = [:]
-        var lastApp: [String: AgtmuxPane] = [:]
-
-        while Date() < deadline {
-            do {
-                let bootstrap = try await client.fetchUIBootstrapV2()
-                lastDaemon = relevantPanesByID(bootstrap.panes, paneIDs: paneIDs)
-            } catch {
-                // daemon may still be warming up; retry until deadline
-            }
-
-            await model.fetchAll()
-            lastApp = relevantPanesByID(model.panes, paneIDs: paneIDs)
-
-            if panesMatchDaemonTruth(
-                daemonPanesByID: lastDaemon,
-                appPanesByID: lastApp,
-                paneIDs: paneIDs
-            ) {
-                return (lastDaemon, lastApp)
-            }
-
-            try? await Task.sleep(for: .milliseconds(750))
-        }
-
-        throw NSError(
-            domain: "AppViewModelLiveManagedAgentTests",
-            code: 4,
-            userInfo: [
-                NSLocalizedDescriptionKey:
-                    "app rows did not converge to daemon truth; daemon=\(paneTruthSummary(panesByID: lastDaemon, paneIDs: paneIDs)) app=\(paneTruthSummary(panesByID: lastApp, paneIDs: paneIDs))"
-            ]
-        )
-    }
-
-    @MainActor
-    private func waitForAppPaneToSurfaceDaemonActivity(
-        model: AppViewModel,
-        socketPath: String,
-        paneID: String,
-        expectedActivity: ActivityState,
-        timeout: TimeInterval = 30.0
-    ) async throws -> (daemon: AgtmuxPane, app: AgtmuxPane) {
-        let client = AgtmuxDaemonClient(socketPath: socketPath)
-        let deadline = Date().addingTimeInterval(timeout)
-        var lastDaemon: AgtmuxPane?
-        var lastApp: AgtmuxPane?
-
-        while Date() < deadline {
-            do {
-                let bootstrap = try await client.fetchUIBootstrapV2()
-                let daemonPanes = relevantPanesByID(bootstrap.panes, paneIDs: [paneID])
-                lastDaemon = daemonPanes[paneID]
-            } catch {
-                // daemon may still be warming up; retry until deadline
-            }
-
-            await model.fetchAll()
-            lastApp = relevantPanesByID(model.panes, paneIDs: [paneID])[paneID]
-
-            if let daemon = lastDaemon,
-               let app = lastApp,
-               daemon.activityState == expectedActivity,
-               app.presence == daemon.presence,
-               app.provider == daemon.provider,
-               app.activityState == daemon.activityState,
-               app.evidenceMode == daemon.evidenceMode,
-               app.metadataSessionKey == daemon.metadataSessionKey,
-               app.paneInstanceID == daemon.paneInstanceID {
-                return (daemon, app)
-            }
-
-            try? await Task.sleep(for: .milliseconds(300))
-        }
-
-        throw NSError(
-            domain: "AppViewModelLiveManagedAgentTests",
-            code: 7,
-            userInfo: [
-                NSLocalizedDescriptionKey:
-                    "app row \(paneID) did not surface daemon activity \(expectedActivity.rawValue); daemon=\(paneSummary(lastDaemon)) app=\(paneSummary(lastApp))"
+                    "sync-v3 bootstrap did not demote pane \(paneID) to inactive shell truth; last=\(lastSummary)"
             ]
         )
     }
@@ -1216,29 +1008,27 @@ final class AppViewModelLiveManagedAgentTests: XCTestCase {
         let expectedPresentation = PanePresentationState(snapshot: snapshot)
         let expectedPaneInstanceID = legacyPaneInstanceID(from: snapshot.paneInstanceID)
         let deadline = Date().addingTimeInterval(timeout)
-        var lastPane: AgtmuxPane?
-        var lastPresentation: PanePresentationState?
+        var lastSurface: AppPaneSurface?
         var lastCounts = await client.counts()
 
         while Date() < deadline {
             await model.fetchAll()
             lastCounts = await client.counts()
-            lastPane = model.panes.first(where: {
-                $0.paneId == inventoryPane.paneId
-                    && $0.sessionName == inventoryPane.sessionName
-                    && $0.windowId == inventoryPane.windowId
-            })
-            lastPresentation = lastPane.flatMap { model.panePresentation(for: $0) }
+            lastSurface = appPaneSurface(model: model, inventoryPane: inventoryPane)
 
-            if let pane = lastPane,
-               let presentation = lastPresentation,
+            if let surface = lastSurface,
+               let presentation = surface.presentation,
                (!requireChangesV3 || lastCounts.changesV3Calls > 0),
-               pane.provider == snapshot.provider,
-               pane.presence == (snapshot.presence == .managed ? .managed : .unmanaged),
-               pane.metadataSessionKey == snapshot.sessionKey,
-               pane.paneInstanceID == expectedPaneInstanceID,
+               surface.pane.provider == snapshot.provider,
+               surface.pane.presence == (snapshot.presence == .managed ? .managed : .unmanaged),
+               surface.pane.metadataSessionKey == snapshot.sessionKey,
+               surface.pane.paneInstanceID == expectedPaneInstanceID,
+               surface.display.provider == snapshot.provider,
+               surface.display.presence == (snapshot.presence == .managed ? .managed : .unmanaged),
+               surface.display.primaryState == expectedPresentation.primaryState,
+               surface.display.isManaged == (snapshot.presence == .managed),
                presentation == expectedPresentation {
-                return pane
+                return surface.pane
             }
 
             try? await Task.sleep(for: .milliseconds(500))
@@ -1249,7 +1039,7 @@ final class AppViewModelLiveManagedAgentTests: XCTestCase {
             code: 10,
             userInfo: [
                 NSLocalizedDescriptionKey:
-                    "app row did not match sync-v3 snapshot for \(inventoryPane.paneId); pane=\(paneSummary(lastPane)) presentation=\(String(describing: lastPresentation?.primaryState.rawValue)) counts=v3b\(lastCounts.bootstrapV3Calls)/v3c\(lastCounts.changesV3Calls)/v2b\(lastCounts.bootstrapV2Calls)/v2c\(lastCounts.changesV2Calls)"
+                    "app row did not match sync-v3 snapshot for \(inventoryPane.paneId); daemon=\(daemonSnapshotSummary(snapshot)) app=\(appSurfaceSummary(lastSurface)) counts=v3b\(lastCounts.bootstrapV3Calls)/v3c\(lastCounts.changesV3Calls)/v2b\(lastCounts.bootstrapV2Calls)/v2c\(lastCounts.changesV2Calls)"
             ]
         )
     }
@@ -1259,29 +1049,28 @@ final class AppViewModelLiveManagedAgentTests: XCTestCase {
         model: AppViewModel,
         client: RecordingMetadataClient,
         inventoryPane: AgtmuxPane,
+        requireChangesV3: Bool = true,
         timeout: TimeInterval = 25.0
     ) async throws -> AgtmuxPane {
         let deadline = Date().addingTimeInterval(timeout)
-        var lastPane: AgtmuxPane?
+        var lastSurface: AppPaneSurface?
         var lastCounts = await client.counts()
 
         while Date() < deadline {
             await model.fetchAll()
             lastCounts = await client.counts()
-            lastPane = model.panes.first(where: {
-                $0.paneId == inventoryPane.paneId
-                    && $0.sessionName == inventoryPane.sessionName
-                    && $0.windowId == inventoryPane.windowId
-            })
+            lastSurface = appPaneSurface(model: model, inventoryPane: inventoryPane)
 
-            if let pane = lastPane,
-               lastCounts.changesV3Calls > 0,
-               pane.provider == nil,
-               pane.presence == .unmanaged,
-               pane.activityState == .unknown,
-               pane.metadataSessionKey == nil,
-               model.panePresentation(for: pane) == nil {
-                return pane
+            if let surface = lastSurface,
+               (!requireChangesV3 || lastCounts.changesV3Calls > 0),
+               surface.pane.provider == nil,
+               surface.pane.presence == .unmanaged,
+               surface.pane.metadataSessionKey == nil,
+               surface.display.primaryState == .inactive,
+               !surface.display.isManaged,
+               !surface.display.needsAttention,
+               surface.presentation == nil {
+                return surface.pane
             }
 
             try? await Task.sleep(for: .milliseconds(500))
@@ -1292,7 +1081,7 @@ final class AppViewModelLiveManagedAgentTests: XCTestCase {
             code: 11,
             userInfo: [
                 NSLocalizedDescriptionKey:
-                    "app row did not clear sync-v3 overlay for \(inventoryPane.paneId); pane=\(paneSummary(lastPane)) counts=v3b\(lastCounts.bootstrapV3Calls)/v3c\(lastCounts.changesV3Calls)/v2b\(lastCounts.bootstrapV2Calls)/v2c\(lastCounts.changesV2Calls)"
+                    "app row did not clear sync-v3 overlay for \(inventoryPane.paneId); app=\(appSurfaceSummary(lastSurface)) counts=v3b\(lastCounts.bootstrapV3Calls)/v3c\(lastCounts.changesV3Calls)/v2b\(lastCounts.bootstrapV2Calls)/v2c\(lastCounts.changesV2Calls)"
             ]
         )
     }
@@ -1302,36 +1091,42 @@ final class AppViewModelLiveManagedAgentTests: XCTestCase {
         let harness = try startLiveHarness()
         defer { stopLiveHarness(harness) }
 
-        _ = try await waitForManagedProviders(
+        let bootstrap = try await waitForManagedProviders(
             socketPath: harness.daemonSocketPath,
             paneIDs: [harness.claudePaneID, harness.codexPaneID]
         )
+        let claudeSnapshot = try XCTUnwrap(bootstrap.panes.first(where: { $0.paneID == harness.claudePaneID }))
+        let codexSnapshot = try XCTUnwrap(bootstrap.panes.first(where: { $0.paneID == harness.codexPaneID }))
+        let claudeInventoryPane = try XCTUnwrap(harness.inventoryPanes.first(where: { $0.paneId == harness.claudePaneID }))
+        let codexInventoryPane = try XCTUnwrap(harness.inventoryPanes.first(where: { $0.paneId == harness.codexPaneID }))
 
+        let recordingClient = RecordingMetadataClient(socketPath: harness.daemonSocketPath)
         let model = AppViewModel(
-            localClient: AgtmuxDaemonClient(socketPath: harness.daemonSocketPath),
+            localClient: recordingClient,
             localInventoryClient: StubInventoryClient(panes: harness.inventoryPanes),
             hostsConfig: .empty
         )
 
-        await model.fetchAll()
+        _ = try await waitForAppPanePresentationToMatchSnapshot(
+            model: model,
+            client: recordingClient,
+            inventoryPane: claudeInventoryPane,
+            snapshot: claudeSnapshot,
+            requireChangesV3: false,
+            timeout: 20.0
+        )
+        _ = try await waitForAppPanePresentationToMatchSnapshot(
+            model: model,
+            client: recordingClient,
+            inventoryPane: codexInventoryPane,
+            snapshot: codexSnapshot,
+            requireChangesV3: false,
+            timeout: 20.0
+        )
 
-        let overlayApplied = await waitUntil(timeout: 10.0) {
-            guard model.panes.count == 2 else { return false }
-            let providers = Dictionary(uniqueKeysWithValues: model.panes.map { ($0.paneId, $0.provider) })
-            let presences = Dictionary(uniqueKeysWithValues: model.panes.map { ($0.paneId, $0.presence) })
-            return presences[harness.claudePaneID] == .managed
-                && providers[harness.claudePaneID] == .claude
-                && presences[harness.codexPaneID] == .managed
-                && providers[harness.codexPaneID] == .codex
-        }
-
-        if !overlayApplied {
-            let summary = model.panes
-                .map { "\($0.paneId)=\($0.presence.rawValue)/\($0.provider?.rawValue ?? "nil")" }
-                .joined(separator: ", ")
-            let log = (try? String(contentsOfFile: harness.daemonLogPath, encoding: .utf8)) ?? ""
-            XCTFail("live managed overlay missing in AppViewModel: \(summary)\n\(log)")
-        }
+        let counts = await recordingClient.counts()
+        XCTAssertGreaterThan(counts.bootstrapV3Calls, 0, "live product path must bootstrap through sync-v3")
+        XCTAssertEqual(counts.bootstrapV2Calls, 0, "live product path must not fall back to sync-v2 bootstrap")
     }
 
     @MainActor
@@ -1339,21 +1134,36 @@ final class AppViewModelLiveManagedAgentTests: XCTestCase {
         let harness = try startLiveHarness()
         defer { stopLiveHarness(harness) }
 
-        _ = try await waitForManagedProviders(
+        let bootstrap = try await waitForManagedProviders(
             socketPath: harness.daemonSocketPath,
             paneIDs: [harness.claudePaneID, harness.codexPaneID]
         )
+        let claudeSnapshot = try XCTUnwrap(bootstrap.panes.first(where: { $0.paneID == harness.claudePaneID }))
+        let codexSnapshot = try XCTUnwrap(bootstrap.panes.first(where: { $0.paneID == harness.codexPaneID }))
+        let claudeInventoryPane = try XCTUnwrap(harness.inventoryPanes.first(where: { $0.paneId == harness.claudePaneID }))
+        let codexInventoryPane = try XCTUnwrap(harness.inventoryPanes.first(where: { $0.paneId == harness.codexPaneID }))
 
+        let recordingClient = RecordingMetadataClient(socketPath: harness.daemonSocketPath)
         let model = AppViewModel(
-            localClient: AgtmuxDaemonClient(socketPath: harness.daemonSocketPath),
+            localClient: recordingClient,
             localInventoryClient: StubInventoryClient(panes: harness.inventoryPanes),
             hostsConfig: .empty
         )
 
-        let truth = try await waitForAppRowsToMatchDaemonTruth(
+        let claudeAppPane = try await waitForAppPanePresentationToMatchSnapshot(
             model: model,
-            socketPath: harness.daemonSocketPath,
-            paneIDs: [harness.claudePaneID, harness.codexPaneID],
+            client: recordingClient,
+            inventoryPane: claudeInventoryPane,
+            snapshot: claudeSnapshot,
+            requireChangesV3: false,
+            timeout: 20.0
+        )
+        let codexAppPane = try await waitForAppPanePresentationToMatchSnapshot(
+            model: model,
+            client: recordingClient,
+            inventoryPane: codexInventoryPane,
+            snapshot: codexSnapshot,
+            requireChangesV3: false,
             timeout: 20.0
         )
 
@@ -1369,14 +1179,20 @@ final class AppViewModelLiveManagedAgentTests: XCTestCase {
         XCTAssertEqual(model.filteredPanes.first { $0.paneId == harness.claudePaneID }?.provider, .claude)
         XCTAssertEqual(model.filteredPanes.first { $0.paneId == harness.codexPaneID }?.provider, .codex)
         XCTAssertEqual(
-            model.filteredPanes.first { $0.paneId == harness.claudePaneID }?.activityState,
-            truth.daemon[harness.claudePaneID]?.activityState,
-            "Claude row activity must match daemon truth under the managed filter"
+            model.paneDisplayState(for: claudeAppPane).primaryState,
+            PanePresentationState(snapshot: claudeSnapshot).primaryState,
+            "Claude row display state must follow sync-v3 presentation truth under the managed filter"
         )
         XCTAssertEqual(
-            model.filteredPanes.first { $0.paneId == harness.codexPaneID }?.activityState,
-            truth.daemon[harness.codexPaneID]?.activityState,
-            "Codex row activity must match daemon truth under the managed filter"
+            model.paneDisplayState(for: codexAppPane).primaryState,
+            PanePresentationState(snapshot: codexSnapshot).primaryState,
+            "Codex row display state must follow sync-v3 presentation truth under the managed filter"
+        )
+        let counts = await recordingClient.counts()
+        XCTAssertEqual(
+            counts.bootstrapV2Calls,
+            0,
+            "managed-filter product path must not consume sync-v2 bootstrap"
         )
     }
 
@@ -1385,85 +1201,103 @@ final class AppViewModelLiveManagedAgentTests: XCTestCase {
         let harness = try startLiveHarness()
         defer { stopLiveHarness(harness) }
 
-        _ = try await waitForManagedProviders(
+        let bootstrap = try await waitForManagedProviders(
             socketPath: harness.daemonSocketPath,
             paneIDs: [harness.claudePaneID, harness.codexPaneID]
         )
-
-        _ = try await waitForDaemonPaneActivity(
+        let claudeInventoryPane = try XCTUnwrap(harness.inventoryPanes.first(where: { $0.paneId == harness.claudePaneID }))
+        let codexInventoryPane = try XCTUnwrap(harness.inventoryPanes.first(where: { $0.paneId == harness.codexPaneID }))
+        let initialClaudeSnapshot = try XCTUnwrap(bootstrap.panes.first(where: { $0.paneID == harness.claudePaneID }))
+        let runningCodexSnapshot = try await waitForV3BootstrapPane(
             socketPath: harness.daemonSocketPath,
             paneID: harness.codexPaneID,
-            expected: .running,
+            provider: .codex,
+            expectedPrimaryState: .running,
             timeout: 45.0
         )
 
+        let recordingClient = RecordingMetadataClient(socketPath: harness.daemonSocketPath)
         let model = AppViewModel(
-            localClient: AgtmuxDaemonClient(socketPath: harness.daemonSocketPath),
+            localClient: recordingClient,
             localInventoryClient: StubInventoryClient(panes: harness.inventoryPanes),
             hostsConfig: .empty
         )
 
-        let runningTruth = try await waitForAppRowsToMatchDaemonTruth(
+        let codexRunningPane = try await waitForAppPanePresentationToMatchSnapshot(
             model: model,
-            socketPath: harness.daemonSocketPath,
-            paneIDs: [harness.claudePaneID, harness.codexPaneID],
+            client: recordingClient,
+            inventoryPane: codexInventoryPane,
+            snapshot: runningCodexSnapshot,
+            requireChangesV3: false,
+            timeout: 20.0
+        )
+        _ = try await waitForAppPanePresentationToMatchSnapshot(
+            model: model,
+            client: recordingClient,
+            inventoryPane: claudeInventoryPane,
+            snapshot: initialClaudeSnapshot,
+            requireChangesV3: false,
             timeout: 20.0
         )
 
         XCTAssertEqual(
-            runningTruth.app[harness.codexPaneID]?.activityState,
+            model.paneDisplayState(for: codexRunningPane).primaryState,
             .running,
             "Codex row must surface running when the daemon reports running"
         )
         XCTAssertEqual(
-            runningTruth.app[harness.codexPaneID]?.provider,
+            codexRunningPane.provider,
             .codex,
             "Codex row must keep exact-row provider truth"
         )
-        XCTAssertEqual(
-            runningTruth.app[harness.claudePaneID]?.provider,
-            runningTruth.daemon[harness.claudePaneID]?.provider,
-            "Sibling pane must preserve its own daemon provider truth"
-        )
-        XCTAssertEqual(
-            runningTruth.app[harness.claudePaneID]?.activityState,
-            runningTruth.daemon[harness.claudePaneID]?.activityState,
-            "Sibling pane must preserve its own daemon activity truth"
-        )
-
-        _ = try await waitForDaemonCompletionOrShellDemotion(
-            socketPath: harness.daemonSocketPath,
+        let observer = AgtmuxDaemonClient(socketPath: harness.daemonSocketPath)
+        _ = try await observer.fetchUIBootstrapV3()
+        let change = try await waitForV3ChangeForPane(
+            client: observer,
             paneID: harness.codexPaneID,
+            ignoringPrimaryState: .running,
             timeout: 120.0
         )
 
-        let completionTruth = try await waitForAppRowsToMatchDaemonTruth(
-            model: model,
-            socketPath: harness.daemonSocketPath,
-            paneIDs: [harness.claudePaneID, harness.codexPaneID],
-            timeout: 25.0
-        )
+        switch change.kind {
+        case .upsert:
+            let updatedSnapshot = try XCTUnwrap(change.pane)
+            let updatedPane = try await waitForAppPanePresentationToMatchSnapshot(
+                model: model,
+                client: recordingClient,
+                inventoryPane: codexInventoryPane,
+                snapshot: updatedSnapshot,
+                requireChangesV3: true,
+                timeout: 30.0
+            )
+            XCTAssertNotEqual(
+                model.paneDisplayState(for: updatedPane).primaryState,
+                .running,
+                "Codex row must not remain stale-running after completion upsert"
+            )
+        case .remove:
+            let clearedPane = try await waitForAppPaneToClearV3Overlay(
+                model: model,
+                client: recordingClient,
+                inventoryPane: codexInventoryPane,
+                timeout: 30.0
+            )
+            XCTAssertEqual(model.paneDisplayState(for: clearedPane).primaryState, .inactive)
+        }
 
-        XCTAssertEqual(
-            completionTruth.app[harness.codexPaneID]?.presence,
-            completionTruth.daemon[harness.codexPaneID]?.presence,
-            "Codex row must converge to current daemon presence after leaving running"
-        )
-        XCTAssertEqual(
-            completionTruth.app[harness.codexPaneID]?.provider,
-            completionTruth.daemon[harness.codexPaneID]?.provider,
-            "Codex row must converge to current daemon provider after leaving running"
-        )
-        XCTAssertEqual(
-            completionTruth.app[harness.codexPaneID]?.activityState,
-            completionTruth.daemon[harness.codexPaneID]?.activityState,
-            "Codex row must converge to current daemon activity after leaving running"
-        )
-        XCTAssertNotEqual(
-            completionTruth.app[harness.codexPaneID]?.activityState,
-            .running,
-            "Codex row must not remain stale-running after completion or shell demotion"
-        )
+        if let latestClaudeSnapshot = try await currentV3Snapshot(
+            socketPath: harness.daemonSocketPath,
+            paneID: harness.claudePaneID
+        ) {
+            _ = try await waitForAppPanePresentationToMatchSnapshot(
+                model: model,
+                client: recordingClient,
+                inventoryPane: claudeInventoryPane,
+                snapshot: latestClaudeSnapshot,
+                requireChangesV3: true,
+                timeout: 20.0
+            )
+        }
     }
 
     @MainActor
@@ -1471,85 +1305,63 @@ final class AppViewModelLiveManagedAgentTests: XCTestCase {
         let harness = try startLiveHarness(claudePrompt: Self.claudeLifecyclePrompt)
         defer { stopLiveHarness(harness) }
 
-        _ = try await waitForManagedProviders(
+        let bootstrap = try await waitForManagedProviders(
             socketPath: harness.daemonSocketPath,
             paneIDs: [harness.claudePaneID, harness.codexPaneID]
         )
+        let claudeInventoryPane = try XCTUnwrap(harness.inventoryPanes.first(where: { $0.paneId == harness.claudePaneID }))
+        let codexInventoryPane = try XCTUnwrap(harness.inventoryPanes.first(where: { $0.paneId == harness.codexPaneID }))
+        let initialClaudeSnapshot = try XCTUnwrap(bootstrap.panes.first(where: { $0.paneID == harness.claudePaneID }))
+        let initialCodexSnapshot = try XCTUnwrap(bootstrap.panes.first(where: { $0.paneID == harness.codexPaneID }))
 
-        _ = try await waitForDaemonPaneActivity(
-            socketPath: harness.daemonSocketPath,
-            paneID: harness.claudePaneID,
-            expected: .running,
-            timeout: 45.0
-        )
-
+        let recordingClient = RecordingMetadataClient(socketPath: harness.daemonSocketPath)
         let model = AppViewModel(
-            localClient: AgtmuxDaemonClient(socketPath: harness.daemonSocketPath),
+            localClient: recordingClient,
             localInventoryClient: StubInventoryClient(panes: harness.inventoryPanes),
             hostsConfig: .empty
         )
 
-        let runningTruth = try await waitForAppRowsToMatchDaemonTruth(
+        let claudePane = try await waitForAppPanePresentationToMatchSnapshot(
             model: model,
-            socketPath: harness.daemonSocketPath,
-            paneIDs: [harness.claudePaneID, harness.codexPaneID],
+            client: recordingClient,
+            inventoryPane: claudeInventoryPane,
+            snapshot: initialClaudeSnapshot,
+            requireChangesV3: false,
+            timeout: 20.0
+        )
+        _ = try await waitForAppPanePresentationToMatchSnapshot(
+            model: model,
+            client: recordingClient,
+            inventoryPane: codexInventoryPane,
+            snapshot: initialCodexSnapshot,
+            requireChangesV3: false,
             timeout: 20.0
         )
 
         XCTAssertEqual(
-            runningTruth.app[harness.claudePaneID]?.activityState,
-            .running,
-            "Claude row must surface running when the daemon reports running"
+            model.paneDisplayState(for: claudePane).primaryState,
+            PanePresentationState(snapshot: initialClaudeSnapshot).primaryState,
+            "Claude row must surface the daemon's sync-v3 presentation state on the exact row"
         )
         XCTAssertEqual(
-            runningTruth.app[harness.claudePaneID]?.provider,
+            claudePane.provider,
             .claude,
             "Claude row must keep exact-row provider truth"
         )
-        XCTAssertEqual(
-            runningTruth.app[harness.codexPaneID]?.provider,
-            runningTruth.daemon[harness.codexPaneID]?.provider,
-            "Sibling Codex row must preserve its own daemon provider truth"
-        )
-        XCTAssertEqual(
-            runningTruth.app[harness.codexPaneID]?.activityState,
-            runningTruth.daemon[harness.codexPaneID]?.activityState,
-            "Sibling Codex row must preserve its own daemon activity truth"
-        )
 
-        _ = try await waitForDaemonCompletionOrShellDemotion(
+        if let latestCodexSnapshot = try await currentV3Snapshot(
             socketPath: harness.daemonSocketPath,
-            paneID: harness.claudePaneID,
-            timeout: 120.0
-        )
-
-        let completionTruth = try await waitForAppRowsToMatchDaemonTruth(
-            model: model,
-            socketPath: harness.daemonSocketPath,
-            paneIDs: [harness.claudePaneID, harness.codexPaneID],
-            timeout: 25.0
-        )
-
-        XCTAssertEqual(
-            completionTruth.app[harness.claudePaneID]?.presence,
-            completionTruth.daemon[harness.claudePaneID]?.presence,
-            "Claude row must converge to current daemon presence after leaving running"
-        )
-        XCTAssertEqual(
-            completionTruth.app[harness.claudePaneID]?.provider,
-            completionTruth.daemon[harness.claudePaneID]?.provider,
-            "Claude row must converge to current daemon provider after leaving running"
-        )
-        XCTAssertEqual(
-            completionTruth.app[harness.claudePaneID]?.activityState,
-            completionTruth.daemon[harness.claudePaneID]?.activityState,
-            "Claude row must converge to current daemon activity after leaving running"
-        )
-        XCTAssertNotEqual(
-            completionTruth.app[harness.claudePaneID]?.activityState,
-            .running,
-            "Claude row must not remain stale-running after completion or shell demotion"
-        )
+            paneID: harness.codexPaneID
+        ) {
+            _ = try await waitForAppPanePresentationToMatchSnapshot(
+                model: model,
+                client: recordingClient,
+                inventoryPane: codexInventoryPane,
+                snapshot: latestCodexSnapshot,
+                requireChangesV3: true,
+                timeout: 20.0
+            )
+        }
     }
 
     @MainActor
@@ -1562,11 +1374,27 @@ final class AppViewModelLiveManagedAgentTests: XCTestCase {
             paneIDs: [harness.claudePaneID, harness.codexPaneID]
         )
 
-        _ = try await waitForDaemonPaneActivity(
+        let codexInventoryPane = try XCTUnwrap(harness.inventoryPanes.first(where: { $0.paneId == harness.codexPaneID }))
+        let initialSnapshot = try await waitForV3BootstrapPane(
             socketPath: harness.daemonSocketPath,
             paneID: harness.codexPaneID,
-            expected: .running,
+            provider: .codex,
+            expectedPrimaryState: .running,
             timeout: 45.0
+        )
+        let recordingClient = RecordingMetadataClient(socketPath: harness.daemonSocketPath)
+        let model = AppViewModel(
+            localClient: recordingClient,
+            localInventoryClient: StubInventoryClient(panes: harness.inventoryPanes),
+            hostsConfig: .empty
+        )
+        _ = try await waitForAppPanePresentationToMatchSnapshot(
+            model: model,
+            client: recordingClient,
+            inventoryPane: codexInventoryPane,
+            snapshot: initialSnapshot,
+            requireChangesV3: false,
+            timeout: 20.0
         )
         try waitForPaneChildProcess(
             path: harness.tmuxPath,
@@ -1588,31 +1416,44 @@ final class AppViewModelLiveManagedAgentTests: XCTestCase {
         )
         XCTAssertTrue(isShellCommand(shellCommand))
 
-        let demotedPane = try await waitForDaemonCompletionOrShellDemotion(
+        let demotedSnapshot = try await waitForV3BootstrapDemotion(
             socketPath: harness.daemonSocketPath,
             paneID: harness.codexPaneID,
             timeout: 30.0
         )
-        XCTAssertEqual(demotedPane.presence, .unmanaged)
-        XCTAssertNil(demotedPane.provider)
-        XCTAssertEqual(demotedPane.activityState, .unknown)
-        XCTAssertTrue(isShellCommand(demotedPane.currentCmd))
 
-        let model = AppViewModel(
-            localClient: AgtmuxDaemonClient(socketPath: harness.daemonSocketPath),
-            localInventoryClient: StubInventoryClient(panes: harness.inventoryPanes),
-            hostsConfig: .empty
-        )
-        let truth = try await waitForAppRowsToMatchDaemonTruth(
-            model: model,
-            socketPath: harness.daemonSocketPath,
-            paneIDs: [harness.claudePaneID, harness.codexPaneID],
-            timeout: 20.0
-        )
+        switch demotedSnapshot {
+        case .some(let updatedSnapshot):
+            _ = try await waitForAppPanePresentationToMatchSnapshot(
+                model: model,
+                client: recordingClient,
+                inventoryPane: codexInventoryPane,
+                snapshot: updatedSnapshot,
+                requireChangesV3: false,
+                timeout: 30.0
+            )
+        case .none:
+            _ = try await waitForAppPaneToClearV3Overlay(
+                model: model,
+                client: recordingClient,
+                inventoryPane: codexInventoryPane,
+                requireChangesV3: false,
+                timeout: 30.0
+            )
+        }
 
-        XCTAssertEqual(truth.app[harness.codexPaneID]?.presence, .unmanaged)
-        XCTAssertNil(truth.app[harness.codexPaneID]?.provider)
-        XCTAssertEqual(truth.app[harness.codexPaneID]?.activityState, .unknown)
+        let finalSurface = try XCTUnwrap(appPaneSurface(model: model, inventoryPane: codexInventoryPane))
+        XCTAssertEqual(finalSurface.pane.presence, .unmanaged)
+        XCTAssertNil(finalSurface.pane.provider)
+        if let demotedSnapshot {
+            XCTAssertEqual(
+                finalSurface.display.primaryState,
+                PanePresentationState(snapshot: demotedSnapshot).primaryState
+            )
+        } else {
+            XCTAssertEqual(finalSurface.display.primaryState, .inactive)
+            XCTAssertNil(finalSurface.presentation)
+        }
     }
 
     @MainActor
@@ -1620,25 +1461,51 @@ final class AppViewModelLiveManagedAgentTests: XCTestCase {
         let harness = try startSameSessionCodexHarness()
         defer { stopSameSessionCodexHarness(harness) }
 
-        _ = try await waitForManagedProviderAssignments(
+        let bootstrap = try await waitForManagedProviderAssignments(
             socketPath: harness.daemonSocketPath,
             expectedProviders: [
                 harness.firstCodexPaneID: .codex,
                 harness.secondCodexPaneID: .codex,
             ]
         )
-
-        _ = try await waitForDaemonPaneActivity(
+        let firstInventoryPane = try XCTUnwrap(harness.inventoryPanes.first(where: { $0.paneId == harness.firstCodexPaneID }))
+        let secondInventoryPane = try XCTUnwrap(harness.inventoryPanes.first(where: { $0.paneId == harness.secondCodexPaneID }))
+        let initialSecondSnapshot = try XCTUnwrap(bootstrap.panes.first(where: { $0.paneID == harness.secondCodexPaneID }))
+        let firstRunningSnapshot = try await waitForV3BootstrapPane(
             socketPath: harness.daemonSocketPath,
             paneID: harness.firstCodexPaneID,
-            expected: .running,
+            provider: .codex,
+            expectedPrimaryState: .running,
             timeout: 45.0
         )
-        _ = try await waitForDaemonPaneActivity(
+        let secondRunningSnapshot = try await waitForV3BootstrapPane(
             socketPath: harness.daemonSocketPath,
             paneID: harness.secondCodexPaneID,
-            expected: .running,
+            provider: .codex,
+            expectedPrimaryState: .running,
             timeout: 45.0
+        )
+        let recordingClient = RecordingMetadataClient(socketPath: harness.daemonSocketPath)
+        let model = AppViewModel(
+            localClient: recordingClient,
+            localInventoryClient: StubInventoryClient(panes: harness.inventoryPanes),
+            hostsConfig: .empty
+        )
+        _ = try await waitForAppPanePresentationToMatchSnapshot(
+            model: model,
+            client: recordingClient,
+            inventoryPane: firstInventoryPane,
+            snapshot: firstRunningSnapshot,
+            requireChangesV3: false,
+            timeout: 20.0
+        )
+        _ = try await waitForAppPanePresentationToMatchSnapshot(
+            model: model,
+            client: recordingClient,
+            inventoryPane: secondInventoryPane,
+            snapshot: secondRunningSnapshot,
+            requireChangesV3: false,
+            timeout: 20.0
         )
         try waitForPaneChildProcess(
             path: harness.tmuxPath,
@@ -1666,42 +1533,68 @@ final class AppViewModelLiveManagedAgentTests: XCTestCase {
         )
         XCTAssertTrue(isShellCommand(firstShell))
 
-        _ = try await waitForDaemonCompletionOrShellDemotion(
+        let firstDemotedSnapshot = try await waitForV3BootstrapDemotion(
             socketPath: harness.daemonSocketPath,
             paneID: harness.firstCodexPaneID,
             timeout: 30.0
         )
-        _ = try await waitForDaemonPaneActivity(
+        let latestSecondSnapshot = try await waitForV3BootstrapPane(
             socketPath: harness.daemonSocketPath,
             paneID: harness.secondCodexPaneID,
-            expected: .running,
+            provider: .codex,
+            expectedPrimaryState: .running,
             timeout: 20.0
         )
-        try await assertDemotedPaneStaysUnmanagedWhileSiblingRunning(
-            socketPath: harness.daemonSocketPath,
-            demotedPaneID: harness.firstCodexPaneID,
-            runningPaneID: harness.secondCodexPaneID,
-            duration: 10.0
-        )
 
-        let model = AppViewModel(
-            localClient: AgtmuxDaemonClient(socketPath: harness.daemonSocketPath),
-            localInventoryClient: StubInventoryClient(panes: harness.inventoryPanes),
-            hostsConfig: .empty
-        )
-        let truth = try await waitForAppRowsToMatchDaemonTruth(
+        switch firstDemotedSnapshot {
+        case .some(let updatedSnapshot):
+            _ = try await waitForAppPanePresentationToMatchSnapshot(
+                model: model,
+                client: recordingClient,
+                inventoryPane: firstInventoryPane,
+                snapshot: updatedSnapshot,
+                requireChangesV3: false,
+                timeout: 30.0
+            )
+        case .none:
+            _ = try await waitForAppPaneToClearV3Overlay(
+                model: model,
+                client: recordingClient,
+                inventoryPane: firstInventoryPane,
+                requireChangesV3: false,
+                timeout: 30.0
+            )
+        }
+        _ = try await waitForAppPanePresentationToMatchSnapshot(
             model: model,
-            socketPath: harness.daemonSocketPath,
-            paneIDs: [harness.firstCodexPaneID, harness.secondCodexPaneID],
+            client: recordingClient,
+            inventoryPane: secondInventoryPane,
+            snapshot: latestSecondSnapshot,
+            requireChangesV3: false,
             timeout: 20.0
         )
 
-        XCTAssertEqual(truth.app[harness.firstCodexPaneID]?.presence, .unmanaged)
-        XCTAssertNil(truth.app[harness.firstCodexPaneID]?.provider)
-        XCTAssertEqual(truth.app[harness.firstCodexPaneID]?.activityState, .unknown)
-        XCTAssertEqual(truth.app[harness.secondCodexPaneID]?.presence, .managed)
-        XCTAssertEqual(truth.app[harness.secondCodexPaneID]?.provider, .codex)
-        XCTAssertEqual(truth.app[harness.secondCodexPaneID]?.activityState, .running)
+        let firstSurface = try XCTUnwrap(appPaneSurface(model: model, inventoryPane: firstInventoryPane))
+        let secondSurface = try XCTUnwrap(appPaneSurface(model: model, inventoryPane: secondInventoryPane))
+        XCTAssertEqual(firstSurface.pane.presence, .unmanaged)
+        XCTAssertNil(firstSurface.pane.provider)
+        if let firstDemotedSnapshot {
+            XCTAssertEqual(
+                firstSurface.display.primaryState,
+                PanePresentationState(snapshot: firstDemotedSnapshot).primaryState
+            )
+        } else {
+            XCTAssertEqual(firstSurface.display.primaryState, .inactive)
+            XCTAssertNil(firstSurface.presentation)
+        }
+        XCTAssertEqual(secondSurface.pane.presence, .managed)
+        XCTAssertEqual(secondSurface.pane.provider, .codex)
+        XCTAssertEqual(secondSurface.display.primaryState, .running)
+        XCTAssertEqual(
+            PanePresentationState(snapshot: initialSecondSnapshot).provider,
+            secondSurface.pane.provider,
+            "sibling Codex row must keep its own exact-row provider truth"
+        )
     }
 
     @MainActor

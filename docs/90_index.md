@@ -94,6 +94,8 @@ Mainline product truth is now:
   dead sync-v3->v2 fallback selector surface is removed from `LocalMetadataTransportBridge`
 - `T-135`
   product-facing daemon incompatibility naming now matches the sync-v3 metadata protocol path
+- `T-136`
+  product live managed-agent suite now matches sync-v3 exact-row truth and no longer relies on sync-v2/`ActivityState` assumptions
 - `T-087`
   docs compaction and active-context redesign complete
 - `T-076` through `T-084`

@@ -282,3 +282,12 @@ The broad `AppViewModelA0Tests` suite now treats sync-v3 as the only product met
 - unsupported `ui.bootstrap.v3` / `ui.changes.v3` is expected to surface daemon incompatibility and inventory-only rows
 - exact-row bootstrap-v3 / changes-v3 behavior is the product truth in the broad suite
 - legacy `conversationTitle` carry-over is no longer treated as normalized sync-v3 truth; remaining title assertions belong to compat-only sync-v2 transport coverage until daemon truth exposes a normalized v3 title field
+
+## Live Product Suite Alignment
+
+`AppViewModelLiveManagedAgentTests` now follows the same product truth boundary.
+
+- the live managed-agent suite bootstraps and observes daemon truth through `ui.bootstrap.v3` / `ui.changes.v3`
+- live product assertions prefer `PanePresentationState` / `PaneDisplayState` over raw legacy `ActivityState` when validating the visible row
+- sync-v2 bootstrap/changes calls are still recorded only to prove that product fallback stays unused
+- managed-exit shell demotion and same-session no-bleed are validated as sync-v3 exact-row updates on the same visible pane row

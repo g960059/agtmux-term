@@ -16,6 +16,26 @@ Historical progress detail lives in `docs/archive/progress/2026-02-28_to_2026-03
 
 ## Recent Entries
 
+## 2026-03-09 — T-136 landed: live product managed-agent suite now matches sync-v3 truth
+
+### What landed
+- migrated `AppViewModelLiveManagedAgentTests` off direct sync-v2 bootstrap/activity assumptions:
+  - daemon bootstrap polling now uses `ui.bootstrap.v3`
+  - live row assertions compare against `PanePresentationState` / `PaneDisplayState`
+  - product fallback counters remain only as negative assertions proving sync-v2 stayed unused
+- tightened live exact-row helpers around sync-v3 identity:
+  - app-side comparison now checks `session_key` + `pane_instance_id` from the sync-v3 snapshot
+  - completion/demotion helpers consume sync-v3 bootstrap or changes rather than legacy `ActivityState`
+- fixed one stale product code path uncovered by the migrated live suite:
+  - `LocalMetadataOverlayStore` now accepts same-visible-row replacement when daemon truth demotes a managed pane back to unmanaged shell truth on the same pane location
+  - conflicting managed upserts with different exact identity still stay fail-loud and are covered by unit tests
+
+### Verification
+- `swift build`
+- `swift test -q --filter LocalMetadataOverlayStoreTests`
+- `AGTMUX_LIVE_TEST_BIN=/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/debug/agtmux swift test -q --filter AppViewModelLiveManagedAgentTests`
+- result: all passed, with `testLiveCodexWaitingInputSurfacesAttentionFilter` intentionally skipped under existing `T-119`
+
 ## 2026-03-09 — T-135 landed: product-facing daemon incompatibility naming matches sync-v3 reality
 
 ### What landed

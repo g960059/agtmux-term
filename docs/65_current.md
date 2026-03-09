@@ -107,6 +107,11 @@
 - `T-135` is now closed:
   - the product-facing daemon incompatibility issue is now named `incompatibleMetadataProtocol`
   - current banners / empty states no longer imply that the product issue is specifically a sync-v2 incompatibility
+- `T-136` is now closed:
+  - `AppViewModelLiveManagedAgentTests` now matches current product truth:
+    - live product metadata bootstraps and replays only through sync-v3
+    - exact-row assertions are anchored in sync-v3 identity rather than raw sync-v2 `ActivityState`
+    - managed-exit and same-session no-bleed live canaries are green after shell demotion replacement at the same visible row
 - `T-116` is now open:
   - metadata-enabled health-strip UI and pane-sync UI both reach their real assertions
   - upstream producer truth is now present in the same failing plain-zsh Codex lane:
