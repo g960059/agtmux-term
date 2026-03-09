@@ -83,8 +83,9 @@ Planned sync-v3 consumer split:
 - term keeps exact-row correlation strict and derives a local presentation model from the raw v3 snapshot before views consume it
 - `attention` is treated as a daemon-generated summary, not as request-identity truth; request identity remains `pending_requests[].request_id`
 - daemon-owned canonical fixture truth currently comes from `agtmux` commit `cb198cca7226666fbb26df34d4e17582a208c3e6` under `fixtures/sync-v3/`
-- additive v3 consumer wiring now prefers `ui.bootstrap.v3` in the daemon client / AppViewModel bootstrap path and consumes `ui.changes.v3` for live replay when available
-- sync-v2 remains the intact fallback path whenever bootstrap-v3 or changes-v3 is unsupported
+- additive v3 consumer wiring now drives the product AppViewModel local metadata path through `ui.bootstrap.v3` and `ui.changes.v3`
+- product local metadata no longer falls back to sync-v2 when bootstrap-v3 or changes-v3 is unsupported; it degrades to inventory-only plus explicit daemon incompatibility
+- remaining sync-v2 transport/service-boundary/workbench code is compatibility-only until later deletion
 - the current v2 / `ActivityState` render path remains live until the v3 presentation cutover lands
 - the first presentation cutover slice is now sidebar-first:
   - local v3-backed rows keep a parallel `PanePresentationState` cache

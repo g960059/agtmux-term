@@ -13,6 +13,34 @@ Historical progress detail lives in `docs/archive/progress/2026-02-28_to_2026-03
 
 ## Recent Entries
 
+## 2026-03-09 — T-132 landed: product local metadata path no longer falls back to sync-v2
+
+### What landed
+- product `AppViewModel` local metadata bootstrap now requires `ui.bootstrap.v3`
+- product `AppViewModel` local metadata replay now requires `ui.changes.v3`
+- unsupported sync-v3 bootstrap/changes no longer downgrades into the old live sync-v2 overlay path
+- instead, the product path now:
+  - clears cached local overlay state
+  - resets the v3 replay cursor
+  - surfaces explicit daemon incompatibility
+  - keeps visible local rows inventory-only until a healthy sync-v3 bootstrap succeeds again
+- `LocalMetadataTransportBridge` remains in the repo for compatibility-only callers, but the product `AppViewModel` refresh path no longer consumes its sync-v2 fallback entrypoint
+
+### What did not move yet
+- sync-v2 transport/service-boundary/workbench compatibility code still exists
+- the historical `LocalDaemonIssue.incompatibleSyncV2` case name is retained for now even though product-facing text now describes a sync-v3 incompatibility
+- this slice does not delete sync-v2 models, transport, or XPC coverage
+- the broad `AppViewModelA0Tests` suite still contains pre-cutover sync-v2 product assumptions and is now tracked as `T-133`; this slice only updated focused no-fallback product tests
+
+### Verification
+- `swift build`
+- `swift test -q --filter LocalMetadataRefreshCoordinatorTests`
+- `swift test -q --filter AppViewModelA0Tests/testBootstrapV3MethodNotFoundSurfacesIncompatibleDaemonWithoutFallingBackToSyncV2`
+- `swift test -q --filter AppViewModelA0Tests/testChangesV3MethodNotFoundSurfacesIncompatibleDaemonWithoutFallingBackToSyncV2`
+- `swift test -q --filter AppViewModelA0Tests/testBootstrapV3ChangesV3UpsertUpdatesExactRowWithoutWeakeningIdentity`
+- `swift test -q --filter AppViewModelA0Tests/testEmptyBootstrapWithLiveInventoryDoesNotPrimeSyncOwnershipAndLaterHealthyBootstrapRecovers`
+- result: all passed
+
 ## 2026-03-09 — T-131 landed: local metadata async refresh orchestration is isolated behind one coordinator
 
 ### What landed
@@ -44,8 +72,8 @@ Historical progress detail lives in `docs/archive/progress/2026-02-28_to_2026-03
 - `swift build`
 - `swift test -q --filter LocalMetadataRefreshCoordinatorTests`
 - `swift test -q --filter LocalMetadataRefreshBoundaryTests`
-- `swift test -q --filter AppViewModelA0Tests/testBootstrapV3MethodNotFoundFallsBackToSyncV2BootstrapWithoutBreakingOverlay`
-- `swift test -q --filter AppViewModelA0Tests/testChangesV3MethodNotFoundFallsBackToSyncV2AfterBootstrapV3`
+- `swift test -q --filter AppViewModelA0Tests/testBootstrapV3MethodNotFoundSurfacesIncompatibleDaemonWithoutFallingBackToSyncV2`
+- `swift test -q --filter AppViewModelA0Tests/testChangesV3MethodNotFoundSurfacesIncompatibleDaemonWithoutFallingBackToSyncV2`
 - `swift test -q --filter AppViewModelA0Tests/testEmptyBootstrapWithLiveInventoryDoesNotPrimeSyncOwnershipAndLaterHealthyBootstrapRecovers`
 - `swift test -q --filter AppViewModelA0Tests/testBootstrapV3ChangesV3UpsertUpdatesExactRowWithoutWeakeningIdentity`
 - result: all passed
@@ -72,8 +100,8 @@ Historical progress detail lives in `docs/archive/progress/2026-02-28_to_2026-03
 ### Verification
 - `swift build`
 - `swift test -q --filter LocalMetadataRefreshBoundaryTests`
-- `swift test -q --filter AppViewModelA0Tests/testBootstrapV3MethodNotFoundFallsBackToSyncV2BootstrapWithoutBreakingOverlay`
-- `swift test -q --filter AppViewModelA0Tests/testChangesV3MethodNotFoundFallsBackToSyncV2AfterBootstrapV3`
+- `swift test -q --filter AppViewModelA0Tests/testBootstrapV3MethodNotFoundSurfacesIncompatibleDaemonWithoutFallingBackToSyncV2`
+- `swift test -q --filter AppViewModelA0Tests/testChangesV3MethodNotFoundSurfacesIncompatibleDaemonWithoutFallingBackToSyncV2`
 - `swift test -q --filter AppViewModelA0Tests/testBootstrapV3ChangesV3UpsertUpdatesExactRowWithoutWeakeningIdentity`
 - `swift test -q --filter AppViewModelA0Tests/testEmptyBootstrapWithLiveInventoryDoesNotPrimeSyncOwnershipAndLaterHealthyBootstrapRecovers`
 - result: all passed
@@ -108,8 +136,8 @@ Historical progress detail lives in `docs/archive/progress/2026-02-28_to_2026-03
 ### Verification
 - `swift build`
 - `swift test -q --filter LocalMetadataOverlayStoreTests`
-- `swift test -q --filter AppViewModelA0Tests/testBootstrapV3MethodNotFoundFallsBackToSyncV2BootstrapWithoutBreakingOverlay`
-- `swift test -q --filter AppViewModelA0Tests/testChangesV3MethodNotFoundFallsBackToSyncV2AfterBootstrapV3`
+- `swift test -q --filter AppViewModelA0Tests/testBootstrapV3MethodNotFoundSurfacesIncompatibleDaemonWithoutFallingBackToSyncV2`
+- `swift test -q --filter AppViewModelA0Tests/testChangesV3MethodNotFoundSurfacesIncompatibleDaemonWithoutFallingBackToSyncV2`
 - `swift test -q --filter AppViewModelA0Tests/testBootstrapV3ChangesV3UpsertUpdatesExactRowWithoutWeakeningIdentity`
 - result: all passed
 
@@ -136,8 +164,8 @@ Historical progress detail lives in `docs/archive/progress/2026-02-28_to_2026-03
 ### Verification
 - `swift build`
 - `swift test -q --filter LocalMetadataTransportBridgeTests`
-- `swift test -q --filter AppViewModelA0Tests/testBootstrapV3MethodNotFoundFallsBackToSyncV2BootstrapWithoutBreakingOverlay`
-- `swift test -q --filter AppViewModelA0Tests/testChangesV3MethodNotFoundFallsBackToSyncV2AfterBootstrapV3`
+- `swift test -q --filter AppViewModelA0Tests/testBootstrapV3MethodNotFoundSurfacesIncompatibleDaemonWithoutFallingBackToSyncV2`
+- `swift test -q --filter AppViewModelA0Tests/testChangesV3MethodNotFoundSurfacesIncompatibleDaemonWithoutFallingBackToSyncV2`
 - result: all passed
 
 ## 2026-03-09 — T-127 landed: product-facing legacy pane collapse is now isolated behind one shared display adapter

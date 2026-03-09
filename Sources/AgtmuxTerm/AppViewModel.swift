@@ -23,6 +23,9 @@ struct SessionGroup: Identifiable {
 
 enum LocalDaemonIssue: Equatable {
     case localDaemonUnavailable(detail: String)
+    // Historical case name retained until the remaining compat-only sync-v2
+    // code is deleted. Product-facing surfacing now uses this for any local
+    // sync metadata incompatibility, including missing sync-v3 support.
     case incompatibleSyncV2(detail: String)
 
     var bannerTitle: String {
@@ -39,7 +42,7 @@ enum LocalDaemonIssue: Equatable {
         case .localDaemonUnavailable:
             return "No local agtmux daemon runtime is configured. Pane rows below are from local tmux inventory only. Use the bundled app runtime or set AGTMUX_BIN."
         case .incompatibleSyncV2:
-            return "This agtmux daemon is incompatible with the current sync metadata contract. Pane rows below are from local tmux inventory only. Restart with a newer daemon."
+            return "This agtmux daemon is incompatible with the current sync-v3 metadata contract. Pane rows below are from local tmux inventory only. Restart with a newer daemon."
         }
     }
 
@@ -48,7 +51,7 @@ enum LocalDaemonIssue: Equatable {
         case .localDaemonUnavailable:
             return "Local agtmux daemon runtime is unavailable. Use the bundled app runtime or set AGTMUX_BIN."
         case .incompatibleSyncV2:
-            return "This agtmux daemon is incompatible with the current sync metadata contract. Restart with a newer daemon."
+            return "This agtmux daemon is incompatible with the current sync-v3 metadata contract. Restart with a newer daemon."
         }
     }
 
@@ -319,6 +322,15 @@ final class AppViewModel: ObservableObject {
     private func classifyLocalDaemonIssue(from error: any Error) -> LocalDaemonIssue? {
         if let overlayError = error as? LocalMetadataOverlayError {
             return .incompatibleSyncV2(detail: overlayError.errorDescription ?? String(describing: overlayError))
+        }
+
+        if let metadataError = error as? LocalMetadataClientError {
+            switch metadataError {
+            case let .unsupportedMethod(method):
+                return .incompatibleSyncV2(
+                    detail: "agtmux daemon does not expose required sync metadata RPC method \(method)"
+                )
+            }
         }
 
         if let daemonError = error as? DaemonError {

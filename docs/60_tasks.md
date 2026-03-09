@@ -226,6 +226,34 @@ Commit closeout is clear; next implementation proceeds on the new Workbench path
   - [x] focused tests lock both v3-backed and legacy-fallback display behavior
   - [x] v2 transport/workbench compatibility and fallback remain intact
 
+### T-132 — product local metadata path requires sync-v3
+- **Status**: DONE
+- **Priority**: P1
+- **Depends**: T-131
+- **Owner**: term implementation agent
+- **Description**:
+  - Remove sync-v2 fallback from the product `AppViewModel` local metadata refresh/bootstrap path while leaving transport/service-boundary/workbench compatibility code alive.
+  - Unsupported `ui.bootstrap.v3` / `ui.changes.v3` must now surface a product-facing daemon incompatibility instead of silently downgrading the live overlay path.
+- **Acceptance Criteria**:
+  - [x] product `AppViewModel` local metadata bootstrap uses sync-v3 only
+  - [x] product `AppViewModel` local metadata replay uses sync-v3 changes only
+  - [x] unsupported sync-v3 bootstrap or changes now clears overlay state and surfaces daemon incompatibility instead of falling back to sync-v2
+  - [x] exact-row v3 overlay behavior and live canary assumptions remain intact
+  - [x] remaining sync-v2 code is documented as compatibility-only, not product refresh truth
+
+### T-133 — migrate broad AppViewModel product tests off sync-v2 assumptions
+- **Status**: TODO
+- **Priority**: P1
+- **Depends**: T-132
+- **Owner**: term implementation agent
+- **Description**:
+  - The broad `AppViewModelA0Tests` suite still contains many pre-cutover cases that inject sync-v2-only bootstrap/changes into the product AppViewModel path.
+  - Migrate those product-facing tests to sync-v3 fixtures or move remaining sync-v2 expectations into compat-only suites so the broad product suite matches current product truth.
+- **Acceptance Criteria**:
+  - [ ] broad AppViewModel product tests no longer assume sync-v2 fallback in the product metadata path
+  - [ ] any remaining sync-v2 coverage lives in compat-only transport/service-boundary tests instead of product AppViewModel expectations
+  - [ ] focused no-fallback sync-v3 product tests remain green after the migration
+
 ### T-126 — thin live canary for sync-v3 bootstrap/changes exact-row lane
 - **Status**: DONE
 - **Priority**: P1

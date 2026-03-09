@@ -86,6 +86,10 @@ Mainline product truth is now:
   local metadata refresh state transitions are now isolated behind one helper while the async loop still remains in `AppViewModel`
 - `T-131`
   local metadata async refresh decisions are now isolated behind one coordinator while the `Task` lifecycle still remains in `AppViewModel`
+- `T-132`
+  product local metadata now requires sync-v3; remaining sync-v2 code is compatibility-only
+- `T-133`
+  migrate broad AppViewModel product tests off pre-cutover sync-v2 assumptions
 - `T-087`
   docs compaction and active-context redesign complete
 - `T-076` through `T-084`

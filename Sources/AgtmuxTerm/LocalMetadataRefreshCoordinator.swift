@@ -46,39 +46,8 @@ final class LocalMetadataRefreshCoordinator {
             )
         }
 
-        switch context.transportVersion ?? .v2 {
-        case .v2:
-            let response = try await client.fetchUIChangesV2(limit: context.changeLimit)
-            switch response {
-            case let .changes(payload):
-                return LocalMetadataRefreshExecution(
-                    preApplyLogMessages: [],
-                    replayResetVersions: [],
-                    plan: LocalMetadataRefreshBoundary.publishPlan(
-                        cache: LocalMetadataOverlayCache(
-                            metadataByPaneKey: overlayStore.apply(payload),
-                            presentationByPaneKey: [:]
-                        ),
-                        inventoryCount: context.inventoryCount,
-                        successInterval: context.successInterval,
-                        syncPrimed: true,
-                        transportVersion: .v2,
-                        daemonIssue: nil,
-                        now: now()
-                    ),
-                    postApplyLogMessages: []
-                )
-            case let .resyncRequired(payload):
-                return try await bootstrapExecution(
-                    context: context,
-                    overlayStore: overlayStore,
-                    preApplyLogMessages: [
-                        "sync-v2 resync required; reason=\(payload.reason) epoch=\(payload.currentEpoch) snapshot_seq=\(payload.latestSnapshotSeq)"
-                    ],
-                    additionalResetVersions: [.v2]
-                )
-            }
-        case .v3:
+        switch context.transportVersion ?? .v3 {
+        case .v2, .v3:
             do {
                 let response = try await client.fetchUIChangesV3(limit: context.changeLimit)
                 switch response {
@@ -108,15 +77,7 @@ final class LocalMetadataRefreshCoordinator {
                     )
                 }
             } catch {
-                guard transportBridge.markV3UnsupportedIfNeeded(error) else {
-                    throw error
-                }
-                return try await bootstrapExecution(
-                    context: context,
-                    overlayStore: overlayStore,
-                    preApplyLogMessages: [],
-                    additionalResetVersions: [.v3]
-                )
+                throw error
             }
         }
     }
@@ -148,17 +109,9 @@ final class LocalMetadataRefreshCoordinator {
         preApplyLogMessages: [String],
         additionalResetVersions: [LocalMetadataTransportVersion]
     ) async throws -> LocalMetadataRefreshExecution {
-        let bootstrap = try await transportBridge.fetchBootstrap(using: client)
-        let cache: LocalMetadataOverlayCache
-        switch bootstrap {
-        case .v3(let snapshot):
-            cache = try overlayStore.bootstrapCaches(from: snapshot)
-        case .v2(let snapshot):
-            cache = LocalMetadataOverlayCache(
-                metadataByPaneKey: try overlayStore.bootstrapMetadataMap(from: snapshot.panes),
-                presentationByPaneKey: [:]
-            )
-        }
+        let snapshot = try await transportBridge.fetchRequiredBootstrapV3(using: client)
+        let bootstrap = LocalMetadataBootstrapSnapshot.v3(snapshot)
+        let cache = try overlayStore.bootstrapCaches(from: snapshot)
 
         switch LocalMetadataRefreshBoundary.bootstrapResult(
             from: bootstrap,
@@ -197,13 +150,7 @@ final class LocalMetadataRefreshCoordinator {
     }
 
     private func activeReplayResetVersion(for transportVersion: LocalMetadataTransportVersion?) -> LocalMetadataTransportVersion {
-        switch transportVersion {
-        case .v3:
-            return .v3
-        case .v2:
-            return .v2
-        case nil:
-            return transportBridge.prefersSyncV3 ? .v3 : .v2
-        }
+        _ = transportVersion
+        return .v3
     }
 }

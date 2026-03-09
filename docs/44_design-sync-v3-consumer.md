@@ -117,7 +117,8 @@ The current term rollout is additive bootstrap-v3 plus additive changes-v3.
   - `session_key`
   - `pane_id`
   - `pane_instance_id`
-- sync-v2 remains intact as the fallback path whenever bootstrap-v3 or changes-v3 is unsupported
+- the product `AppViewModel` local metadata path now requires sync-v3; unsupported bootstrap-v3 or changes-v3 clears overlay state and surfaces daemon incompatibility instead of silently falling back
+- remaining sync-v2 transport/service-boundary/workbench code is compatibility-only
 - the current product UI still renders through legacy `AgtmuxPane` / `ActivityState`
 
 The v3 bridge deliberately adapts daemon truth into the existing term-local row model without cutting views over yet.
@@ -156,7 +157,7 @@ The first UI cutover is intentionally small and additive.
   - freshness surfacing
   - AX row summary
 - sidebar `managed` / `attention` filter and badge/count derivation also prefer the presentation cache
-- sync-v2 remains the live fallback, and non-v3-backed rows still use legacy `AgtmuxPane` / `ActivityState`
+- non-v3-backed rows still use legacy `AgtmuxPane` / `ActivityState` only through compat/display adapters; product local metadata refresh itself no longer falls back to sync-v2
 
 This keeps the cutover reviewable:
 
@@ -196,6 +197,7 @@ The next narrowed holdout is the transport-selection layer inside `AppViewModel`
   - `ui.bootstrap.v3` vs `ui.bootstrap.v2` selection
   - sticky downgrade after explicit daemon `sync-v3 method not found`
   - shared classification of unsupported-method errors across direct and XPC clients
+- the product AppViewModel refresh path now uses only the bridge's sync-v3-required entrypoint; the fallback selection remains for compatibility-only callers
 - `AppViewModel` still owns:
   - exact-row cache construction from bootstrap payloads
   - v2/v3 replay application into local overlay caches
@@ -256,9 +258,8 @@ The next narrowed holdout after refresh-state shaping is the one-step async refr
   - bootstrap fetch/result resolution
   - one-step refresh decisions for:
     - initial bootstrap
-    - sync-v2 change polling/resync
     - sync-v3 change polling/resync
-    - sync-v3 unsupported-method fallback back to sync-v2 bootstrap
+    - sync-v3 unsupported-method failure propagation into explicit daemon-incompatible clear/reset execution
     - failure clear/reset execution shaping
 - `AppViewModel` still owns:
   - `Task` allocation/cancellation
@@ -272,4 +273,5 @@ This keeps the remaining seam explicit:
 - exact-row replay/cache construction stays in `LocalMetadataOverlayStore`
 - refresh-state shaping stays in `LocalMetadataRefreshBoundary`
 - async decision orchestration now lives in `LocalMetadataRefreshCoordinator`
+- product local metadata now requires sync-v3; the remaining sync-v2 helper surface is compat-only
 - only the outer `Task` lifecycle and fetch/publish shell remain in `AppViewModel`

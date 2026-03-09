@@ -25,8 +25,17 @@ enum LocalMetadataBootstrapSnapshot {
 /// The daemon remains authoritative for payload truth. This adapter only decides
 /// whether the term client should stay on sync-v3 or drop to sync-v2 when the
 /// daemon explicitly reports that the v3 methods are unavailable.
+///
+/// Product-facing `AppViewModel` refresh no longer consumes the fallback
+/// selection path. It now requires sync-v3 and surfaces incompatibility
+/// explicitly. The fallback entrypoint remains here for compatibility-only
+/// callers until the wider sync-v2 boundary is deleted.
 final class LocalMetadataTransportBridge {
     private(set) var prefersSyncV3 = true
+
+    func fetchRequiredBootstrapV3(using client: any LocalMetadataClient) async throws -> AgtmuxSyncV3Bootstrap {
+        try await client.fetchUIBootstrapV3()
+    }
 
     func fetchBootstrap(using client: any LocalMetadataClient) async throws -> LocalMetadataBootstrapSnapshot {
         if prefersSyncV3 {

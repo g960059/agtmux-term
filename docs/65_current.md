@@ -61,7 +61,7 @@
   - AppViewModel live replay can now consume daemon `ui.changes.v3` additively after a bootstrap-v3 epoch is established
   - bundled XPC service/client expose matching `fetchUIChangesV3()` / `resetUIChangesV3()` transport so packaged app and direct daemon paths stay aligned
   - exact-row update/remove remains strict on `session_name` / `window_id` / `session_key` / `pane_id` / `pane_instance_id`
-  - sync-v2 remains the intact fallback path when bootstrap-v3 or changes-v3 is unsupported
+  - this historical additive bridge slice originally preserved sync-v2 fallback, but the current product path no longer uses it
   - intentional deferral remains:
     - current sidebar/titlebar/filter/count rendering still flows through legacy `AgtmuxPane` / `ActivityState`
 - `T-124` is now closed:
@@ -81,7 +81,7 @@
 - `T-129` is now closed:
   - exact-row local metadata bootstrap-cache construction and v2/v3 replay application now live in `LocalMetadataOverlayStore`
   - `AppViewModel` keeps publish/clear timing and task orchestration, but no longer open-codes the overlay/replay seam itself
-  - exact-row v3 live lane stays on the same helper-backed cache/update path; sync-v2 fallback remains intact
+  - exact-row v3 live lane stays on the same helper-backed cache/update path
 - `T-130` is now closed:
   - bootstrap-not-ready defer handling and publish/clear cache state transitions now live in `LocalMetadataRefreshBoundary`
   - `AppViewModel` keeps the async refresh loop, replay resets, and snapshot publication orchestration, but no longer open-codes that refresh-state seam
@@ -90,6 +90,13 @@
   - the remaining local metadata async refresh decision body now lives in `LocalMetadataRefreshCoordinator`
   - bootstrap fetch/result resolution, replay reset selection, and one-step v2/v3 refresh decisions no longer live directly in `AppViewModel`
   - `AppViewModel` still owns the `Task` lifecycle, scheduling guards, and top-level fetch/publish orchestration
+- `T-132` is now closed:
+  - the product `AppViewModel` local metadata path now requires sync-v3 for both bootstrap and changes
+  - unsupported `ui.bootstrap.v3` / `ui.changes.v3` now clears local overlay state and surfaces daemon incompatibility instead of silently downgrading to sync-v2
+  - remaining sync-v2 transport/service-boundary/workbench code is compatibility-only
+- `T-133` is now open:
+  - broad `AppViewModelA0Tests` still contains pre-cutover sync-v2 product assumptions
+  - those tests must be migrated to sync-v3 fixtures or split into compat-only suites so the broad product suite matches current product truth
 - `T-116` is now open:
   - metadata-enabled health-strip UI and pane-sync UI both reach their real assertions
   - upstream producer truth is now present in the same failing plain-zsh Codex lane:
@@ -130,7 +137,7 @@
 - `Workbench = app-owned saved layout`
 - browser/document companion surfaces are explicit
 - shipped product path must not create or depend on hidden linked sessions
-- local managed/provider/activity overlay target contract remains exact sync-v2 identity (`session_key` + `pane_instance_id`) with whole-epoch fail-closed behavior on invalid rows
+- local managed/provider/activity overlay target contract remains exact sync-v3 identity (`session_key` + `pane_instance_id`) with whole-epoch fail-closed behavior on invalid rows
 - `session_key` is now treated as opaque overlay identity, not as a visible tmux session alias
 - same-session pane selection must reuse the existing session tile and navigate it to the requested pane/window without reviving linked-session behavior
 - same-session pane selection and terminal-originated pane changes must converge through one reducer-owned runtime pane state with desired/observed separation
@@ -183,7 +190,7 @@
 - a thin live sync-v3 gate canary now exists below XCUITest:
   - it uses a real daemon/runtime lane
   - it proves `AppViewModel` bootstraps on `ui.bootstrap.v3`, polls `ui.changes.v3`, and updates the same exact local row through `PanePresentationState`
-  - sync-v2 remains intact as the fallback path if daemon support disappears
+  - if daemon support disappears, the product path now degrades to inventory-only plus explicit daemon incompatibility instead of falling back to sync-v2
 - the product-facing legacy boundary is narrower:
   - sidebar rows, sidebar badges/counts, row accessibility summaries, and UI-test sidebar snapshots now consume one shared `PaneDisplayState` adapter
   - legacy `ActivityState` collapse is still present, but it is no longer reimplemented independently across those UI consumers
@@ -193,9 +200,9 @@
     - workbench/runtime structs that still store `AgtmuxSyncV2PaneInstanceID`
 - AppViewModel's local metadata bootstrap fallback is also narrower:
   - sync-v3/v2 bootstrap selection and `method not found` downgrade classification now live in `LocalMetadataTransportBridge`
+  - the product refresh loop now consumes only sync-v3 and treats sync-v2 helpers as compat-only
   - AppViewModel still owns:
-    - exact-row overlay cache construction
-    - v2/v3 change application
+    - top-level fetch/publish orchestration
     - publish / clear / not-ready handling
 - same-session multi-view is out of MVP
 
