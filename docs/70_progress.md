@@ -12,8 +12,22 @@ Historical progress detail lives in `docs/archive/progress/2026-02-28_to_2026-03
 - current follow-up boundary is explicit: if a fresh live disagreement appears, validate daemon payload truth before reopening the term consumer
 - the broad `AppViewModelA0Tests` product suite now matches the sync-v3-only product path; remaining sync-v2 assumptions are compat-only
 - `LocalMetadataTransportBridge` now exposes only the required sync-v3 bootstrap passthrough; the dead sync-v3->v2 fallback selector surface has been removed
+- the product-facing daemon incompatibility identity is now `LocalDaemonIssue.incompatibleMetadataProtocol`; current product text no longer implies a sync-v2-specific issue
 
 ## Recent Entries
+
+## 2026-03-09 — T-135 landed: product-facing daemon incompatibility naming matches sync-v3 reality
+
+### What landed
+- renamed the stale product-facing issue identity from `LocalDaemonIssue.incompatibleSyncV2` to `LocalDaemonIssue.incompatibleMetadataProtocol`
+- updated current product banners / empty-state text so the issue is described as incompatible local sync-v3 metadata protocol rather than a sync-v2-specific mismatch
+- updated restore-path mapping and focused UI/product tests to use the renamed issue consistently
+
+### Verification
+- `swift build`
+- `swift test -q --filter AppViewModelA0Tests`
+- `swift test -q --filter WorkbenchV2TerminalRestoreTests`
+- result: all passed
 
 ## 2026-03-09 — T-134 landed: remove dead sync-v3->v2 fallback selector from LocalMetadataTransportBridge
 
@@ -73,7 +87,6 @@ Historical progress detail lives in `docs/archive/progress/2026-02-28_to_2026-03
 
 ### What did not move yet
 - sync-v2 transport/service-boundary/workbench compatibility code still exists
-- the historical `LocalDaemonIssue.incompatibleSyncV2` case name is retained for now even though product-facing text now describes a sync-v3 incompatibility
 - this slice does not delete sync-v2 models, transport, or XPC coverage
 - the broad `AppViewModelA0Tests` suite still contains pre-cutover sync-v2 product assumptions and is now tracked as `T-133`; this slice only updated focused no-fallback product tests
 

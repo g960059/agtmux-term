@@ -927,7 +927,7 @@ final class AgtmuxTermUITests: XCTestCase {
         )
 
         XCTAssertTrue(
-            app.staticTexts["Local daemon incompatible"]
+            app.staticTexts["Local metadata incompatible"]
                 .waitForExistence(timeout: TestConstants.focusSyncLatencyBudget),
             "Legacy session_id payload must surface an incompatible local daemon banner"
         )

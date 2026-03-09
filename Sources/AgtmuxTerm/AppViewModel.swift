@@ -23,17 +23,14 @@ struct SessionGroup: Identifiable {
 
 enum LocalDaemonIssue: Equatable {
     case localDaemonUnavailable(detail: String)
-    // Historical case name retained until the remaining compat-only sync-v2
-    // code is deleted. Product-facing surfacing now uses this for any local
-    // sync metadata incompatibility, including missing sync-v3 support.
-    case incompatibleSyncV2(detail: String)
+    case incompatibleMetadataProtocol(detail: String)
 
     var bannerTitle: String {
         switch self {
         case .localDaemonUnavailable:
             return "Local daemon unavailable"
-        case .incompatibleSyncV2:
-            return "Local daemon incompatible"
+        case .incompatibleMetadataProtocol:
+            return "Local metadata incompatible"
         }
     }
 
@@ -41,8 +38,8 @@ enum LocalDaemonIssue: Equatable {
         switch self {
         case .localDaemonUnavailable:
             return "No local agtmux daemon runtime is configured. Pane rows below are from local tmux inventory only. Use the bundled app runtime or set AGTMUX_BIN."
-        case .incompatibleSyncV2:
-            return "This agtmux daemon is incompatible with the current sync-v3 metadata contract. Pane rows below are from local tmux inventory only. Restart with a newer daemon."
+        case .incompatibleMetadataProtocol:
+            return "This agtmux daemon is incompatible with the current sync-v3 metadata protocol. Pane rows below are from local tmux inventory only. Restart with a newer daemon."
         }
     }
 
@@ -50,8 +47,8 @@ enum LocalDaemonIssue: Equatable {
         switch self {
         case .localDaemonUnavailable:
             return "Local agtmux daemon runtime is unavailable. Use the bundled app runtime or set AGTMUX_BIN."
-        case .incompatibleSyncV2:
-            return "This agtmux daemon is incompatible with the current sync-v3 metadata contract. Restart with a newer daemon."
+        case .incompatibleMetadataProtocol:
+            return "This agtmux daemon is incompatible with the current sync-v3 metadata protocol. Restart with a newer daemon."
         }
     }
 
@@ -59,7 +56,7 @@ enum LocalDaemonIssue: Equatable {
         switch self {
         case let .localDaemonUnavailable(detail):
             return detail
-        case let .incompatibleSyncV2(detail):
+        case let .incompatibleMetadataProtocol(detail):
             return detail
         }
     }
@@ -321,13 +318,13 @@ final class AppViewModel: ObservableObject {
 
     private func classifyLocalDaemonIssue(from error: any Error) -> LocalDaemonIssue? {
         if let overlayError = error as? LocalMetadataOverlayError {
-            return .incompatibleSyncV2(detail: overlayError.errorDescription ?? String(describing: overlayError))
+            return .incompatibleMetadataProtocol(detail: overlayError.errorDescription ?? String(describing: overlayError))
         }
 
         if let metadataError = error as? LocalMetadataClientError {
             switch metadataError {
             case let .unsupportedMethod(method):
-                return .incompatibleSyncV2(
+                return .incompatibleMetadataProtocol(
                     detail: "agtmux daemon does not expose required sync metadata RPC method \(method)"
                 )
             }
@@ -362,7 +359,7 @@ final class AppViewModel: ObservableObject {
             return makeLocalDaemonUnavailableIssue(detail: description)
         }
 
-        let referencesSyncV2Contract =
+        let referencesMetadataProtocol =
             normalized.contains("ui.bootstrap.v2") ||
             normalized.contains("ui.changes.v2") ||
             normalized.contains("agtmux_ui_bootstrap_v2_json") ||
@@ -391,10 +388,10 @@ final class AppViewModel: ObservableObject {
             normalized.contains("mismatched pane instance") ||
             normalized.contains("unknown exact pane")
 
-        guard referencesSyncV2Contract, indicatesIncompatibleMethod || indicatesMissingExactIdentity else {
+        guard referencesMetadataProtocol, indicatesIncompatibleMethod || indicatesMissingExactIdentity else {
             return nil
         }
-        return .incompatibleSyncV2(detail: description)
+        return .incompatibleMetadataProtocol(detail: description)
     }
 
     private func makeLocalDaemonUnavailableIssue(detail: String? = nil) -> LocalDaemonIssue {

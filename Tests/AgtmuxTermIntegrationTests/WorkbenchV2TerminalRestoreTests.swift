@@ -93,7 +93,7 @@ final class WorkbenchV2TerminalRestoreTests: XCTestCase {
             hostsConfig: .empty,
             panes: [],
             offlineHostnames: [],
-            localDaemonIssue: .incompatibleSyncV2(detail: "old protocol")
+            localDaemonIssue: .incompatibleMetadataProtocol(detail: "old protocol")
         )
 
         XCTAssertEqual(issue, .daemonIncompatible("old protocol"))

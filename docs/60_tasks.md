@@ -268,6 +268,19 @@ Commit closeout is clear; next implementation proceeds on the new Workbench path
   - [x] bridge tests cover only the remaining required-v3 bootstrap passthrough/error propagation
   - [x] product no-fallback and coordinator tests remain green after the cleanup
 
+### T-135 — rename stale product-facing local daemon incompatibility naming
+- **Status**: DONE
+- **Priority**: P2
+- **Depends**: T-134
+- **Owner**: Orchestrator (direct implementation)
+- **Description**:
+  - The product metadata path now requires sync-v3, so `LocalDaemonIssue.incompatibleSyncV2` is stale and misleading.
+  - Rename the product-facing issue identity to match current reality without deleting broader sync-v2 compatibility code.
+- **Acceptance Criteria**:
+  - [x] the product-facing enum case is renamed to reflect incompatible metadata protocol rather than sync-v2 specifically
+  - [x] banner / empty-state text and restore-path mappings use the renamed product issue identity consistently
+  - [x] focused tests and current tracking docs no longer present the product issue as specifically a sync-v2 incompatibility
+
 ### T-126 — thin live canary for sync-v3 bootstrap/changes exact-row lane
 - **Status**: DONE
 - **Priority**: P1

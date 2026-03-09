@@ -104,6 +104,9 @@
   - `LocalMetadataTransportBridge` no longer carries the dead sync-v3->v2 fallback selector surface
   - the bridge now only exposes the required-v3 bootstrap passthrough used by product refresh code
   - remaining sync-v2 transport compatibility lives outside that bridge cleanup slice
+- `T-135` is now closed:
+  - the product-facing daemon incompatibility issue is now named `incompatibleMetadataProtocol`
+  - current banners / empty states no longer imply that the product issue is specifically a sync-v2 incompatibility
 - `T-116` is now open:
   - metadata-enabled health-strip UI and pane-sync UI both reach their real assertions
   - upstream producer truth is now present in the same failing plain-zsh Codex lane:

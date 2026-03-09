@@ -1984,7 +1984,7 @@ final class AppViewModelA0Tests: XCTestCase {
         }
         XCTAssertTrue(surfaced, "explicit sync-v3 incompatibility should be surfaced in UI state")
 
-        guard case let .incompatibleSyncV2(detail)? = model.localDaemonIssue else {
+        guard case let .incompatibleMetadataProtocol(detail)? = model.localDaemonIssue else {
             return XCTFail("expected incompatible local daemon issue")
         }
         XCTAssertTrue(detail.contains("ui.bootstrap.v3"))
@@ -2021,7 +2021,7 @@ final class AppViewModelA0Tests: XCTestCase {
         }
         XCTAssertTrue(surfaced, "missing exact identity must be surfaced in UI state")
 
-        guard case let .incompatibleSyncV2(detail)? = model.localDaemonIssue else {
+        guard case let .incompatibleMetadataProtocol(detail)? = model.localDaemonIssue else {
             return XCTFail("expected incompatible local daemon issue")
         }
         XCTAssertTrue(detail.contains("session_key"))
@@ -2057,7 +2057,7 @@ final class AppViewModelA0Tests: XCTestCase {
         }
         XCTAssertTrue(surfaced, "missing exact sync-v2 identity must surface as incompatible")
 
-        guard case let .incompatibleSyncV2(detail)? = model.localDaemonIssue else {
+        guard case let .incompatibleMetadataProtocol(detail)? = model.localDaemonIssue else {
             return XCTFail("expected incompatible local daemon issue for missing exact identity")
         }
         XCTAssertTrue(
@@ -2113,7 +2113,7 @@ final class AppViewModelA0Tests: XCTestCase {
         XCTAssertEqual(panesBySession["vm agtmux-term"]?.activityState, .unknown)
         XCTAssertEqual(panesBySession["vm agtmux-term"]?.currentCmd, "node")
 
-        guard case let .incompatibleSyncV2(detail)? = model.localDaemonIssue else {
+        guard case let .incompatibleMetadataProtocol(detail)? = model.localDaemonIssue else {
             return XCTFail("expected incompatible local daemon issue for legacy bootstrap sample")
         }
         XCTAssertTrue(detail.contains("ui.bootstrap.v3"))
@@ -2181,7 +2181,7 @@ final class AppViewModelA0Tests: XCTestCase {
 
         await model.fetchAll()
         let initialIssueSurfaced = await waitUntil {
-            if case .incompatibleSyncV2? = model.localDaemonIssue {
+            if case .incompatibleMetadataProtocol? = model.localDaemonIssue {
                 return true
             }
             return false
@@ -2254,7 +2254,7 @@ final class AppViewModelA0Tests: XCTestCase {
         await model.fetchAll()
 
         let incompatibleSurfaced = await waitUntil {
-            guard case .incompatibleSyncV2? = model.localDaemonIssue else { return false }
+            guard case .incompatibleMetadataProtocol? = model.localDaemonIssue else { return false }
             return model.panes.first?.presence == .unmanaged
         }
         XCTAssertTrue(incompatibleSurfaced, "initial incompatible bootstrap must fail closed to inventory-only")
@@ -2432,7 +2432,7 @@ final class AppViewModelA0Tests: XCTestCase {
 
         await model.fetchAll()
         let initialIssueSurfaced = await waitUntil {
-            if case .incompatibleSyncV2? = model.localDaemonIssue {
+            if case .incompatibleMetadataProtocol? = model.localDaemonIssue {
                 return true
             }
             return false
@@ -2567,7 +2567,7 @@ final class AppViewModelA0Tests: XCTestCase {
 
         let inventoryOnly = await waitUntil(timeout: 5.0, intervalMs: 50) {
             guard let pane = model.panes.first else { return false }
-            guard case .incompatibleSyncV2? = model.localDaemonIssue else { return false }
+            guard case .incompatibleMetadataProtocol? = model.localDaemonIssue else { return false }
             return pane.presence == .unmanaged
                 && pane.provider == nil
                 && pane.activityState == .unknown
@@ -2578,7 +2578,7 @@ final class AppViewModelA0Tests: XCTestCase {
             "an incompatible resync bootstrap must clear stale managed overlay before the next published sidebar truth"
         )
 
-        guard case let .incompatibleSyncV2(detail)? = model.localDaemonIssue else {
+        guard case let .incompatibleMetadataProtocol(detail)? = model.localDaemonIssue else {
             return XCTFail("expected incompatible local daemon issue after invalid resync bootstrap")
         }
         XCTAssertTrue(detail.contains("session_id"))
@@ -2619,7 +2619,7 @@ final class AppViewModelA0Tests: XCTestCase {
         XCTAssertEqual(model.panes.first?.activityState, .unknown)
         XCTAssertEqual(model.panes.first?.currentCmd, "zsh")
 
-        guard case let .incompatibleSyncV2(detail)? = model.localDaemonIssue else {
+        guard case let .incompatibleMetadataProtocol(detail)? = model.localDaemonIssue else {
             return XCTFail("expected incompatible local daemon issue for mixed-era bootstrap sample")
         }
         XCTAssertTrue(detail.contains("ui.bootstrap.v3"))
@@ -2661,7 +2661,7 @@ final class AppViewModelA0Tests: XCTestCase {
         XCTAssertEqual(model.panes.first?.activityState, .unknown)
         XCTAssertEqual(model.panes.first?.currentCmd, "zsh")
 
-        guard case let .incompatibleSyncV2(detail)? = model.localDaemonIssue else {
+        guard case let .incompatibleMetadataProtocol(detail)? = model.localDaemonIssue else {
             return XCTFail("expected incompatible local daemon issue for live March 7 mixed-era sample")
         }
         XCTAssertTrue(detail.contains("session_id"))
@@ -2702,7 +2702,7 @@ final class AppViewModelA0Tests: XCTestCase {
         XCTAssertEqual(model.panes.first?.activityState, .unknown)
         XCTAssertEqual(model.panes.first?.currentCmd, "node")
 
-        guard case let .incompatibleSyncV2(detail)? = model.localDaemonIssue else {
+        guard case let .incompatibleMetadataProtocol(detail)? = model.localDaemonIssue else {
             return XCTFail("expected incompatible local daemon issue for null exact-location bootstrap sample")
         }
         XCTAssertTrue(detail.contains("ui.bootstrap.v3"))
@@ -2779,7 +2779,7 @@ final class AppViewModelA0Tests: XCTestCase {
         XCTAssertEqual(model.panes.first?.activityState, .unknown)
         XCTAssertEqual(model.panes.first?.currentCmd, "zsh")
 
-        guard case let .incompatibleSyncV2(detail)? = model.localDaemonIssue else {
+        guard case let .incompatibleMetadataProtocol(detail)? = model.localDaemonIssue else {
             return XCTFail("expected incompatible local daemon issue for bootstrap location collision")
         }
         XCTAssertTrue(detail.contains("ui.bootstrap.v2"))
@@ -3910,7 +3910,7 @@ final class AppViewModelA0Tests: XCTestCase {
 
         let incompatibleSurfaced = await waitUntil {
             guard let pane = model.panes.first else { return false }
-            guard case .incompatibleSyncV2? = model.localDaemonIssue else { return false }
+            guard case .incompatibleMetadataProtocol? = model.localDaemonIssue else { return false }
             return pane.provider == nil
                 && pane.presence == .unmanaged
                 && pane.activityState == .unknown
@@ -4077,7 +4077,7 @@ final class AppViewModelA0Tests: XCTestCase {
 
         let incompatibleSurfaced = await waitUntil {
             guard let pane = model.panes.first else { return false }
-            guard case .incompatibleSyncV2? = model.localDaemonIssue else { return false }
+            guard case .incompatibleMetadataProtocol? = model.localDaemonIssue else { return false }
             return pane.provider == nil
                 && pane.activityState == .unknown
                 && pane.metadataSessionKey == nil

@@ -66,7 +66,7 @@ enum WorkbenchV2TerminalRestoreIssue: Equatable {
                 switch localDaemonIssue {
                 case .localDaemonUnavailable(let detail):
                     return .daemonUnavailable(detail)
-                case .incompatibleSyncV2(let detail):
+                case .incompatibleMetadataProtocol(let detail):
                     return .daemonIncompatible(detail)
                 }
             }

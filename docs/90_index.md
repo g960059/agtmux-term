@@ -92,6 +92,8 @@ Mainline product truth is now:
   broad AppViewModel product tests now match the sync-v3-only product path; remaining sync-v2 assertions are compat-only
 - `T-134`
   dead sync-v3->v2 fallback selector surface is removed from `LocalMetadataTransportBridge`
+- `T-135`
+  product-facing daemon incompatibility naming now matches the sync-v3 metadata protocol path
 - `T-087`
   docs compaction and active-context redesign complete
 - `T-076` through `T-084`
