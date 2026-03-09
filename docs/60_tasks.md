@@ -423,6 +423,18 @@ Commit closeout is clear; next implementation proceeds on the new Workbench path
   - [x] compat-only helper owns the mapping from `PanePresentationState` to `ActivityState`
   - [x] focused core/integration tests prove the unchanged compat row behavior
 
+### T-147 — isolate legacy needs-attention compat collapse
+- **Status**: DONE
+- **Priority**: P3
+- **Depends**: T-145
+- **Owner**: term implementation agent
+- **Description**:
+  - Keep `PaneDisplayState` presentation-first while moving its fallback `ActivityState` → `needsAttention` collapse into an explicit compat-only helper.
+- **Acceptance Criteria**:
+  - [x] `PaneDisplayState` fallback path no longer relies on `AgtmuxPane.needsAttention`
+  - [x] `PaneDisplayCompatFallback` owns legacy `ActivityState` → `needsAttention` collapse
+  - [x] focused core tests cover the extracted seam and unchanged display behavior
+
 ### T-126 — thin live canary for sync-v3 bootstrap/changes exact-row lane
 - **Status**: DONE
 - **Priority**: P1

@@ -11,6 +11,15 @@ final class PaneDisplayCompatFallbackTests: XCTestCase {
         XCTAssertEqual(PaneDisplayCompatFallback.primaryState(from: .unknown), .inactive)
     }
 
+    func testMapsLegacyActivityStateToNeedsAttention() {
+        XCTAssertFalse(PaneDisplayCompatFallback.needsAttention(from: .running))
+        XCTAssertTrue(PaneDisplayCompatFallback.needsAttention(from: .waitingApproval))
+        XCTAssertTrue(PaneDisplayCompatFallback.needsAttention(from: .waitingInput))
+        XCTAssertTrue(PaneDisplayCompatFallback.needsAttention(from: .error))
+        XCTAssertFalse(PaneDisplayCompatFallback.needsAttention(from: .idle))
+        XCTAssertFalse(PaneDisplayCompatFallback.needsAttention(from: .unknown))
+    }
+
     func testManagedFreshnessTextUsesLegacyAgeCollapseButRunningStaysNil() {
         let idlePane = AgtmuxPane(
             source: "local",
@@ -37,5 +46,7 @@ final class PaneDisplayCompatFallbackTests: XCTestCase {
 
         XCTAssertEqual(PaneDisplayCompatFallback.freshnessText(for: idlePane), "18s")
         XCTAssertNil(PaneDisplayCompatFallback.freshnessText(for: runningPane))
+        XCTAssertTrue(PaneDisplayCompatFallback.needsAttention(for: idlePane))
+        XCTAssertFalse(PaneDisplayCompatFallback.needsAttention(for: runningPane))
     }
 }

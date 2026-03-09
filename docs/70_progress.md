@@ -16,6 +16,20 @@ Historical progress detail lives in `docs/archive/progress/2026-02-28_to_2026-03
 
 ## Recent Entries
 
+## 2026-03-09 — T-147 landed: legacy needs-attention collapse is now explicit
+
+### What landed
+- extracted legacy `ActivityState` → `needsAttention` collapse into `PaneDisplayCompatFallback`
+- `PaneDisplayState` fallback now uses the compat helper instead of `AgtmuxPane.needsAttention`
+- preserved existing display/accessibility-visible behavior
+
+### Verification
+- `swift build`
+- `swift test -q --filter PaneDisplayCompatFallbackTests`
+- `swift test -q --filter PaneDisplayStateTests`
+- `swift test -q --filter PaneRowAccessibilityTests`
+- result: all passed
+
 ## 2026-03-09 — T-146 landed: metadata overlay compat collapse is now explicit
 
 ### What landed

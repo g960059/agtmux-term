@@ -186,7 +186,7 @@ Before full compatibility cleanup, product-facing consumers should read one shar
   - badge/count derivation
   - row accessibility summaries
   - UI-test sidebar presentation snapshots
-- `PaneDisplayCompatFallback` now owns the compatibility-only collapse from legacy `ActivityState` into `PanePresentationPrimaryState` / freshness text when no v3 presentation is available
+- `PaneDisplayCompatFallback` now owns the compatibility-only collapse from legacy `ActivityState` into `PanePresentationPrimaryState` / freshness text / attention when no v3 presentation is available
 - `PaneMetadataCompatFallback` now owns the compatibility-only collapse from `PanePresentationState` back into legacy `ActivityState` when sync-v3 overlays still have to materialize compat `AgtmuxPane` rows
 - remaining compatibility fields still live behind that adapter:
   - `AgtmuxPane.activityState`

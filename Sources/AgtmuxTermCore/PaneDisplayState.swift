@@ -29,7 +29,7 @@ package struct PaneDisplayState: Equatable, Sendable {
         self.primaryState = legacyPrimary
         self.freshnessText = PaneDisplayCompatFallback.freshnessText(for: pane)
         self.isManaged = pane.isManaged
-        self.needsAttention = pane.needsAttention
+        self.needsAttention = PaneDisplayCompatFallback.needsAttention(for: pane)
     }
 
     private static func primaryState(from pane: AgtmuxPane, presentation: PanePresentationState) -> PanePresentationPrimaryState {

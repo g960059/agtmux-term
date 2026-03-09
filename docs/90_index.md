@@ -116,6 +116,8 @@ Mainline product truth is now:
   `PaneDisplayState` now reads legacy `ActivityState` collapse through explicit compat helper `PaneDisplayCompatFallback`
 - `T-146`
   `LocalMetadataOverlayStore` now reads `PanePresentationState` → `ActivityState` collapse through explicit compat helper `PaneMetadataCompatFallback`
+- `T-147`
+  `PaneDisplayState` now reads legacy `ActivityState` → `needsAttention` collapse through explicit compat helper `PaneDisplayCompatFallback`
 - `T-087`
   docs compaction and active-context redesign complete
 - `T-076` through `T-084`

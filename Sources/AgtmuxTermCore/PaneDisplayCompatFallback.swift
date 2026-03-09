@@ -7,6 +7,10 @@ package enum PaneDisplayCompatFallback {
         primaryState(from: pane.activityState)
     }
 
+    package static func needsAttention(for pane: AgtmuxPane) -> Bool {
+        needsAttention(from: pane.activityState)
+    }
+
     package static func primaryState(from activityState: ActivityState) -> PanePresentationPrimaryState {
         switch activityState {
         case .running:
@@ -22,6 +26,12 @@ package enum PaneDisplayCompatFallback {
         case .unknown:
             return .inactive
         }
+    }
+
+    package static func needsAttention(from activityState: ActivityState) -> Bool {
+        activityState == .waitingApproval
+            || activityState == .waitingInput
+            || activityState == .error
     }
 
     package static func freshnessText(for pane: AgtmuxPane) -> String? {

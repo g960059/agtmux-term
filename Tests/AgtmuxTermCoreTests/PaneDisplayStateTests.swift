@@ -19,6 +19,7 @@ final class PaneDisplayStateTests: XCTestCase {
 
         XCTAssertEqual(PaneDisplayCompatFallback.primaryState(for: pane), .waitingUserInput)
         XCTAssertEqual(PaneDisplayCompatFallback.freshnessText(for: pane), "18s")
+        XCTAssertTrue(PaneDisplayCompatFallback.needsAttention(for: pane))
         XCTAssertEqual(display.provider, .codex)
         XCTAssertEqual(display.presence, .managed)
         XCTAssertEqual(display.primaryState, .waitingUserInput)
