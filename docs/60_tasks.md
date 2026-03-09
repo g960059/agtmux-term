@@ -155,6 +155,20 @@ Commit closeout is clear; next implementation proceeds on the new Workbench path
 
 ## Recently Closed
 
+### T-128 — isolate local metadata transport/fallback selection behind a small bridge
+- **Status**: DONE
+- **Priority**: P1
+- **Depends**: T-127
+- **Owner**: Orchestrator (direct implementation)
+- **Description**:
+  - Narrow AppViewModel's direct knowledge of sync-v3/v2 bootstrap fallback without changing overlay semantics.
+  - Keep overlay application, publish, and exact-row merge in AppViewModel for now, but move transport selection and unsupported-method fallback classification into one helper.
+- **Acceptance Criteria**:
+  - [x] local metadata bootstrap transport selection is isolated behind one helper
+  - [x] sync-v3 unsupported-method fallback classification is no longer open-coded inside AppViewModel
+  - [x] exact-row overlay behavior and v2 fallback semantics stay unchanged
+  - [x] focused tests cover the extracted bridge plus the existing AppViewModel fallback regressions
+
 ### T-127 — isolate product-facing legacy pane collapse behind a display adapter
 - **Status**: DONE
 - **Priority**: P1

@@ -187,3 +187,19 @@ Before full compatibility cleanup, product-facing consumers should read one shar
   - `AgtmuxSyncV2PaneInstanceID`
 
 This keeps future v3 cleanup reviewable by shrinking the number of UI consumers that directly depend on collapsed legacy state.
+
+## Local Metadata Transport Boundary
+
+The next narrowed holdout is the transport-selection layer inside `AppViewModel`.
+
+- `LocalMetadataTransportBridge` now owns:
+  - `ui.bootstrap.v3` vs `ui.bootstrap.v2` selection
+  - sticky downgrade after explicit daemon `sync-v3 method not found`
+  - shared classification of unsupported-method errors across direct and XPC clients
+- `AppViewModel` still owns:
+  - exact-row cache construction from bootstrap payloads
+  - v2/v3 replay application into local overlay caches
+  - bootstrap-not-ready defer logic
+  - cache publish / clear timing
+
+This keeps the next extraction target explicit without pretending the compatibility layer is already removed.

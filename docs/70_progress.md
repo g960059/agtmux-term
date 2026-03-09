@@ -13,6 +13,33 @@ Historical progress detail lives in `docs/archive/progress/2026-02-28_to_2026-03
 
 ## Recent Entries
 
+## 2026-03-09 — T-128 landed: AppViewModel no longer open-codes sync-v3 bootstrap fallback selection
+
+### What landed
+- extracted `LocalMetadataTransportBridge`
+- the new bridge now owns:
+  - bootstrap transport selection (`ui.bootstrap.v3` vs `ui.bootstrap.v2`)
+  - sticky downgrade after daemon `sync-v3 method not found`
+  - shared fallback classification for:
+    - `LocalMetadataClientError.unsupportedMethod`
+    - structured daemon method-not-found envelopes
+    - XPC method-not-found envelopes
+    - raw `-32601/method not found` fallback text
+- `AppViewModel` now consumes that bridge instead of re-implementing the same fallback classification inline
+
+### What did not move yet
+- exact-row cache construction still lives in `AppViewModel`
+- v2/v3 change replay application still lives in `AppViewModel`
+- bootstrap-not-ready defer / publish / clear logic still lives in `AppViewModel`
+- this slice is only transport/fallback extraction, not a semantic rewrite
+
+### Verification
+- `swift build`
+- `swift test -q --filter LocalMetadataTransportBridgeTests`
+- `swift test -q --filter AppViewModelA0Tests/testBootstrapV3MethodNotFoundFallsBackToSyncV2BootstrapWithoutBreakingOverlay`
+- `swift test -q --filter AppViewModelA0Tests/testChangesV3MethodNotFoundFallsBackToSyncV2AfterBootstrapV3`
+- result: all passed
+
 ## 2026-03-09 — T-127 landed: product-facing legacy pane collapse is now isolated behind one shared display adapter
 
 ### What landed

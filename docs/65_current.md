@@ -179,6 +179,12 @@
     - `AgtmuxPane.activityState` as the compatibility field carried through the merged row model
     - sync-v2 transport/session types and exact-row replay path
     - workbench/runtime structs that still store `AgtmuxSyncV2PaneInstanceID`
+- AppViewModel's local metadata bootstrap fallback is also narrower:
+  - sync-v3/v2 bootstrap selection and `method not found` downgrade classification now live in `LocalMetadataTransportBridge`
+  - AppViewModel still owns:
+    - exact-row overlay cache construction
+    - v2/v3 change application
+    - publish / clear / not-ready handling
 - same-session multi-view is out of MVP
 
 ## Locked MVP Decisions
@@ -228,6 +234,8 @@
   thin live sync-v3 bootstrap/changes exact-row canary (`DONE`)
 - `T-127`
   shared `PaneDisplayState` adapter isolates product-facing legacy pane collapse (`DONE`)
+- `T-128`
+  `LocalMetadataTransportBridge` isolates bootstrap transport/fallback selection (`DONE`)
 - `T-114`
   single-writer local overlay recovery and live managed-pane surfacing (`DONE`)
 - `T-115`

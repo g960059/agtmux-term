@@ -304,12 +304,8 @@ final class AppViewModel: ObservableObject {
     private var localMetadataRefreshTask: Task<Void, Never>?
     private var localHealthRefreshTask: Task<Void, Never>?
     private var localMetadataSyncPrimed = false
-    private enum LocalMetadataTransportVersion {
-        case v2
-        case v3
-    }
     private var localMetadataTransportVersion: LocalMetadataTransportVersion?
-    private var localMetadataPrefersSyncV3 = true
+    private var localMetadataTransportBridge = LocalMetadataTransportBridge()
     private var uiTestMetadataModeEnabled = false
     private var nextLocalMetadataRefreshAt: Date = .distantPast
     private var nextLocalHealthRefreshAt: Date = .distantPast
@@ -1081,7 +1077,7 @@ final class AppViewModel: ObservableObject {
         case .v2:
             await localClient.resetUIChangesV2()
         case nil:
-            if localMetadataPrefersSyncV3 {
+            if localMetadataTransportBridge.prefersSyncV3 {
                 await localClient.resetUIChangesV3()
             } else {
                 await localClient.resetUIChangesV2()
@@ -1205,11 +1201,10 @@ final class AppViewModel: ObservableObject {
                             )
                         }
                     } catch {
-                        guard self.shouldFallbackToSyncV2FromV3Error(error) else {
+                        guard self.localMetadataTransportBridge.markV3UnsupportedIfNeeded(error) else {
                             throw error
                         }
                         await self.localClient.resetUIChangesV3()
-                        self.localMetadataPrefersSyncV3 = false
                         self.localMetadataTransportVersion = nil
                         self.localMetadataSyncPrimed = false
                         let bootstrapResult = try await self.fetchLocalBootstrapMetadataByPaneKey()
@@ -1247,81 +1242,34 @@ final class AppViewModel: ObservableObject {
     }
 
     private func fetchLocalBootstrapMetadataByPaneKey() async throws -> LocalBootstrapMetadataResult {
-        if localMetadataPrefersSyncV3 {
-            do {
-                let bootstrap = try await localClient.fetchUIBootstrapV3()
-                try Task.checkCancellation()
-                if await deferBootstrapIfNotReady(bootstrap) {
-                    return .deferred
-                }
-                let cache = try localMetadataCaches(from: bootstrap)
-                return .metadata(
-                    LocalBootstrapMetadataPayload(
-                        metadataByPaneKey: cache.metadataByPaneKey,
-                        presentationByPaneKey: cache.presentationByPaneKey,
-                        transportVersion: .v3
-                    )
-                )
-            } catch {
-                guard shouldFallbackToSyncV2FromV3Error(error) else {
-                    throw error
-                }
-                localMetadataPrefersSyncV3 = false
-            }
-        }
-
-        let bootstrap = try await localClient.fetchUIBootstrapV2()
+        let bootstrap = try await localMetadataTransportBridge.fetchBootstrap(using: localClient)
         try Task.checkCancellation()
-        if await deferBootstrapIfNotReady(bootstrap) {
-            return .deferred
-        }
-        return .metadata(
-            LocalBootstrapMetadataPayload(
-                metadataByPaneKey: try localMetadataMap(from: bootstrap.panes),
-                presentationByPaneKey: [:],
-                transportVersion: .v2
+
+        switch bootstrap {
+        case .v3(let snapshot):
+            if await deferBootstrapIfNotReady(snapshot) {
+                return .deferred
+            }
+            let cache = try localMetadataCaches(from: snapshot)
+            return .metadata(
+                LocalBootstrapMetadataPayload(
+                    metadataByPaneKey: cache.metadataByPaneKey,
+                    presentationByPaneKey: cache.presentationByPaneKey,
+                    transportVersion: bootstrap.transportVersion
+                )
             )
-        )
-    }
-
-    private func shouldFallbackToSyncV2FromV3Error(_ error: any Error) -> Bool {
-        if let metadataError = error as? LocalMetadataClientError {
-            if case let .unsupportedMethod(method) = metadataError,
-               method == "ui.bootstrap.v3" || method == "ui.changes.v3" {
-                return true
+        case .v2(let snapshot):
+            if await deferBootstrapIfNotReady(snapshot) {
+                return .deferred
             }
+            return .metadata(
+                LocalBootstrapMetadataPayload(
+                    metadataByPaneKey: try localMetadataMap(from: snapshot.panes),
+                    presentationByPaneKey: [:],
+                    transportVersion: bootstrap.transportVersion
+                )
+            )
         }
-
-        if let daemonError = error as? DaemonError {
-            switch daemonError {
-            case .daemonUnavailable:
-                break
-            case let .processError(_, stderr):
-                if DaemonError.decodeUIErrorEnvelope(from: stderr)?.code == DaemonUIErrorCode.syncV3MethodNotFound.rawValue {
-                    return true
-                }
-            case let .parseError(message):
-                if DaemonError.decodeUIErrorEnvelope(from: message)?.code == DaemonUIErrorCode.syncV3MethodNotFound.rawValue {
-                    return true
-                }
-            }
-        }
-
-        if let xpcError = error as? XPCClientError {
-            switch xpcError {
-            case .unavailable, .proxyUnavailable:
-                break
-            case let .remote(message), let .decode(message), let .timeout(message):
-                if DaemonError.decodeUIErrorEnvelope(from: message)?.code == DaemonUIErrorCode.syncV3MethodNotFound.rawValue {
-                    return true
-                }
-            }
-        }
-
-        let normalized = String(describing: error).lowercased()
-        let referencesV3Method = normalized.contains("ui.bootstrap.v3") || normalized.contains("ui.changes.v3")
-        return referencesV3Method
-            && (normalized.contains("-32601") || normalized.contains("method not found"))
     }
 
     private func deferBootstrapIfNotReady(_ bootstrap: AgtmuxSyncV2Bootstrap) async -> Bool {
