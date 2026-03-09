@@ -112,6 +112,12 @@
     - live product metadata bootstraps and replays only through sync-v3
     - exact-row assertions are anchored in sync-v3 identity rather than raw sync-v2 `ActivityState`
     - managed-exit and same-session no-bleed live canaries are green after shell demotion replacement at the same visible row
+- `T-137` is now closed:
+  - `UITestTmuxBridge` sidebar diagnostics now probe `ui.bootstrap.v3`
+  - metadata-enabled UI diagnostics prefer sync-v3 presentation/identity summaries over raw sync-v2 activity collapse
+  - deterministic integration coverage now locks the migrated diagnostic shape in `UITestSidebarDiagnosticsTests`
+  - the targeted metadata-enabled plain-zsh Codex UI execution remains a harness-only defer:
+    - `xcodebuild ... testMetadataEnabledPlainZshCodexPaneSurfacesManagedProviderAndActivity` currently times out while enabling automation mode before entering the test body
 - `T-116` is now open:
   - metadata-enabled health-strip UI and pane-sync UI both reach their real assertions
   - upstream producer truth is now present in the same failing plain-zsh Codex lane:

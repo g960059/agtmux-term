@@ -291,3 +291,12 @@ The broad `AppViewModelA0Tests` suite now treats sync-v3 as the only product met
 - live product assertions prefer `PanePresentationState` / `PaneDisplayState` over raw legacy `ActivityState` when validating the visible row
 - sync-v2 bootstrap/changes calls are still recorded only to prove that product fallback stays unused
 - managed-exit shell demotion and same-session no-bleed are validated as sync-v3 exact-row updates on the same visible pane row
+
+## UI Harness Diagnostics Alignment
+
+`UITestTmuxBridge` sidebar dumps now follow the same diagnostic boundary.
+
+- metadata-enabled bootstrap probes use `ui.bootstrap.v3`
+- bootstrap target summaries expose sync-v3 presentation/identity fields (`primary state`, `freshness`, `session_key`, `pane_instance_id`)
+- visible row summaries still include inventory-derived `current_cmd` when needed for shell readiness, but they no longer treat raw sync-v2 `activity_state` as daemon truth
+- deterministic coverage for that diagnostic contract now lives in `UITestSidebarDiagnosticsTests`; targeted metadata-enabled XCUITest execution remains a foreground/automation harness concern rather than the primary verification lane

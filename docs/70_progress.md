@@ -16,6 +16,28 @@ Historical progress detail lives in `docs/archive/progress/2026-02-28_to_2026-03
 
 ## Recent Entries
 
+## 2026-03-09 — T-137 landed: UI test bridge bootstrap/sidebar diagnostics now consume sync-v3 truth
+
+### What landed
+- migrated `UITestTmuxBridge` app-side sidebar dump command off `ui.bootstrap.v2`:
+  - bootstrap probe now calls `fetchUIBootstrapV3()`
+  - probe summaries record `transport=sync-v3`
+  - target summaries now expose sync-v3 presentation/identity fields (`primary`, `freshness`, `session_key`, `pane_instance`)
+- narrowed stale diagnostic assumptions in the UI test runner:
+  - `SidebarPanePresentationSnapshot` now carries `primaryState` instead of a raw legacy activity label
+  - metadata-enabled bootstrap readiness now checks sync-v3 daemon truth for managed/provider/primary state and uses the visible row only for inventory-derived `current_cmd`
+  - failure summaries now prefer sync-v3-derived target diagnostics over raw sync-v2 bootstrap collapse
+
+### Verification
+- `swift build`
+- `swift test -q --filter UITestSidebarDiagnosticsTests`
+- `xcodegen generate`
+- `xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -destination 'platform=macOS,arch=arm64' build-for-testing -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testMetadataEnabledPlainZshCodexPaneSurfacesManagedProviderAndActivity`
+- `xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -destination 'platform=macOS,arch=arm64' test -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testMetadataEnabledPlainZshCodexPaneSurfacesManagedProviderAndActivity`
+- result:
+  - deterministic diagnostic tests and UI-target compile path passed
+  - targeted UI execution is still blocked by `Timed out while enabling automation mode.` before the test body, so the automation harness remains an explicit defer
+
 ## 2026-03-09 — T-136 landed: live product managed-agent suite now matches sync-v3 truth
 
 ### What landed

@@ -57,14 +57,14 @@ final class UITestTmuxBridge {
     private struct SidebarStateSnapshot: Codable {
         let statusFilter: String
         let panes: [AgtmuxPane]
-        let panePresentations: [SidebarPanePresentationSnapshot]
+        let panePresentations: [UITestSidebarPanePresentationSnapshot]
         let filteredPanes: [AgtmuxPane]
-        let filteredPanePresentations: [SidebarPanePresentationSnapshot]
+        let filteredPanePresentations: [UITestSidebarPanePresentationSnapshot]
         let attentionCount: Int
         let localDaemonIssueTitle: String?
         let localDaemonIssueDetail: String?
-        let bootstrapProbeSummary: BootstrapProbeSummary
-        let bootstrapTargetSummary: BootstrapTargetSummary?
+        let bootstrapProbeSummary: UITestBootstrapProbeSummary
+        let bootstrapTargetSummary: UITestBootstrapTargetSummary?
         let managedDaemonSocketPath: String
         let tmuxSocketArguments: [String]
         let daemonCLIArguments: [String]
@@ -76,40 +76,11 @@ final class UITestTmuxBridge {
         let managedDaemonStderrTail: String?
     }
 
-    private struct SidebarPanePresentationSnapshot: Codable {
-        let source: String
-        let sessionName: String
-        let paneID: String
-        let presence: String
-        let provider: String?
-        let activity: String
-        let freshness: String?
-        let currentCommand: String?
-        let isManaged: Bool
-        let needsAttention: Bool
-    }
-
     private struct DaemonLaunchRecordSnapshot: Codable {
         let binaryPath: String
         let arguments: [String]
         let environment: [String: String]
         let reusedExistingRuntime: Bool
-    }
-
-    private struct BootstrapProbeSummary: Codable {
-        let ok: Bool
-        let totalPanes: Int?
-        let managedPanes: Int?
-        let error: String?
-    }
-
-    private struct BootstrapTargetSummary: Codable {
-        let sessionName: String
-        let paneID: String
-        let presence: String
-        let provider: String?
-        let activity: String
-        let currentCommand: String?
     }
 
     private let viewModel: AppViewModel
@@ -354,40 +325,20 @@ final class UITestTmuxBridge {
                 let data = try JSONEncoder().encode(snapshot)
                 stdout = String(decoding: data, as: UTF8.self)
             case sidebarStateCommand:
-                let bootstrapProbeSummary: BootstrapProbeSummary
-                let bootstrapTargetSummary: BootstrapTargetSummary?
+                let bootstrapProbeSummary: UITestBootstrapProbeSummary
+                let bootstrapTargetSummary: UITestBootstrapTargetSummary?
                 let requestedSessionName = request.args.dropFirst().first
                 let requestedPaneID = request.args.dropFirst().dropFirst().first
                 do {
-                    let bootstrap = try await AgtmuxDaemonClient().fetchUIBootstrapV2()
-                    if let requestedSessionName, let requestedPaneID,
-                       let target = bootstrap.panes.first(where: {
-                           $0.sessionName == requestedSessionName && $0.paneId == requestedPaneID
-                       }) {
-                        bootstrapTargetSummary = BootstrapTargetSummary(
-                            sessionName: target.sessionName,
-                            paneID: target.paneId,
-                            presence: target.presence.rawValue,
-                            provider: target.provider?.rawValue,
-                            activity: target.activityState.rawValue,
-                            currentCommand: target.currentCmd
-                        )
-                    } else {
-                        bootstrapTargetSummary = nil
-                    }
-                    bootstrapProbeSummary = BootstrapProbeSummary(
-                        ok: true,
-                        totalPanes: bootstrap.panes.count,
-                        managedPanes: bootstrap.panes.filter { $0.presence == .managed }.count,
-                        error: nil
+                    let bootstrap = try await AgtmuxDaemonClient().fetchUIBootstrapV3()
+                    bootstrapTargetSummary = UITestSidebarDiagnostics.bootstrapTargetSummary(
+                        from: bootstrap,
+                        requestedSessionName: requestedSessionName,
+                        requestedPaneID: requestedPaneID
                     )
+                    bootstrapProbeSummary = UITestSidebarDiagnostics.bootstrapProbeSummary(from: bootstrap)
                 } catch {
-                    bootstrapProbeSummary = BootstrapProbeSummary(
-                        ok: false,
-                        totalPanes: nil,
-                        managedPanes: nil,
-                        error: error.localizedDescription
-                    )
+                    bootstrapProbeSummary = UITestSidebarDiagnostics.bootstrapProbeSummary(error: error)
                     bootstrapTargetSummary = nil
                 }
                 let managedSocketPath = AgtmuxBinaryResolver.resolvedSocketPath(from: env)
@@ -442,19 +393,11 @@ final class UITestTmuxBridge {
         }
     }
 
-    private func sidebarPanePresentationSnapshot(for pane: AgtmuxPane) -> SidebarPanePresentationSnapshot {
+    private func sidebarPanePresentationSnapshot(for pane: AgtmuxPane) -> UITestSidebarPanePresentationSnapshot {
         let display = viewModel.paneDisplayState(for: pane)
-        return SidebarPanePresentationSnapshot(
-            source: pane.source,
-            sessionName: pane.sessionName,
-            paneID: pane.paneId,
-            presence: display.presence.rawValue,
-            provider: display.provider?.rawValue,
-            activity: display.primaryState.rawValue,
-            freshness: display.freshnessText,
-            currentCommand: pane.currentCmd,
-            isManaged: display.isManaged,
-            needsAttention: display.needsAttention
+        return UITestSidebarDiagnostics.panePresentationSnapshot(
+            for: pane,
+            display: display
         )
     }
 

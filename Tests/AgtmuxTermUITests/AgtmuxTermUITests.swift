@@ -2874,7 +2874,7 @@ final class AgtmuxTermUITests: XCTestCase {
         let paneID: String
         let presence: String
         let provider: String?
-        let activity: String
+        let primaryState: String
         let freshness: String?
         let currentCommand: String?
         let isManaged: Bool
@@ -2890,6 +2890,7 @@ final class AgtmuxTermUITests: XCTestCase {
 
     private struct BootstrapProbeSummary: Decodable {
         let ok: Bool
+        let transportVersion: String?
         let totalPanes: Int?
         let managedPanes: Int?
         let error: String?
@@ -2900,8 +2901,10 @@ final class AgtmuxTermUITests: XCTestCase {
         let paneID: String
         let presence: String
         let provider: String?
-        let activity: String
-        let currentCommand: String?
+        let primaryState: String
+        let freshness: String?
+        let sessionKey: String
+        let paneInstanceID: String
     }
 
     private struct AppWorkbenchTerminalTargetSnapshot: Decodable {
@@ -3227,11 +3230,18 @@ final class AgtmuxTermUITests: XCTestCase {
                 lastSnapshot = snapshot
                 let probe = snapshot.bootstrapProbeSummary
                 let target = snapshot.bootstrapTargetSummary
+                let visiblePane = snapshot.panes.first {
+                    $0.source == "local" && $0.sessionName == sessionName && $0.paneId == paneID
+                }
                 if probe.ok,
+                   probe.transportVersion == "sync-v3",
                    (probe.totalPanes ?? 0) > 0,
                    target?.sessionName == sessionName,
                    target?.paneID == paneID,
-                   target?.currentCommand == expectedCurrentCommand {
+                   target?.presence == "managed",
+                   target?.provider != nil,
+                   target?.primaryState != PanePresentationPrimaryState.inactive.rawValue,
+                   visiblePane?.currentCmd == expectedCurrentCommand {
                     return snapshot
                 }
             }
@@ -3267,7 +3277,7 @@ final class AgtmuxTermUITests: XCTestCase {
             return [
                 "presence=\(pane.presence)",
                 "provider=\(pane.provider ?? "nil")",
-                "activity=\(pane.activity)",
+                "primary=\(pane.primaryState)",
                 "freshness=\(pane.freshness ?? "nil")",
                 "managed=\(pane.isManaged)",
                 "attention=\(pane.needsAttention)",
@@ -3300,15 +3310,17 @@ final class AgtmuxTermUITests: XCTestCase {
 
         let probe = snapshot.bootstrapProbeSummary
         let probeSummary = probe.ok
-            ? "ok total=\(probe.totalPanes ?? -1) managed=\(probe.managedPanes ?? -1)"
+            ? "ok transport=\(probe.transportVersion ?? "nil") total=\(probe.totalPanes ?? -1) managed=\(probe.managedPanes ?? -1)"
             : "error=\(probe.error ?? "unknown")"
         let targetSummary: String
         if let target = snapshot.bootstrapTargetSummary {
             targetSummary = [
                 "presence=\(target.presence)",
                 "provider=\(target.provider ?? "nil")",
-                "activity=\(target.activity)",
-                "current_cmd=\(target.currentCommand ?? "nil")"
+                "primary=\(target.primaryState)",
+                "freshness=\(target.freshness ?? "nil")",
+                "session_key=\(target.sessionKey)",
+                "pane_instance=\(target.paneInstanceID)"
             ].joined(separator: ",")
         } else {
             targetSummary = "nil"

@@ -96,6 +96,8 @@ Mainline product truth is now:
   product-facing daemon incompatibility naming now matches the sync-v3 metadata protocol path
 - `T-136`
   product live managed-agent suite now matches sync-v3 exact-row truth and no longer relies on sync-v2/`ActivityState` assumptions
+- `T-137`
+  UI test bridge sidebar/bootstrap diagnostics now use sync-v3 truth and presentation-derived summaries
 - `T-087`
   docs compaction and active-context redesign complete
 - `T-076` through `T-084`

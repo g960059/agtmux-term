@@ -295,6 +295,20 @@ Commit closeout is clear; next implementation proceeds on the new Workbench path
   - [x] product live assertions explicitly prove sync-v2 bootstrap/changes fallback stays unused
   - [x] managed-exit and same-session no-bleed live cases stay green after the sync-v3 migration
 
+### T-137 — migrate UI test bridge diagnostics to sync-v3 truth
+- **Status**: DONE
+- **Priority**: P2
+- **Depends**: T-136
+- **Owner**: term implementation agent
+- **Description**:
+  - Move `UITestTmuxBridge` sidebar dump/bootstrap diagnostics off `ui.bootstrap.v2` and raw `AgtmuxPane.activityState` assumptions.
+  - Keep UI harness output anchored in sync-v3 bootstrap truth plus `PaneDisplayState` / `PanePresentationState` summaries.
+- **Acceptance Criteria**:
+  - [x] app-side `__agtmux_dump_sidebar_state__` probe uses `ui.bootstrap.v3`
+  - [x] bootstrap target diagnostics expose sync-v3 presentation/identity fields instead of raw sync-v2 activity/current-cmd assumptions
+  - [x] deterministic non-UI verification locks the sync-v3 diagnostic shape
+  - [x] focused metadata-enabled UI execution blocker remains documented as an automation harness defer, not a product failure
+
 ### T-126 — thin live canary for sync-v3 bootstrap/changes exact-row lane
 - **Status**: DONE
 - **Priority**: P1
