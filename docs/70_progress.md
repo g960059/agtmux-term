@@ -13,6 +13,44 @@ Historical progress detail lives in `docs/archive/progress/2026-02-28_to_2026-03
 
 ## Recent Entries
 
+## 2026-03-09 — T-127 landed: product-facing legacy pane collapse is now isolated behind one shared display adapter
+
+### What landed
+- added `PaneDisplayState` in `AgtmuxTermCore`
+- `PaneDisplayState` is now the single product-facing adapter for:
+  - provider
+  - managed/unmanaged surfacing
+  - primary row state
+  - freshness text
+  - attention flag
+- `AppViewModel` now exposes `paneDisplayState(for:)` and delegates the existing product helpers through it
+- the following consumers no longer each re-implement their own legacy fallback logic:
+  - sidebar row rendering
+  - sidebar badge/count rollups
+  - row accessibility summary
+  - UI-test sidebar presentation snapshot
+
+### Why this slice stayed small
+- this does not remove sync-v2
+- this does not delete `ActivityState`
+- this does not rewrite workbench/runtime structs that still depend on `AgtmuxSyncV2PaneInstanceID`
+- it only narrows the product-facing boundary so future v3 cleanup can delete fewer scattered legacy assumptions
+
+### Remaining explicit holdouts
+- merged row compatibility still stores:
+  - `AgtmuxPane.activityState`
+  - `AgtmuxPane.presence`
+  - `AgtmuxSyncV2PaneInstanceID`
+- sync-v2 bootstrap/changes transport and replay remain live as fallback
+- workbench/runtime structs still carry v2 pane-instance identity types
+
+### Verification
+- `swift build`
+- `swift test -q --filter PaneDisplayStateTests`
+- `swift test -q --filter PaneRowAccessibilityTests`
+- `swift test -q --filter AppViewModelA0Tests/testPaneDisplayStatePrefersPresentationCacheOverLegacyActivityCollapse`
+- result: all passed
+
 ## 2026-03-09 — T-126 landed: a thin live canary now proves the sync-v3 bootstrap/changes lane updates one exact local row without falling back to sync-v2
 
 ### What landed

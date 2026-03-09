@@ -573,10 +573,11 @@ struct PaneRowView: View {
             paneID: pane.paneId
         )
     }
-    private var provider: Provider? { viewModel.paneProviderForSidebar(pane) }
-    private var primaryState: PanePresentationPrimaryState { viewModel.panePrimaryState(for: pane) }
-    private var freshnessText: String? { viewModel.paneFreshnessText(for: pane) }
-    private var isManaged: Bool { viewModel.paneIsManaged(pane) }
+    private var displayState: PaneDisplayState { viewModel.paneDisplayState(for: pane) }
+    private var provider: Provider? { displayState.provider }
+    private var primaryState: PanePresentationPrimaryState { displayState.primaryState }
+    private var freshnessText: String? { displayState.freshnessText }
+    private var isManaged: Bool { displayState.isManaged }
 
     var body: some View {
         HStack(spacing: 10) {
@@ -751,7 +752,7 @@ struct PaneRowView: View {
         var parts: [String] = []
         if let branch = pane.gitBranch   { parts.append("⎇ \(branch)") }
         if let path = pane.currentPath   { parts.append("  \(path)") }
-        if pane.isManaged {
+        if displayState.isManaged {
             parts.append("evidence: \(pane.evidenceMode.rawValue)")
         }
         if let cmd = pane.currentCmd     { parts.append("cmd: \(cmd)") }
@@ -774,11 +775,11 @@ struct WindowStateBadge: View {
     @EnvironmentObject private var viewModel: AppViewModel
 
     private var runningCount: Int {
-        panes.filter { viewModel.panePrimaryState(for: $0) == .running }.count
+        panes.filter { viewModel.paneDisplayState(for: $0).primaryState == .running }.count
     }
 
     private var attentionCount: Int {
-        panes.filter { viewModel.paneNeedsAttention($0) }.count
+        panes.filter { viewModel.paneDisplayState(for: $0).needsAttention }.count
     }
 
     var body: some View {
@@ -902,7 +903,7 @@ struct FreshnessLabel: View {
     }
 
     init(ageSecs: Int) {
-        self.text = PaneRowAccessibility.formattedLegacyFreshness(ageSecs: ageSecs, activityState: .idle)
+        self.text = PaneDisplayState.legacyFreshnessText(ageSecs: ageSecs, activityState: .idle) ?? "none"
     }
 
     var body: some View {

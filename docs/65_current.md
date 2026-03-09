@@ -172,6 +172,13 @@
   - it uses a real daemon/runtime lane
   - it proves `AppViewModel` bootstraps on `ui.bootstrap.v3`, polls `ui.changes.v3`, and updates the same exact local row through `PanePresentationState`
   - sync-v2 remains intact as the fallback path if daemon support disappears
+- the product-facing legacy boundary is narrower:
+  - sidebar rows, sidebar badges/counts, row accessibility summaries, and UI-test sidebar snapshots now consume one shared `PaneDisplayState` adapter
+  - legacy `ActivityState` collapse is still present, but it is no longer reimplemented independently across those UI consumers
+  - explicit remaining holdouts are:
+    - `AgtmuxPane.activityState` as the compatibility field carried through the merged row model
+    - sync-v2 transport/session types and exact-row replay path
+    - workbench/runtime structs that still store `AgtmuxSyncV2PaneInstanceID`
 - same-session multi-view is out of MVP
 
 ## Locked MVP Decisions
@@ -219,6 +226,8 @@
   additive changes-v3 consumer bridge in AppViewModel/XPC path (`DONE`)
 - `T-126`
   thin live sync-v3 bootstrap/changes exact-row canary (`DONE`)
+- `T-127`
+  shared `PaneDisplayState` adapter isolates product-facing legacy pane collapse (`DONE`)
 - `T-114`
   single-writer local overlay recovery and live managed-pane surfacing (`DONE`)
 - `T-115`

@@ -78,8 +78,8 @@ Mainline product truth is now:
 
 - `T-090` through `T-094`
   Workbench V2 implementation kickoff track
-- `T-120` through `T-126`
-  sync-v3 consumer foundation, daemon-owned fixture ingest, additive bridge, first UI cutover, and thin live canary are landed
+- `T-120` through `T-127`
+  sync-v3 consumer foundation, daemon-owned fixture ingest, additive bridge, first UI cutover, thin live canary, and shared display-adapter isolation are landed
 - `T-087`
   docs compaction and active-context redesign complete
 - `T-076` through `T-084`

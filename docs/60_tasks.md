@@ -155,6 +155,20 @@ Commit closeout is clear; next implementation proceeds on the new Workbench path
 
 ## Recently Closed
 
+### T-127 — isolate product-facing legacy pane collapse behind a display adapter
+- **Status**: DONE
+- **Priority**: P1
+- **Depends**: T-126
+- **Owner**: Orchestrator (direct implementation)
+- **Description**:
+  - Shrink the product-facing `ActivityState` / legacy-pane boundary without attempting full v2 removal.
+  - Introduce one local display adapter so sidebar/accessibility/UI-test consumers no longer each re-implement legacy fallback logic.
+- **Acceptance Criteria**:
+  - [x] one shared display adapter isolates product-facing fallback from raw `AgtmuxPane` + optional v3 presentation
+  - [x] sidebar row, badge/count, accessibility summary, and UI-test sidebar snapshot use the shared adapter rather than bespoke legacy collapse logic
+  - [x] focused tests lock both v3-backed and legacy-fallback display behavior
+  - [x] v2 transport/workbench compatibility and fallback remain intact
+
 ### T-126 — thin live canary for sync-v3 bootstrap/changes exact-row lane
 - **Status**: DONE
 - **Priority**: P1

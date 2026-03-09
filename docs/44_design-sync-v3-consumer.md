@@ -171,3 +171,19 @@ The next small cutover after sidebar rows/filter/count stays deliberately narrow
 - titlebar continues to consume shared presentation-derived `attentionCount` / filter state from `AppViewModel`
 - UI-harness / diagnostic sidebar summaries should also prefer the same presentation-derived state when available
 - this avoids a split world where visible UI uses `PanePresentationState` but diagnostics still report only legacy `ActivityState`
+
+## Shared Display Adapter Boundary
+
+Before full compatibility cleanup, product-facing consumers should read one shared adapter rather than open-coding legacy fallback.
+
+- `PaneDisplayState` is the current boundary for:
+  - sidebar row presentation
+  - badge/count derivation
+  - row accessibility summaries
+  - UI-test sidebar presentation snapshots
+- remaining compatibility fields still live behind that adapter:
+  - `AgtmuxPane.activityState`
+  - `AgtmuxPane.presence`
+  - `AgtmuxSyncV2PaneInstanceID`
+
+This keeps future v3 cleanup reviewable by shrinking the number of UI consumers that directly depend on collapsed legacy state.

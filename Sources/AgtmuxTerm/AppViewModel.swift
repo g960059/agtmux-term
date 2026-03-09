@@ -238,67 +238,28 @@ final class AppViewModel: ObservableObject {
         return cachedLocalPresentationByPaneKey[paneMetadataKey(for: pane)]
     }
 
+    func paneDisplayState(for pane: AgtmuxPane) -> PaneDisplayState {
+        PaneDisplayState(pane: pane, presentation: panePresentation(for: pane))
+    }
+
     func panePrimaryState(for pane: AgtmuxPane) -> PanePresentationPrimaryState {
-        if let presentation = panePresentation(for: pane) {
-            return presentation.primaryState
-        }
-        switch pane.activityState {
-        case .running:
-            return .running
-        case .waitingApproval:
-            return .waitingApproval
-        case .waitingInput:
-            return .waitingUserInput
-        case .error:
-            return .error
-        case .idle:
-            return .idle
-        case .unknown:
-            return .inactive
-        }
+        paneDisplayState(for: pane).primaryState
     }
 
     func paneIsManaged(_ pane: AgtmuxPane) -> Bool {
-        panePresentation(for: pane)?.presence == .managed || pane.isManaged
+        paneDisplayState(for: pane).isManaged
     }
 
     func paneNeedsAttention(_ pane: AgtmuxPane) -> Bool {
-        if let presentation = panePresentation(for: pane) {
-            switch presentation.primaryState {
-            case .waitingApproval, .waitingUserInput, .error:
-                return true
-            case .running, .completedIdle, .idle, .inactive:
-                return false
-            }
-        }
-        return pane.needsAttention
+        paneDisplayState(for: pane).needsAttention
     }
 
     func paneProviderForSidebar(_ pane: AgtmuxPane) -> Provider? {
-        panePresentation(for: pane)?.provider ?? pane.provider
+        paneDisplayState(for: pane).provider
     }
 
     func paneFreshnessText(for pane: AgtmuxPane) -> String? {
-        if let presentation = panePresentation(for: pane) {
-            switch presentation.freshnessState {
-            case .fresh:
-                guard presentation.primaryState != .running,
-                      let ageSecs = pane.ageSecs else { return nil }
-                return PaneRowAccessibility.formattedLegacyFreshness(ageSecs: ageSecs, activityState: .idle)
-            case .degraded:
-                if presentation.primaryState != .running, let ageSecs = pane.ageSecs {
-                    return PaneRowAccessibility.formattedLegacyFreshness(ageSecs: ageSecs, activityState: .idle)
-                }
-                return "degraded"
-            case .down:
-                return "down"
-            }
-        }
-
-        guard pane.isManaged,
-              let ageSecs = pane.ageSecs,
-              pane.activityState != .running else { return nil }
-        return PaneRowAccessibility.formattedLegacyFreshness(ageSecs: ageSecs, activityState: .idle)
+        paneDisplayState(for: pane).freshnessText
     }
 
     // MARK: - Selection

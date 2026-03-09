@@ -3284,6 +3284,43 @@ final class AppViewModelA0Tests: XCTestCase {
     }
 
     @MainActor
+    func testPaneDisplayStatePrefersPresentationCacheOverLegacyActivityCollapse() async throws {
+        let bootstrap = try loadSyncV3Fixture(named: "codex-completed-idle")
+        let inventoryPane = makeInventoryPane(
+            paneId: "%12",
+            sessionName: "workbench",
+            windowId: "@5",
+            activityState: .idle,
+            currentCmd: "zsh"
+        )
+        let client = StubMetadataClient(
+            bootstrapV3Steps: [
+                BootstrapV3Step(delayMs: 20, result: .success(bootstrap))
+            ],
+            bootstrapSteps: []
+        )
+        let model = AppViewModel(
+            localClient: client,
+            localInventoryClient: StubInventoryClient(panes: [inventoryPane]),
+            hostsConfig: .empty
+        )
+
+        await model.fetchAll()
+
+        let displayApplied = await waitUntil {
+            guard let pane = model.panes.first else { return false }
+            let display = model.paneDisplayState(for: pane)
+            return display.provider == .codex
+                && display.primaryState == .completedIdle
+                && display.needsAttention == false
+                && display.isManaged
+        }
+
+        XCTAssertTrue(displayApplied, "product-facing display adapter must prefer v3 presentation cache over legacy collapsed pane state")
+        XCTAssertNil(model.localDaemonIssue)
+    }
+
+    @MainActor
     func testBootstrapV3FreshnessDegradedFeedsFreshnessLabelWithoutAttention() async throws {
         let bootstrap = try loadSyncV3Fixture(named: "freshness-degraded")
         let inventoryPane = makeInventoryPane(

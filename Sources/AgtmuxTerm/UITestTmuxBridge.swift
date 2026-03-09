@@ -443,18 +443,18 @@ final class UITestTmuxBridge {
     }
 
     private func sidebarPanePresentationSnapshot(for pane: AgtmuxPane) -> SidebarPanePresentationSnapshot {
-        let presence = viewModel.panePresentation(for: pane)?.presence.rawValue ?? pane.presence.rawValue
+        let display = viewModel.paneDisplayState(for: pane)
         return SidebarPanePresentationSnapshot(
             source: pane.source,
             sessionName: pane.sessionName,
             paneID: pane.paneId,
-            presence: presence,
-            provider: viewModel.paneProviderForSidebar(pane)?.rawValue,
-            activity: viewModel.panePrimaryState(for: pane).rawValue,
-            freshness: viewModel.paneFreshnessText(for: pane),
+            presence: display.presence.rawValue,
+            provider: display.provider?.rawValue,
+            activity: display.primaryState.rawValue,
+            freshness: display.freshnessText,
             currentCommand: pane.currentCmd,
-            isManaged: viewModel.paneIsManaged(pane),
-            needsAttention: viewModel.paneNeedsAttention(pane)
+            isManaged: display.isManaged,
+            needsAttention: display.needsAttention
         )
     }
 
