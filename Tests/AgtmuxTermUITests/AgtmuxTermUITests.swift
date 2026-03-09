@@ -2058,7 +2058,11 @@ final class AgtmuxTermUITests: XCTestCase {
             control: control,
             sessionName: session,
             paneID: paneID,
-            expectedCurrentCommand: "zsh"
+            expectedCurrentCommand: "zsh",
+            expectedPresence: "unmanaged",
+            expectedProvider: nil,
+            expectedPrimaryStates: [PanePresentationPrimaryState.idle.rawValue],
+            failureContext: "Pre-launch daemon bootstrap did not surface the plain zsh row as unmanaged sync-v3 truth"
         )
         _ = try sendAppTmuxCommand(
             ["display-message", "-p", "#{session_name}"],
@@ -3214,6 +3218,10 @@ final class AgtmuxTermUITests: XCTestCase {
         sessionName: String,
         paneID: String,
         expectedCurrentCommand: String,
+        expectedPresence: String,
+        expectedProvider: String?,
+        expectedPrimaryStates: [String],
+        failureContext: String,
         timeout: TimeInterval = 10.0
     ) throws -> SidebarStateSnapshot {
         let deadline = Date().addingTimeInterval(timeout)
@@ -3236,9 +3244,9 @@ final class AgtmuxTermUITests: XCTestCase {
                    (probe.totalPanes ?? 0) > 0,
                    target?.sessionName == sessionName,
                    target?.paneID == paneID,
-                   target?.presence == "managed",
-                   target?.provider != nil,
-                   target?.primaryState != PanePresentationPrimaryState.inactive.rawValue,
+                   target?.presence == expectedPresence,
+                   target?.provider == expectedProvider,
+                   expectedPrimaryStates.contains(target?.primaryState ?? ""),
                    visiblePresentation?.currentCommand == expectedCurrentCommand {
                     return snapshot
                 }
@@ -3247,7 +3255,7 @@ final class AgtmuxTermUITests: XCTestCase {
         }
 
         XCTFail(
-            "Managed daemon bootstrap never became ready for the app-driven tmux pane. " +
+            "\(failureContext). " +
             "sidebar='\(sidebarStateSummary(lastSnapshot, sessionName: sessionName, paneID: paneID))'"
         )
         return try fetchAppSidebarState(control: control, sessionName: sessionName, paneID: paneID)

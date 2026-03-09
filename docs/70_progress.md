@@ -16,6 +16,26 @@ Historical progress detail lives in `docs/archive/progress/2026-02-28_to_2026-03
 
 ## Recent Entries
 
+## 2026-03-09 — T-116 pre-launch bootstrap mismatch fixed; remaining red is post-launch app activation
+
+### What landed
+- corrected the metadata-enabled plain-zsh Codex UI helper so the pre-launch bootstrap gate matches sync-v3 product truth:
+  - before Codex is launched into the pane, the exact row should still surface as unmanaged `shell:%pane`
+  - the helper no longer requires `presence=managed` / `provider!=nil` before any provider-truth-producing action has been sent
+- kept the exact-socket/bootstrap diagnostics in place so later failures still report the same managed-daemon socket, tmux socket, and bootstrap probe details
+
+### Evidence
+- reran the same targeted executed XCUITest twice:
+  - `testMetadataEnabledPlainZshCodexPaneSurfacesManagedProviderAndActivity` no longer fails at the old managed-bootstrap-ready gate
+  - both reruns now fail later and consistently at `UITestHelpers.launch()` with `Failed to activate application ... (current state: Running Background)` after about 61 seconds
+- this means the earlier pre-provider bootstrap mismatch is closed; the current blocker is a post-launch activation harness problem
+- the held attention-filter lane stays deferred until the primary metadata-enabled lane is green again
+
+### Verification
+- `xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -destination 'platform=macOS,arch=arm64' test -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testMetadataEnabledPlainZshCodexPaneSurfacesManagedProviderAndActivity`
+- same command rerun a second time
+- result: both entered the test body and reproduced the same `Running Background` failure stage after the pre-launch bootstrap gate
+
 ## 2026-03-09 — T-119 closed: live Codex completion uses `completed_idle`, not implicit attention
 
 ### What landed

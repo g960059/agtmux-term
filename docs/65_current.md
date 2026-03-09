@@ -117,8 +117,8 @@
   - `UITestTmuxBridge` sidebar diagnostics now probe `ui.bootstrap.v3`
   - metadata-enabled UI diagnostics prefer sync-v3 presentation/identity summaries over raw sync-v2 activity collapse
   - deterministic integration coverage now locks the migrated diagnostic shape in `UITestSidebarDiagnosticsTests`
-  - the targeted metadata-enabled plain-zsh Codex UI execution remains a harness-only defer:
-    - `xcodebuild ... testMetadataEnabledPlainZshCodexPaneSurfacesManagedProviderAndActivity` currently times out while enabling automation mode before entering the test body
+  - the targeted metadata-enabled plain-zsh Codex UI execution no longer fails before the body on automation mode
+  - the current remaining UI blocker has moved to post-launch activation later in the proof
 - `T-138` is now closed:
   - the metadata-enabled plain-zsh Codex UI proof no longer relies on raw `activity=...` labels
   - live Codex row assertions now use `primary=...` semantics and accept `completed_idle` as a canonical completion state
@@ -153,13 +153,12 @@
   - `AgtmuxPane.needsAttention` still exists for compat callers, but it now delegates to `PaneDisplayCompatFallback`
   - visible/product behavior is unchanged; the cleanup only removes duplicated legacy collapse logic
 - `T-116` is now open:
-  - metadata-enabled health-strip UI and pane-sync UI both reach their real assertions
-  - upstream producer truth is now present in the same failing plain-zsh Codex lane:
-    - the app-side bootstrap probe sees managed Codex rows on `ui.bootstrap.v3`
-    - the app-side sidebar snapshot reports the target pane via presentation-first diagnostics (`presence=managed, provider=codex, primary=...`)
-  - the remaining red is now term-side UI/accessibility surfacing:
-    - the targeted XCUITest still times out on provider/primary-state marker detection
-    - current pane-row accessibility uses tiny overlay children under a `.combine` wrapper, so XCUITest cannot rely on those descendants even when the visible row already carries managed truth
+  - metadata-enabled plain-zsh Codex UI reruns now pass the pre-launch bootstrap gate with the correct sync-v3 truth:
+    - before provider launch, the app-driven pane is expected to remain `presence=unmanaged, provider=nil, primary=idle`
+    - the targeted helper now asserts that pre-provider state instead of requiring managed truth too early
+  - the remaining red is now a later UI harness blocker:
+    - after the pre-launch gate passes and Codex launch is sent, the targeted XCUITest reproducibly fails at `UITestHelpers.launch()` with `Failed to activate application ... (current state: Running Background)`
+    - the held attention-filter lane has not been rerun yet because the primary metadata-enabled lane is still blocked there
   - March 9, 2026 term-side readiness hardening remains valid:
     - `inventory present + bootstrap panes=[]` no longer primes sync-v2 ownership
     - live AppViewModel managed entry/exit canaries stay green against the updated daemon binary
@@ -296,8 +295,6 @@
 
 ### Done
 
-- `T-116`
-  metadata-enabled plain-zsh XCUITest managed-row surfacing via stable row-level AX contract (`DONE`)
 - `T-120`
   sync-v3 term consumer foundation and presentation scaffolding (`DONE`)
 - `T-121`
@@ -371,8 +368,8 @@
 
 ### Next
 
-- hand back the remaining explicit-`--tmux-socket` app-launch failure to `agtmux`
-- rerun the focused metadata-enabled plain-zsh Codex UI lane once the daemon fix lands
+- keep the focused metadata-enabled plain-zsh Codex UI lane on hold until the post-launch `Running Background` activation blocker is resolved
+- rerun the held attention-filter lane only after the primary metadata-enabled lane is green again
 - keep lower-layer live managed entry/exit canaries green while the UI harness is being debugged
 
 ## Open Blockers

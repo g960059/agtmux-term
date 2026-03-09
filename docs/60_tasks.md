@@ -82,13 +82,20 @@ Commit closeout is clear; next implementation proceeds on the new Workbench path
   - [x] after restart, direct `ui.bootstrap.v2` probe on `~/Library/Application Support/AGTMUXDesktop/agtmuxd.sock` contains no null `session_name` / `window_id` rows on the current local sample
 
 ### T-116 — Metadata-enabled plain-zsh XCUITest managed-row surfacing
-- **Status**: DONE
+- **Status**: IN_PROGRESS
 - **Priority**: P0
 - **Depends**: T-117
 - **Owner**: Orchestrator (direct implementation)
 - **Description**:
   - Close the remaining metadata-enabled plain-zsh UI proof failure so a real Codex process launched from a plain `zsh` pane surfaces as a managed sidebar row with provider/activity metadata on a fresh daemon runtime.
 - **Current split**:
+  - upstream `agtmux:8304d5d` confirmed the previous metadata-enabled pre-launch gate was a term-side mismatch:
+    - before Codex is sent, sync-v3 bootstrap should still report the app-driven pane as plain unmanaged `shell:%pane`
+    - the targeted UI helper now asserts that correct pre-provider truth instead of requiring a managed row too early
+  - focused reruns now pass that pre-launch bootstrap gate and only then launch Codex into the pane
+  - the remaining red has shifted again:
+    - after the pre-launch gate passes, the same targeted XCUITest now reproducibly fails later at `UITestHelpers.launch()` with `Failed to activate application ... (current state: Running Background)` after about 61 seconds
+    - this is currently a post-launch app-activation harness blocker, not the earlier producer/bootstrap mismatch
   - daemon freshness is now revalidated on the normal app-owned socket; the current focused red is no longer attributed to stale daemon reuse
   - targeted metadata-enabled `xcodebuild` now reaches the real managed-row assertions and fails with:
     - `capture-pane` proving a real Codex run completed inside the app-driven `zsh` pane
@@ -149,6 +156,8 @@ Commit closeout is clear; next implementation proceeds on the new Workbench path
   - [x] targeted metadata-enabled XCUITest waits for a non-empty isolated bootstrap before asserting managed Codex surfacing
   - [x] lower-layer live Codex/Claude canaries remain green against the updated daemon binary
   - [x] docs/current/progress isolate daemon socket/runtime handoff as the current harness prerequisite instead of blaming managed-exit product truth
+  - [x] targeted metadata-enabled bootstrap now asserts the correct pre-provider unmanaged sync-v3 truth before launching Codex
+  - [ ] targeted executed metadata-enabled XCUITest is green after the pre-launch gate; current reruns still fail later at `Failed to activate application ... (current state: Running Background)`
 
 ## Recently Closed
 
