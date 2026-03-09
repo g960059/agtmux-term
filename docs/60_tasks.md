@@ -155,6 +155,20 @@ Commit closeout is clear; next implementation proceeds on the new Workbench path
 
 ## Recently Closed
 
+### T-131 — extract local metadata async refresh coordinator
+- **Status**: DONE
+- **Priority**: P1
+- **Depends**: T-130
+- **Owner**: Orchestrator (direct implementation)
+- **Description**:
+  - Narrow the remaining AppViewModel-heavy local metadata async orchestration without changing semantics.
+  - Extract bootstrap fetch/result resolution, replay reset selection, and the one-step refresh decision body into one coordinator while leaving `Task` lifecycle in `AppViewModel`.
+- **Acceptance Criteria**:
+  - [x] bootstrap fetch/result resolution no longer lives directly in `AppViewModel`
+  - [x] active replay reset selection no longer lives directly in `AppViewModel`
+  - [x] the main metadata refresh decision body is delegated into one helper/coordinator
+  - [x] focused coordinator tests and existing AppViewModel v2/v3 fallback regressions remain green
+
 ### T-130 — extract local metadata refresh state-transition boundary
 - **Status**: DONE
 - **Priority**: P1

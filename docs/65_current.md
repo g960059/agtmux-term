@@ -86,6 +86,10 @@
   - bootstrap-not-ready defer handling and publish/clear cache state transitions now live in `LocalMetadataRefreshBoundary`
   - `AppViewModel` keeps the async refresh loop, replay resets, and snapshot publication orchestration, but no longer open-codes that refresh-state seam
   - the proven v3 bootstrap/changes live lane still flows through the same bridge + overlay store + refresh boundary stack
+- `T-131` is now closed:
+  - the remaining local metadata async refresh decision body now lives in `LocalMetadataRefreshCoordinator`
+  - bootstrap fetch/result resolution, replay reset selection, and one-step v2/v3 refresh decisions no longer live directly in `AppViewModel`
+  - `AppViewModel` still owns the `Task` lifecycle, scheduling guards, and top-level fetch/publish orchestration
 - `T-116` is now open:
   - metadata-enabled health-strip UI and pane-sync UI both reach their real assertions
   - upstream producer truth is now present in the same failing plain-zsh Codex lane:
@@ -248,6 +252,8 @@
   `LocalMetadataOverlayStore` isolates bootstrap-cache construction and v2/v3 replay application (`DONE`)
 - `T-130`
   `LocalMetadataRefreshBoundary` isolates bootstrap-not-ready and publish/clear state transitions (`DONE`)
+- `T-131`
+  `LocalMetadataRefreshCoordinator` isolates bootstrap fetch/result resolution and one-step refresh orchestration (`DONE`)
 - `T-114`
   single-writer local overlay recovery and live managed-pane surfacing (`DONE`)
 - `T-115`

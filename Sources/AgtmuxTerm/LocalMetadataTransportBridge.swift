@@ -1,7 +1,7 @@
 import Foundation
 import AgtmuxTermCore
 
-enum LocalMetadataTransportVersion {
+enum LocalMetadataTransportVersion: Equatable {
     case v2
     case v3
 }

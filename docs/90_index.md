@@ -84,6 +84,8 @@ Mainline product truth is now:
   local metadata overlay/replay cache application is now isolated behind one helper while publish/clear orchestration still remains in `AppViewModel`
 - `T-130`
   local metadata refresh state transitions are now isolated behind one helper while the async loop still remains in `AppViewModel`
+- `T-131`
+  local metadata async refresh decisions are now isolated behind one coordinator while the `Task` lifecycle still remains in `AppViewModel`
 - `T-087`
   docs compaction and active-context redesign complete
 - `T-076` through `T-084`

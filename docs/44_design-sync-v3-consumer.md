@@ -246,3 +246,30 @@ This keeps the remaining seam explicit:
 - exact-row replay/cache construction remains in `LocalMetadataOverlayStore`
 - refresh-state shaping now lives in `LocalMetadataRefreshBoundary`
 - the main async orchestration still intentionally lives in `AppViewModel`
+
+## Local Metadata Async Coordinator Boundary
+
+The next narrowed holdout after refresh-state shaping is the one-step async refresh decision body.
+
+- `LocalMetadataRefreshCoordinator` now owns:
+  - active replay reset selection
+  - bootstrap fetch/result resolution
+  - one-step refresh decisions for:
+    - initial bootstrap
+    - sync-v2 change polling/resync
+    - sync-v3 change polling/resync
+    - sync-v3 unsupported-method fallback back to sync-v2 bootstrap
+    - failure clear/reset execution shaping
+- `AppViewModel` still owns:
+  - `Task` allocation/cancellation
+  - scheduling guards (`localMetadataRefreshTask == nil`, backoff deadlines)
+  - applying coordinator executions
+  - top-level inventory fetch / snapshot publication orchestration
+
+This keeps the remaining seam explicit:
+
+- transport selection stays in `LocalMetadataTransportBridge`
+- exact-row replay/cache construction stays in `LocalMetadataOverlayStore`
+- refresh-state shaping stays in `LocalMetadataRefreshBoundary`
+- async decision orchestration now lives in `LocalMetadataRefreshCoordinator`
+- only the outer `Task` lifecycle and fetch/publish shell remain in `AppViewModel`

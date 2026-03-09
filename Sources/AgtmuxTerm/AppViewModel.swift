@@ -651,6 +651,25 @@ final class AppViewModel: ObservableObject {
         )
     }
 
+    private func makeLocalMetadataRefreshContext() -> LocalMetadataRefreshContext {
+        LocalMetadataRefreshContext(
+            syncPrimed: localMetadataSyncPrimed,
+            transportVersion: localMetadataTransportVersion,
+            inventoryCount: lastSuccessfulLocalInventory.count,
+            successInterval: localMetadataSuccessInterval,
+            failureBackoff: localMetadataFailureBackoff,
+            bootstrapNotReadyBackoff: localMetadataBootstrapNotReadyBackoff,
+            changeLimit: localMetadataChangeLimit
+        )
+    }
+
+    private func makeLocalMetadataRefreshCoordinator() -> LocalMetadataRefreshCoordinator {
+        LocalMetadataRefreshCoordinator(
+            client: localClient,
+            transportBridge: localMetadataTransportBridge
+        )
+    }
+
     /// Merge local tmux inventory with daemon metadata overlay.
     ///
     /// Inventory (tmux list-panes) is authoritative for pane existence.
@@ -715,18 +734,24 @@ final class AppViewModel: ObservableObject {
         await publishFromSnapshotCache()
     }
 
-    private func resetActiveLocalMetadataReplayState() async {
-        switch localMetadataTransportVersion {
-        case .v3:
-            await localClient.resetUIChangesV3()
-        case .v2:
-            await localClient.resetUIChangesV2()
-        case nil:
-            if localMetadataTransportBridge.prefersSyncV3 {
-                await localClient.resetUIChangesV3()
-            } else {
+    private func applyLocalMetadataRefreshExecution(_ execution: LocalMetadataRefreshExecution) async {
+        for message in execution.preApplyLogMessages {
+            logLocalFetch(message)
+        }
+
+        for version in execution.replayResetVersions {
+            switch version {
+            case .v2:
                 await localClient.resetUIChangesV2()
+            case .v3:
+                await localClient.resetUIChangesV3()
             }
+        }
+
+        await applyLocalMetadataRefreshPlan(execution.plan)
+
+        for message in execution.postApplyLogMessages {
+            logLocalFetch(message)
         }
     }
 
@@ -772,192 +797,26 @@ final class AppViewModel: ObservableObject {
             defer { self.localMetadataRefreshTask = nil }
 
             do {
-                if !self.localMetadataSyncPrimed {
-                    let bootstrapResult = try await self.fetchLocalBootstrapMetadataByPaneKey()
-                    try Task.checkCancellation()
-                    guard case let .metadata(payload) = bootstrapResult else {
-                        return
-                    }
-                    let plan = LocalMetadataRefreshBoundary.publishPlan(
-                        cache: payload.cache,
-                        inventoryCount: self.lastSuccessfulLocalInventory.count,
-                        successInterval: self.localMetadataSuccessInterval,
-                        syncPrimed: true,
-                        transportVersion: payload.transportVersion,
-                        daemonIssue: nil
-                    )
-                    await self.applyLocalMetadataRefreshPlan(plan)
-                    return
-                }
-
-                switch self.localMetadataTransportVersion ?? .v2 {
-                case .v2:
-                    let response = try await self.localClient.fetchUIChangesV2(limit: self.localMetadataChangeLimit)
-                    try Task.checkCancellation()
-                    switch response {
-                    case let .changes(payload):
-                        let plan = LocalMetadataRefreshBoundary.publishPlan(
-                            cache: LocalMetadataOverlayCache(
-                                metadataByPaneKey: self.makeLocalMetadataOverlayStore().apply(payload),
-                                presentationByPaneKey: [:]
-                            ),
-                            inventoryCount: self.lastSuccessfulLocalInventory.count,
-                            successInterval: self.localMetadataSuccessInterval,
-                            syncPrimed: true,
-                            transportVersion: .v2,
-                            daemonIssue: nil
-                        )
-                        await self.applyLocalMetadataRefreshPlan(plan)
-                    case let .resyncRequired(payload):
-                        self.logLocalFetch(
-                            "sync-v2 resync required; reason=\(payload.reason) epoch=\(payload.currentEpoch) snapshot_seq=\(payload.latestSnapshotSeq)"
-                        )
-                        await self.localClient.resetUIChangesV2()
-                        let bootstrapResult = try await self.fetchLocalBootstrapMetadataByPaneKey()
-                        try Task.checkCancellation()
-                        guard case let .metadata(payload) = bootstrapResult else {
-                            return
-                        }
-                        let plan = LocalMetadataRefreshBoundary.publishPlan(
-                            cache: payload.cache,
-                            inventoryCount: self.lastSuccessfulLocalInventory.count,
-                            successInterval: self.localMetadataSuccessInterval,
-                            syncPrimed: true,
-                            transportVersion: payload.transportVersion,
-                            daemonIssue: nil
-                        )
-                        await self.applyLocalMetadataRefreshPlan(plan)
-                    }
-                case .v3:
-                    do {
-                        let response = try await self.localClient.fetchUIChangesV3(limit: self.localMetadataChangeLimit)
-                        try Task.checkCancellation()
-                        switch response {
-                        case let .changes(payload):
-                            let cache = self.makeLocalMetadataOverlayStore().apply(payload)
-                            let plan = LocalMetadataRefreshBoundary.publishPlan(
-                                cache: cache,
-                                inventoryCount: self.lastSuccessfulLocalInventory.count,
-                                successInterval: self.localMetadataSuccessInterval,
-                                syncPrimed: true,
-                                transportVersion: .v3,
-                                daemonIssue: nil
-                            )
-                            await self.applyLocalMetadataRefreshPlan(plan)
-                        case let .resyncRequired(payload):
-                            self.logLocalFetch(
-                                "sync-v3 resync required; reason=\(payload.reason) latest_snapshot_seq=\(payload.latestSnapshotSeq)"
-                            )
-                            await self.localClient.resetUIChangesV3()
-                            let bootstrapResult = try await self.fetchLocalBootstrapMetadataByPaneKey()
-                            try Task.checkCancellation()
-                            guard case let .metadata(payload) = bootstrapResult else {
-                                return
-                            }
-                            let plan = LocalMetadataRefreshBoundary.publishPlan(
-                                cache: payload.cache,
-                                inventoryCount: self.lastSuccessfulLocalInventory.count,
-                                successInterval: self.localMetadataSuccessInterval,
-                                syncPrimed: true,
-                                transportVersion: payload.transportVersion,
-                                daemonIssue: nil
-                            )
-                            await self.applyLocalMetadataRefreshPlan(plan)
-                        }
-                    } catch {
-                        guard self.localMetadataTransportBridge.markV3UnsupportedIfNeeded(error) else {
-                            throw error
-                        }
-                        await self.localClient.resetUIChangesV3()
-                        self.localMetadataTransportVersion = nil
-                        self.localMetadataSyncPrimed = false
-                        let bootstrapResult = try await self.fetchLocalBootstrapMetadataByPaneKey()
-                        try Task.checkCancellation()
-                        guard case let .metadata(payload) = bootstrapResult else {
-                            return
-                        }
-                        let plan = LocalMetadataRefreshBoundary.publishPlan(
-                            cache: payload.cache,
-                            inventoryCount: self.lastSuccessfulLocalInventory.count,
-                            successInterval: self.localMetadataSuccessInterval,
-                            syncPrimed: true,
-                            transportVersion: payload.transportVersion,
-                            daemonIssue: nil
-                        )
-                        await self.applyLocalMetadataRefreshPlan(plan)
-                    }
-                }
+                let execution = try await self.makeLocalMetadataRefreshCoordinator().runStep(
+                    context: self.makeLocalMetadataRefreshContext(),
+                    overlayStore: self.makeLocalMetadataOverlayStore()
+                )
+                try Task.checkCancellation()
+                await self.applyLocalMetadataRefreshExecution(execution)
             } catch is CancellationError {
                 return
             } catch {
                 if Task.isCancelled {
                     return
                 }
-                await self.resetActiveLocalMetadataReplayState()
-                if Task.isCancelled {
-                    return
-                }
-                let plan = LocalMetadataRefreshBoundary.clearPlan(
-                    inventoryCount: self.lastSuccessfulLocalInventory.count,
-                    nextRefreshAt: Date().addingTimeInterval(self.localMetadataFailureBackoff),
-                    syncPrimed: false,
-                    transportVersion: nil,
-                    daemonIssue: self.classifyLocalDaemonIssue(from: error)
+                let execution = self.makeLocalMetadataRefreshCoordinator().failureExecution(
+                    context: self.makeLocalMetadataRefreshContext(),
+                    error: error,
+                    classifyLocalDaemonIssue: self.classifyLocalDaemonIssue(from:)
                 )
-                await self.applyLocalMetadataRefreshPlan(plan)
-                self.logLocalFetch("sync metadata unavailable; cleared cached overlay: \(error)")
+                await self.applyLocalMetadataRefreshExecution(execution)
             }
         }
-    }
-
-    private func fetchLocalBootstrapMetadataByPaneKey() async throws -> LocalBootstrapMetadataResult {
-        let bootstrap = try await localMetadataTransportBridge.fetchBootstrap(using: localClient)
-        try Task.checkCancellation()
-
-        switch bootstrap {
-        case .v3(let snapshot):
-            let cache = try makeLocalMetadataOverlayStore().bootstrapCaches(from: snapshot)
-            return try await resolveBootstrapMetadataResult(
-                LocalMetadataRefreshBoundary.bootstrapResult(
-                    from: bootstrap,
-                    cache: cache,
-                    inventoryCount: lastSuccessfulLocalInventory.count,
-                    bootstrapNotReadyBackoff: localMetadataBootstrapNotReadyBackoff
-                )
-            )
-        case .v2(let snapshot):
-            let cache = LocalMetadataOverlayCache(
-                metadataByPaneKey: try makeLocalMetadataOverlayStore().bootstrapMetadataMap(from: snapshot.panes),
-                presentationByPaneKey: [:]
-            )
-            return try await resolveBootstrapMetadataResult(
-                LocalMetadataRefreshBoundary.bootstrapResult(
-                    from: bootstrap,
-                    cache: cache,
-                    inventoryCount: lastSuccessfulLocalInventory.count,
-                    bootstrapNotReadyBackoff: localMetadataBootstrapNotReadyBackoff
-                )
-            )
-        }
-    }
-
-    private func resolveBootstrapMetadataResult(
-        _ result: LocalBootstrapMetadataResult
-    ) async throws -> LocalBootstrapMetadataResult {
-        guard case let .deferred(plan) = result else {
-            return result
-        }
-
-        switch plan.replayResetVersion {
-        case .v2:
-            await localClient.resetUIChangesV2()
-        case .v3:
-            await localClient.resetUIChangesV3()
-        case nil:
-            break
-        }
-        await applyLocalMetadataRefreshPlan(plan)
-        return .deferred(plan)
     }
 
     private func fetchLocalPanes() async throws -> [AgtmuxPane] {

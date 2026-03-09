@@ -13,6 +13,43 @@ Historical progress detail lives in `docs/archive/progress/2026-02-28_to_2026-03
 
 ## Recent Entries
 
+## 2026-03-09 — T-131 landed: local metadata async refresh orchestration is isolated behind one coordinator
+
+### What landed
+- extracted `LocalMetadataRefreshCoordinator`
+- the new coordinator now owns:
+  - active replay reset selection
+  - bootstrap fetch/result resolution on top of:
+    - `LocalMetadataTransportBridge`
+    - `LocalMetadataOverlayStore`
+    - `LocalMetadataRefreshBoundary`
+  - one-step local metadata refresh decisions for:
+    - initial bootstrap
+    - sync-v2 change polling and resync
+    - sync-v3 change polling and resync
+    - sync-v3 unsupported-method fallback back to sync-v2 bootstrap
+    - failure clear/reset execution shaping
+- `AppViewModel` now keeps only:
+  - `Task` lifecycle and scheduling guards
+  - applying the coordinator execution
+  - top-level inventory fetch / snapshot publication orchestration
+
+### What did not move yet
+- `Task` allocation/cancellation remains in `AppViewModel`
+- broader fetch/publish orchestration still remains in `AppViewModel`
+- transport/service-boundary/workbench compatibility and sync-v2 fallback remain intact
+- this slice is extraction only, not a semantic rewrite or v2 deletion
+
+### Verification
+- `swift build`
+- `swift test -q --filter LocalMetadataRefreshCoordinatorTests`
+- `swift test -q --filter LocalMetadataRefreshBoundaryTests`
+- `swift test -q --filter AppViewModelA0Tests/testBootstrapV3MethodNotFoundFallsBackToSyncV2BootstrapWithoutBreakingOverlay`
+- `swift test -q --filter AppViewModelA0Tests/testChangesV3MethodNotFoundFallsBackToSyncV2AfterBootstrapV3`
+- `swift test -q --filter AppViewModelA0Tests/testEmptyBootstrapWithLiveInventoryDoesNotPrimeSyncOwnershipAndLaterHealthyBootstrapRecovers`
+- `swift test -q --filter AppViewModelA0Tests/testBootstrapV3ChangesV3UpsertUpdatesExactRowWithoutWeakeningIdentity`
+- result: all passed
+
 ## 2026-03-09 — T-130 landed: local metadata refresh state transitions are isolated behind one boundary
 
 ### What landed
