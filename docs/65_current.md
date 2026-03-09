@@ -130,6 +130,9 @@
 - `T-141` is now closed:
   - the unused `FreshnessLabel(ageSecs:)` helper is gone
   - docs/comments now make it explicit that `sidebar.pane.activity.*` remains a stable AX identifier name while its label/value carries primary-state semantics
+- `T-142` is now closed:
+  - product-facing incompatible metadata detail now speaks in terms of metadata protocol / exact-identity failures rather than treating raw `sync-v2 bootstrap` wording as product truth
+  - factual failing RPC names like `ui.bootstrap.v2` can still appear in detail when they are the actual failing method or payload source
 - `T-116` is now open:
   - metadata-enabled health-strip UI and pane-sync UI both reach their real assertions
   - upstream producer truth is now present in the same failing plain-zsh Codex lane:

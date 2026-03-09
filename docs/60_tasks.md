@@ -361,6 +361,19 @@ Commit closeout is clear; next implementation proceeds on the new Workbench path
   - [x] accessibility/docs wording explains that `sidebar.pane.activity.*` is a stable identifier name with primary-state semantics
   - [x] focused verification remains green
 
+### T-142 — make incompatible metadata detail protocol-accurate
+- **Status**: DONE
+- **Priority**: P3
+- **Depends**: T-132, T-135
+- **Owner**: term implementation agent
+- **Description**:
+  - Keep product-facing local daemon incompatibility detail aligned with the current sync-v3-required metadata path.
+  - Preserve factual failing RPC names where useful, but stop surfacing raw `sync-v2 bootstrap` wording as if it were product truth.
+- **Acceptance Criteria**:
+  - [x] surfaced incompatible metadata detail prefers `metadata protocol` / `metadata bootstrap` wording
+  - [x] factual failing RPC names like `ui.bootstrap.v2` remain visible where they are the actual failing method or payload source
+  - [x] focused product tests cover the updated detail wording
+
 ### T-126 — thin live canary for sync-v3 bootstrap/changes exact-row lane
 - **Status**: DONE
 - **Priority**: P1

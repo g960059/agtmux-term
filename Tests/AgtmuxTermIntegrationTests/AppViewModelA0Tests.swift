@@ -2062,8 +2062,9 @@ final class AppViewModelA0Tests: XCTestCase {
         }
         XCTAssertTrue(
             detail.contains("ui.bootstrap.v2") || detail.contains("AGTMUX_UI_BOOTSTRAP_V2_JSON"),
-            "detail must identify the sync-v2 bootstrap contract that failed"
+            "detail must keep the factual failing RPC or payload source"
         )
+        XCTAssertTrue(detail.contains("metadata bootstrap"))
         XCTAssertTrue(detail.contains("session_key"))
     }
 
@@ -2782,7 +2783,7 @@ final class AppViewModelA0Tests: XCTestCase {
         guard case let .incompatibleMetadataProtocol(detail)? = model.localDaemonIssue else {
             return XCTFail("expected incompatible local daemon issue for bootstrap location collision")
         }
-        XCTAssertTrue(detail.contains("ui.bootstrap.v2"))
+        XCTAssertTrue(detail.contains("metadata bootstrap"))
         XCTAssertTrue(detail.contains("ambiguous exact pane location"))
         let resetCount = await client.resets()
         XCTAssertEqual(resetCount, 1)

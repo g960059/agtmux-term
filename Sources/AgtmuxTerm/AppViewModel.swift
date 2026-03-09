@@ -318,7 +318,11 @@ final class AppViewModel: ObservableObject {
 
     private func classifyLocalDaemonIssue(from error: any Error) -> LocalDaemonIssue? {
         if let overlayError = error as? LocalMetadataOverlayError {
-            return .incompatibleMetadataProtocol(detail: overlayError.errorDescription ?? String(describing: overlayError))
+            return .incompatibleMetadataProtocol(
+                detail: normalizedMetadataProtocolDetail(
+                    overlayError.errorDescription ?? String(describing: overlayError)
+                )
+            )
         }
 
         if let metadataError = error as? LocalMetadataClientError {
@@ -391,7 +395,32 @@ final class AppViewModel: ObservableObject {
         guard referencesMetadataProtocol, indicatesIncompatibleMethod || indicatesMissingExactIdentity else {
             return nil
         }
-        return .incompatibleMetadataProtocol(detail: description)
+        return .incompatibleMetadataProtocol(detail: normalizedMetadataProtocolDetail(description))
+    }
+
+    private func normalizedMetadataProtocolDetail(_ description: String) -> String {
+        var detail = description
+
+        let replacements: [(String, String)] = [
+            ("RPC ui.bootstrap.v2 parse failed:", "Local metadata protocol parse failed (ui.bootstrap.v2):"),
+            ("RPC ui.changes.v2 parse failed:", "Local metadata protocol parse failed (ui.changes.v2):"),
+            ("RPC ui.bootstrap.v3 parse failed:", "Local metadata protocol parse failed (ui.bootstrap.v3):"),
+            ("RPC ui.changes.v3 parse failed:", "Local metadata protocol parse failed (ui.changes.v3):"),
+            ("AGTMUX_UI_BOOTSTRAP_V2_JSON parse failed:", "Local metadata protocol parse failed (AGTMUX_UI_BOOTSTRAP_V2_JSON):"),
+            ("AGTMUX_UI_CHANGES_V2_JSON parse failed:", "Local metadata protocol parse failed (AGTMUX_UI_CHANGES_V2_JSON):"),
+            ("AGTMUX_UI_BOOTSTRAP_V3_JSON parse failed:", "Local metadata protocol parse failed (AGTMUX_UI_BOOTSTRAP_V3_JSON):"),
+            ("AGTMUX_UI_CHANGES_V3_JSON parse failed:", "Local metadata protocol parse failed (AGTMUX_UI_CHANGES_V3_JSON):"),
+            ("sync-v2 bootstrap", "metadata bootstrap"),
+            ("sync-v2 pane", "metadata pane"),
+            ("sync-v3 bootstrap", "metadata bootstrap"),
+            ("sync-v3 pane", "metadata pane"),
+        ]
+
+        for (needle, replacement) in replacements {
+            detail = detail.replacingOccurrences(of: needle, with: replacement)
+        }
+
+        return detail.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func makeLocalDaemonUnavailableIssue(detail: String? = nil) -> LocalDaemonIssue {

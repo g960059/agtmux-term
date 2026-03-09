@@ -16,6 +16,19 @@ Historical progress detail lives in `docs/archive/progress/2026-02-28_to_2026-03
 
 ## Recent Entries
 
+## 2026-03-09 — T-142 landed: incompatible metadata detail is now protocol-accurate
+
+### What landed
+- normalized product-facing incompatible metadata detail so it now speaks in terms of metadata protocol / metadata bootstrap / exact-identity failures
+- kept factual RPC or payload-source names like `ui.bootstrap.v2` and `AGTMUX_UI_BOOTSTRAP_V2_JSON` when they are the real failing surface
+- aligned overlay-store localized errors and focused product assertions with the new wording
+
+### Verification
+- `swift build`
+- `swift test -q --filter AppViewModelA0Tests/testMissingExactIdentityInSyncV2BootstrapIsSurfacedAsIncompatible`
+- `swift test -q --filter AppViewModelA0Tests/testBootstrapLocationCollisionFailsClosedForWholeLocalMetadataEpoch`
+- result: all passed
+
 ## 2026-03-09 — T-141 landed: removed stale freshness/accessibility wording drift
 
 ### What landed

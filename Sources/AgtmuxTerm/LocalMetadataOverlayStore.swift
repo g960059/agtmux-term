@@ -7,7 +7,7 @@ enum LocalMetadataOverlayError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .ambiguousBootstrapLocation(let metadataKey):
-            return "RPC ui.bootstrap.v2 parse failed: sync-v2 bootstrap ambiguous exact pane location \(metadataKey)"
+            return "Local metadata protocol parse failed: metadata bootstrap ambiguous exact pane location \(metadataKey)"
         }
     }
 }

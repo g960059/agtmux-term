@@ -119,6 +119,7 @@ The current term rollout is additive bootstrap-v3 plus additive changes-v3.
   - `pane_instance_id`
 - the product `AppViewModel` local metadata path now requires sync-v3; unsupported bootstrap-v3 or changes-v3 clears overlay state and surfaces daemon incompatibility instead of silently falling back
 - the product-facing issue identity for that path is now `LocalDaemonIssue.incompatibleMetadataProtocol`, not the older `incompatibleSyncV2` naming
+- surfaced detail for that issue should describe metadata protocol / exact-identity failures first; factual RPC names may still appear when they are the real failing surface
 - remaining sync-v2 transport/service-boundary/workbench code is compatibility-only
 - the current product UI still renders through legacy `AgtmuxPane` / `ActivityState`
 
