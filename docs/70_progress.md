@@ -16,6 +16,19 @@ Historical progress detail lives in `docs/archive/progress/2026-02-28_to_2026-03
 
 ## Recent Entries
 
+## 2026-03-09 — T-146 landed: metadata overlay compat collapse is now explicit
+
+### What landed
+- extracted `PanePresentationState` → legacy `ActivityState` collapse into `PaneMetadataCompatFallback`
+- `LocalMetadataOverlayStore` now reads that compat helper instead of inlining the mapping
+- preserved the existing compat `AgtmuxPane` row behavior used by overlay/store consumers
+
+### Verification
+- `swift build`
+- `swift test -q --filter PaneMetadataCompatFallbackTests`
+- `swift test -q --filter LocalMetadataOverlayStoreTests`
+- result: all passed
+
 ## 2026-03-09 — T-145 landed: PaneDisplayState legacy collapse is now an explicit compat seam
 
 ### What landed

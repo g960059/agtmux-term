@@ -114,6 +114,8 @@ Mainline product truth is now:
   product-facing metadata clients/tests now depend on `ProductLocalMetadataClient`; `LocalMetadataClient` survives only as a compat-only surface
 - `T-145`
   `PaneDisplayState` now reads legacy `ActivityState` collapse through explicit compat helper `PaneDisplayCompatFallback`
+- `T-146`
+  `LocalMetadataOverlayStore` now reads `PanePresentationState` → `ActivityState` collapse through explicit compat helper `PaneMetadataCompatFallback`
 - `T-087`
   docs compaction and active-context redesign complete
 - `T-076` through `T-084`

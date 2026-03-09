@@ -411,6 +411,18 @@ Commit closeout is clear; next implementation proceeds on the new Workbench path
   - [x] a compat-only helper owns that mapping without changing visible behavior
   - [x] focused core tests cover the extracted seam and the unchanged display behavior
 
+### T-146 — isolate metadata overlay legacy activity collapse seam
+- **Status**: DONE
+- **Priority**: P3
+- **Depends**: T-145
+- **Owner**: term implementation agent
+- **Description**:
+  - Keep `LocalMetadataOverlayStore` behavior unchanged while moving its `PanePresentationState` → `ActivityState` collapse into an explicit compat-only helper.
+- **Acceptance Criteria**:
+  - [x] `LocalMetadataOverlayStore` no longer inlines legacy presentation-to-activity collapse
+  - [x] compat-only helper owns the mapping from `PanePresentationState` to `ActivityState`
+  - [x] focused core/integration tests prove the unchanged compat row behavior
+
 ### T-126 — thin live canary for sync-v3 bootstrap/changes exact-row lane
 - **Status**: DONE
 - **Priority**: P1

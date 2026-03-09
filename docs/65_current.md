@@ -142,6 +142,9 @@
 - `T-145` is now closed:
   - `PaneDisplayState` is still presentation-first, but its legacy `ActivityState` collapse now lives in explicit compat-only helper `PaneDisplayCompatFallback`
   - visible sidebar/accessibility behavior is unchanged; the cleanup only narrows the fallback seam
+- `T-146` is now closed:
+  - `LocalMetadataOverlayStore` still materializes compat `AgtmuxPane` rows, but the `PanePresentationState` → `ActivityState` collapse now lives in explicit helper `PaneMetadataCompatFallback`
+  - visible/product behavior is unchanged; the cleanup only narrows the metadata compat seam
 - `T-116` is now open:
   - metadata-enabled health-strip UI and pane-sync UI both reach their real assertions
   - upstream producer truth is now present in the same failing plain-zsh Codex lane:

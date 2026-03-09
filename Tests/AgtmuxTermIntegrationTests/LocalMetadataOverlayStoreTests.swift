@@ -311,6 +311,10 @@ final class LocalMetadataOverlayStoreTests: XCTestCase {
         let key = "local:visible-session:@1:%1"
         XCTAssertEqual(nextCache.metadataByPaneKey[key]?.provider, .codex)
         XCTAssertEqual(nextCache.metadataByPaneKey[key]?.activityState, .idle)
+        XCTAssertEqual(
+            nextCache.metadataByPaneKey[key]?.activityState,
+            PaneMetadataCompatFallback.activityState(from: try XCTUnwrap(nextCache.presentationByPaneKey[key]))
+        )
         XCTAssertEqual(nextCache.presentationByPaneKey[key]?.primaryState, .completedIdle)
     }
 

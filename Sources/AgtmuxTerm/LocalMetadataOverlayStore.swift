@@ -193,7 +193,7 @@ struct LocalMetadataOverlayStore {
             paneId: snapshot.paneID,
             sessionName: snapshot.sessionName,
             windowId: snapshot.windowID,
-            activityState: legacyActivityState(from: presentation),
+            activityState: PaneMetadataCompatFallback.activityState(from: presentation),
             presence: legacyPresence(from: snapshot.presence),
             provider: snapshot.provider,
             evidenceMode: legacyEvidenceMode(from: snapshot),
@@ -368,23 +368,6 @@ struct LocalMetadataOverlayStore {
             return .managed
         case .unmanaged, .missing:
             return .unmanaged
-        }
-    }
-
-    private func legacyActivityState(from presentation: PanePresentationState) -> ActivityState {
-        switch presentation.primaryState {
-        case .running:
-            return .running
-        case .waitingApproval:
-            return .waitingApproval
-        case .waitingUserInput:
-            return .waitingInput
-        case .error:
-            return .error
-        case .completedIdle, .idle:
-            return .idle
-        case .inactive:
-            return .unknown
         }
     }
 
