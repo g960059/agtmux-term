@@ -2,6 +2,21 @@ import Foundation
 import Darwin
 
 extension AgtmuxDaemonClient: AgtmuxSyncV2Transport {
+    package func fetchBootstrapV3() async throws -> AgtmuxSyncV3Bootstrap {
+        if let inlineJSON = ProcessInfo.processInfo.environment["AGTMUX_UI_BOOTSTRAP_V3_JSON"] {
+            guard let data = inlineJSON.data(using: .utf8) else {
+                throw DaemonError.parseError("AGTMUX_UI_BOOTSTRAP_V3_JSON is not valid UTF-8")
+            }
+            return try Self.decodeJSONPayload(AgtmuxSyncV3Bootstrap.self, from: data, label: "AGTMUX_UI_BOOTSTRAP_V3_JSON")
+        }
+
+        try ensureManagedRuntimeConfigured(forInlineOverrideKeys: ["AGTMUX_UI_BOOTSTRAP_V3_JSON"])
+        return try rpcCall(
+            method: "ui.bootstrap.v3",
+            params: EmptyRPCParams()
+        )
+    }
+
     package func fetchBootstrapV2() async throws -> AgtmuxSyncV2Bootstrap {
         if let inlineJSON = ProcessInfo.processInfo.environment["AGTMUX_UI_BOOTSTRAP_V2_JSON"] {
             guard let data = inlineJSON.data(using: .utf8) else {
@@ -120,6 +135,12 @@ private extension AgtmuxDaemonClient {
         let message = error.message.trimmingCharacters(in: .whitespacesAndNewlines)
         if isMethodNotFound(error: error) {
             switch method {
+            case "ui.bootstrap.v3":
+                return .makeSyncV3MethodNotFoundError(
+                    method: method,
+                    rpcCode: error.code,
+                    message: message
+                )
             case "ui.bootstrap.v2", "ui.changes.v2":
                 return .makeSyncV2MethodNotFoundError(
                     method: method,

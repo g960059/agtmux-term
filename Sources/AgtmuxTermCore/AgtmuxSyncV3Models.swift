@@ -3,6 +3,7 @@ import Foundation
 package enum AgtmuxSyncV3ProtocolError: LocalizedError, Equatable, Sendable {
     case unsupportedVersion(Int)
     case missingBootstrapPaneField(String)
+    case paneInstanceIDMismatch(topLevelPaneID: String, paneInstancePaneID: String)
 
     package var errorDescription: String? {
         switch self {
@@ -10,6 +11,8 @@ package enum AgtmuxSyncV3ProtocolError: LocalizedError, Equatable, Sendable {
             return "sync-v3 bootstrap version \(version) is unsupported"
         case .missingBootstrapPaneField(let field):
             return "sync-v3 bootstrap pane missing required exact identity field '\(field)'"
+        case .paneInstanceIDMismatch(let topLevelPaneID, let paneInstancePaneID):
+            return "sync-v3 bootstrap pane_instance_id.pane_id '\(paneInstancePaneID)' does not match pane_id '\(topLevelPaneID)'"
         }
     }
 }
@@ -40,6 +43,12 @@ package struct AgtmuxSyncV3PaneInstanceID: Codable, Equatable, Hashable, Sendabl
         case generation
         case birthTs = "birth_ts"
     }
+}
+
+package enum AgtmuxSyncV3Presence: String, Codable, Equatable, Sendable {
+    case managed
+    case unmanaged
+    case missing
 }
 
 package enum AgtmuxSyncV3AgentLifecycle: String, Codable, Equatable, Sendable {
@@ -370,7 +379,7 @@ package struct AgtmuxSyncV3PaneSnapshot: Codable, Equatable, Sendable {
     package let paneID: String
     package let paneInstanceID: AgtmuxSyncV3PaneInstanceID
     package let provider: Provider?
-    package let presence: PanePresence
+    package let presence: AgtmuxSyncV3Presence
     package let agent: AgtmuxSyncV3AgentState
     package let thread: AgtmuxSyncV3ThreadState
     package let pendingRequests: [AgtmuxSyncV3PendingRequest]
@@ -385,7 +394,7 @@ package struct AgtmuxSyncV3PaneSnapshot: Codable, Equatable, Sendable {
                  paneID: String,
                  paneInstanceID: AgtmuxSyncV3PaneInstanceID,
                  provider: Provider?,
-                 presence: PanePresence,
+                 presence: AgtmuxSyncV3Presence,
                  agent: AgtmuxSyncV3AgentState,
                  thread: AgtmuxSyncV3ThreadState,
                  pendingRequests: [AgtmuxSyncV3PendingRequest],
@@ -438,7 +447,7 @@ package struct AgtmuxSyncV3PaneSnapshot: Codable, Equatable, Sendable {
             forKey: .paneInstanceID
         )
         provider = try container.decodeIfPresent(Provider.self, forKey: .provider)
-        presence = try container.decode(PanePresence.self, forKey: .presence)
+        presence = try container.decode(AgtmuxSyncV3Presence.self, forKey: .presence)
         agent = try container.decode(AgtmuxSyncV3AgentState.self, forKey: .agent)
         thread = try container.decode(AgtmuxSyncV3ThreadState.self, forKey: .thread)
         pendingRequests = try container.decode([AgtmuxSyncV3PendingRequest].self, forKey: .pendingRequests)
@@ -446,6 +455,12 @@ package struct AgtmuxSyncV3PaneSnapshot: Codable, Equatable, Sendable {
         freshness = try container.decode(AgtmuxSyncV3FreshnessSummary.self, forKey: .freshness)
         providerRaw = try container.decodeIfPresent(AgtmuxSyncV3ProviderRaw.self, forKey: .providerRaw)
         updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+        if paneInstanceID.paneId != paneID {
+            throw AgtmuxSyncV3ProtocolError.paneInstanceIDMismatch(
+                topLevelPaneID: paneID,
+                paneInstancePaneID: paneInstanceID.paneId
+            )
+        }
     }
 
     private static func decodeRequired<T: Decodable>(
@@ -463,18 +478,18 @@ package struct AgtmuxSyncV3PaneSnapshot: Codable, Equatable, Sendable {
 
 package struct AgtmuxSyncV3Bootstrap: Codable, Equatable, Sendable {
     package let version: Int
-    package let epoch: UInt64
-    package let snapshotSeq: UInt64
+    package let epoch: UInt64?
+    package let snapshotSeq: UInt64?
     package let panes: [AgtmuxSyncV3PaneSnapshot]
     package let generatedAt: Date
-    package let replayCursor: AgtmuxSyncV3Cursor
+    package let replayCursor: AgtmuxSyncV3Cursor?
 
     package init(version: Int,
-                 epoch: UInt64,
-                 snapshotSeq: UInt64,
+                 epoch: UInt64?,
+                 snapshotSeq: UInt64?,
                  panes: [AgtmuxSyncV3PaneSnapshot],
                  generatedAt: Date,
-                 replayCursor: AgtmuxSyncV3Cursor) {
+                 replayCursor: AgtmuxSyncV3Cursor?) {
         self.version = version
         self.epoch = epoch
         self.snapshotSeq = snapshotSeq
@@ -498,10 +513,10 @@ package struct AgtmuxSyncV3Bootstrap: Codable, Equatable, Sendable {
         if version != 3 {
             throw AgtmuxSyncV3ProtocolError.unsupportedVersion(version)
         }
-        epoch = try container.decode(UInt64.self, forKey: .epoch)
-        snapshotSeq = try container.decode(UInt64.self, forKey: .snapshotSeq)
+        epoch = try container.decodeIfPresent(UInt64.self, forKey: .epoch)
+        snapshotSeq = try container.decodeIfPresent(UInt64.self, forKey: .snapshotSeq)
         panes = try container.decode([AgtmuxSyncV3PaneSnapshot].self, forKey: .panes)
         generatedAt = try container.decode(Date.self, forKey: .generatedAt)
-        replayCursor = try container.decode(AgtmuxSyncV3Cursor.self, forKey: .replayCursor)
+        replayCursor = try container.decodeIfPresent(AgtmuxSyncV3Cursor.self, forKey: .replayCursor)
     }
 }

@@ -47,7 +47,11 @@
   - term-side `sync-v3` consumer foundation is landed but not yet wired into the live app path
   - strict `AgtmuxSyncV3Models` now preserve exact-row identity assumptions on the consumer side
   - a local `PanePresentationState` derivation layer now exists so future v3 UI cutover does not bind views directly to raw daemon structs
-  - temporary local decode fixtures are explicitly marked as swap-ready until daemon-owned canonical fixtures exist
+  - temporary local decode fixtures were only a bridge until daemon-owned canonical fixtures arrived
+- `T-121` is now closed:
+  - term-side v3 consumer tests now ingest daemon-owned canonical fixtures directly from sibling repo truth
+  - current fixture truth source is `agtmux` commit `cb198cca7226666fbb26df34d4e17582a208c3e6`
+  - the term repo also has an additive `fetchUIBootstrapV3()` decode surface, but no live app wiring yet
 - `T-116` is now open:
   - metadata-enabled health-strip UI and pane-sync UI both reach their real assertions
   - upstream producer truth is now present in the same failing plain-zsh Codex lane:
@@ -111,6 +115,7 @@
   - daemon will own structured multi-axis truth (`agent/thread/blocking/execution/turn/pending_requests/attention/freshness/provider_raw`)
   - term will own local presentation derivation from that structured truth
   - `attention` remains summary-only in the consumer; request identity truth stays in `pending_requests[].request_id`
+  - canonical positive consumer scenarios now come from daemon-owned fixtures, not local mirrored JSON
 - the current persistent app-managed socket has been revalidated after the upstream daemon fix and daemon restart:
   - `/Users/virtualmachine/Library/Application Support/AGTMUXDesktop/agtmuxd.sock` now returns only rows with complete exact-location fields
   - managed provider/activity/title overlay is expected to recover on the normal app path without further terminal-side protocol changes
@@ -171,6 +176,8 @@
   metadata-enabled plain-zsh XCUITest managed-row surfacing via stable row-level AX contract (`DONE`)
 - `T-120`
   sync-v3 term consumer foundation and presentation scaffolding (`DONE`)
+- `T-121`
+  daemon-owned sync-v3 fixture ingestion and additive bootstrap decode surface (`DONE`)
 - `T-114`
   single-writer local overlay recovery and live managed-pane surfacing (`DONE`)
 - `T-115`

@@ -2,214 +2,111 @@ import XCTest
 @testable import AgtmuxTermCore
 
 final class AgtmuxSyncV3DecodingTests: XCTestCase {
-    private func decoder() -> JSONDecoder {
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        return decoder
-    }
-
     private func date(_ value: String) -> Date {
         let formatter = ISO8601DateFormatter()
         return formatter.date(from: value)!
     }
 
-    /// Temporary local fixture scaffold derived from `/tmp/agtmux-status-v3-final-design-20260309.md`.
-    /// Replace with daemon-owned canonical fixtures once they are available.
-    private func bootstrapJSON(paneFields: String) -> String {
-        """
-        {
-          "version": 3,
-          "epoch": 9,
-          "snapshot_seq": 44,
-          "panes": [
-            \(paneFields)
-          ],
-          "generated_at": "2026-03-09T20:11:05Z",
-          "replay_cursor": {
-            "epoch": 9,
-            "seq": 45
-          }
-        }
-        """
+    private func fixturePane(_ name: String, filePath: StaticString = #filePath) throws -> AgtmuxSyncV3PaneSnapshot {
+        let bootstrap = try AgtmuxSyncV3FixtureLoader.bootstrap(named: name, filePath: filePath)
+        XCTAssertEqual(bootstrap.version, 3)
+        XCTAssertEqual(bootstrap.panes.count, 1, "fixture \(name) should contain one pane")
+        return try XCTUnwrap(bootstrap.panes.first)
     }
 
-    func testDecodeBootstrapMapsStructuredStatusAxesAndProviderRaw() throws {
-        let json = bootstrapJSON(
-            paneFields: """
-            {
-              "session_name": "workbench",
-              "window_id": "@5",
-              "session_key": "codex:%12",
-              "pane_id": "%12",
-              "pane_instance_id": {
-                "pane_id": "%12",
-                "generation": 7,
-                "birth_ts": "2026-03-09T20:09:54Z"
-              },
-              "provider": "codex",
-              "presence": "managed",
-              "agent": {
-                "lifecycle": "running"
-              },
-              "thread": {
-                "lifecycle": "active",
-                "blocking": "waiting_approval",
-                "execution": "tool_running",
-                "flags": {
-                  "review_mode": true,
-                  "subagent_active": false
-                },
-                "turn": {
-                  "outcome": "none",
-                  "sequence": 42,
-                  "started_at": "2026-03-09T20:10:00Z",
-                  "completed_at": null
-                }
-              },
-              "pending_requests": [
-                {
-                  "request_id": "req_approval_123",
-                  "kind": "approval",
-                  "title": "Apply patch",
-                  "detail": "Approve file modifications",
-                  "created_at": "2026-03-09T20:11:04Z",
-                  "updated_at": "2026-03-09T20:11:04Z",
-                  "status": "pending",
-                  "source": {
-                    "provider": "codex",
-                    "source_kind": "codex_appserver"
-                  }
-                }
-              ],
-              "attention": {
-                "active_kinds": ["approval"],
-                "highest_priority": "approval",
-                "unresolved_count": 1,
-                "generation": 9,
-                "latest_at": "2026-03-09T20:11:04Z"
-              },
-              "freshness": {
-                "snapshot": "fresh",
-                "blocking": "fresh",
-                "execution": "fresh"
-              },
-              "provider_raw": {
-                "codex": {
-                  "thread_status_type": "active",
-                  "active_flags": ["waitingOnApproval"],
-                  "agent_status": "running",
-                  "review_mode": true
-                }
-              },
-              "updated_at": "2026-03-09T20:11:04Z"
-            }
-            """
-        )
-
-        let bootstrap = try decoder().decode(AgtmuxSyncV3Bootstrap.self, from: Data(json.utf8))
+    func testDecodeCanonicalCodexRunningFixture() throws {
+        let bootstrap = try AgtmuxSyncV3FixtureLoader.bootstrap(named: "codex-running")
+        let pane = try XCTUnwrap(bootstrap.panes.first)
 
         XCTAssertEqual(bootstrap.version, 3)
-        XCTAssertEqual(bootstrap.epoch, 9)
-        XCTAssertEqual(bootstrap.snapshotSeq, 44)
-        XCTAssertEqual(bootstrap.generatedAt, date("2026-03-09T20:11:05Z"))
-        XCTAssertEqual(bootstrap.replayCursor, AgtmuxSyncV3Cursor(epoch: 9, seq: 45))
-        XCTAssertEqual(bootstrap.panes.count, 1)
-
-        let pane = bootstrap.panes[0]
-        XCTAssertEqual(pane.sessionName, "workbench")
-        XCTAssertEqual(pane.windowID, "@5")
-        XCTAssertEqual(pane.sessionKey, "codex:%12")
-        XCTAssertEqual(pane.paneID, "%12")
-        XCTAssertEqual(
-            pane.paneInstanceID,
-            AgtmuxSyncV3PaneInstanceID(
-                paneId: "%12",
-                generation: 7,
-                birthTs: date("2026-03-09T20:09:54Z")
-            )
-        )
+        XCTAssertNil(bootstrap.epoch)
+        XCTAssertNil(bootstrap.snapshotSeq)
+        XCTAssertNil(bootstrap.replayCursor)
+        XCTAssertEqual(bootstrap.generatedAt, date("2026-03-09T20:11:04Z"))
         XCTAssertEqual(pane.provider, .codex)
         XCTAssertEqual(pane.presence, .managed)
         XCTAssertEqual(pane.agent.lifecycle, .running)
         XCTAssertEqual(pane.thread.lifecycle, .active)
+        XCTAssertEqual(pane.thread.blocking, .none)
+        XCTAssertEqual(pane.thread.execution, .thinking)
+    }
+
+    func testDecodeCanonicalCodexWaitingApprovalFixture() throws {
+        let pane = try fixturePane("codex-waiting-approval")
+
         XCTAssertEqual(pane.thread.blocking, .waitingApproval)
         XCTAssertEqual(pane.thread.execution, .toolRunning)
         XCTAssertEqual(pane.thread.flags.reviewMode, true)
-        XCTAssertEqual(pane.thread.flags.subagentActive, false)
-        XCTAssertEqual(pane.thread.turn.outcome, .none)
-        XCTAssertEqual(pane.thread.turn.sequence, 42)
-        XCTAssertEqual(pane.pendingRequests.map(\.requestID), ["req_approval_123"])
+        XCTAssertEqual(pane.pendingRequests.map(\.requestID), ["req_codex_approval_001"])
         XCTAssertEqual(pane.attention.highestPriority, .approval)
-        XCTAssertEqual(pane.attention.generation, 9)
-        XCTAssertEqual(pane.freshness.execution, .fresh)
-        XCTAssertEqual(pane.updatedAt, date("2026-03-09T20:11:04Z"))
-
-        guard case let .object(codexRaw)? = pane.providerRaw?[.codex]?.storage else {
-            return XCTFail("expected codex provider_raw payload")
-        }
-        XCTAssertEqual(codexRaw["thread_status_type"], AgtmuxSyncV3JSONValue(.string("active")))
     }
 
-    func testDecodeBootstrapAllowsCompletedAgentAlongsideIdleThread() throws {
-        let json = bootstrapJSON(
-            paneFields: """
-            {
-              "session_name": "demo",
-              "window_id": "@1",
-              "session_key": "codex:%4",
-              "pane_id": "%4",
-              "pane_instance_id": {
-                "pane_id": "%4",
-                "generation": 2,
-                "birth_ts": "2026-03-09T21:00:00Z"
-              },
-              "presence": "managed",
-              "agent": {
-                "lifecycle": "completed"
-              },
-              "thread": {
-                "lifecycle": "idle",
-                "blocking": "none",
-                "execution": "none",
-                "flags": {
-                  "review_mode": false,
-                  "subagent_active": false
-                },
-                "turn": {
-                  "outcome": "completed",
-                  "sequence": 7,
-                  "started_at": "2026-03-09T21:00:00Z",
-                  "completed_at": "2026-03-09T21:00:09Z"
-                }
-              },
-              "pending_requests": [],
-              "attention": {
-                "active_kinds": ["completion"],
-                "highest_priority": "completion",
-                "unresolved_count": 0,
-                "generation": 11,
-                "latest_at": "2026-03-09T21:00:09Z"
-              },
-              "freshness": {
-                "snapshot": "fresh",
-                "blocking": "fresh",
-                "execution": "fresh"
-              },
-              "updated_at": "2026-03-09T21:00:09Z"
-            }
-            """
-        )
+    func testDecodeCanonicalCodexCompletedIdleFixture() throws {
+        let pane = try fixturePane("codex-completed-idle")
 
-        let bootstrap = try decoder().decode(AgtmuxSyncV3Bootstrap.self, from: Data(json.utf8))
+        XCTAssertEqual(pane.agent.lifecycle, .completed)
+        XCTAssertEqual(pane.thread.lifecycle, .idle)
+        XCTAssertEqual(pane.thread.turn.outcome, .completed)
+        XCTAssertEqual(pane.attention.highestPriority, .completion)
+    }
 
-        XCTAssertEqual(bootstrap.panes[0].agent.lifecycle, .completed)
-        XCTAssertEqual(bootstrap.panes[0].thread.lifecycle, .idle)
-        XCTAssertEqual(bootstrap.panes[0].thread.turn.outcome, .completed)
+    func testDecodeCanonicalClaudeApprovalFixture() throws {
+        let pane = try fixturePane("claude-approval")
+
+        XCTAssertEqual(pane.provider, .claude)
+        XCTAssertEqual(pane.thread.blocking, .waitingApproval)
+        XCTAssertEqual(pane.pendingRequests.first?.source.sourceKind, "claude_hooks")
+        guard case let .object(raw)? = pane.providerRaw?[.claude]?.storage else {
+            return XCTFail("expected opaque claude provider_raw object")
+        }
+        XCTAssertEqual(raw["hook_event"], AgtmuxSyncV3JSONValue(.string("PermissionRequest")))
+    }
+
+    func testDecodeCanonicalClaudeStopIdleFixture() throws {
+        let pane = try fixturePane("claude-stop-idle")
+
+        XCTAssertEqual(pane.provider, .claude)
+        XCTAssertEqual(pane.thread.lifecycle, .idle)
+        XCTAssertEqual(pane.thread.turn.outcome, .completed)
+        XCTAssertEqual(pane.attention.highestPriority, .completion)
+    }
+
+    func testDecodeCanonicalUnmanagedDemotionFixture() throws {
+        let pane = try fixturePane("unmanaged-demotion")
+
+        XCTAssertNil(pane.provider)
+        XCTAssertEqual(pane.presence, .unmanaged)
+        XCTAssertEqual(pane.agent.lifecycle, .unknown)
+        XCTAssertEqual(pane.freshness.snapshot, .down)
+    }
+
+    func testDecodeCanonicalErrorFixture() throws {
+        let pane = try fixturePane("error")
+
+        XCTAssertEqual(pane.agent.lifecycle, .errored)
+        XCTAssertEqual(pane.thread.lifecycle, .errored)
+        XCTAssertEqual(pane.thread.turn.outcome, .errored)
+        guard case let .object(codexRaw)? = pane.providerRaw?[.codex]?.storage,
+              case let .object(errorObject)? = codexRaw["error"]?.storage else {
+            return XCTFail("expected nested error object in provider_raw")
+        }
+        XCTAssertEqual(errorObject["message"], AgtmuxSyncV3JSONValue(.string("tool invocation failed")))
+    }
+
+    func testDecodeCanonicalFreshnessDegradedFixture() throws {
+        let pane = try fixturePane("freshness-degraded")
+
+        XCTAssertEqual(pane.thread.execution, .streaming)
+        XCTAssertEqual(pane.freshness.snapshot, .stale)
+        XCTAssertEqual(pane.freshness.execution, .stale)
     }
 
     func testDecodeBootstrapFailsWhenExactIdentityFieldsAreMissing() throws {
-        let json = bootstrapJSON(
-            paneFields: """
+        let json = """
+        {
+          "version": 3,
+          "generated_at": "2026-03-09T20:11:05Z",
+          "panes": [
             {
               "window_id": "@1",
               "session_key": "codex:%4",
@@ -253,15 +150,84 @@ final class AgtmuxSyncV3DecodingTests: XCTestCase {
               },
               "updated_at": "2026-03-09T21:00:09Z"
             }
-            """
-        )
+          ]
+        }
+        """
 
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
         XCTAssertThrowsError(
-            try decoder().decode(AgtmuxSyncV3Bootstrap.self, from: Data(json.utf8))
+            try decoder.decode(AgtmuxSyncV3Bootstrap.self, from: Data(json.utf8))
         ) { error in
             XCTAssertEqual(
                 error as? AgtmuxSyncV3ProtocolError,
                 .missingBootstrapPaneField("session_name")
+            )
+        }
+    }
+
+    func testDecodeBootstrapFailsWhenPaneInstanceIdentityDoesNotMatchPaneID() throws {
+        let json = """
+        {
+          "version": 3,
+          "generated_at": "2026-03-09T20:11:05Z",
+          "panes": [
+            {
+              "session_name": "demo",
+              "window_id": "@1",
+              "session_key": "codex:%4",
+              "pane_id": "%4",
+              "pane_instance_id": {
+                "pane_id": "%999",
+                "generation": 2,
+                "birth_ts": "2026-03-09T21:00:00Z"
+              },
+              "presence": "managed",
+              "agent": {
+                "lifecycle": "running"
+              },
+              "thread": {
+                "lifecycle": "active",
+                "blocking": "none",
+                "execution": "thinking",
+                "flags": {
+                  "review_mode": false,
+                  "subagent_active": false
+                },
+                "turn": {
+                  "outcome": "none",
+                  "sequence": null,
+                  "started_at": null,
+                  "completed_at": null
+                }
+              },
+              "pending_requests": [],
+              "attention": {
+                "active_kinds": [],
+                "highest_priority": "none",
+                "unresolved_count": 0,
+                "generation": 0,
+                "latest_at": null
+              },
+              "freshness": {
+                "snapshot": "fresh",
+                "blocking": "fresh",
+                "execution": "fresh"
+              },
+              "updated_at": "2026-03-09T21:00:09Z"
+            }
+          ]
+        }
+        """
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        XCTAssertThrowsError(
+            try decoder.decode(AgtmuxSyncV3Bootstrap.self, from: Data(json.utf8))
+        ) { error in
+            XCTAssertEqual(
+                error as? AgtmuxSyncV3ProtocolError,
+                .paneInstanceIDMismatch(topLevelPaneID: "%4", paneInstancePaneID: "%999")
             )
         }
     }

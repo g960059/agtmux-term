@@ -13,6 +13,46 @@ Historical progress detail lives in `docs/archive/progress/2026-02-28_to_2026-03
 
 ## Recent Entries
 
+## 2026-03-09 — T-121 landed: term-side v3 tests now consume daemon-owned canonical fixtures
+
+### Fixture source of truth
+- switched the v3 consumer tests away from local ad hoc positive fixtures
+- canonical source is now the sibling `agtmux` repo at commit:
+  - `cb198cca7226666fbb26df34d4e17582a208c3e6`
+- fixture root:
+  - `/Users/virtualmachine/ghq/github.com/g960059/agtmux/fixtures/sync-v3/`
+- added a reusable loader so term tests read daemon-owned snapshots directly, with an env override only for alternate local checkouts
+
+### Consumer coverage now fixed to canonical scenarios
+- decode coverage explicitly includes:
+  - `codex-running`
+  - `codex-waiting-approval`
+  - `codex-completed-idle`
+  - `claude-approval`
+  - `claude-stop-idle`
+  - `unmanaged-demotion`
+  - `error`
+  - `freshness-degraded`
+- presentation derivation coverage now uses the same daemon-owned fixtures for those scenarios
+- local inline payloads remain only for consumer fail-closed negatives:
+  - missing exact identity field
+  - mismatched `pane_id` vs `pane_instance_id.pane_id`
+
+### Additive client surface
+- added a non-wired `fetchUIBootstrapV3()` decode surface to `AgtmuxDaemonClient`
+- added `AGTMUX_UI_BOOTSTRAP_V3_JSON` inline override coverage so the v3 bootstrap decoder can be exercised without live wire cutover
+- this is intentionally additive only:
+  - no `AppViewModel` migration
+  - no live UI path changes
+  - no sync-v2 removal
+
+### Verification
+- `swift build`
+- `swift test -q --filter AgtmuxSyncV3DecodingTests`
+- `swift test -q --filter PanePresentationStateTests`
+- `swift test -q --filter RuntimeHardeningTests/testDaemonClientFetchUIBootstrapV3DecodesDaemonOwnedFixtureFromInlineOverride`
+- result: all passed
+
 ## 2026-03-09 — T-120 landed: term-side sync-v3 consumer foundation is in place without disturbing the live v2 path
 
 ### What landed

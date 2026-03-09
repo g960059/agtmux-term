@@ -44,7 +44,7 @@ package struct PanePresentationIdentity: Equatable, Sendable {
 /// in `pendingRequestIDs`.
 package struct PanePresentationState: Equatable, Sendable {
     package let identity: PanePresentationIdentity
-    package let presence: PanePresence
+    package let presence: AgtmuxSyncV3Presence
     package let provider: Provider?
     package let agentLifecycle: AgtmuxSyncV3AgentLifecycle
     package let threadLifecycle: AgtmuxSyncV3ThreadLifecycle

@@ -90,14 +90,20 @@ Truth remains:
 `attention.generation` is summary/update metadata only.
 It must not be used as request identity or dedupe identity.
 
-## Temporary Fixture Policy
+## Canonical Fixture Policy
 
-Daemon-owned canonical v3 fixtures do not exist in this repo yet.
-Until they do:
+Daemon-owned canonical v3 fixtures now live in the sibling `agtmux` repo at commit:
 
-- local decode tests may use temporary inline JSON fixtures derived from the final design doc
-- those fixtures must stay clearly marked as temporary scaffolds
-- the term repo should be ready to swap to daemon-owned fixtures without changing presentation semantics
+- `cb198cca7226666fbb26df34d4e17582a208c3e6`
+
+Source-of-truth path:
+
+- `/Users/virtualmachine/ghq/github.com/g960059/agtmux/fixtures/sync-v3/`
+
+Term-side consumer tests read those fixtures directly.
+The term repo should not mirror or reinterpret them independently unless the daemon repo changes the contract first.
+
+Local negative tests that assert consumer fail-closed behavior may still use inline invalid payloads, but canonical positive scenarios must come from the daemon-owned fixtures.
 
 ## Current Limit
 

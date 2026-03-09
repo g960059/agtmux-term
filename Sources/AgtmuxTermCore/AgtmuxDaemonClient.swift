@@ -63,6 +63,11 @@ package actor AgtmuxDaemonClient {
         return try await session.bootstrap()
     }
 
+    package func fetchUIBootstrapV3() async throws -> AgtmuxSyncV3Bootstrap {
+        try ensureManagedRuntimeConfigured(forInlineOverrideKeys: ["AGTMUX_UI_BOOTSTRAP_V3_JSON"])
+        return try await fetchBootstrapV3()
+    }
+
     package func fetchUIChangesV2(limit: Int = 256) async throws -> AgtmuxSyncV2ChangesResponse {
         try ensureManagedRuntimeConfigured(forInlineOverrideKeys: ["AGTMUX_UI_CHANGES_V2_JSON"])
         let session = syncV2SessionInstance()
@@ -181,6 +186,7 @@ package actor AgtmuxDaemonClient {
 
 package enum DaemonUIErrorCode: String, Sendable {
     case syncV2MethodNotFound = "sync_v2_method_not_found"
+    case syncV3MethodNotFound = "sync_v3_method_not_found"
     case uiHealthMethodNotFound = "ui_health_v1_method_not_found"
 }
 
@@ -240,6 +246,18 @@ package extension DaemonError {
         let humanMessage = "agtmux daemon is too old for sync-v2: missing RPC method \(method) (code \(codeText)): \(trimmed)"
         return makeStructuredMethodNotFoundError(
             code: .syncV2MethodNotFound,
+            method: method,
+            rpcCode: rpcCode,
+            message: humanMessage
+        )
+    }
+
+    static func makeSyncV3MethodNotFoundError(method: String, rpcCode: Int?, message: String) -> DaemonError {
+        let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        let codeText = rpcCode.map(String.init) ?? "unknown"
+        let humanMessage = "agtmux daemon does not expose sync-v3 bootstrap yet: missing RPC method \(method) (code \(codeText)): \(trimmed)"
+        return makeStructuredMethodNotFoundError(
+            code: .syncV3MethodNotFound,
             method: method,
             rpcCode: rpcCode,
             message: humanMessage

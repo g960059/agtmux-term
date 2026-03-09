@@ -2,183 +2,81 @@ import XCTest
 @testable import AgtmuxTermCore
 
 final class PanePresentationStateTests: XCTestCase {
-    private func date(_ value: String) -> Date {
-        let formatter = ISO8601DateFormatter()
-        return formatter.date(from: value)!
+    private func fixturePresentation(_ name: String, filePath: StaticString = #filePath) throws -> PanePresentationState {
+        let bootstrap = try AgtmuxSyncV3FixtureLoader.bootstrap(named: name, filePath: filePath)
+        let pane = try XCTUnwrap(bootstrap.panes.first)
+        return PanePresentationState(snapshot: pane)
     }
 
-    private func makeSnapshot(
-        provider: Provider? = .codex,
-        presence: PanePresence = .managed,
-        agentLifecycle: AgtmuxSyncV3AgentLifecycle = .running,
-        threadLifecycle: AgtmuxSyncV3ThreadLifecycle = .active,
-        blocking: AgtmuxSyncV3BlockingState = .none,
-        execution: AgtmuxSyncV3ExecutionState = .toolRunning,
-        reviewMode: Bool = false,
-        subagentActive: Bool = false,
-        outcome: AgtmuxSyncV3TurnOutcome = .none,
-        pendingRequests: [AgtmuxSyncV3PendingRequest] = [],
-        attentionKinds: [AgtmuxSyncV3AttentionKind] = [],
-        highestPriority: AgtmuxSyncV3AttentionPriority = .none,
-        unresolvedCount: UInt32 = 0,
-        freshness: AgtmuxSyncV3FreshnessSummary = .init(snapshot: .fresh, blocking: .fresh, execution: .fresh)
-    ) -> AgtmuxSyncV3PaneSnapshot {
-        AgtmuxSyncV3PaneSnapshot(
-            sessionName: "demo",
-            windowID: "@1",
-            sessionKey: "codex:%1",
-            paneID: "%1",
-            paneInstanceID: AgtmuxSyncV3PaneInstanceID(
-                paneId: "%1",
-                generation: 1,
-                birthTs: date("2026-03-09T22:00:00Z")
-            ),
-            provider: provider,
-            presence: presence,
-            agent: AgtmuxSyncV3AgentState(lifecycle: agentLifecycle),
-            thread: AgtmuxSyncV3ThreadState(
-                lifecycle: threadLifecycle,
-                blocking: blocking,
-                execution: execution,
-                flags: AgtmuxSyncV3ThreadFlags(
-                    reviewMode: reviewMode,
-                    subagentActive: subagentActive
-                ),
-                turn: AgtmuxSyncV3TurnState(
-                    outcome: outcome,
-                    sequence: 7,
-                    startedAt: date("2026-03-09T22:00:00Z"),
-                    completedAt: outcome == .none ? nil : date("2026-03-09T22:00:10Z")
-                )
-            ),
-            pendingRequests: pendingRequests,
-            attention: AgtmuxSyncV3AttentionSummary(
-                activeKinds: attentionKinds,
-                highestPriority: highestPriority,
-                unresolvedCount: unresolvedCount,
-                generation: 4,
-                latestAt: date("2026-03-09T22:00:10Z")
-            ),
-            freshness: freshness,
-            providerRaw: nil,
-            updatedAt: date("2026-03-09T22:00:10Z")
-        )
-    }
-
-    private func approvalRequest() -> AgtmuxSyncV3PendingRequest {
-        AgtmuxSyncV3PendingRequest(
-            requestID: "req-approval",
-            kind: .approval,
-            title: "Apply patch",
-            detail: "Approve workspace modifications",
-            createdAt: date("2026-03-09T22:00:01Z"),
-            updatedAt: date("2026-03-09T22:00:01Z"),
-            status: .pending,
-            source: AgtmuxSyncV3PendingRequestSource(provider: .codex, sourceKind: "codex_appserver")
-        )
-    }
-
-    private func questionRequest() -> AgtmuxSyncV3PendingRequest {
-        AgtmuxSyncV3PendingRequest(
-            requestID: "req-question",
-            kind: .userInput,
-            title: "Need answer",
-            detail: "Choose A or B",
-            createdAt: date("2026-03-09T22:00:01Z"),
-            updatedAt: date("2026-03-09T22:00:01Z"),
-            status: .pending,
-            source: AgtmuxSyncV3PendingRequestSource(provider: .claude, sourceKind: "claude_hooks")
-        )
-    }
-
-    func testDeriveRunningState() {
-        let presentation = PanePresentationState(snapshot: makeSnapshot())
+    func testDerivePresentationFromCanonicalCodexRunningFixture() throws {
+        let presentation = try fixturePresentation("codex-running")
 
         XCTAssertEqual(presentation.primaryState, .running)
-        XCTAssertEqual(presentation.execution, .toolRunning)
+        XCTAssertEqual(presentation.execution, .thinking)
         XCTAssertEqual(presentation.freshnessState, .fresh)
         XCTAssertFalse(presentation.needsUserAction)
-        XCTAssertEqual(presentation.identity.sessionName, "demo")
     }
 
-    func testDeriveWaitingApprovalState() {
-        let presentation = PanePresentationState(
-            snapshot: makeSnapshot(
-                blocking: .waitingApproval,
-                pendingRequests: [approvalRequest()],
-                attentionKinds: [.approval],
-                highestPriority: .approval,
-                unresolvedCount: 1
-            )
-        )
+    func testDerivePresentationFromCanonicalCodexWaitingApprovalFixture() throws {
+        let presentation = try fixturePresentation("codex-waiting-approval")
 
         XCTAssertEqual(presentation.primaryState, .waitingApproval)
         XCTAssertTrue(presentation.needsUserAction)
-        XCTAssertEqual(presentation.pendingRequestIDs, ["req-approval"])
+        XCTAssertEqual(presentation.pendingRequestIDs, ["req_codex_approval_001"])
         XCTAssertEqual(presentation.attentionSummary.highestPriority, .approval)
+        XCTAssertTrue(presentation.reviewMode)
     }
 
-    func testDeriveWaitingUserInputState() {
-        let presentation = PanePresentationState(
-            snapshot: makeSnapshot(
-                provider: .claude,
-                blocking: .waitingUserInput,
-                execution: .none,
-                pendingRequests: [questionRequest()],
-                attentionKinds: [.question],
-                highestPriority: .question,
-                unresolvedCount: 1
-            )
-        )
-
-        XCTAssertEqual(presentation.primaryState, .waitingUserInput)
-        XCTAssertTrue(presentation.needsUserAction)
-        XCTAssertTrue(presentation.showsAttentionSummary)
-        XCTAssertEqual(presentation.pendingRequestIDs, ["req-question"])
-    }
-
-    func testDeriveCompletedIdleStateWithoutReintroducingWaiting() {
-        let presentation = PanePresentationState(
-            snapshot: makeSnapshot(
-                agentLifecycle: .completed,
-                threadLifecycle: .idle,
-                blocking: .none,
-                execution: .none,
-                outcome: .completed,
-                attentionKinds: [.completion],
-                highestPriority: .completion
-            )
-        )
+    func testDerivePresentationFromCanonicalCodexCompletedIdleFixture() throws {
+        let presentation = try fixturePresentation("codex-completed-idle")
 
         XCTAssertEqual(presentation.primaryState, .completedIdle)
         XCTAssertEqual(presentation.turnOutcome, .completed)
         XCTAssertFalse(presentation.needsUserAction)
+        XCTAssertTrue(presentation.showsAttentionSummary)
     }
 
-    func testDeriveErrorState() {
-        let presentation = PanePresentationState(
-            snapshot: makeSnapshot(
-                agentLifecycle: .errored,
-                threadLifecycle: .errored,
-                execution: .none,
-                outcome: .errored,
-                attentionKinds: [.error],
-                highestPriority: .error
-            )
-        )
+    func testDerivePresentationFromCanonicalClaudeApprovalFixture() throws {
+        let presentation = try fixturePresentation("claude-approval")
+
+        XCTAssertEqual(presentation.primaryState, .waitingApproval)
+        XCTAssertEqual(presentation.provider, .claude)
+        XCTAssertTrue(presentation.needsUserAction)
+        XCTAssertEqual(presentation.pendingRequestIDs, ["req_claude_approval_001"])
+    }
+
+    func testDerivePresentationFromCanonicalClaudeStopIdleFixture() throws {
+        let presentation = try fixturePresentation("claude-stop-idle")
+
+        XCTAssertEqual(presentation.primaryState, .completedIdle)
+        XCTAssertEqual(presentation.provider, .claude)
+        XCTAssertEqual(presentation.turnOutcome, .completed)
+        XCTAssertFalse(presentation.needsUserAction)
+    }
+
+    func testDerivePresentationFromCanonicalUnmanagedDemotionFixture() throws {
+        let presentation = try fixturePresentation("unmanaged-demotion")
+
+        XCTAssertEqual(presentation.primaryState, .idle)
+        XCTAssertEqual(presentation.presence, .unmanaged)
+        XCTAssertNil(presentation.provider)
+        XCTAssertEqual(presentation.freshnessState, .down)
+    }
+
+    func testDerivePresentationFromCanonicalErrorFixture() throws {
+        let presentation = try fixturePresentation("error")
 
         XCTAssertEqual(presentation.primaryState, .error)
+        XCTAssertEqual(presentation.turnOutcome, .errored)
         XCTAssertTrue(presentation.showsAttentionSummary)
         XCTAssertEqual(presentation.attentionSummary.highestPriority, .error)
     }
 
-    func testDeriveDegradedFreshnessWhenAnyAxisIsStale() {
-        let presentation = PanePresentationState(
-            snapshot: makeSnapshot(
-                freshness: .init(snapshot: .fresh, blocking: .stale, execution: .fresh)
-            )
-        )
+    func testDerivePresentationFromCanonicalFreshnessDegradedFixture() throws {
+        let presentation = try fixturePresentation("freshness-degraded")
 
+        XCTAssertEqual(presentation.primaryState, .running)
+        XCTAssertEqual(presentation.execution, .streaming)
         XCTAssertEqual(presentation.freshnessState, .degraded)
     }
 }

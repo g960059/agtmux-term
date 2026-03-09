@@ -112,6 +112,21 @@ final class RuntimeHardeningTests: XCTestCase {
         XCTAssertEqual(socketPath, socketURL.path)
     }
 
+    func testDaemonClientFetchUIBootstrapV3DecodesDaemonOwnedFixtureFromInlineOverride() async throws {
+        let fixtureURL = AgtmuxSyncV3FixtureLoader.fixtureURL(named: "codex-running")
+        let fixtureData = try Data(contentsOf: fixtureURL)
+        let expected = try AgtmuxSyncV3FixtureLoader.bootstrap(named: "codex-running")
+        let client = AgtmuxDaemonClient(socketPath: "/tmp/agtmux-sync-v3-test.sock")
+
+        let actual = try await withEnvironment([
+            "AGTMUX_UI_BOOTSTRAP_V3_JSON": String(decoding: fixtureData, as: UTF8.self)
+        ]) {
+            try await client.fetchUIBootstrapV3()
+        }
+
+        XCTAssertEqual(actual, expected)
+    }
+
     func testManagedDaemonFreshnessRequiresRestartWhenBinaryIsNewerThanDefaultSocket() throws {
         let tempDirectory = try makeTemporaryDirectory(prefix: "agtmux-daemon-freshness")
         defer { try? FileManager.default.removeItem(at: tempDirectory) }

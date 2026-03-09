@@ -155,6 +155,29 @@ Commit closeout is clear; next implementation proceeds on the new Workbench path
 
 ## Recently Closed
 
+### T-121 — daemon-owned sync-v3 fixture ingestion in term consumer tests
+- **Status**: DONE
+- **Priority**: P1
+- **Depends**: T-120
+- **Owner**: term implementation agent
+- **Description**:
+  - Replace temporary local v3 consumer fixtures with daemon-owned canonical bootstrap fixtures from `agtmux` commit `cb198cca7226666fbb26df34d4e17582a208c3e6`.
+  - Keep v3 client support additive only; do not start AppViewModel/live cutover.
+- **Acceptance Criteria**:
+  - [x] term-side v3 decode tests read daemon-owned fixtures directly from `agtmux/fixtures/sync-v3/`
+  - [x] decode/presentation coverage explicitly includes:
+    - `codex-running`
+    - `codex-waiting-approval`
+    - `codex-completed-idle`
+    - `claude-approval`
+    - `claude-stop-idle`
+    - `unmanaged-demotion`
+    - `error`
+    - `freshness-degraded`
+  - [x] term-side docs record daemon commit `cb198cca7226666fbb26df34d4e17582a208c3e6` as the current fixture truth source
+  - [x] an additive v3 bootstrap decode surface exists in the daemon client layer without wiring live app paths
+  - [x] v2 / `ActivityState` product paths remain untouched
+
 ### T-120 — sync-v3 term consumer foundation and presentation scaffolding
 - **Status**: DONE
 - **Priority**: P1
