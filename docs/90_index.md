@@ -118,6 +118,8 @@ Mainline product truth is now:
   `LocalMetadataOverlayStore` now reads `PanePresentationState` → `ActivityState` collapse through explicit compat helper `PaneMetadataCompatFallback`
 - `T-147`
   `PaneDisplayState` now reads legacy `ActivityState` → `needsAttention` collapse through explicit compat helper `PaneDisplayCompatFallback`
+- `T-148`
+  `AgtmuxPane.needsAttention` now delegates to `PaneDisplayCompatFallback`; duplicated legacy attention collapse is gone from `CoreModels`
 - `T-087`
   docs compaction and active-context redesign complete
 - `T-076` through `T-084`

@@ -241,9 +241,7 @@ package struct AgtmuxPane: Identifiable, Codable, Equatable, Sendable {
 
     /// True when the pane requires user attention (approval, input, or error).
     package var needsAttention: Bool {
-        activityState == .waitingApproval
-            || activityState == .waitingInput
-            || activityState == .error
+        PaneDisplayCompatFallback.needsAttention(for: self)
     }
 }
 

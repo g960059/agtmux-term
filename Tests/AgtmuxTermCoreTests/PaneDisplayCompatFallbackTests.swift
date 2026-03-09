@@ -20,6 +20,32 @@ final class PaneDisplayCompatFallbackTests: XCTestCase {
         XCTAssertFalse(PaneDisplayCompatFallback.needsAttention(from: .unknown))
     }
 
+    func testAgtmuxPaneNeedsAttentionDelegatesToCompatFallback() {
+        let attentionPane = AgtmuxPane(
+            source: "local",
+            paneId: "%3",
+            sessionName: "demo",
+            windowId: "@1",
+            activityState: .waitingInput,
+            presence: .managed,
+            provider: .codex,
+            currentCmd: "node"
+        )
+        let quietPane = AgtmuxPane(
+            source: "local",
+            paneId: "%4",
+            sessionName: "demo",
+            windowId: "@1",
+            activityState: .idle,
+            presence: .managed,
+            provider: .codex,
+            currentCmd: "node"
+        )
+
+        XCTAssertEqual(attentionPane.needsAttention, PaneDisplayCompatFallback.needsAttention(for: attentionPane))
+        XCTAssertEqual(quietPane.needsAttention, PaneDisplayCompatFallback.needsAttention(for: quietPane))
+    }
+
     func testManagedFreshnessTextUsesLegacyAgeCollapseButRunningStaysNil() {
         let idlePane = AgtmuxPane(
             source: "local",

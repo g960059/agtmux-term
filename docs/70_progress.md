@@ -16,6 +16,20 @@ Historical progress detail lives in `docs/archive/progress/2026-02-28_to_2026-03
 
 ## Recent Entries
 
+## 2026-03-09 — T-148 landed: pane attention compat property now delegates
+
+### What landed
+- `AgtmuxPane.needsAttention` now delegates to `PaneDisplayCompatFallback`
+- removed the last inline `ActivityState` → attention collapse from `CoreModels`
+- preserved the existing compat-visible behavior for pane rows and diagnostics
+
+### Verification
+- `swift build`
+- `swift test -q --filter PaneDisplayCompatFallbackTests`
+- `swift test -q --filter PaneDisplayStateTests`
+- `swift test -q --filter PaneRowAccessibilityTests`
+- result: all passed
+
 ## 2026-03-09 — T-147 landed: legacy needs-attention collapse is now explicit
 
 ### What landed
