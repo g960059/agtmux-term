@@ -11,8 +11,30 @@ Historical progress detail lives in `docs/archive/progress/2026-02-28_to_2026-03
 - `T-108` is now closed on app-side code, focused verification, and executed real-surface UI proof
 - current follow-up boundary is explicit: if a fresh live disagreement appears, validate daemon payload truth before reopening the term consumer
 - the broad `AppViewModelA0Tests` product suite now matches the sync-v3-only product path; remaining sync-v2 assumptions are compat-only
+- `LocalMetadataTransportBridge` now exposes only the required sync-v3 bootstrap passthrough; the dead sync-v3->v2 fallback selector surface has been removed
 
 ## Recent Entries
+
+## 2026-03-09 — T-134 landed: remove dead sync-v3->v2 fallback selector from LocalMetadataTransportBridge
+
+### What landed
+- deleted the now-unused bridge fallback selector surface:
+  - `prefersSyncV3`
+  - `fetchBootstrap(using:)`
+  - `markV3UnsupportedIfNeeded(...)`
+  - `shouldFallbackToSyncV2(...)`
+- narrowed `LocalMetadataTransportBridgeTests` to the only product-relevant contract that remains:
+  - required `ui.bootstrap.v3` passthrough
+  - unsupported-method propagation without hidden fallback
+- kept the rest of the sync-v2 compatibility layer intact for later slices
+
+### Verification
+- `swift build`
+- `swift test -q --filter LocalMetadataTransportBridgeTests`
+- `swift test -q --filter LocalMetadataRefreshCoordinatorTests`
+- `swift test -q --filter AppViewModelA0Tests/testBootstrapV3MethodNotFoundSurfacesIncompatibleDaemonWithoutFallingBackToSyncV2`
+- `swift test -q --filter AppViewModelA0Tests/testChangesV3MethodNotFoundSurfacesIncompatibleDaemonWithoutFallingBackToSyncV2`
+- result: all passed
 
 ## 2026-03-09 — T-133 landed: broad AppViewModel product suite no longer encodes sync-v2 fallback
 

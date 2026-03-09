@@ -191,13 +191,11 @@ This keeps future v3 cleanup reviewable by shrinking the number of UI consumers 
 
 ## Local Metadata Transport Boundary
 
-The next narrowed holdout is the transport-selection layer inside `AppViewModel`.
+The transport seam is now narrowed to required sync-v3 bootstrap fetches only.
 
 - `LocalMetadataTransportBridge` now owns:
-  - `ui.bootstrap.v3` vs `ui.bootstrap.v2` selection
-  - sticky downgrade after explicit daemon `sync-v3 method not found`
-  - shared classification of unsupported-method errors across direct and XPC clients
-- the product AppViewModel refresh path now uses only the bridge's sync-v3-required entrypoint; the fallback selection remains for compatibility-only callers
+  - the required `ui.bootstrap.v3` fetch entrypoint used by product refresh code
+- the old sync-v3->v2 fallback selector has been deleted from the bridge because product code no longer consumes it
 - `AppViewModel` still owns:
   - exact-row cache construction from bootstrap payloads
   - v2/v3 replay application into local overlay caches

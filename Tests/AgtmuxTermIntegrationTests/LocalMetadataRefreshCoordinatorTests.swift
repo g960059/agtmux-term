@@ -224,7 +224,6 @@ final class LocalMetadataRefreshCoordinatorTests: XCTestCase {
 
     func testFailureExecutionAlwaysUsesV3ReplayResetVersionForProductPath() {
         let bridge = LocalMetadataTransportBridge()
-        _ = bridge.markV3UnsupportedIfNeeded(LocalMetadataClientError.unsupportedMethod("ui.bootstrap.v3"))
         let coordinator = LocalMetadataRefreshCoordinator(
             client: StubMetadataClient(),
             transportBridge: bridge,

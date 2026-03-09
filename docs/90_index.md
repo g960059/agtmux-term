@@ -90,6 +90,8 @@ Mainline product truth is now:
   product local metadata now requires sync-v3; remaining sync-v2 code is compatibility-only
 - `T-133`
   broad AppViewModel product tests now match the sync-v3-only product path; remaining sync-v2 assertions are compat-only
+- `T-134`
+  dead sync-v3->v2 fallback selector surface is removed from `LocalMetadataTransportBridge`
 - `T-087`
   docs compaction and active-context redesign complete
 - `T-076` through `T-084`

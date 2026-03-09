@@ -100,6 +100,10 @@
     - unsupported `ui.bootstrap.v3` / `ui.changes.v3` surfaces daemon incompatibility plus inventory-only rows instead of sync-v2 fallback
     - exact-row v3 updates are the product truth in the broad suite
   - stale product assertions that depended on legacy sync-v2 replay or legacy `conversationTitle` carry-over were removed from the broad suite; remaining sync-v2 assumptions are compat-only
+- `T-134` is now closed:
+  - `LocalMetadataTransportBridge` no longer carries the dead sync-v3->v2 fallback selector surface
+  - the bridge now only exposes the required-v3 bootstrap passthrough used by product refresh code
+  - remaining sync-v2 transport compatibility lives outside that bridge cleanup slice
 - `T-116` is now open:
   - metadata-enabled health-strip UI and pane-sync UI both reach their real assertions
   - upstream producer truth is now present in the same failing plain-zsh Codex lane:

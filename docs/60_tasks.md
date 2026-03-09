@@ -254,6 +254,20 @@ Commit closeout is clear; next implementation proceeds on the new Workbench path
   - [x] any remaining sync-v2 coverage lives in compat-only transport/service-boundary tests instead of product AppViewModel expectations
   - [x] focused no-fallback sync-v3 product tests remain green after the migration
 
+### T-134 — remove dead sync-v2 fallback selector surface from LocalMetadataTransportBridge
+- **Status**: DONE
+- **Priority**: P1
+- **Depends**: T-133
+- **Owner**: Orchestrator (direct implementation)
+- **Description**:
+  - Product code no longer uses `LocalMetadataTransportBridge` as a sync-v3->v2 fallback selector.
+  - Delete the dead bridge surface and narrow tests to the remaining required-v3 passthrough behavior.
+- **Acceptance Criteria**:
+  - [x] `prefersSyncV3` is removed from `LocalMetadataTransportBridge`
+  - [x] `fetchBootstrap(using:)` and `markV3UnsupportedIfNeeded(...)` are removed
+  - [x] bridge tests cover only the remaining required-v3 bootstrap passthrough/error propagation
+  - [x] product no-fallback and coordinator tests remain green after the cleanup
+
 ### T-126 — thin live canary for sync-v3 bootstrap/changes exact-row lane
 - **Status**: DONE
 - **Priority**: P1
