@@ -97,7 +97,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: local.agtmux.term.daemonservice
         PRODUCT_NAME: AgtmuxDaemonService
-        GENERATE_INFOPLIST_FILE: "YES"
+        GENERATE_INFOPLIST_FILE: "NO"
+        INFOPLIST_FILE: Sources/AgtmuxDaemonService/Info.plist
 
   AgtmuxTermCoreTests:
     templates:
