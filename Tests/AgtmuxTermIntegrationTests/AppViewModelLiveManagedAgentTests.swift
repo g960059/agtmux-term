@@ -1698,6 +1698,14 @@ final class AppViewModelLiveManagedAgentTests: XCTestCase {
         XCTAssertEqual(model.attentionCount, 0)
         model.statusFilter = .attention
         XCTAssertTrue(model.filteredPanes.isEmpty)
+        try? await Task.sleep(for: .seconds(16))
+        await model.fetchAll()
+        let quietCodexSurface = try XCTUnwrap(appPaneSurface(model: model, inventoryPane: codexInventoryPane))
+        XCTAssertNotEqual(
+            quietCodexSurface.display.freshnessText,
+            "down",
+            "quiet completed-idle Codex rows must not surface row-level freshness down after the daemon settles fallback freshness"
+        )
         let counts = await recordingClient.counts()
         XCTAssertGreaterThan(counts.bootstrapV3Calls, 0, "completed_idle live lane must bootstrap through sync-v3")
     }
