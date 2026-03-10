@@ -99,9 +99,10 @@ Commit closeout is clear; next implementation proceeds on the new Workbench path
       - same exact row becomes `provider=.codex`
       - same exact row becomes `presence=.managed`
       - managed Codex bootstrap truth carries explicit sync-v3 freshness coverage
-    - the stricter Codex semantic-state lane is also green on `agtmux` `7536bea`:
+    - the stricter Codex semantic-state lane is also green on `agtmux` exec parity:
       - `testLiveCodexActivityTruthReachesExactAppRowWithoutBleed`
-      - this lane now uses interactive Codex launch mode so the exact row reaches sync-v3 `primary=.running`
+      - this lane now uses Codex exec launch mode for the main strict `primary=.running` proof
+      - interactive Codex launch remains covered by `testLiveCodexInteractiveRunningSentinelStillSurfacesExactRunningTruth`
   - the held attention-filter XCUITest remains deferred:
     - canonical consumer attention/filter proof stays deterministic in `AppViewModelA0Tests`
 - **Plan**:

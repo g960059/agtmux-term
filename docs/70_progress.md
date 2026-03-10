@@ -14,21 +14,21 @@ Historical progress detail lives in `docs/archive/progress/2026-02-28_to_2026-03
 - `LocalMetadataTransportBridge` now exposes only the required sync-v3 bootstrap passthrough; the dead sync-v3->v2 fallback selector surface has been removed
 - the product-facing daemon incompatibility identity is now `LocalDaemonIssue.incompatibleMetadataProtocol`; current product text no longer implies a sync-v2-specific issue
 - the old metadata-enabled plain-zsh Codex XCUITest lane is now explicitly environment-blocked/deferred; the semantic replacement is the green live AppViewModel managed-agent proof with explicit Codex freshness coverage
-- the remaining strict live Codex `running` proof is green again on `agtmux` `7536bea` when the semantic-state lane uses interactive Codex launch
+- the remaining strict live Codex `running` proof is green again on exec parity; interactive launch is kept only as a narrow sentinel
 
 ## Recent Entries
 
-## 2026-03-09 — strict live Codex running lane closed on interactive semantic-state launch
+## 2026-03-10 — strict live Codex running lane moved to exec parity; interactive remains sentinel
 
 ### What landed
-- the strict live Codex running proof now uses interactive launch mode in:
+- the strict live Codex running proof now uses exec launch mode in:
   - `testLiveCodexActivityTruthReachesExactAppRowWithoutBleed`
-- this is intentionally narrower than the looser managed/provider lane:
-  - semantic-state proof uses interactive Codex launch to observe reducer-backed `primary=.running`
-  - looser managed/provider coverage can remain on the existing launch shape
+- interactive launch remains covered by a narrow backstop:
+  - `testLiveCodexInteractiveRunningSentinelStillSurfacesExactRunningTruth`
+- this keeps the main semantic-state proof aligned with the same launch shape used by looser managed/provider coverage while preserving one transcript-backed running sentinel
 
 ### Evidence
-- fresh upstream daemon fix `agtmux` `7536bea` plus interactive Codex launch makes the strict lane green again
+- fresh upstream daemon local diff with exec parity makes the strict lane green again
 - the same exact-row proof now reaches:
   - `provider=.codex`
   - `presence=.managed`
@@ -39,6 +39,7 @@ Historical progress detail lives in `docs/archive/progress/2026-02-28_to_2026-03
 ### Verification
 - `cargo build -p agtmux`
 - `AGTMUX_LIVE_TEST_BIN=/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/debug/agtmux swift test -q --filter AppViewModelLiveManagedAgentTests/testLiveCodexActivityTruthReachesExactAppRowWithoutBleed`
+- `AGTMUX_LIVE_TEST_BIN=/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/debug/agtmux swift test -q --filter AppViewModelLiveManagedAgentTests/testLiveCodexInteractiveRunningSentinelStillSurfacesExactRunningTruth`
 - `AGTMUX_LIVE_TEST_BIN=/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/debug/agtmux swift test -q --filter AppViewModelLiveManagedAgentTests/testLivePlainZshAgentLaunchSurfacesManagedFilterProviderAndActivity`
 
 ## 2026-03-09 — T-116 closed via live AppViewModel replacement proof; XCUITest lane is deferred

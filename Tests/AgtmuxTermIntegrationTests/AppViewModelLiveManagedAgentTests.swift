@@ -1199,9 +1199,9 @@ final class AppViewModelLiveManagedAgentTests: XCTestCase {
 
     @MainActor
     func testLiveCodexActivityTruthReachesExactAppRowWithoutBleed() async throws {
-        // Codex semantic-state proof uses interactive mode so sync-v3 can observe
-        // reducer-backed running truth, while looser managed/provider coverage can stay on exec.
-        let harness = try startLiveHarness(codexLaunchMode: .interactive)
+        // Codex semantic-state proof now uses exec mode on the main lane.
+        // Interactive launch stays covered by a narrower sentinel below.
+        let harness = try startLiveHarness(codexLaunchMode: .exec)
         defer { stopLiveHarness(harness) }
 
         let bootstrap = try await waitForManagedProviders(
@@ -1279,13 +1279,30 @@ final class AppViewModelLiveManagedAgentTests: XCTestCase {
                 "Codex row must not remain stale-running after completion upsert"
             )
         case .remove:
-            let clearedPane = try await waitForAppPaneToClearV3Overlay(
-                model: model,
-                client: recordingClient,
-                inventoryPane: codexInventoryPane,
-                timeout: 30.0
+            let demotedSnapshot = try await currentV3Snapshot(
+                socketPath: harness.daemonSocketPath,
+                paneID: harness.codexPaneID
             )
-            XCTAssertEqual(model.paneDisplayState(for: clearedPane).primaryState, .inactive)
+            switch demotedSnapshot {
+            case .some(let updatedSnapshot):
+                let updatedPane = try await waitForAppPanePresentationToMatchSnapshot(
+                    model: model,
+                    client: recordingClient,
+                    inventoryPane: codexInventoryPane,
+                    snapshot: updatedSnapshot,
+                    requireChangesV3: true,
+                    timeout: 30.0
+                )
+                XCTAssertEqual(model.paneDisplayState(for: updatedPane).primaryState, .idle)
+            case .none:
+                let clearedPane = try await waitForAppPaneToClearV3Overlay(
+                    model: model,
+                    client: recordingClient,
+                    inventoryPane: codexInventoryPane,
+                    timeout: 30.0
+                )
+                XCTAssertEqual(model.paneDisplayState(for: clearedPane).primaryState, .inactive)
+            }
         }
 
         if let latestClaudeSnapshot = try await currentV3Snapshot(
@@ -1301,6 +1318,29 @@ final class AppViewModelLiveManagedAgentTests: XCTestCase {
                 timeout: 20.0
             )
         }
+    }
+
+    @MainActor
+    func testLiveCodexInteractiveRunningSentinelStillSurfacesExactRunningTruth() async throws {
+        let harness = try startLiveHarness(codexLaunchMode: .interactive)
+        defer { stopLiveHarness(harness) }
+
+        _ = try await waitForManagedProviders(
+            socketPath: harness.daemonSocketPath,
+            paneIDs: [harness.claudePaneID, harness.codexPaneID]
+        )
+
+        let runningCodexSnapshot = try await waitForV3BootstrapPane(
+            socketPath: harness.daemonSocketPath,
+            paneID: harness.codexPaneID,
+            provider: .codex,
+            expectedPrimaryState: .running,
+            timeout: 45.0
+        )
+
+        XCTAssertEqual(runningCodexSnapshot.provider, .codex)
+        XCTAssertEqual(runningCodexSnapshot.presence, .managed)
+        XCTAssertEqual(PanePresentationState(snapshot: runningCodexSnapshot).primaryState, .running)
     }
 
     @MainActor
@@ -1771,12 +1811,28 @@ final class AppViewModelLiveManagedAgentTests: XCTestCase {
                 timeout: 30.0
             )
         case .remove:
-            _ = try await waitForAppPaneToClearV3Overlay(
-                model: model,
-                client: recordingClient,
-                inventoryPane: codexInventoryPane,
-                timeout: 30.0
+            let demotedSnapshot = try await currentV3Snapshot(
+                socketPath: harness.daemonSocketPath,
+                paneID: harness.codexPaneID
             )
+            switch demotedSnapshot {
+            case .some(let updatedSnapshot):
+                _ = try await waitForAppPanePresentationToMatchSnapshot(
+                    model: model,
+                    client: recordingClient,
+                    inventoryPane: codexInventoryPane,
+                    snapshot: updatedSnapshot,
+                    requireChangesV3: true,
+                    timeout: 30.0
+                )
+            case .none:
+                _ = try await waitForAppPaneToClearV3Overlay(
+                    model: model,
+                    client: recordingClient,
+                    inventoryPane: codexInventoryPane,
+                    timeout: 30.0
+                )
+            }
         }
 
         let finalCounts = await recordingClient.counts()
