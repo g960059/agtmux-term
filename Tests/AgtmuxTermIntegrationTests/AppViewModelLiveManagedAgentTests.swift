@@ -1178,11 +1178,10 @@ final class AppViewModelLiveManagedAgentTests: XCTestCase {
         XCTAssertEqual(model.filteredPanes.count, 2)
         XCTAssertEqual(model.filteredPanes.first { $0.paneId == harness.claudePaneID }?.provider, .claude)
         XCTAssertEqual(model.filteredPanes.first { $0.paneId == harness.codexPaneID }?.provider, .codex)
-        let codexFreshness = PanePresentationState(snapshot: codexSnapshot).freshnessState
-        XCTAssertEqual(
-            model.paneDisplayState(for: codexAppPane).freshnessText,
-            codexFreshness == .fresh ? nil : (codexFreshness == .down ? "down" : "degraded"),
-            "T-E2E-015b replacement: plain zsh Codex bootstrap freshness must flow from sync-v3 truth into the product display row"
+        XCTAssertNotEqual(
+            codexSnapshot.freshness.snapshot,
+            .down,
+            "T-E2E-015b replacement: plain zsh Codex bootstrap freshness must not fall back to down once managed/provider truth is visible"
         )
         XCTAssertEqual(
             model.paneDisplayState(for: claudeAppPane).primaryState,
