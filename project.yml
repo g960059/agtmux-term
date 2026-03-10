@@ -75,6 +75,21 @@ targets:
       - sdk: WebKit.framework
       - sdk: libiconv.tbd
       - sdk: libc++.tbd
+    postBuildScripts:
+      - name: Bundle agtmux daemon
+        shell: /bin/sh
+        basedOnDependencyAnalysis: false
+        script: |
+          set -euo pipefail
+          src="${AGTMUX_BIN:-$SRCROOT/../agtmux/target/debug/agtmux}"
+          if [ ! -x "$src" ]; then
+            echo "error: agtmux binary not found at $src; set AGTMUX_BIN or build ../agtmux/target/debug/agtmux" >&2
+            exit 1
+          fi
+          dest="$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/Tools/agtmux"
+          mkdir -p "$(dirname "$dest")"
+          cp "$src" "$dest"
+          chmod +x "$dest"
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: local.agtmux.term.app

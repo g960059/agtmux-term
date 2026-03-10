@@ -1,4 +1,13 @@
-Place a signed `agtmux` executable here to bundle it with the app.
+The packaged app/XPC path expects a bundled `agtmux` executable here.
+
+In local Debug builds, the `AgtmuxTerm` target now stages the daemon directly
+into the built app bundle at build time:
+
+- source priority at build time:
+  1. `AGTMUX_BIN`
+  2. sibling workspace binary `../agtmux/target/debug/agtmux`
+- bundled runtime path:
+  - `AgtmuxTerm.app/Contents/Resources/Tools/agtmux`
 
 Expected bundled path at runtime:
 - `AgtmuxTerm.app/Contents/Resources/Tools/agtmux`
