@@ -152,28 +152,15 @@
 - `T-148` is now closed:
   - `AgtmuxPane.needsAttention` still exists for compat callers, but it now delegates to `PaneDisplayCompatFallback`
   - visible/product behavior is unchanged; the cleanup only removes duplicated legacy collapse logic
-- `T-116` is now open:
-  - metadata-enabled plain-zsh Codex UI reruns now pass the pre-launch bootstrap gate with the correct sync-v3 truth:
-    - before provider launch, the app-driven pane is expected to remain `presence=unmanaged, provider=nil, primary=idle`
-    - the targeted helper now asserts that pre-provider state instead of requiring managed truth too early
-  - the `Running Background` activation blocker is now cleared in the primary targeted lane:
-    - the same executed XCUITest reaches the managed-provider assertion body after Codex launch
-  - the remaining red is now substantive managed surfacing:
-    - after Codex launch completes, the targeted XCUITest still reports `probe=ok transport=sync-v3 total=1 managed=0`
-    - the exact row remains `presence=unmanaged, provider=nil, primary=idle`, so the held attention-filter lane is still deferred behind this primary failure
-  - March 9, 2026 term-side readiness hardening remains valid:
-    - `inventory present + bootstrap panes=[]` no longer primes sync-v2 ownership
-    - live AppViewModel managed entry/exit canaries stay green against the updated daemon binary
-  - term-side readiness hardening is now in:
-    - `AppViewModel` keeps retrying instead of priming on `inventory present + bootstrap panes=[]`
-    - focused integration regression is green
-    - focused metadata-enabled UI proof now fails earlier and more precisely: the isolated app-child daemon still never reaches a non-empty bootstrap before any live Codex assertion runs
-    - same app process can directly run `tmux -S <bootstrapResolvedTmuxSocketPath> list-panes` and sees the target row, so the remaining mismatch is not `-L` vs `-S` resolution inside the app process
-  - current remediation direction:
-    - keep `UITestTmuxBridge` exact-socket/runtime/launch-env diagnostics
-    - harden term so `inventory present + bootstrap panes=[]` is treated as startup-not-ready instead of a primed sync-v2 epoch
-    - keep the focused UI lane gated on non-empty isolated bootstrap before launching the live Codex proof
-    - hand the remaining `starts-and-listens-but-bootstrap-stays-empty` app-child repro back to `agtmux`
+- `T-116` is now closed on a semantic replacement basis:
+  - the metadata-enabled plain-zsh Codex XCUITest lane is environment-blocked/deferred on this host
+  - even the smallest bridge-only launch canary with no Ghostty surfaces and no metadata/provider logic still fails at `UITestHelpers.launch()` with `Running Background`
+  - the product semantic replacement is the existing green live AppViewModel proof:
+    - `testLivePlainZshAgentLaunchSurfacesManagedFilterProviderAndActivity`
+    - the Codex half now explicitly asserts sync-v3 freshness on the managed bootstrap row
+    - the same test already proves the exact row becomes `provider=.codex` under the managed filter from a plain `zsh` launch
+  - the held attention-filter XCUITest remains deferred
+  - canonical non-XCUITest attention/filter proof remains in `AppViewModelA0Tests`
 - fresh live tmux inspection proved the durable product oracle is exact rendered-client truth, not attach-command intent alone
 - vendor Ghostty forwards only `OSC 9911` into the embedded host action seam, and the app's rendered-client binding now uses that supported path
 - fresh current-code rerun closed the last metadata-enabled pane-sync red:

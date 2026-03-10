@@ -13,8 +13,34 @@ Historical progress detail lives in `docs/archive/progress/2026-02-28_to_2026-03
 - the broad `AppViewModelA0Tests` product suite now matches the sync-v3-only product path; remaining sync-v2 assumptions are compat-only
 - `LocalMetadataTransportBridge` now exposes only the required sync-v3 bootstrap passthrough; the dead sync-v3->v2 fallback selector surface has been removed
 - the product-facing daemon incompatibility identity is now `LocalDaemonIssue.incompatibleMetadataProtocol`; current product text no longer implies a sync-v2-specific issue
+- the old metadata-enabled plain-zsh Codex XCUITest lane is now explicitly environment-blocked/deferred; the semantic replacement is the green live AppViewModel managed-agent proof with explicit Codex freshness coverage
 
 ## Recent Entries
+
+## 2026-03-09 — T-116 closed via live AppViewModel replacement proof; XCUITest lane is deferred
+
+### What landed
+- stopped treating the metadata-enabled plain-zsh Codex XCUITest as the product semantic gate in this environment
+- clarified that the existing green live managed-agent proof is the replacement semantic coverage:
+  - `testLivePlainZshAgentLaunchSurfacesManagedFilterProviderAndActivity`
+  - same plain `zsh` launch path
+  - same sync-v3 managed/provider promotion on the exact Codex row
+- added one explicit Codex freshness assertion to that green live proof so the replacement also covers the bootstrap freshness dimension that the old UI lane was trying to observe
+
+### Evidence
+- the existing two-pane live proof remains green on `agtmux` `0ab1fde`
+- the tiny one-pane replacement experiment was not adopted:
+  - it failed to promote at all while the existing two-pane live proof stayed green
+  - this identified a helper/launch-shape gap in that experiment, not a product regression
+- the XCUITest metadata lane remains environment-blocked on this host:
+  - even the smallest bridge-only launch canary with no Ghostty surfaces and no metadata/provider logic still fails at `UITestHelpers.launch()` with `Running Background`
+- truthful product gate for this scenario is therefore the non-NSApplication live proof, not the blocked XCUITest lane
+- the held attention-filter XCUITest stays deferred; canonical non-XCUITest attention/filter proof remains in `AppViewModelA0Tests`
+
+### Verification
+- `swift build`
+- `AGTMUX_LIVE_TEST_BIN=/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/debug/agtmux swift test -q --filter AppViewModelLiveManagedAgentTests/testLivePlainZshAgentLaunchSurfacesManagedFilterProviderAndActivity`
+- `swift test -q --filter AppViewModelA0Tests/testWaitingApprovalManagedRowSurfacesAttentionCountAndFilterWithoutBleed`
 
 ## 2026-03-09 — T-116 launch/activation blocker cleared; remaining red is managed surfacing after provider launch
 

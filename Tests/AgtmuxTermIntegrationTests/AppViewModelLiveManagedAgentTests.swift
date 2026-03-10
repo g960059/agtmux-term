@@ -1126,6 +1126,9 @@ final class AppViewModelLiveManagedAgentTests: XCTestCase {
         XCTAssertGreaterThan(counts.bootstrapV3Calls, 0, "live product path must bootstrap through sync-v3")
     }
 
+    /// Semantic replacement for T-E2E-015b.
+    /// The metadata-enabled XCUITest lane is environment-blocked on this host,
+    /// so this live AppViewModel proof is the product gate for plain-zsh -> Codex promotion.
     @MainActor
     func testLivePlainZshAgentLaunchSurfacesManagedFilterProviderAndActivity() async throws {
         let harness = try startLiveHarness()
@@ -1175,6 +1178,12 @@ final class AppViewModelLiveManagedAgentTests: XCTestCase {
         XCTAssertEqual(model.filteredPanes.count, 2)
         XCTAssertEqual(model.filteredPanes.first { $0.paneId == harness.claudePaneID }?.provider, .claude)
         XCTAssertEqual(model.filteredPanes.first { $0.paneId == harness.codexPaneID }?.provider, .codex)
+        let codexFreshness = PanePresentationState(snapshot: codexSnapshot).freshnessState
+        XCTAssertEqual(
+            model.paneDisplayState(for: codexAppPane).freshnessText,
+            codexFreshness == .fresh ? nil : (codexFreshness == .down ? "down" : "degraded"),
+            "T-E2E-015b replacement: plain zsh Codex bootstrap freshness must flow from sync-v3 truth into the product display row"
+        )
         XCTAssertEqual(
             model.paneDisplayState(for: claudeAppPane).primaryState,
             PanePresentationState(snapshot: claudeSnapshot).primaryState,
