@@ -1200,7 +1200,9 @@ final class AppViewModelLiveManagedAgentTests: XCTestCase {
 
     @MainActor
     func testLiveCodexActivityTruthReachesExactAppRowWithoutBleed() async throws {
-        let harness = try startLiveHarness()
+        // Codex semantic-state proof uses interactive mode so sync-v3 can observe
+        // reducer-backed running truth, while looser managed/provider coverage can stay on exec.
+        let harness = try startLiveHarness(codexLaunchMode: .interactive)
         defer { stopLiveHarness(harness) }
 
         let bootstrap = try await waitForManagedProviders(

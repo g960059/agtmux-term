@@ -124,6 +124,8 @@ Mainline product truth is now:
   live product Codex completion no longer expects `waiting_input`; sync-v3 truth is `completed_idle` without attention unless pending requests explicitly exist
 - `T-116`
   metadata-enabled plain-zsh Codex XCUITest is now recorded as environment-blocked/deferred; the semantic replacement is the green live AppViewModel managed-agent proof, with explicit Codex freshness coverage on sync-v3 bootstrap truth
+- strict live Codex running-state proof is also green again on `agtmux` `7536bea`:
+  `testLiveCodexActivityTruthReachesExactAppRowWithoutBleed` now reserves interactive Codex launch for semantic-state observation of `primary=.running`
 - `T-087`
   docs compaction and active-context redesign complete
 - `T-076` through `T-084`

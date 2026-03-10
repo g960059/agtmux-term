@@ -159,6 +159,9 @@
     - `testLivePlainZshAgentLaunchSurfacesManagedFilterProviderAndActivity`
     - the Codex half now explicitly asserts sync-v3 freshness on the managed bootstrap row
     - the same test already proves the exact row becomes `provider=.codex` under the managed filter from a plain `zsh` launch
+  - the remaining strict Codex running-state gap is also closed on the live path:
+    - `testLiveCodexActivityTruthReachesExactAppRowWithoutBleed` is green on `agtmux` `7536bea`
+    - this semantic-state lane now uses interactive Codex launch so the exact row reaches sync-v3 `primary=.running`
   - the held attention-filter XCUITest remains deferred
   - canonical non-XCUITest attention/filter proof remains in `AppViewModelA0Tests`
 - fresh live tmux inspection proved the durable product oracle is exact rendered-client truth, not attach-command intent alone
