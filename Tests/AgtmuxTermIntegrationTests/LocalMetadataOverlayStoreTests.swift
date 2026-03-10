@@ -388,15 +388,92 @@ final class LocalMetadataOverlayStoreTests: XCTestCase {
         XCTAssertEqual(nextCache.presentationByPaneKey[key], PanePresentationState(snapshot: demotedSnapshot))
     }
 
+    func testApplyV3ChangesDropsManagedPromotionUpsertAtSameLocationWhenSessionKeyChangesWithoutRemove() {
+        let cachedPane = makePane(
+            paneID: "%1",
+            sessionName: "visible-session",
+            windowID: "@1",
+            sessionKey: "shell:%1",
+            paneInstanceID: makeV2PaneInstanceID(paneID: "%1", generation: 2),
+            currentCmd: "zsh"
+        )
+        let cachedPresentation = PanePresentationState(
+            snapshot: makeV3Snapshot(
+                sessionName: "visible-session",
+                windowID: "@1",
+                sessionKey: "shell:%1",
+                paneID: "%1",
+                paneInstanceID: makeV3PaneInstanceID(paneID: "%1", generation: 2),
+                provider: nil,
+                presence: .unmanaged,
+                threadLifecycle: .idle,
+                blocking: .none,
+                execution: .none
+            )
+        )
+        var logMessages: [String] = []
+        let store = makeStore(
+            metadataByPaneKey: [LocalMetadataOverlayStore.paneMetadataKey(for: cachedPane): cachedPane],
+            presentationByPaneKey: [LocalMetadataOverlayStore.paneMetadataKey(for: cachedPane): cachedPresentation],
+            log: { logMessages.append($0) }
+        )
+        let promotedSnapshot = makeV3Snapshot(
+            sessionName: "visible-session",
+            windowID: "@1",
+            sessionKey: "codex:%1",
+            paneID: "%1",
+            paneInstanceID: makeV3PaneInstanceID(paneID: "%1", generation: 2),
+            provider: .codex,
+            presence: .managed,
+            threadLifecycle: .active,
+            blocking: .none,
+            execution: .streaming
+        )
+
+        let nextCache = store.apply(
+            AgtmuxSyncV3Changes(
+                fromSeq: 9,
+                toSeq: 9,
+                nextCursor: AgtmuxSyncV3Cursor(seq: 9),
+                changes: [
+                    AgtmuxSyncV3PaneChange(
+                        seq: 9,
+                        at: now,
+                        kind: .upsert,
+                        paneID: "%1",
+                        sessionName: "visible-session",
+                        windowID: "@1",
+                        sessionKey: "codex:%1",
+                        paneInstanceID: makeV3PaneInstanceID(paneID: "%1", generation: 2),
+                        fieldGroups: [.identity, .provider, .thread],
+                        pane: promotedSnapshot
+                    )
+                ]
+            )
+        )
+
+        let key = "local:visible-session:@1:%1"
+        XCTAssertEqual(nextCache.metadataByPaneKey[key]?.presence, .unmanaged)
+        XCTAssertNil(nextCache.metadataByPaneKey[key]?.provider)
+        XCTAssertEqual(nextCache.metadataByPaneKey[key]?.metadataSessionKey, "shell:%1")
+        XCTAssertEqual(nextCache.presentationByPaneKey[key], cachedPresentation)
+        XCTAssertEqual(
+            logMessages,
+            ["sync-v3 pane upsert dropped for conflicting exact pane codex:%1/%1"]
+        )
+    }
+
     private func makeStore(
         inventory: [AgtmuxPane] = [],
         metadataByPaneKey: [String: AgtmuxPane] = [:],
-        presentationByPaneKey: [String: PanePresentationState] = [:]
+        presentationByPaneKey: [String: PanePresentationState] = [:],
+        log: @escaping (String) -> Void = { _ in }
     ) -> LocalMetadataOverlayStore {
         LocalMetadataOverlayStore(
             inventory: inventory,
             metadataByPaneKey: metadataByPaneKey,
-            presentationByPaneKey: presentationByPaneKey
+            presentationByPaneKey: presentationByPaneKey,
+            log: log
         )
     }
 
