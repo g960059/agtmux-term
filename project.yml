@@ -92,6 +92,7 @@ targets:
       - path: Sources/AgtmuxDaemonService
     dependencies:
       - target: AgtmuxTermCore
+        embed: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: local.agtmux.term.daemonservice
