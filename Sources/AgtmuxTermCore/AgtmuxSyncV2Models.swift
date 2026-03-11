@@ -1,6 +1,6 @@
 import Foundation
 
-/// sync-v2 compat: remove after daemon drops v2 endpoints.
+/// Legacy sync-v2 row/model types retained for pane identity and overlay compatibility.
 package enum AgtmuxSyncV2ProtocolError: LocalizedError, Equatable, Sendable {
     case missingBootstrapPaneField(String)
     case legacyPaneField(String)

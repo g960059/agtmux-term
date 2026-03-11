@@ -7,17 +7,12 @@ final class AgtmuxDaemonXPCClientTests: XCTestCase {
         var startManagedDaemonResult: (Bool, String?) = (true, nil)
         var bootstrapV3Reply: (Data?, String?) = (nil, nil)
         var changesV3Reply: (Data?, String?) = (nil, nil)
-        var bootstrapReply: (Data?, String?) = (nil, nil)
-        var changesReply: (Data?, String?) = (nil, nil)
         var healthReply: (Data?, String?) = (nil, nil)
         private(set) var startManagedDaemonCalls = 0
         private(set) var fetchUIBootstrapV3Calls = 0
         private(set) var fetchUIChangesV3Calls = 0
-        private(set) var fetchUIBootstrapV2Calls = 0
-        private(set) var fetchUIChangesV2Calls = 0
         private(set) var fetchUIHealthV1Calls = 0
         private(set) var resetUIChangesV3Calls = 0
-        private(set) var lastFetchUIChangesV2Limit: Int?
         private(set) var lastFetchUIChangesV3Limit: Int?
 
         func startManagedDaemon(_ reply: @escaping (Bool, NSString?) -> Void) {
@@ -34,30 +29,15 @@ final class AgtmuxDaemonXPCClientTests: XCTestCase {
             reply(bootstrapV3Reply.0.map { $0 as NSData }, bootstrapV3Reply.1.map { $0 as NSString })
         }
 
-        func fetchUIBootstrapV2(_ reply: @escaping (NSData?, NSString?) -> Void) {
-            fetchUIBootstrapV2Calls += 1
-            reply(bootstrapReply.0.map { $0 as NSData }, bootstrapReply.1.map { $0 as NSString })
-        }
-
         func fetchUIChangesV3(_ limit: NSNumber, reply: @escaping (NSData?, NSString?) -> Void) {
             fetchUIChangesV3Calls += 1
             lastFetchUIChangesV3Limit = limit.intValue
             reply(changesV3Reply.0.map { $0 as NSData }, changesV3Reply.1.map { $0 as NSString })
         }
 
-        func fetchUIChangesV2(_ limit: NSNumber, reply: @escaping (NSData?, NSString?) -> Void) {
-            fetchUIChangesV2Calls += 1
-            lastFetchUIChangesV2Limit = limit.intValue
-            reply(changesReply.0.map { $0 as NSData }, changesReply.1.map { $0 as NSString })
-        }
-
         func fetchUIHealthV1(_ reply: @escaping (NSData?, NSString?) -> Void) {
             fetchUIHealthV1Calls += 1
             reply(healthReply.0.map { $0 as NSData }, healthReply.1.map { $0 as NSString })
-        }
-
-        func resetUIChangesV2(_ reply: @escaping () -> Void) {
-            reply()
         }
 
         func resetUIChangesV3(_ reply: @escaping () -> Void) {
@@ -68,27 +48,6 @@ final class AgtmuxDaemonXPCClientTests: XCTestCase {
         func stopManagedDaemon(_ reply: @escaping () -> Void) {
             reply()
         }
-    }
-
-    func testFetchUIBootstrapV2DecodesBootstrapPayloadFromInjectedXPCProxy() async throws {
-        let expected = makeBootstrap()
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-
-        let proxy = ProxyStub()
-        proxy.bootstrapReply = (try encoder.encode(expected), nil)
-
-        let client = AgtmuxDaemonXPCClient(
-            serviceName: "test.agtmux.xpc",
-            proxyProviderOverride: { _ in proxy }
-        )
-
-        let actual = try await client.fetchUIBootstrapV2()
-
-        XCTAssertEqual(actual, expected)
-        XCTAssertEqual(proxy.startManagedDaemonCalls, 1)
-        XCTAssertEqual(proxy.fetchUIBootstrapV2Calls, 1)
-        XCTAssertEqual(proxy.fetchUIChangesV2Calls, 0)
     }
 
     func testFetchUIBootstrapV3DecodesBootstrapPayloadFromInjectedXPCProxy() async throws {
@@ -109,32 +68,6 @@ final class AgtmuxDaemonXPCClientTests: XCTestCase {
         XCTAssertEqual(actual, expected)
         XCTAssertEqual(proxy.startManagedDaemonCalls, 1)
         XCTAssertEqual(proxy.fetchUIBootstrapV3Calls, 1)
-        XCTAssertEqual(proxy.fetchUIBootstrapV2Calls, 0)
-    }
-
-    func testFetchUIChangesV2DecodesPayloadAndForwardsLimitFromInjectedXPCProxy() async throws {
-        let bootstrap = makeBootstrap(replayCursor: AgtmuxSyncV2Cursor(epoch: 7, seq: 40))
-        let expected = makeChangesResponse(nextCursor: AgtmuxSyncV2Cursor(epoch: 7, seq: 41))
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-
-        let proxy = ProxyStub()
-        proxy.bootstrapReply = (try encoder.encode(bootstrap), nil)
-        proxy.changesReply = (try encoder.encode(expected), nil)
-
-        let client = AgtmuxDaemonXPCClient(
-            serviceName: "test.agtmux.xpc",
-            proxyProviderOverride: { _ in proxy }
-        )
-
-        _ = try await client.fetchUIBootstrapV2()
-        let actual = try await client.fetchUIChangesV2(limit: 17)
-
-        XCTAssertEqual(actual, expected)
-        XCTAssertEqual(proxy.startManagedDaemonCalls, 1)
-        XCTAssertEqual(proxy.fetchUIBootstrapV2Calls, 1)
-        XCTAssertEqual(proxy.fetchUIChangesV2Calls, 1)
-        XCTAssertEqual(proxy.lastFetchUIChangesV2Limit, 17)
     }
 
     func testFetchUIChangesV3DecodesPayloadAndForwardsLimitFromInjectedXPCProxy() async throws {
@@ -160,52 +93,6 @@ final class AgtmuxDaemonXPCClientTests: XCTestCase {
         XCTAssertEqual(proxy.fetchUIBootstrapV3Calls, 1)
         XCTAssertEqual(proxy.fetchUIChangesV3Calls, 1)
         XCTAssertEqual(proxy.lastFetchUIChangesV3Limit, 19)
-    }
-
-    func testFetchUIBootstrapV2RejectsMixedEraSessionIDPayloadFromInjectedXPCProxy() async throws {
-        let mixedEraJSON = #"""
-        {
-          "epoch": 1,
-          "snapshot_seq": 1,
-          "generated_at": "2026-03-07T16:57:36Z",
-          "replay_cursor": { "epoch": 1, "seq": 2 },
-          "sessions": [],
-          "panes": [
-            {
-              "pane_id": "%1",
-              "session_id": "$1",
-              "session_name": "vm agtmux",
-              "session_key": "vm agtmux",
-              "window_id": "@1",
-              "pane_instance_id": {
-                "pane_id": "%1",
-                "generation": 1,
-                "birth_ts": "2026-03-07T16:45:00Z"
-              },
-              "presence": "managed",
-              "activity_state": "running",
-              "provider": "codex",
-              "updated_at": "2026-03-07T16:46:08Z"
-            }
-          ]
-        }
-        """#
-        let proxy = ProxyStub()
-        proxy.bootstrapReply = (Data(mixedEraJSON.utf8), nil)
-
-        let client = AgtmuxDaemonXPCClient(
-            serviceName: "test.agtmux.xpc",
-            proxyProviderOverride: { _ in proxy }
-        )
-
-        do {
-            _ = try await client.fetchUIBootstrapV2()
-            XCTFail("mixed-era bootstrap payload must fail loudly across the XPC client seam")
-        } catch let XPCClientError.decode(text) {
-            XCTAssertTrue(text.contains("session_id"))
-        } catch {
-            XCTFail("unexpected error: \(error)")
-        }
     }
 
     func testFetchUIHealthV1DecodesHealthPayloadFromInjectedXPCProxy() async throws {
@@ -272,49 +159,6 @@ final class AgtmuxDaemonXPCClientTests: XCTestCase {
 
         XCTAssertEqual(proxy.startManagedDaemonCalls, 1)
         XCTAssertEqual(proxy.fetchUIHealthV1Calls, 1)
-    }
-
-    private func makeBootstrap(
-        replayCursor: AgtmuxSyncV2Cursor = .init(epoch: 7, seq: 12)
-    ) -> AgtmuxSyncV2Bootstrap {
-        let generatedAt = ISO8601DateFormatter().date(from: "2026-03-06T21:00:00Z")!
-        return AgtmuxSyncV2Bootstrap(
-            epoch: replayCursor.epoch,
-            snapshotSeq: replayCursor.seq - 1,
-            panes: [
-                AgtmuxPane(
-                    source: "local",
-                    paneId: "%41",
-                    sessionName: "dev",
-                    windowId: "@9",
-                    activityState: .running,
-                    presence: .managed,
-                    provider: .claude,
-                    evidenceMode: .deterministic,
-                    conversationTitle: "Review sync-v2",
-                    currentCmd: "node",
-                    updatedAt: generatedAt,
-                    ageSecs: 0,
-                    metadataSessionKey: "dev",
-                    paneInstanceID: AgtmuxSyncV2PaneInstanceID(
-                        paneId: "%41",
-                        generation: 2,
-                        birthTs: Date(timeIntervalSince1970: 1_778_825_000)
-                    )
-                )
-            ],
-            sessions: [
-                AgtmuxSyncV2SessionState(
-                    sessionKey: "dev",
-                    presence: .managed,
-                    evidenceMode: .deterministic,
-                    activityState: .running,
-                    updatedAt: generatedAt
-                )
-            ],
-            generatedAt: generatedAt,
-            replayCursor: replayCursor
-        )
     }
 
     private func makeBootstrapV3(replayCursor: AgtmuxSyncV3Cursor? = nil) -> AgtmuxSyncV3Bootstrap {
@@ -400,47 +244,6 @@ final class AgtmuxDaemonXPCClientTests: XCTestCase {
                         pane: pane
                     )
                 ]
-            )
-        )
-    }
-
-    private func makeChangesResponse(
-        nextCursor: AgtmuxSyncV2Cursor
-    ) -> AgtmuxSyncV2ChangesResponse {
-        .changes(
-            AgtmuxSyncV2Changes(
-                epoch: nextCursor.epoch,
-                changes: [
-                    AgtmuxSyncV2ChangeRef(
-                        seq: nextCursor.seq - 1,
-                        sessionKey: "dev",
-                        paneId: "%41",
-                        timestamp: Date(timeIntervalSince1970: 1_778_825_310),
-                        pane: AgtmuxSyncV2PaneState(
-                            paneInstanceID: AgtmuxSyncV2PaneInstanceID(
-                                paneId: "%41",
-                                generation: 2,
-                                birthTs: Date(timeIntervalSince1970: 1_778_825_000)
-                            ),
-                            presence: .managed,
-                            evidenceMode: .deterministic,
-                            activityState: .running,
-                            provider: .claude,
-                            sessionKey: "dev",
-                            updatedAt: Date(timeIntervalSince1970: 1_778_825_310)
-                        ),
-                        session: AgtmuxSyncV2SessionState(
-                            sessionKey: "dev",
-                            presence: .managed,
-                            evidenceMode: .deterministic,
-                            activityState: .running,
-                            updatedAt: Date(timeIntervalSince1970: 1_778_825_310)
-                        )
-                    )
-                ],
-                fromSeq: nextCursor.seq - 1,
-                toSeq: nextCursor.seq - 1,
-                nextCursor: nextCursor
             )
         )
     }

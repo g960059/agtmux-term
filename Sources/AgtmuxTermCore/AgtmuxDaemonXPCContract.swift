@@ -12,9 +12,6 @@ public enum AgtmuxDaemonXPC {
 /// - `fetchSnapshot`: UTF-8 JSON encoded `AgtmuxSnapshot` (ISO8601 dates)
 /// - `fetchUIBootstrapV3`: UTF-8 JSON encoded `AgtmuxSyncV3Bootstrap` (ISO8601 dates)
 /// - `fetchUIChangesV3`: UTF-8 JSON encoded `AgtmuxSyncV3ChangesResponse` (ISO8601 dates)
-/// - sync-v2 compat: remove after daemon drops v2 endpoints
-/// - `fetchUIBootstrapV2`: UTF-8 JSON encoded `AgtmuxSyncV2Bootstrap` (ISO8601 dates)
-/// - `fetchUIChangesV2`: UTF-8 JSON encoded `AgtmuxSyncV2ChangesResponse` (ISO8601 dates)
 /// - `fetchUIHealthV1`: UTF-8 JSON encoded `AgtmuxUIHealthV1` (ISO8601 dates)
 /// - errors: human-readable strings
 @objc public protocol AgtmuxDaemonServiceXPCProtocol {
@@ -22,10 +19,7 @@ public enum AgtmuxDaemonXPC {
     func fetchSnapshot(_ reply: @escaping (NSData?, NSString?) -> Void)
     func fetchUIBootstrapV3(_ reply: @escaping (NSData?, NSString?) -> Void)
     func fetchUIChangesV3(_ limit: NSNumber, reply: @escaping (NSData?, NSString?) -> Void)
-    func fetchUIBootstrapV2(_ reply: @escaping (NSData?, NSString?) -> Void)
-    func fetchUIChangesV2(_ limit: NSNumber, reply: @escaping (NSData?, NSString?) -> Void)
     func fetchUIHealthV1(_ reply: @escaping (NSData?, NSString?) -> Void)
-    func resetUIChangesV2(_ reply: @escaping () -> Void)
     func resetUIChangesV3(_ reply: @escaping () -> Void)
     func stopManagedDaemon(_ reply: @escaping () -> Void)
 }

@@ -133,49 +133,6 @@ actor AgtmuxDaemonXPCClient: AgtmuxDaemonXPCClientMetadataConformance {
         return try decode(AgtmuxSyncV3ChangesResponse.self, from: payload)
     }
 
-    // MARK: - Compatibility-only sync-v2 metadata convenience
-    // sync-v2 compat: remove after daemon drops v2 endpoints.
-
-    func fetchUIBootstrapV2() async throws -> AgtmuxSyncV2Bootstrap {
-        try await startManagedDaemonIfNeeded()
-
-        let payload: Data = try await invoke(timeout: 5.0, operation: "fetchUIBootstrapV2") { proxy, done in
-            proxy.fetchUIBootstrapV2 { data, errorText in
-                if let errorText {
-                    done(.failure(XPCClientError.remote(errorText as String)))
-                    return
-                }
-                guard let data else {
-                    done(.failure(XPCClientError.remote("no bootstrap payload")))
-                    return
-                }
-                done(.success(data as Data))
-            }
-        }
-
-        return try decode(AgtmuxSyncV2Bootstrap.self, from: payload)
-    }
-
-    func fetchUIChangesV2(limit: Int = 256) async throws -> AgtmuxSyncV2ChangesResponse {
-        try await startManagedDaemonIfNeeded()
-
-        let payload: Data = try await invoke(timeout: 5.0, operation: "fetchUIChangesV2") { proxy, done in
-            proxy.fetchUIChangesV2(NSNumber(value: limit)) { data, errorText in
-                if let errorText {
-                    done(.failure(XPCClientError.remote(errorText as String)))
-                    return
-                }
-                guard let data else {
-                    done(.failure(XPCClientError.remote("no changes payload")))
-                    return
-                }
-                done(.success(data as Data))
-            }
-        }
-
-        return try decode(AgtmuxSyncV2ChangesResponse.self, from: payload)
-    }
-
     func fetchUIHealthV1() async throws -> AgtmuxUIHealthV1 {
         try await startManagedDaemonIfNeeded()
 
@@ -194,14 +151,6 @@ actor AgtmuxDaemonXPCClient: AgtmuxDaemonXPCClientMetadataConformance {
         }
 
         return try decode(AgtmuxUIHealthV1.self, from: payload)
-    }
-
-    func resetUIChangesV2() async {
-        _ = try? await invoke(timeout: 2.0, operation: "resetUIChangesV2") { proxy, done in
-            proxy.resetUIChangesV2 {
-                done(.success(()))
-            }
-        }
     }
 
     func resetUIChangesV3() async {

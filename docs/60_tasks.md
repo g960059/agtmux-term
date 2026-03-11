@@ -10,6 +10,19 @@ Commit closeout is clear; next implementation proceeds on the new Workbench path
 
 ## Active / Next
 
+### T-151 — remove sync-v2 compat endpoint layer after daemon T-SV2-P2
+- **Status**: DONE
+- **Priority**: P1
+- **Depends**: T-150
+- **Owner**: direct implementation
+- **Description**:
+  - Follow daemon `T-SV2-P2` endpoint deletion by removing term-side sync-v2 RPC/session/XPC compat code.
+  - Keep only the legacy sync-v2 model types that are still needed for pane identity compatibility.
+- **Acceptance Criteria**:
+  - [x] `fetchUIBootstrapV2` / `fetchUIChangesV2` / `resetUIChangesV2` are removed from client/XPC/service surfaces
+  - [x] sync-v2 XPC client/service-boundary tests are deleted
+  - [x] `swift build` + `swift test` pass on the remaining sync-v3 + health path
+
 ### T-150 — shrink remaining sync-v2 residue from the product metadata boundary
 - **Status**: DONE
 - **Priority**: P1

@@ -13,11 +13,34 @@ Historical progress detail lives in `docs/archive/progress/2026-02-28_to_2026-03
 - the broad `AppViewModelA0Tests` product suite now matches the sync-v3-only product path; remaining sync-v2 assumptions are compat-only
 - `LocalMetadataTransportBridge` now exposes only the required sync-v3 bootstrap passthrough; the dead sync-v3->v2 fallback selector surface has been removed
 - the product metadata refresh boundary no longer models a mixed sync-v2/sync-v3 bootstrap union; remaining sync-v2 code is now explicitly compat-only below that boundary
+- daemon `T-SV2-P2` is now matched downstream: sync-v2 endpoint/session/XPC compat code is removed from the term layer; only legacy sync-v2 model types remain where still needed
 - the product-facing daemon incompatibility identity is now `LocalDaemonIssue.incompatibleMetadataProtocol`; current product text no longer implies a sync-v2-specific issue
 - the old metadata-enabled plain-zsh Codex XCUITest lane is now explicitly environment-blocked/deferred; the semantic replacement is the green live AppViewModel managed-agent proof with explicit Codex freshness coverage
 - the remaining strict live Codex `running` proof is green again on exec parity; interactive launch is kept only as a narrow sentinel
 
 ## Recent Entries
+
+## 2026-03-11 — T-151 removed term-side sync-v2 endpoint compat layer
+
+### What landed
+- deleted the term-side sync-v2 endpoint/session/XPC compat layer:
+  - `LocalMetadataClient+Compat.swift`
+  - `AgtmuxSyncV2Session`
+  - sync-v2 methods on `AgtmuxDaemonClient`
+  - sync-v2 methods on `AgtmuxDaemonXPCClient`
+  - sync-v2 methods on `AgtmuxDaemonServiceEndpoint`
+  - sync-v2 entries in `AgtmuxDaemonServiceXPCProtocol`
+- removed the matching sync-v2 XPC client/service-boundary and runtime-hardening tests
+- kept `AgtmuxSyncV2Models` because legacy pane identity/types still reference it outside the removed endpoint path
+
+### Evidence
+- the product metadata path was already sync-v3-only before this slice
+- after daemon `T-SV2-P2`, no live term caller still needs `ui.bootstrap.v2` / `ui.changes.v2`
+- remaining sync-v2 usage is now limited to legacy type compatibility such as `AgtmuxSyncV2PaneInstanceID`
+
+### Verification
+- `swift build`
+- `swift test`
 
 ## 2026-03-11 — T-150 removed product-boundary sync-v2 transport/version residue
 

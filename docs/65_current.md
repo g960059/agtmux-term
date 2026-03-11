@@ -144,6 +144,10 @@
   - the product refresh boundary no longer carries a mixed sync-v2/sync-v3 bootstrap union or `.v2` transport version
   - `LocalMetadataTransportBridge`, `LocalMetadataRefreshBoundary`, and `LocalMetadataRefreshCoordinator` now model product bootstrap/defer/reset flow in sync-v3 terms only
   - remaining sync-v2 models/session/transport code is explicitly compat-only and documented as a later deletion target
+- `T-151` is now closed:
+  - the sync-v2 endpoint compat layer is gone from `AgtmuxDaemonClient`, `AgtmuxDaemonXPCClient`, `AgtmuxDaemonServiceEndpoint`, and the XPC contract
+  - `LocalMetadataClient` and `AgtmuxSyncV2Session` are deleted
+  - remaining sync-v2 usage is limited to legacy model/identity types still needed outside the removed RPC path
 - `T-145` is now closed:
   - `PaneDisplayState` is still presentation-first, but its legacy `ActivityState` collapse now lives in explicit compat-only helper `PaneDisplayCompatFallback`
   - visible sidebar/accessibility behavior is unchanged; the cleanup only narrows the fallback seam

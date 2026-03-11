@@ -55,73 +55,6 @@ final class AgtmuxDaemonXPCServiceBoundaryTests: XCTestCase {
         }
     }
 
-    func testFetchUIBootstrapV2DecodesPayloadAcrossXPCServiceBoundary() async throws {
-        let expected = AgtmuxXPCHealthTestSupport.makeBootstrap(
-            replayCursor: AgtmuxSyncV2Cursor(epoch: 6, seq: 21)
-        )
-
-        let host = AnonymousXPCServiceHost(
-            exportedObject: SyncV2ServiceBridge(
-                daemonClient: AgtmuxDaemonClient()
-            )
-        )
-        defer { host.invalidate() }
-
-        let client = AgtmuxDaemonXPCClient(listenerEndpointOverride: host.endpoint)
-        defer { Task { await client.invalidate() } }
-
-        try await AgtmuxXPCHealthTestSupport.withEnvironment([
-            "AGTMUX_BIN": nil,
-            "AGTMUX_UI_BOOTSTRAP_V2_JSON": try AgtmuxXPCHealthTestSupport.encodeJSON(expected)
-        ]) {
-            let actual = try await client.fetchUIBootstrapV2()
-            XCTAssertEqual(actual, expected)
-        }
-    }
-
-    func testFetchUIChangesV2FailsLoudlyBeforeBootstrapAndThenReturnsChangesAcrossXPCServiceBoundary() async throws {
-        let bootstrap = AgtmuxXPCHealthTestSupport.makeBootstrap(
-            replayCursor: AgtmuxSyncV2Cursor(epoch: 6, seq: 30)
-        )
-        let expected = AgtmuxXPCHealthTestSupport.makeChangesResponse(
-            nextCursor: AgtmuxSyncV2Cursor(epoch: 6, seq: 31)
-        )
-
-        let host = AnonymousXPCServiceHost(
-            exportedObject: SyncV2ServiceBridge(
-                daemonClient: AgtmuxDaemonClient()
-            )
-        )
-        defer { host.invalidate() }
-
-        let client = AgtmuxDaemonXPCClient(listenerEndpointOverride: host.endpoint)
-        defer { Task { await client.invalidate() } }
-
-        try await AgtmuxXPCHealthTestSupport.withEnvironment([
-            "AGTMUX_BIN": nil,
-            "AGTMUX_UI_BOOTSTRAP_V2_JSON": try AgtmuxXPCHealthTestSupport.encodeJSON(bootstrap),
-            "AGTMUX_UI_CHANGES_V2_JSON": try AgtmuxXPCHealthTestSupport.encodeJSON(expected)
-        ]) {
-            do {
-                _ = try await client.fetchUIChangesV2(limit: 9)
-                XCTFail("expected ui.changes.v2 to fail loudly before bootstrap")
-            } catch let XPCClientError.remote(text) {
-                XCTAssertFalse(
-                    text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                    "bootstrap-required failure must surface across the service boundary"
-                )
-            } catch {
-                XCTFail("unexpected error: \(error)")
-            }
-
-            let actualBootstrap = try await client.fetchUIBootstrapV2()
-            XCTAssertEqual(actualBootstrap, bootstrap)
-
-            let actualChanges = try await client.fetchUIChangesV2(limit: 9)
-            XCTAssertEqual(actualChanges, expected)
-        }
-    }
-
     func testFetchUIChangesV3FailsLoudlyBeforeBootstrapAndThenReturnsChangesAcrossXPCServiceBoundary() async throws {
         let bootstrap = AgtmuxXPCHealthTestSupport.makeBootstrapV3(replayCursor: .init(seq: 40))
         let expected = AgtmuxXPCHealthTestSupport.makeChangesResponseV3(nextCursor: .init(seq: 41))
@@ -234,79 +167,6 @@ final class AgtmuxDaemonXPCServiceBoundaryTests: XCTestCase {
 
 #if !SWIFT_PACKAGE
 final class AgtmuxDaemonServiceEndpointTests: XCTestCase {
-    func testFetchUIBootstrapV2DecodesPayloadAcrossActualServiceEndpoint() async throws {
-        let expected = AgtmuxXPCHealthTestSupport.makeBootstrap(
-            replayCursor: AgtmuxSyncV2Cursor(epoch: 8, seq: 14)
-        )
-
-        let supervisor = StubServiceDaemonSupervisor()
-        let endpoint = AgtmuxDaemonServiceEndpoint(
-            supervisor: supervisor,
-            daemonClient: AgtmuxDaemonClient()
-        )
-        let host = AnonymousXPCServiceHost(exportedObject: endpoint)
-        defer { host.invalidate() }
-
-        let client = AgtmuxDaemonXPCClient(listenerEndpointOverride: host.endpoint)
-        defer { Task { await client.invalidate() } }
-
-        try await AgtmuxXPCHealthTestSupport.withEnvironment([
-            "AGTMUX_BIN": nil,
-            "AGTMUX_UI_BOOTSTRAP_V2_JSON": try AgtmuxXPCHealthTestSupport.encodeJSON(expected)
-        ]) {
-            let actual = try await client.fetchUIBootstrapV2()
-            XCTAssertEqual(actual, expected)
-        }
-
-        XCTAssertEqual(supervisor.startIfNeededCalls, 2)
-    }
-
-    func testFetchUIChangesV2FailsLoudlyBeforeBootstrapAndThenReturnsChangesAcrossActualServiceEndpoint() async throws {
-        let bootstrap = AgtmuxXPCHealthTestSupport.makeBootstrap(
-            replayCursor: AgtmuxSyncV2Cursor(epoch: 8, seq: 40)
-        )
-        let expected = AgtmuxXPCHealthTestSupport.makeChangesResponse(
-            nextCursor: AgtmuxSyncV2Cursor(epoch: 8, seq: 41)
-        )
-
-        let supervisor = StubServiceDaemonSupervisor()
-        let endpoint = AgtmuxDaemonServiceEndpoint(
-            supervisor: supervisor,
-            daemonClient: AgtmuxDaemonClient()
-        )
-        let host = AnonymousXPCServiceHost(exportedObject: endpoint)
-        defer { host.invalidate() }
-
-        let client = AgtmuxDaemonXPCClient(listenerEndpointOverride: host.endpoint)
-        defer { Task { await client.invalidate() } }
-
-        try await AgtmuxXPCHealthTestSupport.withEnvironment([
-            "AGTMUX_BIN": nil,
-            "AGTMUX_UI_BOOTSTRAP_V2_JSON": try AgtmuxXPCHealthTestSupport.encodeJSON(bootstrap),
-            "AGTMUX_UI_CHANGES_V2_JSON": try AgtmuxXPCHealthTestSupport.encodeJSON(expected)
-        ]) {
-            do {
-                _ = try await client.fetchUIChangesV2(limit: 5)
-                XCTFail("expected ui.changes.v2 service-endpoint fetch to fail loudly before bootstrap")
-            } catch let XPCClientError.remote(text) {
-                XCTAssertFalse(
-                    text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                    "bootstrap-required failure must surface across the actual service endpoint"
-                )
-            } catch {
-                XCTFail("unexpected error: \(error)")
-            }
-
-            let actualBootstrap = try await client.fetchUIBootstrapV2()
-            XCTAssertEqual(actualBootstrap, bootstrap)
-
-            let actualChanges = try await client.fetchUIChangesV2(limit: 5)
-            XCTAssertEqual(actualChanges, expected)
-        }
-
-        XCTAssertEqual(supervisor.startIfNeededCalls, 4)
-    }
-
     func testFetchUIHealthV1DecodesHealthPayloadAcrossActualServiceEndpoint() async throws {
         let expected = AgtmuxXPCHealthTestSupport.makeHealth(
             runtimeStatus: .degraded,
@@ -459,49 +319,6 @@ private enum AgtmuxXPCHealthTestSupport {
         return String(decoding: try encoder.encode(value), as: UTF8.self)
     }
 
-    static func makeBootstrap(
-        replayCursor: AgtmuxSyncV2Cursor = .init(epoch: 5, seq: 11)
-    ) -> AgtmuxSyncV2Bootstrap {
-        let generatedAt = ISO8601DateFormatter().date(from: "2026-03-06T22:10:00Z")!
-        return AgtmuxSyncV2Bootstrap(
-            epoch: replayCursor.epoch,
-            snapshotSeq: replayCursor.seq - 1,
-            panes: [
-                AgtmuxPane(
-                    source: "local",
-                    paneId: "%5",
-                    sessionName: "dev",
-                    windowId: "@3",
-                    activityState: .running,
-                    presence: .managed,
-                    provider: .codex,
-                    evidenceMode: .deterministic,
-                    conversationTitle: "Boundary sync-v2",
-                    currentCmd: "node",
-                    updatedAt: generatedAt,
-                    ageSecs: 0,
-                    metadataSessionKey: "dev",
-                    paneInstanceID: AgtmuxSyncV2PaneInstanceID(
-                        paneId: "%5",
-                        generation: 1,
-                        birthTs: Date(timeIntervalSince1970: 1_778_825_000)
-                    )
-                )
-            ],
-            sessions: [
-                AgtmuxSyncV2SessionState(
-                    sessionKey: "dev",
-                    presence: .managed,
-                    evidenceMode: .deterministic,
-                    activityState: .running,
-                    updatedAt: generatedAt
-                )
-            ],
-            generatedAt: generatedAt,
-            replayCursor: replayCursor
-        )
-    }
-
     static func makeBootstrapV3() -> AgtmuxSyncV3Bootstrap {
         makeBootstrapV3(replayCursor: nil)
     }
@@ -593,47 +410,6 @@ private enum AgtmuxXPCHealthTestSupport {
         )
     }
 
-    static func makeChangesResponse(
-        nextCursor: AgtmuxSyncV2Cursor
-    ) -> AgtmuxSyncV2ChangesResponse {
-        .changes(
-            AgtmuxSyncV2Changes(
-                epoch: nextCursor.epoch,
-                changes: [
-                    AgtmuxSyncV2ChangeRef(
-                        seq: nextCursor.seq - 1,
-                        sessionKey: "dev",
-                        paneId: "%5",
-                        timestamp: Date(timeIntervalSince1970: 1_778_825_640),
-                        pane: AgtmuxSyncV2PaneState(
-                            paneInstanceID: AgtmuxSyncV2PaneInstanceID(
-                                paneId: "%5",
-                                generation: 1,
-                                birthTs: Date(timeIntervalSince1970: 1_778_825_000)
-                            ),
-                            presence: .managed,
-                            evidenceMode: .deterministic,
-                            activityState: .running,
-                            provider: .codex,
-                            sessionKey: "dev",
-                            updatedAt: Date(timeIntervalSince1970: 1_778_825_640)
-                        ),
-                        session: AgtmuxSyncV2SessionState(
-                            sessionKey: "dev",
-                            presence: .managed,
-                            evidenceMode: .deterministic,
-                            activityState: .running,
-                            updatedAt: Date(timeIntervalSince1970: 1_778_825_640)
-                        )
-                    )
-                ],
-                fromSeq: nextCursor.seq - 1,
-                toSeq: nextCursor.seq - 1,
-                nextCursor: nextCursor
-            )
-        )
-    }
-
     static func makeHealth(
         runtimeStatus: AgtmuxUIHealthStatus,
         replayStatus: AgtmuxUIHealthStatus,
@@ -712,16 +488,8 @@ private final class HealthServiceBridge: NSObject, AgtmuxDaemonServiceXPCProtoco
         reply(nil, "unexpected fetchUIBootstrapV3 call" as NSString)
     }
 
-    func fetchUIBootstrapV2(_ reply: @escaping (NSData?, NSString?) -> Void) {
-        reply(nil, "unexpected fetchUIBootstrapV2 call" as NSString)
-    }
-
     func fetchUIChangesV3(_ limit: NSNumber, reply: @escaping (NSData?, NSString?) -> Void) {
         reply(nil, "unexpected fetchUIChangesV3 call" as NSString)
-    }
-
-    func fetchUIChangesV2(_ limit: NSNumber, reply: @escaping (NSData?, NSString?) -> Void) {
-        reply(nil, "unexpected fetchUIChangesV2 call" as NSString)
     }
 
     func fetchUIHealthV1(_ reply: @escaping (NSData?, NSString?) -> Void) {
@@ -740,91 +508,12 @@ private final class HealthServiceBridge: NSObject, AgtmuxDaemonServiceXPCProtoco
         }
     }
 
-    func resetUIChangesV2(_ reply: @escaping () -> Void) {
-        reply()
-    }
-
     func resetUIChangesV3(_ reply: @escaping () -> Void) {
         reply()
     }
 
     func stopManagedDaemon(_ reply: @escaping () -> Void) {
         reply()
-    }
-}
-
-private final class SyncV2ServiceBridge: NSObject, AgtmuxDaemonServiceXPCProtocol {
-    private let syncV2Session: AgtmuxSyncV2Session
-
-    init(daemonClient: AgtmuxDaemonClient) {
-        self.syncV2Session = AgtmuxSyncV2Session(transport: daemonClient)
-    }
-
-    func startManagedDaemon(_ reply: @escaping (Bool, NSString?) -> Void) {
-        reply(true, nil)
-    }
-
-    func fetchSnapshot(_ reply: @escaping (NSData?, NSString?) -> Void) {
-        reply(nil, "unexpected fetchSnapshot call" as NSString)
-    }
-
-    func fetchUIBootstrapV3(_ reply: @escaping (NSData?, NSString?) -> Void) {
-        reply(nil, "unexpected fetchUIBootstrapV3 call" as NSString)
-    }
-
-    func fetchUIBootstrapV2(_ reply: @escaping (NSData?, NSString?) -> Void) {
-        Task {
-            do {
-                let bootstrap = try await syncV2Session.bootstrap()
-                reply(try Self.encode(bootstrap) as NSData, nil)
-            } catch let error as DaemonError {
-                reply(nil, error.uiSurfaceText as NSString)
-            } catch {
-                reply(nil, error.localizedDescription as NSString)
-            }
-        }
-    }
-
-    func fetchUIChangesV3(_ limit: NSNumber, reply: @escaping (NSData?, NSString?) -> Void) {
-        reply(nil, "unexpected fetchUIChangesV3 call" as NSString)
-    }
-
-    func fetchUIChangesV2(_ limit: NSNumber, reply: @escaping (NSData?, NSString?) -> Void) {
-        Task {
-            do {
-                let changes = try await syncV2Session.pollChanges(limit: limit.intValue)
-                reply(try Self.encode(changes) as NSData, nil)
-            } catch let error as DaemonError {
-                reply(nil, error.uiSurfaceText as NSString)
-            } catch {
-                reply(nil, error.localizedDescription as NSString)
-            }
-        }
-    }
-
-    func fetchUIHealthV1(_ reply: @escaping (NSData?, NSString?) -> Void) {
-        reply(nil, "unexpected fetchUIHealthV1 call" as NSString)
-    }
-
-    func resetUIChangesV2(_ reply: @escaping () -> Void) {
-        Task {
-            await syncV2Session.reset()
-            reply()
-        }
-    }
-
-    func resetUIChangesV3(_ reply: @escaping () -> Void) {
-        reply()
-    }
-
-    func stopManagedDaemon(_ reply: @escaping () -> Void) {
-        reply()
-    }
-
-    private static func encode<T: Encodable>(_ value: T) throws -> Data {
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        return try encoder.encode(value)
     }
 }
 
@@ -856,10 +545,6 @@ private final class BootstrapV3ServiceBridge: NSObject, AgtmuxDaemonServiceXPCPr
         }
     }
 
-    func fetchUIBootstrapV2(_ reply: @escaping (NSData?, NSString?) -> Void) {
-        reply(nil, "unexpected fetchUIBootstrapV2 call" as NSString)
-    }
-
     func fetchUIChangesV3(_ limit: NSNumber, reply: @escaping (NSData?, NSString?) -> Void) {
         Task {
             do {
@@ -873,16 +558,8 @@ private final class BootstrapV3ServiceBridge: NSObject, AgtmuxDaemonServiceXPCPr
         }
     }
 
-    func fetchUIChangesV2(_ limit: NSNumber, reply: @escaping (NSData?, NSString?) -> Void) {
-        reply(nil, "unexpected fetchUIChangesV2 call" as NSString)
-    }
-
     func fetchUIHealthV1(_ reply: @escaping (NSData?, NSString?) -> Void) {
         reply(nil, "unexpected fetchUIHealthV1 call" as NSString)
-    }
-
-    func resetUIChangesV2(_ reply: @escaping () -> Void) {
-        reply()
     }
 
     func resetUIChangesV3(_ reply: @escaping () -> Void) {

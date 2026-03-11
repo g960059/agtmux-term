@@ -8,8 +8,6 @@ final class ServiceDaemonSupervisor {
         "AGTMUX_JSON",
         "AGTMUX_UI_BOOTSTRAP_V3_JSON",
         "AGTMUX_UI_CHANGES_V3_JSON",
-        "AGTMUX_UI_BOOTSTRAP_V2_JSON",
-        "AGTMUX_UI_CHANGES_V2_JSON",
         "AGTMUX_UI_HEALTH_V1_JSON",
     ]
 
@@ -195,7 +193,6 @@ extension ServiceDaemonSupervisor: ServiceDaemonSupervising {}
 final class AgtmuxDaemonServiceEndpoint: NSObject, AgtmuxDaemonServiceXPCProtocol {
     private let supervisor: any ServiceDaemonSupervising
     private let daemonClient: AgtmuxDaemonClient
-    private let syncV2Session: AgtmuxSyncV2Session
     private let syncV3Session: AgtmuxSyncV3Session
 
     init(
@@ -204,7 +201,6 @@ final class AgtmuxDaemonServiceEndpoint: NSObject, AgtmuxDaemonServiceXPCProtoco
     ) {
         self.supervisor = supervisor
         self.daemonClient = daemonClient
-        syncV2Session = AgtmuxSyncV2Session(transport: daemonClient)
         syncV3Session = AgtmuxSyncV3Session(transport: daemonClient)
         super.init()
     }
@@ -230,21 +226,6 @@ final class AgtmuxDaemonServiceEndpoint: NSObject, AgtmuxDaemonServiceXPCProtoco
                 encoder.dateEncodingStrategy = .iso8601
                 let data = try encoder.encode(snapshot)
                 reply(data as NSData, nil)
-            } catch {
-                reply(nil, errorText(for: error) as NSString)
-            }
-        }
-    }
-
-    func fetchUIBootstrapV2(_ reply: @escaping (NSData?, NSString?) -> Void) {
-        guard supervisor.startIfNeeded() else {
-            reply(nil, "agtmux daemon unavailable" as NSString)
-            return
-        }
-        Task {
-            do {
-                let bootstrap = try await syncV2Session.bootstrap()
-                reply(try encode(bootstrap) as NSData, nil)
             } catch {
                 reply(nil, errorText(for: error) as NSString)
             }
@@ -281,21 +262,6 @@ final class AgtmuxDaemonServiceEndpoint: NSObject, AgtmuxDaemonServiceXPCProtoco
         }
     }
 
-    func fetchUIChangesV2(_ limit: NSNumber, reply: @escaping (NSData?, NSString?) -> Void) {
-        guard supervisor.startIfNeeded() else {
-            reply(nil, "agtmux daemon unavailable" as NSString)
-            return
-        }
-        Task {
-            do {
-                let response = try await syncV2Session.pollChanges(limit: limit.intValue)
-                reply(try encode(response) as NSData, nil)
-            } catch {
-                reply(nil, errorText(for: error) as NSString)
-            }
-        }
-    }
-
     func fetchUIHealthV1(_ reply: @escaping (NSData?, NSString?) -> Void) {
         guard supervisor.startIfNeeded() else {
             reply(nil, "agtmux daemon unavailable" as NSString)
@@ -308,13 +274,6 @@ final class AgtmuxDaemonServiceEndpoint: NSObject, AgtmuxDaemonServiceXPCProtoco
             } catch {
                 reply(nil, errorText(for: error) as NSString)
             }
-        }
-    }
-
-    func resetUIChangesV2(_ reply: @escaping () -> Void) {
-        Task {
-            await syncV2Session.reset()
-            reply()
         }
     }
 

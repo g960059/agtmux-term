@@ -16,10 +16,8 @@ package enum DaemonError: Error {
 // MARK: - AgtmuxDaemonClient
 
 /// Local daemon client for snapshot, sync-v3 metadata, and health APIs.
-/// Low-level sync-v2 transport helpers remain below the product-facing term boundary.
 package actor AgtmuxDaemonClient {
     package let socketPath: String
-    private var syncV2Session: AgtmuxSyncV2Session?
     private var syncV3Session: AgtmuxSyncV3Session?
 
     package init(socketPath: String = AgtmuxBinaryResolver.resolvedSocketPath()) {
@@ -75,24 +73,6 @@ package actor AgtmuxDaemonClient {
         syncV3Session = nil
     }
 
-    // MARK: - Compatibility-only sync-v2 metadata convenience
-
-    package func fetchUIBootstrapV2() async throws -> AgtmuxSyncV2Bootstrap {
-        try ensureManagedRuntimeConfigured(forInlineOverrideKeys: ["AGTMUX_UI_BOOTSTRAP_V2_JSON"])
-        let session = syncV2SessionInstance()
-        return try await session.bootstrap()
-    }
-
-    package func fetchUIChangesV2(limit: Int = 256) async throws -> AgtmuxSyncV2ChangesResponse {
-        try ensureManagedRuntimeConfigured(forInlineOverrideKeys: ["AGTMUX_UI_CHANGES_V2_JSON"])
-        let session = syncV2SessionInstance()
-        return try await session.pollChanges(limit: limit)
-    }
-
-    package func resetUIChangesV2() async {
-        syncV2Session = nil
-    }
-
     private func runJSON(binaryURL agtmuxURL: URL) throws -> AgtmuxSnapshot {
         let result = try Self.runProcess(
             executableURL: agtmuxURL,
@@ -109,16 +89,6 @@ package actor AgtmuxDaemonClient {
         } catch {
             throw DaemonError.parseError(error.localizedDescription)
         }
-    }
-
-    private func syncV2SessionInstance() -> AgtmuxSyncV2Session {
-        if let syncV2Session {
-            return syncV2Session
-        }
-
-        let created = AgtmuxSyncV2Session(transport: self)
-        syncV2Session = created
-        return created
     }
 
     private func syncV3SessionInstance() -> AgtmuxSyncV3Session {
@@ -210,7 +180,6 @@ package actor AgtmuxDaemonClient {
 }
 
 package enum DaemonUIErrorCode: String, Sendable {
-    case syncV2MethodNotFound = "sync_v2_method_not_found"
     case syncV3MethodNotFound = "sync_v3_method_not_found"
     case uiHealthMethodNotFound = "ui_health_v1_method_not_found"
 }
@@ -263,18 +232,6 @@ package extension DaemonError {
         default:
             return errorDescription ?? "agtmux daemon error"
         }
-    }
-
-    static func makeSyncV2MethodNotFoundError(method: String, rpcCode: Int?, message: String) -> DaemonError {
-        let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
-        let codeText = rpcCode.map(String.init) ?? "unknown"
-        let humanMessage = "agtmux daemon is too old for sync-v2: missing RPC method \(method) (code \(codeText)): \(trimmed)"
-        return makeStructuredMethodNotFoundError(
-            code: .syncV2MethodNotFound,
-            method: method,
-            rpcCode: rpcCode,
-            message: humanMessage
-        )
     }
 
     static func makeSyncV3MethodNotFoundError(method: String, rpcCode: Int?, message: String) -> DaemonError {

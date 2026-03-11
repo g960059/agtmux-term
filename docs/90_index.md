@@ -117,6 +117,8 @@ Mainline product truth is now:
   product-facing metadata clients/tests now depend on `ProductLocalMetadataClient`; `LocalMetadataClient` survives only as a compat-only surface
 - `T-150`
   product metadata refresh helpers no longer model mixed sync-v2/sync-v3 bootstrap state; remaining sync-v2 code is compat-only below the product boundary
+- `T-151`
+  term-side sync-v2 endpoint/session/XPC compat code is removed after daemon `T-SV2-P2`; only legacy sync-v2 model types remain where still needed
 - `T-145`
   `PaneDisplayState` now reads legacy `ActivityState` collapse through explicit compat helper `PaneDisplayCompatFallback`
 - `T-146`
