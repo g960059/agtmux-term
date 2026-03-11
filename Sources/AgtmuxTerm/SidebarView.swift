@@ -578,28 +578,24 @@ struct PaneRowView: View {
     private var primaryState: PanePresentationPrimaryState { displayState.primaryState }
     private var freshnessText: String? { displayState.freshnessText }
     private var isManaged: Bool { displayState.isManaged }
+    private var subtitle: String? { viewModel.paneDisplaySubtitle(for: pane) }
 
     var body: some View {
-        HStack(spacing: 10) {
-            // Activity state indicator (fixed-width slot)
-            stateIndicator
-                .frame(width: 10, height: 10)
+        HStack(spacing: 8) {
+            if isManaged, let provider {
+                ProviderStatusBadge(provider: provider, primaryState: primaryState)
+            }
 
-            // Primary label
             Text(viewModel.paneDisplayTitle(for: pane))
                 .font(.system(size: 13, weight: isSelected ? .semibold : .regular, design: .rounded))
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .foregroundStyle(isManaged ? Color.white.opacity(0.95) : Color.white.opacity(0.82))
+                .layoutPriority(1)
 
             Spacer()
 
-            // Provider icon (managed panes only)
-            if let provider {
-                ProviderIcon(provider: provider)
-            }
-
-            // Elapsed time since last state change (idle/waiting/error only)
+            // Elapsed time since last state change (managed panes only)
             if isManaged,
                let freshnessText {
                 FreshnessLabel(text: freshnessText)
@@ -607,7 +603,7 @@ struct PaneRowView: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
-        .padding(.leading, 10)
+        .padding(.leading, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: SidebarRowStyle.cornerRadius, style: .continuous)
@@ -716,42 +712,13 @@ struct PaneRowView: View {
         return .clear
     }
 
-    /// State indicator:
-    ///   running         → green spinner
-    ///   waitingApproval → orange raised-hand icon
-    ///   waitingInput    → yellow ellipsis-circle icon
-    ///   error           → red xmark-circle icon
-    ///   completed-idle / idle / inactive / unmanaged → empty
-    @ViewBuilder
-    private var stateIndicator: some View {
-        if isManaged {
-            switch primaryState {
-            case .running:
-                SpinnerView(color: .green, size: 11)
-            case .waitingApproval:
-                Image(systemName: "hand.raised.fill")
-                    .font(.system(size: 10))
-                    .foregroundColor(.orange)
-            case .waitingUserInput:
-                Image(systemName: "ellipsis.circle.fill")
-                    .font(.system(size: 11))
-                    .foregroundColor(.yellow)
-            case .error:
-                Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 11))
-                    .foregroundColor(.red)
-            case .completedIdle, .idle, .inactive:
-                Color.clear
-            }
-        } else {
-            Color.clear
-        }
-    }
-
     private var tooltipText: String {
         var parts: [String] = []
         if let branch = pane.gitBranch   { parts.append("⎇ \(branch)") }
         if let path = pane.currentPath   { parts.append("  \(path)") }
+        if isManaged, let subtitle, !subtitle.isEmpty {
+            parts.append("subtitle: \(subtitle)")
+        }
         if displayState.isManaged {
             parts.append("evidence: \(pane.evidenceMode.rawValue)")
         }
@@ -817,17 +784,20 @@ private struct StatBadge: View {
 struct SpinnerView: View {
     let color: Color
     let size: CGFloat
+    var lineWidth: CGFloat = 1.5
+    var trimRange: ClosedRange<CGFloat> = 0.15...0.85
+    var duration: Double = 0.8
 
     @State private var angle: Double = 0
 
     var body: some View {
         Circle()
-            .trim(from: 0.15, to: 0.85)
-            .stroke(color, style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
+            .trim(from: trimRange.lowerBound, to: trimRange.upperBound)
+            .stroke(color, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
             .frame(width: size, height: size)
             .rotationEffect(.degrees(angle))
             .onAppear {
-                withAnimation(.linear(duration: 0.8).repeatForever(autoreverses: false)) {
+                withAnimation(.linear(duration: duration).repeatForever(autoreverses: false)) {
                     angle = 360
                 }
             }
@@ -859,6 +829,50 @@ struct ProviderIcon: View {
                     .frame(width: size, height: size)
             }
         }
+    }
+}
+
+struct ProviderStatusBadge: View {
+    let provider: Provider
+    let primaryState: PanePresentationPrimaryState
+    var iconSize: CGFloat = 16
+    var ringDiameter: CGFloat = 22
+
+    var body: some View {
+        ZStack {
+            ringView
+            ProviderIcon(provider: provider, size: iconSize)
+        }
+        .frame(width: ringDiameter, height: ringDiameter)
+    }
+
+    @ViewBuilder
+    private var ringView: some View {
+        switch primaryState {
+        case .running:
+            SpinnerView(
+                color: .green,
+                size: ringDiameter,
+                lineWidth: 2,
+                trimRange: 0.08...0.72
+            )
+        case .waitingApproval:
+            ringStroke(Color.orange, lineWidth: 2)
+        case .waitingUserInput:
+            ringStroke(Color.yellow, lineWidth: 2)
+        case .error:
+            ringStroke(Color.red, lineWidth: 2)
+        case .completedIdle, .idle:
+            ringStroke(Color.white.opacity(0.2), lineWidth: 1.5)
+        case .inactive:
+            EmptyView()
+        }
+    }
+
+    private func ringStroke(_ color: Color, lineWidth: CGFloat) -> some View {
+        Circle()
+            .strokeBorder(color, lineWidth: lineWidth)
+            .frame(width: ringDiameter, height: ringDiameter)
     }
 }
 
