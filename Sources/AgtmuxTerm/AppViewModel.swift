@@ -89,6 +89,8 @@ final class AppViewModel: ObservableObject {
     /// Set of source identifiers that are currently unreachable ("local" or hostname).
     @Published var offlineHosts: Set<String> = []
     @Published var statusFilter: StatusFilter = .all
+    @Published var showAgentsOnly: Bool = false
+    @Published var showPinnedOnly: Bool = false
     @Published private(set) var pinnedPaneKeys: Set<String> = []
     @Published private(set) var paneDisplayTitleOverrides: [String: String] = [:]
     @Published private(set) var sessionOrderBySource: [String: [String]] = [:]
@@ -157,7 +159,9 @@ final class AppViewModel: ObservableObject {
     // MARK: - Filtered panes
 
     var filteredPanes: [AgtmuxPane] {
-        let visible = panes
+        var visible = panes
+        if showAgentsOnly { visible = visible.filter { paneIsManaged($0) } }
+        if showPinnedOnly { visible = visible.filter { isPanePinned($0) } }
         switch statusFilter {
         case .all:       return visible
         case .managed:   return visible.filter { paneIsManaged($0) }

@@ -55,7 +55,7 @@ struct TitlebarChromeView: View {
     }
 
     private var controlsContentWidth: CGFloat {
-        let iconCount = 2
+        let iconCount = 3
         let button = TitlebarChromeMetrics.iconButtonSize
         let spacing = TitlebarChromeMetrics.iconSpacing
         return (CGFloat(iconCount) * button) + (CGFloat(max(0, iconCount - 1)) * spacing)
@@ -102,6 +102,8 @@ struct TitlebarChromeView: View {
                     }
                 }
             }
+
+            TitlebarNewWorkbenchButton()
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(AccessibilityID.sidebarFilterBar)
@@ -172,5 +174,32 @@ private struct TitlebarIconButton<Label: View>: View {
         if isActive { return TitlebarChromeMetrics.controlActive }
         if isHovered { return TitlebarChromeMetrics.controlHover }
         return .clear
+    }
+}
+
+private struct TitlebarNewWorkbenchButton: View {
+    @Environment(WorkbenchStoreV2.self) private var store
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: { store.createWorkbench() }) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .fill(isHovered ? TitlebarChromeMetrics.controlHover : Color.clear)
+                Image(systemName: "plus")
+                    .font(.system(size: TitlebarChromeMetrics.iconGlyphSize, weight: .semibold))
+                    .frame(width: TitlebarChromeMetrics.iconGlyphSize, height: TitlebarChromeMetrics.iconGlyphSize)
+                    .foregroundStyle(Color.white.opacity(0.88))
+            }
+            .frame(
+                width: TitlebarChromeMetrics.iconButtonSize,
+                height: TitlebarChromeMetrics.iconButtonSize
+            )
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .help("New Workbench")
+        .accessibilityLabel("New Workbench")
+        .accessibilityIdentifier(AccessibilityID.workspaceNewTab)
     }
 }

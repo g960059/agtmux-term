@@ -16,11 +16,32 @@ private enum CockpitChrome {
 private struct FullScreenTopBar: View {
     @EnvironmentObject private var viewModel: AppViewModel
     @Environment(CockpitChromeState.self) private var chromeState
-    @Environment(WorkbenchStoreV2.self) private var workbenchStoreV2
+
+    private let sidebarExpandedWidth: CGFloat = 302
+    private let iconSize: CGFloat = 20
+    private let iconSpacing: CGFloat = 6
 
     var body: some View {
         HStack(spacing: 0) {
-            // Sidebar toggle
+            // Left icon cluster — width matches sidebar when expanded so tab bar aligns with workspace
+            leftIcons
+                .padding(.leading, 8)
+                .frame(
+                    width: chromeState.isSidebarCollapsed ? nil : sidebarExpandedWidth,
+                    alignment: .leading
+                )
+
+            // Tab bar fills the remaining width (aligns with WorkbenchAreaV2)
+            WorkbenchTabBarV2()
+                .frame(maxWidth: .infinity)
+        }
+        .frame(height: 36)
+        .background(.ultraThinMaterial.opacity(0.3))
+    }
+
+    @ViewBuilder
+    private var leftIcons: some View {
+        HStack(spacing: iconSpacing) {
             Button {
                 withAnimation(.easeInOut(duration: 0.16)) {
                     chromeState.isSidebarCollapsed.toggle()
@@ -28,24 +49,18 @@ private struct FullScreenTopBar: View {
             } label: {
                 Image(systemName: "sidebar.leading")
                     .font(.system(size: 13, weight: .semibold))
-                    .frame(width: 20, height: 20)
+                    .frame(width: iconSize, height: iconSize)
                     .foregroundStyle(Color.white.opacity(!chromeState.isSidebarCollapsed ? 0.88 : 0.56))
             }
             .buttonStyle(.plain)
-            .padding(.leading, 8)
 
-            // Attention bell
             Button {
-                if viewModel.statusFilter == .attention {
-                    viewModel.statusFilter = .all
-                } else {
-                    viewModel.statusFilter = .attention
-                }
+                viewModel.statusFilter = viewModel.statusFilter == .attention ? .all : .attention
             } label: {
                 ZStack(alignment: .topTrailing) {
                     Image(systemName: viewModel.statusFilter == .attention ? "bell.fill" : "bell")
                         .font(.system(size: 13, weight: .semibold))
-                        .frame(width: 20, height: 20)
+                        .frame(width: iconSize, height: iconSize)
                     if viewModel.attentionCount > 0 {
                         Text("\(viewModel.attentionCount)")
                             .font(.system(size: 8, weight: .bold))
@@ -60,14 +75,7 @@ private struct FullScreenTopBar: View {
                 .foregroundStyle(Color.white.opacity(0.88))
             }
             .buttonStyle(.plain)
-            .padding(.leading, 6)
-
-            // Tab bar fills remaining width
-            WorkbenchTabBarV2()
-                .frame(maxWidth: .infinity)
         }
-        .frame(height: 36)
-        .background(.ultraThinMaterial.opacity(0.3))
     }
 }
 

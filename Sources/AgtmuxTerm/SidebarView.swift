@@ -139,20 +139,25 @@ struct SourceHeaderView: View {
 // MARK: - SessionsHeaderView
 
 /// Unified "SESSIONS" header for the sidebar with a "+" menu for new sessions /
-/// target management, and a filter icon for managed / pinned filters.
+/// target management, and a filter popover for agents / pinned filters.
 private struct SessionsHeaderView: View {
     @EnvironmentObject private var viewModel: AppViewModel
     @State private var isPresentingHostsSheet = false
+    @State private var isPresentingFilterPopover = false
+
+    private var isFilterActive: Bool {
+        viewModel.showAgentsOnly || viewModel.showPinnedOnly
+    }
 
     var body: some View {
-        HStack(spacing: 0) {
+        HStack(spacing: 2) {
             Text("SESSIONS")
                 .font(.system(size: 11, weight: .semibold, design: .rounded))
                 .foregroundStyle(Color.white.opacity(0.56))
 
             Spacer(minLength: 0)
 
-            // "+" menu: new session + target management
+            // "+" menu: new session + target management (no arrow indicator)
             Menu {
                 if viewModel.hostsConfig.hosts.isEmpty {
                     Button("New Session") {
@@ -185,37 +190,26 @@ private struct SessionsHeaderView: View {
                     .contentShape(Rectangle())
             }
             .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
             .fixedSize()
             .help("New Session / Add Target")
 
-            // Filter menu: Agents Only / Pinned Only
-            Menu {
-                Toggle(isOn: Binding(
-                    get: { viewModel.statusFilter == .managed },
-                    set: { viewModel.statusFilter = $0 ? .managed : .all }
-                )) {
-                    Label("Agents Only", systemImage: "cpu")
-                }
-                Toggle(isOn: Binding(
-                    get: { viewModel.statusFilter == .pinned },
-                    set: { viewModel.statusFilter = $0 ? .pinned : .all }
-                )) {
-                    Label("Pinned Only", systemImage: "pin")
-                }
+            // Filter button → custom popover with independent checkmarks on right
+            Button {
+                isPresentingFilterPopover = true
             } label: {
-                Image(
-                    systemName: (viewModel.statusFilter == .managed || viewModel.statusFilter == .pinned)
-                        ? "line.3.horizontal.decrease.circle.fill"
-                        : "line.3.horizontal.decrease"
-                )
-                .font(.system(size: 11, weight: .medium))
-                .frame(width: 22, height: 22)
-                .foregroundStyle(Color.white.opacity(0.62))
-                .contentShape(Rectangle())
+                Image(systemName: isFilterActive ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease")
+                    .font(.system(size: 11, weight: .medium))
+                    .frame(width: 22, height: 22)
+                    .foregroundStyle(Color.white.opacity(isFilterActive ? 0.88 : 0.62))
+                    .contentShape(Rectangle())
             }
-            .menuStyle(.borderlessButton)
-            .fixedSize()
+            .buttonStyle(.plain)
             .help("Filter Sessions")
+            .popover(isPresented: $isPresentingFilterPopover, arrowEdge: .bottom) {
+                SessionFilterPopover()
+                    .environmentObject(viewModel)
+            }
         }
         .padding(.horizontal, 12)
         .padding(.top, 10)
@@ -224,6 +218,44 @@ private struct SessionsHeaderView: View {
             HostsManagementView()
                 .environmentObject(viewModel)
         }
+    }
+}
+
+private struct SessionFilterPopover: View {
+    @EnvironmentObject private var viewModel: AppViewModel
+
+    var body: some View {
+        VStack(spacing: 0) {
+            filterRow(label: "Show Agents Only", isOn: $viewModel.showAgentsOnly)
+            Divider().opacity(0.15)
+            filterRow(label: "Show Pinned Only", isOn: $viewModel.showPinnedOnly)
+        }
+        .frame(width: 188)
+        .padding(.vertical, 4)
+        .preferredColorScheme(.dark)
+    }
+
+    private func filterRow(label: String, isOn: Binding<Bool>) -> some View {
+        Button {
+            isOn.wrappedValue.toggle()
+        } label: {
+            HStack(spacing: 0) {
+                Text(label)
+                    .font(.system(size: 13))
+                    .foregroundStyle(Color.white.opacity(0.88))
+                Spacer()
+                // Pre-reserved checkmark space — always takes width, only visible when on
+                Image(systemName: "checkmark")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Color.white.opacity(0.88))
+                    .frame(width: 16)
+                    .opacity(isOn.wrappedValue ? 1.0 : 0.0)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 }
 
@@ -249,6 +281,7 @@ struct SessionBlockView: View {
     let onSelect: (AgtmuxPane, AgtmuxTermCore.WindowGroup) -> Void
 
     @EnvironmentObject private var viewModel: AppViewModel
+    @State private var isCollapsed = false
 
     private var rowID: String { "session:\(session.id)" }
     private var isHighlighted: Bool { highlightedRowID == rowID }
@@ -257,9 +290,19 @@ struct SessionBlockView: View {
         VStack(alignment: .leading, spacing: 1) {
             // Session header
             HStack(spacing: 7) {
-                Image(systemName: "folder")
-                    .font(.system(size: 10, weight: .regular))
-                    .foregroundStyle(Color.white.opacity(0.56))
+                // Accordion chevron — appears on hover, hidden otherwise (space always reserved)
+                Button {
+                    withAnimation(.easeInOut(duration: 0.12)) {
+                        isCollapsed.toggle()
+                    }
+                } label: {
+                    Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
+                        .font(.system(size: 8, weight: .medium))
+                        .frame(width: 10, height: 10)
+                        .foregroundStyle(Color.white.opacity(isHighlighted ? 0.72 : 0.0))
+                }
+                .buttonStyle(.plain)
+                .animation(.easeInOut(duration: 0.1), value: isHighlighted)
 
                 Text(session.sessionName)
                     .font(.system(size: 13, weight: .regular, design: .rounded))
@@ -373,15 +416,17 @@ struct SessionBlockView: View {
             }
 
             // Window sub-blocks (hide header when session has only one window)
-            let multiWindow = session.windows.count > 1
-            ForEach(session.windows) { window in
-                WindowBlockView(
-                    window: window,
-                    selectedPaneId: selectedPaneId,
-                    highlightedRowID: $highlightedRowID,
-                    onSelect: onSelect,
-                    showHeader: multiWindow
-                )
+            if !isCollapsed {
+                let multiWindow = session.windows.count > 1
+                ForEach(session.windows) { window in
+                    WindowBlockView(
+                        window: window,
+                        selectedPaneId: selectedPaneId,
+                        highlightedRowID: $highlightedRowID,
+                        onSelect: onSelect,
+                        showHeader: multiWindow
+                    )
+                }
             }
         }
     }
@@ -456,10 +501,6 @@ struct WindowBlockView: View {
                     .font(.system(size: 8, weight: .regular))
                     .foregroundStyle(Color.white.opacity(0.72))
                     .frame(width: 10)
-
-                Image(systemName: "terminal")
-                    .font(.system(size: 9, weight: .regular))
-                    .foregroundStyle(Color.white.opacity(0.72))
 
                 Text(windowLabel)
                     .font(.system(size: 12, weight: .regular, design: .rounded))
