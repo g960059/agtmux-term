@@ -88,6 +88,6 @@ final class AgtmuxSnapshotDecodeCompatibilityTests: XCTestCase {
         let pane = try XCTUnwrap(snapshot.panes.first)
 
         XCTAssertEqual(pane.sessionSubtitle, "Review sidebar metadata")
-        XCTAssertEqual(pane.primaryLabel, "agtmux-term")
+        XCTAssertEqual(pane.primaryLabel, "Review sidebar metadata")
     }
 }

@@ -230,21 +230,15 @@ package struct AgtmuxPane: Identifiable, Codable, Equatable, Sendable {
 
     /// Display label for the sidebar row.
     ///
-    /// - managed pane: `conversationTitle` → current working-directory leaf name → `paneId`
+    /// - managed pane: `conversationTitle` → `sessionSubtitle` → provider name → `paneId`
     ///   NOTE: `currentCmd` is intentionally skipped for managed panes because Claude Code
     ///   runs as a Node.js process, making `pane_current_command` = "node" (unhelpful).
     /// - unmanaged pane: `currentCmd` (e.g. "vim", "python", "bash") → `paneId`
     package var primaryLabel: String {
         if isManaged {
-            if let conversationTitle, !conversationTitle.isEmpty {
-                return conversationTitle
-            }
-            if let currentPath, !currentPath.isEmpty {
-                let folderName = URL(fileURLWithPath: currentPath).lastPathComponent
-                if !folderName.isEmpty && folderName != "/" {
-                    return folderName
-                }
-            }
+            if let conversationTitle, !conversationTitle.isEmpty { return conversationTitle }
+            if let sessionSubtitle, !sessionSubtitle.isEmpty { return sessionSubtitle }
+            if let providerName = provider?.rawValue { return providerName }
             return paneId
         } else {
             return currentCmd ?? paneId
