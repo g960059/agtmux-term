@@ -10,6 +10,9 @@
 The daemon owns semantic truth.
 The term app owns presentation.
 
+Product local metadata must therefore prefer daemon sync-v3 truth or fail closed to inventory-only.
+It must not resurrect sync-v2, collapsed `ActivityState`, or `provider_raw` as fallback semantic truth.
+
 This document records the term-side boundary before live `sync-v3` wiring begins.
 
 ## Responsibility Split
@@ -36,6 +39,7 @@ The term app remains authoritative for:
 
 The term app must not try to reconstruct daemon truth from `provider_raw`.
 It consumes the normalized snapshot and derives presentation locally.
+The remaining sync-v2 / legacy compat surfaces are explicitly non-product and should continue shrinking until they can be deleted.
 
 ## Exact-Row Correlation
 

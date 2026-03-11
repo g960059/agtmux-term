@@ -179,6 +179,9 @@
 ## Current Product Truth
 
 - `tmux first`
+- `daemon = truth` for product metadata
+- `term = presentation` for product metadata
+- `sync-v2` / legacy collapse is compatibility-only, not a product fallback
 - `terminal stays terminal`
 - `1 terminal tile = 1 real tmux session`
 - `Workbench = app-owned saved layout`

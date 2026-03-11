@@ -81,6 +81,8 @@ Planned sync-v3 consumer split:
 
 - daemon remains the semantic truth producer for normalized multi-axis status, pending requests, attention summary, freshness, and provider-native raw state
 - term keeps exact-row correlation strict and derives a local presentation model from the raw v3 snapshot before views consume it
+- product metadata must come from daemon sync-v3 truth, not from local reconstruction of legacy/sync-v2 collapse
+- legacy/sync-v2 transport and compat helpers are not product fallback truth; they survive only as compatibility-only boundaries pending deletion
 - `attention` is treated as a daemon-generated summary, not as request-identity truth; request identity remains `pending_requests[].request_id`
 - daemon-owned canonical fixture truth currently comes from `agtmux` commit `cb198cca7226666fbb26df34d4e17582a208c3e6` under `fixtures/sync-v3/`
 - additive v3 consumer wiring now drives the product AppViewModel local metadata path through `ui.bootstrap.v3` and `ui.changes.v3`

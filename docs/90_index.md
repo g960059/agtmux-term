@@ -53,6 +53,9 @@ When rebuilding context, read in this order:
 Mainline product truth is now:
 
 - real tmux sessions are the visible source of truth
+- agtmux daemon sync-v3 is the semantic metadata truth
+- agtmux-term is a presentation consumer of that truth
+- sync-v2 / legacy collapse is compatibility-only and not a product fallback
 - terminal tiles stay normal Ghostty/tmux views
 - Workbench is app-owned saved layout state
 - browser/document surfaces are explicit companion views
