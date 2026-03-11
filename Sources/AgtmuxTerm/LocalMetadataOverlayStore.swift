@@ -197,6 +197,7 @@ struct LocalMetadataOverlayStore {
             presence: legacyPresence(from: snapshot.presence),
             provider: snapshot.provider,
             evidenceMode: legacyEvidenceMode(from: snapshot),
+            conversationTitle: snapshot.conversationTitle,
             sessionSubtitle: snapshot.sessionSubtitle,
             updatedAt: snapshot.updatedAt,
             metadataSessionKey: snapshot.sessionKey,

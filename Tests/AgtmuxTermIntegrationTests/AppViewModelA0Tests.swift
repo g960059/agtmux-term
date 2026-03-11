@@ -545,6 +545,7 @@ final class AppViewModelA0Tests: XCTestCase {
             paneID: pane.paneId,
             paneInstanceID: paneInstance,
             provider: pane.presence == .managed ? pane.provider : nil,
+            conversationTitle: pane.conversationTitle,
             sessionSubtitle: pane.sessionSubtitle,
             presence: presence,
             agent: AgtmuxSyncV3AgentState(lifecycle: makeV3AgentLifecycle(from: pane.activityState, presence: presence)),

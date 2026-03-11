@@ -383,6 +383,7 @@ package struct AgtmuxSyncV3PaneSnapshot: Codable, Equatable, Sendable {
     package let paneID: String
     package let paneInstanceID: AgtmuxSyncV3PaneInstanceID
     package let provider: Provider?
+    package let conversationTitle: String?
     package let sessionSubtitle: String?
     package let presence: AgtmuxSyncV3Presence
     package let agent: AgtmuxSyncV3AgentState
@@ -399,6 +400,7 @@ package struct AgtmuxSyncV3PaneSnapshot: Codable, Equatable, Sendable {
                  paneID: String,
                  paneInstanceID: AgtmuxSyncV3PaneInstanceID,
                  provider: Provider?,
+                 conversationTitle: String? = nil,
                  sessionSubtitle: String? = nil,
                  presence: AgtmuxSyncV3Presence,
                  agent: AgtmuxSyncV3AgentState,
@@ -414,6 +416,7 @@ package struct AgtmuxSyncV3PaneSnapshot: Codable, Equatable, Sendable {
         self.paneID = paneID
         self.paneInstanceID = paneInstanceID
         self.provider = provider
+        self.conversationTitle = conversationTitle
         self.sessionSubtitle = sessionSubtitle
         self.presence = presence
         self.agent = agent
@@ -432,6 +435,7 @@ package struct AgtmuxSyncV3PaneSnapshot: Codable, Equatable, Sendable {
         case paneID = "pane_id"
         case paneInstanceID = "pane_instance_id"
         case provider
+        case conversationTitle = "conversation_title"
         case sessionSubtitle = "session_subtitle"
         case presence
         case agent
@@ -455,6 +459,7 @@ package struct AgtmuxSyncV3PaneSnapshot: Codable, Equatable, Sendable {
             forKey: .paneInstanceID
         )
         provider = try container.decodeIfPresent(Provider.self, forKey: .provider)
+        conversationTitle = try container.decodeIfPresent(String.self, forKey: .conversationTitle)
         sessionSubtitle = try container.decodeIfPresent(String.self, forKey: .sessionSubtitle)
         presence = try container.decode(AgtmuxSyncV3Presence.self, forKey: .presence)
         agent = try container.decode(AgtmuxSyncV3AgentState.self, forKey: .agent)
