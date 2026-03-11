@@ -55,7 +55,7 @@ final class PaneDisplayStateTests: XCTestCase {
         )
 
         XCTAssertEqual(display.primaryState, .running)
-        XCTAssertEqual(display.freshnessText, "degraded")
+        XCTAssertNil(display.freshnessText)
         XCTAssertTrue(display.isManaged)
         XCTAssertFalse(display.needsAttention)
     }

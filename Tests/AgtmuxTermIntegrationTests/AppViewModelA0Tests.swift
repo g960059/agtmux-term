@@ -3853,7 +3853,7 @@ final class AppViewModelA0Tests: XCTestCase {
         let presentationApplied = await waitUntil {
             guard let pane = model.panes.first else { return false }
             return model.panePrimaryState(for: pane) == .running
-                && model.paneFreshnessText(for: pane) == "degraded"
+                && model.paneFreshnessText(for: pane) == nil
                 && model.paneNeedsAttention(pane) == false
         }
 

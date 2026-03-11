@@ -227,45 +227,6 @@ private struct WorkbenchTerminalTileViewV2: View {
 
             terminalBody
 
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(spacing: 10) {
-                    Image(systemName: "terminal")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(Color.white.opacity(0.88))
-
-                    Text(sessionRef.sessionName)
-                        .font(.system(size: 14, weight: .semibold, design: .rounded))
-                        .foregroundStyle(Color.white.opacity(0.94))
-                        .lineLimit(1)
-
-                    Spacer(minLength: 0)
-
-                    Text(targetBadgeText)
-                        .font(.system(size: 10, weight: .bold, design: .monospaced))
-                        .foregroundStyle(Color.white.opacity(0.76))
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(Color.black.opacity(0.22), in: Capsule(style: .continuous))
-                }
-
-                Text(detailText)
-                    .font(.system(size: 12, weight: .regular, design: .monospaced))
-                    .foregroundStyle(Color.white.opacity(0.72))
-                    .lineLimit(2)
-
-                if let navigationHintText {
-                    navigationHintBadge(navigationHintText)
-                }
-
-                if case .broken(let restoreIssue) = terminalState {
-                    restoreIssueBody(restoreIssue)
-                } else {
-                    Spacer(minLength: 0)
-                    statusBanner
-                }
-            }
-            .padding(16)
-
             Color.clear
                 .allowsHitTesting(false)
                 .accessibilityElement()
@@ -273,9 +234,6 @@ private struct WorkbenchTerminalTileViewV2: View {
                 .accessibilityLabel(sessionRef.sessionName)
                 .accessibilityValue(accessibilityValue)
         }
-        .overlay(tileBorder)
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .padding(8)
         .contentShape(Rectangle())
         .onTapGesture {
             store.focusTile(id: tile.id)
@@ -757,7 +715,7 @@ private struct WorkbenchTerminalTileViewV2: View {
     }
 
     private var tileBackground: some View {
-        RoundedRectangle(cornerRadius: 14, style: .continuous)
+        Rectangle()
             .fill(
                 LinearGradient(
                     colors: [
@@ -767,14 +725,6 @@ private struct WorkbenchTerminalTileViewV2: View {
                     startPoint: .topLeading,
                     endPoint: .bottomTrailing
                 )
-            )
-    }
-
-    private var tileBorder: some View {
-        RoundedRectangle(cornerRadius: 14, style: .continuous)
-            .stroke(
-                isFocused ? Color.white.opacity(0.18) : Color.white.opacity(0.10),
-                lineWidth: 1
             )
     }
 }

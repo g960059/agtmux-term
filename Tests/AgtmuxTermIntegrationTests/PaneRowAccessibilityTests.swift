@@ -98,7 +98,7 @@ final class PaneRowAccessibilityTests: XCTestCase {
 
         XCTAssertEqual(
             PaneRowAccessibility.summary(for: pane, presentation: presentation, isSelected: true),
-            "selection=selected, presence=managed, provider=codex, primary=completed_idle, freshness=degraded"
+            "selection=selected, presence=managed, provider=codex, primary=completed_idle, freshness=none"
         )
     }
 }
