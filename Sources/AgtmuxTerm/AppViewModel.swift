@@ -91,6 +91,9 @@ final class AppViewModel: ObservableObject {
     @Published var statusFilter: StatusFilter = .all
     @Published var showAgentsOnly: Bool = false
     @Published var showPinnedOnly: Bool = false
+    @Published var autoLaunchSessionName: String {
+        didSet { UserDefaults.standard.set(autoLaunchSessionName, forKey: "autoLaunchSessionName") }
+    }
     @Published private(set) var pinnedPaneKeys: Set<String> = []
     @Published private(set) var paneDisplayTitleOverrides: [String: String] = [:]
     @Published private(set) var sessionOrderBySource: [String: [String]] = [:]
@@ -308,6 +311,7 @@ final class AppViewModel: ObservableObject {
     private var lastSuccessfulLocalInventory: [AgtmuxPane] = []
     private var cachedLocalMetadataByPaneKey: [String: AgtmuxPane] = [:]
     private var cachedLocalPresentationByPaneKey: [String: PanePresentationState] = [:]
+    private var hasAttemptedAutoLaunch = false
     private var localMetadataRefreshTask: Task<Void, Never>?
     private var localHealthRefreshTask: Task<Void, Never>?
     private var localMetadataSyncPrimed = false
@@ -563,6 +567,7 @@ final class AppViewModel: ObservableObject {
         self.localHealthClient = localClient as? any LocalHealthClient
         self.localInventoryClient = localInventoryClient
         self.binaryURLResolver = binaryURLResolver
+        self.autoLaunchSessionName = UserDefaults.standard.string(forKey: "autoLaunchSessionName") ?? "main"
         let config = hostsConfig ?? HostsConfig.load()
         self.hostsConfig = config
         if let remotePaneSources {
@@ -1098,5 +1103,21 @@ final class AppViewModel: ObservableObject {
         }
         await publishFromSnapshotCache(offlineHosts: newOffline)
         hasCompletedInitialFetch = true
+        maybeAutoLaunchSession()
+    }
+
+    private func maybeAutoLaunchSession() {
+        guard !hasAttemptedAutoLaunch else { return }
+        guard !autoLaunchSessionName.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+        let hasLocalPanes = panes.contains { $0.source == "local" }
+        guard !hasLocalPanes else { return }
+        hasAttemptedAutoLaunch = true
+        let name = autoLaunchSessionName
+        Task {
+            _ = try? await TmuxCommandRunner.shared.run(
+                ["new-session", "-d", "-s", name],
+                source: "local"
+            )
+        }
     }
 }

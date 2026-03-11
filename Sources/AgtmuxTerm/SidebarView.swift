@@ -1549,6 +1549,39 @@ private extension Date {
     }
 }
 
+// MARK: - SidebarHookInfoStrip
+
+/// Compact 2-line info strip at sidebar bottom when hooks aren't registered.
+private struct SidebarHookInfoStrip: View {
+    let status: HookSetupStatus
+    @EnvironmentObject var viewModel: AppViewModel
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: status == .unavailable ? "xmark.circle.fill" : "exclamationmark.triangle.fill")
+                .font(.system(size: 11))
+                .foregroundStyle(status == .unavailable ? Color.red.opacity(0.82) : Color.orange.opacity(0.82))
+                .padding(.top, 1)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(status == .unavailable ? "agtmux binary not found" : "Claude hooks not registered")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Color.white.opacity(0.78))
+                Text("Open Settings to register hooks.")
+                    .font(.system(size: 10))
+                    .foregroundStyle(Color.white.opacity(0.48))
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .background(
+            (status == .unavailable ? Color.red : Color.orange).opacity(0.07)
+        )
+    }
+}
+
 // MARK: - SidebarView
 
 /// Scrollable pane list, grouped by source → session → window → pane.
@@ -1576,6 +1609,8 @@ struct SidebarView: View {
         return 8
     }
 
+    @State private var isPresentingSettings = false
+
     var body: some View {
         VStack(spacing: 0) {
             SessionsHeaderView()
@@ -1584,28 +1619,6 @@ struct SidebarView: View {
             if let issue = viewModel.localDaemonIssue,
                !viewModel.panesBySession.isEmpty {
                 LocalDaemonIssueBanner(issue: issue)
-            }
-
-            if viewModel.hookSetupStatus == .missing || viewModel.hookSetupStatus == .unavailable {
-                HookWarningBanner(
-                    status: viewModel.hookSetupStatus,
-                    topPadding: hookWarningTopPadding,
-                    onVerify: {
-                        Task {
-                            await viewModel.performStartupHookCheck()
-                        }
-                    },
-                    onRegister: {
-                        Task {
-                            await viewModel.registerHooks()
-                        }
-                    },
-                    onUnregister: {
-                        Task {
-                            await viewModel.unregisterHooks()
-                        }
-                    }
-                )
             }
 
             if viewModel.panesBySession.isEmpty {
@@ -1644,6 +1657,32 @@ struct SidebarView: View {
                     .onChange(of: selectedPaneID) { _, _ in
                         scrollToSelectedPane(with: proxy, animated: true)
                     }
+                }
+            }
+
+            // Bottom fixed area: hook info strip + settings button
+            VStack(spacing: 0) {
+                Divider().opacity(0.12)
+
+                if viewModel.hookSetupStatus == .missing || viewModel.hookSetupStatus == .unavailable {
+                    SidebarHookInfoStrip(status: viewModel.hookSetupStatus)
+                        .environmentObject(viewModel)
+                }
+
+                Button {
+                    isPresentingSettings = true
+                } label: {
+                    Label("Settings", systemImage: "gearshape")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(Color.white.opacity(0.64))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 9)
+                }
+                .buttonStyle(.plain)
+                .sheet(isPresented: $isPresentingSettings) {
+                    SettingsView()
+                        .environmentObject(viewModel)
                 }
             }
         }
