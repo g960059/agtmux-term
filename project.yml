@@ -14,6 +14,8 @@ settings:
     # CRITICAL: -package-name makes both targets share the 'agtmux_term' Swift package namespace.
     # This allows 'package' access modifier to work across XcodeGen targets just like SwiftPM.
     OTHER_SWIFT_FLAGS: "$(inherited) -package-name agtmux_term"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
 
 targetTemplates:
   LocalCodeSign:
@@ -36,7 +38,7 @@ targets:
       - path: Sources/AgtmuxTermCore
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: local.agtmux.term.core
+        PRODUCT_BUNDLE_IDENTIFIER: com.g960059.agtmux.term.core
         PRODUCT_NAME: AgtmuxTermCore
         PRODUCT_MODULE_NAME: AgtmuxTermCore
         DEFINES_MODULE: "YES"
@@ -92,10 +94,15 @@ targets:
           chmod +x "$dest"
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: local.agtmux.term.app
+        PRODUCT_BUNDLE_IDENTIFIER: com.g960059.agtmux.term
         PRODUCT_NAME: AgtmuxTerm
         GENERATE_INFOPLIST_FILE: "YES"
         INFOPLIST_KEY_CFBundleDisplayName: agtmux-term
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+      configs:
+        Release:
+          ENABLE_HARDENED_RUNTIME: "YES"
+          CODE_SIGN_ENTITLEMENTS: AgtmuxTerm.entitlements
 
   AgtmuxDaemonService:
     templates:
@@ -110,10 +117,14 @@ targets:
         embed: true
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: local.agtmux.term.daemonservice
+        PRODUCT_BUNDLE_IDENTIFIER: com.g960059.agtmux.term.daemonservice
         PRODUCT_NAME: AgtmuxDaemonService
         GENERATE_INFOPLIST_FILE: "NO"
         INFOPLIST_FILE: Sources/AgtmuxDaemonService/Info.plist
+      configs:
+        Release:
+          ENABLE_HARDENED_RUNTIME: "YES"
+          CODE_SIGN_ENTITLEMENTS: AgtmuxDaemonService.entitlements
 
   AgtmuxTermCoreTests:
     templates:
@@ -127,7 +138,7 @@ targets:
       - target: AgtmuxTermCore
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: local.agtmux.term.core-tests
+        PRODUCT_BUNDLE_IDENTIFIER: com.g960059.agtmux.term.core-tests
         GENERATE_INFOPLIST_FILE: "YES"
 
   AgtmuxTermIntegrationTests:
@@ -141,7 +152,7 @@ targets:
     dependencies: []
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: local.agtmux.term.integration-tests
+        PRODUCT_BUNDLE_IDENTIFIER: com.g960059.agtmux.term.integration-tests
         GENERATE_INFOPLIST_FILE: "YES"
 
   AgtmuxTermUITests:
@@ -157,7 +168,7 @@ targets:
       - target: AgtmuxTermCore
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: local.agtmux.term.uitests
+        PRODUCT_BUNDLE_IDENTIFIER: com.g960059.agtmux.term.uitests
         TEST_TARGET_NAME: AgtmuxTerm
         GENERATE_INFOPLIST_FILE: "YES"
 

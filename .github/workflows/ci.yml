@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate --spec project.yml
+
+      - name: Build (debug)
+        run: |
+          xcodebuild build \
+            -project AgtmuxTerm.xcodeproj \
+            -scheme AgtmuxTerm \
+            -configuration Debug \
+            -destination "platform=macOS" \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO \
+            AGTMUX_BIN=/usr/bin/true \
+            | xcpretty || true
+
+      - name: Run unit tests
+        run: |
+          xcodebuild test \
+            -project AgtmuxTerm.xcodeproj \
+            -scheme AgtmuxTerm \
+            -configuration Debug \
+            -destination "platform=macOS" \
+            -only-testing:AgtmuxTermCoreTests \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO \
+            AGTMUX_BIN=/usr/bin/true \
+            | xcpretty

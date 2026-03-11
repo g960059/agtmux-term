@@ -1,110 +1,153 @@
 # agtmux-term
 
-AI エージェント（Claude Code, Codex など）が動く tmux セッションを管理・監視するための macOS ターミナルアプリケーション。
+macOS terminal cockpit for managing AI agent sessions (Claude Code, Codex, etc.) running in tmux.
 
-```
-[Screenshot placeholder — will be added after Phase 1 completion]
-```
+![App Icon](Sources/AgtmuxTerm/Resources/Assets.xcassets/AppIcon.appiconset/icon_256x256.png)
 
 ## Features
 
-- **サイドバー**: tmux セッション一覧、エージェント状態（Running / Waiting / Idle）、会話タイトル
-- **ターミナル**: libghostty による GPU レンダリング（≈125fps）、ネイティブ IME、正確な VT パーサ
-- **リアルタイム状態更新**: agtmux daemon 経由でエージェント状態を1秒間隔で取得
-- **daemon 自動起動 (XPC service)**: app 起動時に bundled XPC service 経由で agtmux daemon を必要時のみ起動し、app 終了時に自動停止
+- **Sidebar** — live tmux session list grouped by session/window, agent status (Running / Waiting / Idle / Attention), conversation titles
+- **Ghostty terminal** — GPU-accelerated rendering (~125fps via libghostty), native macOS IME, accurate VT parser
+- **Real-time state** — agtmux daemon pushes agent state every second over Unix socket JSON-RPC
+- **SSH targets** — connect to remote hosts (SSH/Mosh) and manage their sessions from one window
+- **Claude hooks** — register/unregister/verify Claude Code hooks directly from the Settings sheet
+- **Auto-launch** — creates a configured tmux session automatically when no local sessions are running
+- **Daemon bundled** — XPC service manages the agtmux daemon lifecycle; zero manual setup
 
-## Status
+## Install
 
-Current phase: **Implementation in progress**.
+### Homebrew (recommended)
 
-See [docs/60_tasks.md](docs/60_tasks.md) for the task board and [docs/70_progress.md](docs/70_progress.md) for progress.
+```bash
+brew tap g960059/tap
+brew install --cask agtmux-term
+```
 
-## Prerequisites
+The daemon (`agtmux`) is bundled inside the app — no separate install needed.
+Power users who want the CLI standalone:
+
+```bash
+brew install agtmux
+```
+
+### DMG
+
+Download the latest `AgtmuxTerm-x.y.z.dmg` from [Releases](https://github.com/g960059/agtmux-term/releases), open it, and drag `AgtmuxTerm.app` to Applications.
+
+## Requirements
 
 - macOS 14 (Sonoma) or later
-- Xcode 15 or later
-- [Zig 0.14.x](https://ziglang.org/download/) — for building GhosttyKit.xcframework
-- tmux — available in PATH
-- [agtmux daemon](https://github.com/g960059/agtmux-v5-architecture-blueprint) binary
-  - 推奨: `Sources/AgtmuxTerm/Resources/Tools/agtmux` に同梱（app bundle に `Contents/Resources/Tools/agtmux` として入る）
-  - 代替: `AGTMUX_BIN` または PATH 上の `agtmux`
+- tmux available in PATH (for local sessions)
 
-## Build
+## Build from Source
 
 ```bash
 # 1. Clone with submodules (Ghostty source)
 git clone --recursive https://github.com/g960059/agtmux-term
 cd agtmux-term
 
-# 2. Build GhosttyKit.xcframework from Ghostty source
+# 2. Build GhosttyKit.xcframework
 cd vendor/ghostty
 zig build xcframework
 cp -r zig-out/lib/GhosttyKit.xcframework ../../GhosttyKit/
 cd ../..
 
-# 3. Build the Swift app
-swift build
+# 3. Generate Xcode project
+brew install xcodegen
+xcodegen generate --spec project.yml
 
-# 4. (Optional) Bundle agtmux binary
-# cp /opt/homebrew/bin/agtmux Sources/AgtmuxTerm/Resources/Tools/agtmux
-# chmod +x Sources/AgtmuxTerm/Resources/Tools/agtmux
+# 4. Build agtmux daemon (optional — app falls back to PATH)
+cd ../agtmux && cargo build --release
+export AGTMUX_BIN=$PWD/target/release/agtmux
+cd ../agtmux-term
 
-# 5. Run
-swift run AgtmuxTerm
+# 5. Open in Xcode or build via command line
+open AgtmuxTerm.xcodeproj
+# or: xcodebuild build -scheme AgtmuxTerm -destination "platform=macOS" AGTMUX_BIN=$AGTMUX_BIN
 ```
 
-## Daemon Startup
+## Setup
 
-デフォルトでは app は bundled XPC service (`AgtmuxDaemonService.xpc`) を使って local daemon を管理します。
-`swift run AgtmuxTerm` のように `.app` 外で実行した場合は、XPC service が同梱されないため自動的に legacy fallback へ切り替わります。
+### Claude Code Hooks
 
-Bundle 形式:
+For live agent state updates, agtmux hooks into Claude Code's event system:
 
-1. `AgtmuxTerm.app/Contents/XPCServices/AgtmuxDaemonService.xpc`
-2. `AgtmuxTerm.app/Contents/Resources/Tools/agtmux` (optional, bundled daemon binary)
+1. Open agtmux-term
+2. Go to **Settings** (gear icon at sidebar bottom)
+3. Click **Register** under "Claude Hooks"
 
-`agtmux` 実行ファイルは以下の順で解決します。
-
-1. `AGTMUX_BIN`（明示指定）
-2. bundle 内 `Resources/Tools/agtmux`（SwiftPM では bundle ルート `agtmux` にフラット化される場合あり）
-3. PATH と既知ディレクトリ（`~/go/bin`, `~/.cargo/bin`, `/usr/local/bin`, `/opt/homebrew/bin`）
-
-起動時に既存 daemon が見つからない場合のみ `agtmux daemon` を自動起動し、アプリ終了時にこのアプリが起動した daemon を停止します。
-
-動作切替:
+Or from the CLI:
 
 ```bash
-# daemon 自動起動を無効化
-AGTMUX_AUTOSTART=0 swift run AgtmuxTerm
-
-# XPC service を無効化して legacy fallback を使う
-AGTMUX_XPC_DISABLED=1 swift run AgtmuxTerm
+agtmux setup-hooks
 ```
+
+### SSH Targets
+
+Add remote hosts to monitor their tmux sessions over SSH/Mosh:
+
+1. Settings → SSH Targets → Add Target
+2. Enter hostname, username (optional), display name, and transport
+
+### Auto-launch Session
+
+Settings → Session → configure the session name to create on startup (default: `main`).
+Set empty to disable.
+
+## Daemon Resolution
+
+The `agtmux` binary is resolved in this order:
+
+1. `AGTMUX_BIN` env var (explicit override)
+2. `AgtmuxTerm.app/Contents/Resources/Tools/agtmux` (bundled)
+3. PATH and known directories (`~/.cargo/bin`, `/opt/homebrew/bin`, etc.)
 
 ## Architecture
 
 ```
 agtmux-term (Swift macOS App)
 ├── GhosttyKit.xcframework    ← Built from Ghostty source via zig
-├── Sidebar (SwiftUI)         ← Agent state, session list
-└── Terminal (NSView/Metal)   ← libghostty GPU rendering
-        |
-        ├── agtmux daemon (UDS JSON-RPC)  ← Agent state
-        └── tmux (PTY)                     ← Terminal sessions
+├── CockpitView (SwiftUI)     ← Top-level layout: sidebar + workbench
+├── SidebarView (SwiftUI)     ← Session list, filters, settings
+├── WorkbenchAreaV2 (SwiftUI) ← Tab-based terminal workspace
+└── Ghostty surface (Metal)   ← GPU terminal rendering
+        │
+        ├── AgtmuxDaemonService.xpc   ← XPC service managing daemon lifecycle
+        ├── agtmux daemon (UDS RPC)   ← Agent state estimation engine
+        └── tmux (PTY)                ← Terminal multiplexer
 ```
 
-See [docs/30_architecture.md](docs/30_architecture.md) for details.
+## Release / CI
+
+| Workflow | Trigger | What it does |
+|----------|---------|-------------|
+| `ci.yml` | push / PR | Build + unit tests |
+| `release.yml` | `v*` tag | Build universal binary → sign → notarize → DMG → GitHub Release → update Homebrew tap |
+
+To release a new version:
+
+```bash
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+The workflow builds a universal (arm64 + x86_64) app with the `agtmux` daemon bundled, signs and notarizes it, creates a DMG, publishes a GitHub Release, and updates the Homebrew tap cask automatically.
+
+Required GitHub secrets:
+
+| Secret | Description |
+|--------|-------------|
+| `APPLE_DEVELOPER_CERTIFICATE_P12` | Base64-encoded Developer ID .p12 |
+| `APPLE_DEVELOPER_CERTIFICATE_PASSWORD` | Password for the .p12 |
+| `APPLE_TEAM_ID` | 10-character Apple Team ID |
+| `APPLE_ID` | Apple ID email for notarytool |
+| `APPLE_APP_SPECIFIC_PASSWORD` | App-specific password for notarytool |
+| `HOMEBREW_TAP_TOKEN` | GitHub PAT with write access to `g960059/homebrew-tap` |
 
 ## Related
 
-- **agtmux daemon** (state estimation engine): [g960059/agtmux-v5-architecture-blueprint](https://github.com/g960059/agtmux-v5-architecture-blueprint)
-- **Ghostty** (terminal emulator, source of libghostty): [ghostty-org/ghostty](https://github.com/ghostty-org/ghostty)
-
-## Background
-
-This project replaces a SwiftTerm-based POC (`exp/go-codex-implementation-poc` branch in the agtmux repo) that had fundamental issues: 10fps rendering, unstable IME, and cursor drift. The solution is to use libghostty — the same core library powering the Ghostty terminal emulator — which provides GPU rendering, native IME, and an accurate VT parser.
-
-See [ADR-20260228](docs/80_decisions/ADR-20260228-libghostty-over-swiftterm.md) for the full rationale.
+- **[agtmux](https://github.com/g960059/agtmux)** — Rust daemon that tracks AI agent state via Claude Code hooks, JSONL parsing, and tmux polling
+- **[Ghostty](https://github.com/ghostty-org/ghostty)** — Terminal emulator providing libghostty (GPU rendering core)
 
 ## License
 

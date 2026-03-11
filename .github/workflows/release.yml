@@ -1,0 +1,304 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  contents: write
+
+env:
+  # Version of the bundled agtmux daemon binary.
+  # Update this var when bumping the bundled daemon version.
+  AGTMUX_DAEMON_TAG: v0.1.11
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────
+  # 1. CI gate: build + unit tests must pass before release proceeds
+  # ─────────────────────────────────────────────────────────────────
+  ci-gate:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate --spec project.yml
+
+      - name: Build + unit tests
+        run: |
+          xcodebuild test \
+            -project AgtmuxTerm.xcodeproj \
+            -scheme AgtmuxTerm \
+            -configuration Debug \
+            -destination "platform=macOS" \
+            -only-testing:AgtmuxTermCoreTests \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO \
+            AGTMUX_BIN=/usr/bin/true
+
+  # ─────────────────────────────────────────────────────────────────
+  # 2. Build agtmux daemon as universal binary (arm64 + x86_64)
+  # ─────────────────────────────────────────────────────────────────
+  build-daemon:
+    needs: [ci-gate]
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: g960059/agtmux
+          ref: ${{ env.AGTMUX_DAEMON_TAG }}
+          path: agtmux-daemon
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Build universal daemon binary
+        working-directory: agtmux-daemon
+        run: |
+          cargo build --release --target aarch64-apple-darwin
+          cargo build --release --target x86_64-apple-darwin
+          mkdir -p target/universal-apple-darwin/release
+          lipo -create \
+            target/aarch64-apple-darwin/release/agtmux \
+            target/x86_64-apple-darwin/release/agtmux \
+            -output target/universal-apple-darwin/release/agtmux
+          echo "Built universal binary:"
+          file target/universal-apple-darwin/release/agtmux
+
+      - name: Upload daemon artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: agtmux-universal
+          path: agtmux-daemon/target/universal-apple-darwin/release/agtmux
+
+  # ─────────────────────────────────────────────────────────────────
+  # 3. Build, sign, notarize, package DMG
+  # ─────────────────────────────────────────────────────────────────
+  build-release:
+    needs: [ci-gate, build-daemon]
+    runs-on: macos-15
+    outputs:
+      dmg_name: ${{ steps.dmg.outputs.dmg_name }}
+      sha256: ${{ steps.dmg.outputs.sha256 }}
+      version: ${{ steps.version.outputs.version }}
+    env:
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version
+        id: version
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+
+      - name: Install tools
+        run: |
+          brew install xcodegen create-dmg
+          gem install xcpretty
+
+      - name: Generate Xcode project
+        run: xcodegen generate --spec project.yml
+
+      - name: Download daemon binary
+        uses: actions/download-artifact@v4
+        with:
+          name: agtmux-universal
+          path: artifacts/
+
+      - name: Import Developer ID certificate
+        env:
+          CERTIFICATE_P12: ${{ secrets.APPLE_DEVELOPER_CERTIFICATE_P12 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.APPLE_DEVELOPER_CERTIFICATE_PASSWORD }}
+        run: |
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+          security create-keychain -p "" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "" "$KEYCHAIN_PATH"
+          echo "$CERTIFICATE_P12" | base64 --decode -o /tmp/certificate.p12
+          security import /tmp/certificate.p12 \
+            -P "$CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 \
+            -k "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH"
+          security set-key-partition-list \
+            -S apple-tool:,apple: -s -k "" "$KEYCHAIN_PATH"
+          rm /tmp/certificate.p12
+
+      - name: Sign daemon binary
+        run: |
+          chmod +x artifacts/agtmux
+          codesign --sign "Developer ID Application" \
+            --timestamp \
+            --options runtime \
+            artifacts/agtmux
+          codesign --verify --verbose artifacts/agtmux
+
+      - name: Archive app
+        run: |
+          xcodebuild archive \
+            -project AgtmuxTerm.xcodeproj \
+            -scheme AgtmuxTerm \
+            -configuration Release \
+            -archivePath "$RUNNER_TEMP/AgtmuxTerm.xcarchive" \
+            ONLY_ACTIVE_ARCH=NO \
+            SKIP_INSTALL=NO \
+            CODE_SIGN_STYLE=Manual \
+            "CODE_SIGN_IDENTITY=Developer ID Application" \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+            ENABLE_HARDENED_RUNTIME=YES \
+            "OTHER_CODE_SIGN_FLAGS=--timestamp --options runtime" \
+            MARKETING_VERSION="$VERSION" \
+            CURRENT_PROJECT_VERSION="${{ github.run_number }}" \
+            AGTMUX_BIN="$GITHUB_WORKSPACE/artifacts/agtmux" \
+            | xcpretty
+
+      - name: Export archive
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          # Inject team ID into ExportOptions.plist
+          sed "s/APPLE_TEAM_ID_PLACEHOLDER/$APPLE_TEAM_ID/g" \
+            ExportOptions.plist > /tmp/ExportOptions.plist
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/AgtmuxTerm.xcarchive" \
+            -exportPath "$RUNNER_TEMP/export/" \
+            -exportOptionsPlist /tmp/ExportOptions.plist \
+            | xcpretty
+
+      - name: Notarize app
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          ditto -c -k --keepParent \
+            "$RUNNER_TEMP/export/AgtmuxTerm.app" \
+            "$RUNNER_TEMP/AgtmuxTerm-notarize.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/AgtmuxTerm-notarize.zip" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait \
+            --output-format json | tee /tmp/notarization.json
+          STATUS=$(jq -r '.status' /tmp/notarization.json)
+          echo "Notarization status: $STATUS"
+          [ "$STATUS" = "Accepted" ] || { echo "::error::Notarization failed"; exit 1; }
+          xcrun stapler staple "$RUNNER_TEMP/export/AgtmuxTerm.app"
+          xcrun stapler validate "$RUNNER_TEMP/export/AgtmuxTerm.app"
+
+      - name: Create DMG
+        id: dmg
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          DMG_NAME="AgtmuxTerm-${VERSION}.dmg"
+          mkdir -p "$RUNNER_TEMP/dmg-staging"
+          cp -r "$RUNNER_TEMP/export/AgtmuxTerm.app" "$RUNNER_TEMP/dmg-staging/"
+
+          create-dmg \
+            --volname "AgtmuxTerm ${VERSION}" \
+            --window-pos 200 120 \
+            --window-size 600 400 \
+            --icon-size 100 \
+            --icon "AgtmuxTerm.app" 175 190 \
+            --hide-extension "AgtmuxTerm.app" \
+            --app-drop-link 425 190 \
+            --no-internet-enable \
+            "${DMG_NAME}" \
+            "$RUNNER_TEMP/dmg-staging/"
+
+          # Sign the DMG
+          codesign --sign "Developer ID Application" \
+            --timestamp "${DMG_NAME}"
+
+          # Notarize and staple the DMG
+          xcrun notarytool submit "${DMG_NAME}" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait \
+            --output-format json | tee /tmp/dmg-notarization.json
+          DMG_STATUS=$(jq -r '.status' /tmp/dmg-notarization.json)
+          [ "$DMG_STATUS" = "Accepted" ] || { echo "::error::DMG notarization failed"; exit 1; }
+          xcrun stapler staple "${DMG_NAME}"
+
+          SHA256=$(shasum -a 256 "${DMG_NAME}" | cut -d' ' -f1)
+          echo "${SHA256}  ${DMG_NAME}" > "${DMG_NAME}.sha256"
+
+          echo "dmg_name=${DMG_NAME}" >> $GITHUB_OUTPUT
+          echo "sha256=${SHA256}" >> $GITHUB_OUTPUT
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dmg-release
+          path: |
+            AgtmuxTerm-${{ env.VERSION }}.dmg
+            AgtmuxTerm-${{ env.VERSION }}.dmg.sha256
+
+  # ─────────────────────────────────────────────────────────────────
+  # 4. Create GitHub Release
+  # ─────────────────────────────────────────────────────────────────
+  github-release:
+    needs: [build-release]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.build-release.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: dmg-release
+          path: release-artifacts/
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "AgtmuxTerm ${VERSION}" \
+            --generate-notes \
+            "release-artifacts/AgtmuxTerm-${VERSION}.dmg" \
+            "release-artifacts/AgtmuxTerm-${VERSION}.dmg.sha256"
+
+  # ─────────────────────────────────────────────────────────────────
+  # 5. Update Homebrew tap cask
+  # ─────────────────────────────────────────────────────────────────
+  update-homebrew-cask:
+    needs: [github-release, build-release]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.build-release.outputs.version }}
+      SHA256: ${{ needs.build-release.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: g960059/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+
+      - name: Update cask formula
+        run: |
+          DMG_URL="https://github.com/g960059/agtmux-term/releases/download/${GITHUB_REF_NAME}/AgtmuxTerm-${VERSION}.dmg"
+          CASK_FILE="homebrew-tap/Casks/agtmux-term.rb"
+
+          sed -i \
+            -e "s|version \".*\"|version \"${VERSION}\"|" \
+            -e "s|sha256 \".*\"|sha256 \"${SHA256}\"|" \
+            -e "s|url \".*\"|url \"${DMG_URL}\"|" \
+            "$CASK_FILE"
+
+          cd homebrew-tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Casks/agtmux-term.rb
+          git commit -m "agtmux-term ${VERSION}"
+          git push
