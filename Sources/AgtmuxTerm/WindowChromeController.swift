@@ -67,6 +67,29 @@ final class WindowChromeController: NSObject {
             }
             observers.append(token)
         }
+
+        // Track fullscreen state separately so views can adapt layout.
+        let fsEnter = center.addObserver(
+            forName: NSWindow.didEnterFullScreenNotification,
+            object: window,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.chromeState.isFullScreen = true
+            }
+        }
+        observers.append(fsEnter)
+
+        let fsExit = center.addObserver(
+            forName: NSWindow.didExitFullScreenNotification,
+            object: window,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.chromeState.isFullScreen = false
+            }
+        }
+        observers.append(fsExit)
     }
 
     private func updateMetrics() {

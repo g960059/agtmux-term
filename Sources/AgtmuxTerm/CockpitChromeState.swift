@@ -20,4 +20,7 @@ final class CockpitChromeState {
 
     /// Fine vertical alignment offset between traffic lights and custom row.
     var yOffset: CGFloat = 0
+
+    /// True while the window is in fullscreen mode.
+    var isFullScreen: Bool = false
 }

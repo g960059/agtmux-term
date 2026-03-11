@@ -17,18 +17,22 @@ struct TitlebarChromeView: View {
     private let sidebarExpandedWidth: CGFloat = 302
 
     var body: some View {
-        HStack(spacing: 0) {
-            controls
-                .frame(width: controlsSlotWidth, alignment: .leading)
+        if chromeState.isFullScreen {
+            EmptyView()
+        } else {
+            HStack(spacing: 0) {
+                controls
+                    .frame(width: controlsSlotWidth, alignment: .leading)
 
-            WorkbenchTabBarV2()
-                .frame(maxWidth: .infinity, alignment: .leading)
+                WorkbenchTabBarV2()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+            .padding(.leading, iconLeading)
+            .padding(.trailing, 6)
+            .offset(y: chromeState.yOffset)
+            .animation(.easeInOut(duration: 0.16), value: chromeState.isSidebarCollapsed)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-        .padding(.leading, iconLeading)
-        .padding(.trailing, 6)
-        .offset(y: chromeState.yOffset)
-        .animation(.easeInOut(duration: 0.16), value: chromeState.isSidebarCollapsed)
     }
 
     private var iconLeading: CGFloat {
@@ -51,7 +55,7 @@ struct TitlebarChromeView: View {
     }
 
     private var controlsContentWidth: CGFloat {
-        let iconCount = chromeState.isSidebarCollapsed ? 2 : 4
+        let iconCount = 2
         let button = TitlebarChromeMetrics.iconButtonSize
         let spacing = TitlebarChromeMetrics.iconSpacing
         return (CGFloat(iconCount) * button) + (CGFloat(max(0, iconCount - 1)) * spacing)
@@ -72,19 +76,6 @@ struct TitlebarChromeView: View {
                 Image(systemName: "sidebar.leading")
                     .font(.system(size: TitlebarChromeMetrics.iconGlyphSize, weight: .semibold))
                     .frame(width: TitlebarChromeMetrics.iconGlyphSize, height: TitlebarChromeMetrics.iconGlyphSize)
-            }
-
-            if !chromeState.isSidebarCollapsed {
-                TitlebarIconButton(
-                    isActive: viewModel.statusFilter == .managed,
-                    action: { toggleFilter(.managed) },
-                    accessibilityLabel: "Managed",
-                    accessibilityID: AccessibilityID.sidebarFilterManaged
-                ) {
-                    ProviderIcon(provider: .codex, size: TitlebarChromeMetrics.iconGlyphSize)
-                        .frame(width: TitlebarChromeMetrics.iconGlyphSize, height: TitlebarChromeMetrics.iconGlyphSize)
-                }
-                .transition(.opacity.combined(with: .scale(scale: 0.96)))
             }
 
             TitlebarIconButton(
@@ -110,20 +101,6 @@ struct TitlebarChromeView: View {
                             .accessibilityIdentifier(AccessibilityID.sidebarFilterAttentionBadge)
                     }
                 }
-            }
-
-            if !chromeState.isSidebarCollapsed {
-                TitlebarIconButton(
-                    isActive: viewModel.statusFilter == .pinned,
-                    action: { toggleFilter(.pinned) },
-                    accessibilityLabel: "Pinned",
-                    accessibilityID: AccessibilityID.sidebarFilterPinned
-                ) {
-                    Image(systemName: viewModel.statusFilter == .pinned ? "pin.fill" : "pin")
-                        .font(.system(size: TitlebarChromeMetrics.iconGlyphSize, weight: .semibold))
-                        .frame(width: TitlebarChromeMetrics.iconGlyphSize, height: TitlebarChromeMetrics.iconGlyphSize)
-                }
-                .transition(.opacity.combined(with: .scale(scale: 0.96)))
             }
         }
         .accessibilityElement(children: .contain)

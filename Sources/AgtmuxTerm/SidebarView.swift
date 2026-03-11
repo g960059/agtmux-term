@@ -17,11 +17,11 @@ private enum SidebarRowStyle {
 
 // MARK: - FilterBarView
 
-/// Horizontal tab bar for switching between StatusFilter modes.
+/// Slim bar shown at the top of the sidebar: sidebar toggle + attention bell.
+/// Managed/pinned filters and SSH target management have moved to SessionsHeaderView.
 struct FilterBarView: View {
     let onToggleSidebar: () -> Void
     @EnvironmentObject var viewModel: AppViewModel
-    @State private var isPresentingHostsSheet = false
 
     var body: some View {
         HStack(spacing: 8) {
@@ -33,14 +33,6 @@ struct FilterBarView: View {
             .buttonStyle(.plain)
             .foregroundStyle(Color.white.opacity(0.78))
             .help("Toggle Sidebar")
-
-            filterPill(isActive: viewModel.statusFilter == .managed) {
-                ProviderIcon(provider: .codex, size: 13)
-                    .frame(width: 13, height: 13)
-            } action: {
-                toggleFilter(.managed)
-            }
-            .help("Managed")
 
             filterPill(isActive: viewModel.statusFilter == .attention) {
                 ZStack(alignment: .topTrailing) {
@@ -63,31 +55,7 @@ struct FilterBarView: View {
             }
             .help("Attention")
 
-            filterPill(isActive: viewModel.statusFilter == .pinned) {
-                Image(systemName: viewModel.statusFilter == .pinned ? "pin.fill" : "pin")
-                    .font(.system(size: 12, weight: .semibold))
-                    .frame(width: 13, height: 13)
-            } action: {
-                toggleFilter(.pinned)
-            }
-            .help("Pinned")
-
             Spacer(minLength: 0)
-
-            Button {
-                isPresentingHostsSheet = true
-            } label: {
-                Image(systemName: "plus")
-                    .font(.system(size: 12, weight: .semibold))
-                    .frame(width: 18, height: 18)
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(Color.white.opacity(0.78))
-            .help("Add SSH Target")
-            .sheet(isPresented: $isPresentingHostsSheet) {
-                HostsManagementView()
-                    .environmentObject(viewModel)
-            }
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
@@ -168,6 +136,97 @@ struct SourceHeaderView: View {
     }
 }
 
+// MARK: - SessionsHeaderView
+
+/// Unified "SESSIONS" header for the sidebar with a "+" menu for new sessions /
+/// target management, and a filter icon for managed / pinned filters.
+private struct SessionsHeaderView: View {
+    @EnvironmentObject private var viewModel: AppViewModel
+    @State private var isPresentingHostsSheet = false
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Text("SESSIONS")
+                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                .foregroundStyle(Color.white.opacity(0.56))
+
+            Spacer(minLength: 0)
+
+            // "+" menu: new session + target management
+            Menu {
+                if viewModel.hostsConfig.hosts.isEmpty {
+                    Button("New Session") {
+                        TmuxManager.shared.createSession(source: "local", viewModel: viewModel)
+                    }
+                } else {
+                    Button("New Local Session") {
+                        TmuxManager.shared.createSession(source: "local", viewModel: viewModel)
+                    }
+                    ForEach(viewModel.hostsConfig.hosts) { host in
+                        Button("New \(host.displayName ?? host.hostname) Session") {
+                            TmuxManager.shared.createSession(source: host.hostname, viewModel: viewModel)
+                        }
+                    }
+                    Divider()
+                }
+                Button("Add SSH Target...") {
+                    isPresentingHostsSheet = true
+                }
+                if !viewModel.hostsConfig.hosts.isEmpty {
+                    Button("Manage Targets...") {
+                        isPresentingHostsSheet = true
+                    }
+                }
+            } label: {
+                Image(systemName: "plus")
+                    .font(.system(size: 11, weight: .medium))
+                    .frame(width: 22, height: 22)
+                    .foregroundStyle(Color.white.opacity(0.62))
+                    .contentShape(Rectangle())
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("New Session / Add Target")
+
+            // Filter menu: Agents Only / Pinned Only
+            Menu {
+                Toggle(isOn: Binding(
+                    get: { viewModel.statusFilter == .managed },
+                    set: { viewModel.statusFilter = $0 ? .managed : .all }
+                )) {
+                    Label("Agents Only", systemImage: "cpu")
+                }
+                Toggle(isOn: Binding(
+                    get: { viewModel.statusFilter == .pinned },
+                    set: { viewModel.statusFilter = $0 ? .pinned : .all }
+                )) {
+                    Label("Pinned Only", systemImage: "pin")
+                }
+            } label: {
+                Image(
+                    systemName: (viewModel.statusFilter == .managed || viewModel.statusFilter == .pinned)
+                        ? "line.3.horizontal.decrease.circle.fill"
+                        : "line.3.horizontal.decrease"
+                )
+                .font(.system(size: 11, weight: .medium))
+                .frame(width: 22, height: 22)
+                .foregroundStyle(Color.white.opacity(0.62))
+                .contentShape(Rectangle())
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("Filter Sessions")
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 10)
+        .padding(.bottom, 4)
+        .sheet(isPresented: $isPresentingHostsSheet) {
+            HostsManagementView()
+                .environmentObject(viewModel)
+        }
+    }
+}
+
 // MARK: - SessionBlockView
 
 struct DraggedSession: Equatable {
@@ -186,6 +245,7 @@ struct SessionBlockView: View {
     let selectedPaneId: String?
     @Binding var highlightedRowID: String?
     @Binding var draggedSession: DraggedSession?
+    var targetBadge: String? = nil
     let onSelect: (AgtmuxPane, AgtmuxTermCore.WindowGroup) -> Void
 
     @EnvironmentObject private var viewModel: AppViewModel
@@ -210,6 +270,16 @@ struct SessionBlockView: View {
                 Spacer(minLength: 4)
 
                 WindowStateBadge(panes: session.panes)
+
+                if let targetBadge {
+                    Text(targetBadge)
+                        .font(.system(size: 9, weight: .medium, design: .monospaced))
+                        .foregroundStyle(Color.white.opacity(0.72))
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 2)
+                        .background(Color.white.opacity(0.1), in: Capsule())
+                        .lineLimit(1)
+                }
 
                 if let branch = session.representativeBranch {
                     Text(branch)
@@ -1467,6 +1537,9 @@ struct SidebarView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            SessionsHeaderView()
+                .environmentObject(viewModel)
+
             if let issue = viewModel.localDaemonIssue,
                !viewModel.panesBySession.isEmpty {
                 LocalDaemonIssueBanner(issue: issue)
@@ -1501,18 +1574,16 @@ struct SidebarView: View {
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 0, pinnedViews: []) {
                             ForEach(viewModel.panesBySession, id: \.source) { group in
-                                SourceHeaderView(
-                                    source: group.source,
-                                    displayName: viewModel.hostsConfig.displayName(for: group.source),
-                                    isOffline: viewModel.offlineHosts.contains(group.source)
-                                )
-
+                                let badge: String? = group.source == "local"
+                                    ? nil
+                                    : (viewModel.hostsConfig.displayName(for: group.source) ?? group.source)
                                 ForEach(group.sessions) { session in
                                     SessionBlockView(
                                         session: session,
                                         selectedPaneId: selectedPaneID,
                                         highlightedRowID: $highlightedRowID,
                                         draggedSession: $draggedSession,
+                                        targetBadge: badge,
                                         onSelect: { pane, _ in
                                             workbenchStoreV2.openTerminal(
                                                 for: pane,
