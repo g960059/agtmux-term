@@ -15,7 +15,7 @@ private enum CockpitChrome {
 struct CockpitView: View {
     @Environment(CockpitChromeState.self) private var chromeState
 
-    private let sidebarExpandedWidth: CGFloat = 252
+    private let sidebarExpandedWidth: CGFloat = 302
 
     var body: some View {
         ZStack {

@@ -145,11 +145,11 @@ let cockpit = CockpitView()
     .environment(chromeState)
 
 let hostingView = NonDraggableHostingView(rootView: cockpit)
-hostingView.frame = NSRect(x: 0, y: 0, width: 1080, height: 680)
+hostingView.frame = NSRect(x: 0, y: 0, width: 1280, height: 800)
 
 // 5. Create the window.
 let window = NSWindow(
-    contentRect: NSRect(x: 100, y: 100, width: 1080, height: 680),
+    contentRect: NSRect(x: 100, y: 100, width: 1280, height: 800),
     styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
     backing: .buffered,
     defer: false

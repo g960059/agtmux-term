@@ -587,7 +587,7 @@ struct PaneRowView: View {
             }
 
             Text(viewModel.paneDisplayTitle(for: pane))
-                .font(.system(size: 13, weight: isSelected ? .semibold : .regular, design: .rounded))
+                .font(.system(size: 12, weight: isSelected ? .semibold : .regular, design: .rounded))
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .foregroundStyle(isManaged ? Color.white.opacity(0.95) : Color.white.opacity(0.82))
@@ -835,8 +835,8 @@ struct ProviderIcon: View {
 struct ProviderStatusBadge: View {
     let provider: Provider
     let primaryState: PanePresentationPrimaryState
-    var iconSize: CGFloat = 16
-    var ringDiameter: CGFloat = 22
+    var iconSize: CGFloat = 13
+    var ringDiameter: CGFloat = 18
 
     var body: some View {
         ZStack {
