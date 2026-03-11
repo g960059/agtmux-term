@@ -62,6 +62,14 @@ enum LocalDaemonIssue: Equatable {
     }
 }
 
+public enum HookSetupStatus: Equatable, Sendable {
+    case unknown
+    case checking
+    case registered
+    case missing
+    case unavailable
+}
+
 struct RemotePaneInventorySource {
     let source: String
     let fetchPanes: @Sendable () async throws -> [AgtmuxPane]
@@ -87,6 +95,7 @@ final class AppViewModel: ObservableObject {
     @Published private(set) var hasCompletedInitialFetch = false
     @Published private(set) var localDaemonIssue: LocalDaemonIssue?
     @Published private(set) var localDaemonHealth: AgtmuxUIHealthV1?
+    @Published private(set) var hookSetupStatus: HookSetupStatus = .unknown
 
     /// True if any source is offline.
     var isOffline: Bool { !offlineHosts.isEmpty }
@@ -305,6 +314,7 @@ final class AppViewModel: ObservableObject {
     private let localHealthSuccessInterval: TimeInterval = 1.0
     private let localHealthFailureBackoff: TimeInterval = 3.0
     private let localHealthUnsupportedBackoff: TimeInterval = 60.0
+    private let binaryURLResolver: () -> URL?
 
     private enum LocalHealthRefreshDisposition {
         case unsupportedMethod
@@ -538,10 +548,12 @@ final class AppViewModel: ObservableObject {
     init(localClient: any ProductLocalMetadataClient = AgtmuxDaemonClient(),
          localInventoryClient: any LocalPaneInventoryClient = LocalTmuxInventoryClient(),
          hostsConfig: HostsConfig? = nil,
-         remotePaneSources: [RemotePaneInventorySource]? = nil) {
+         remotePaneSources: [RemotePaneInventorySource]? = nil,
+         binaryURLResolver: @escaping () -> URL? = AgtmuxBinaryResolver.resolveBinaryURL) {
         self.localClient = localClient
         self.localHealthClient = localClient as? any LocalHealthClient
         self.localInventoryClient = localInventoryClient
+        self.binaryURLResolver = binaryURLResolver
         let config = hostsConfig ?? HostsConfig.load()
         self.hostsConfig = config
         if let remotePaneSources {
@@ -577,6 +589,9 @@ final class AppViewModel: ObservableObject {
                 }
             }
         }
+        Task {
+            await performStartupHookCheck()
+        }
     }
 
     /// Cancel the polling loop and reset so startPolling() can be called again.
@@ -605,6 +620,73 @@ final class AppViewModel: ObservableObject {
         localMetadataTransportVersion = nil
         nextLocalMetadataRefreshAt = .distantPast
         nextLocalHealthRefreshAt = .distantPast
+    }
+
+    func performStartupHookCheck() async {
+        guard let binaryURL = binaryURLResolver() else {
+            hookSetupStatus = .unavailable
+            return
+        }
+
+        hookSetupStatus = .checking
+        let exitCode = await runAgtmuxCommand(binaryURL, args: ["setup-hooks", "--check"])
+        switch exitCode {
+        case 0:
+            hookSetupStatus = .registered
+        case 1:
+            hookSetupStatus = .missing
+        default:
+            hookSetupStatus = .unavailable
+        }
+    }
+
+    func registerHooks() async {
+        guard let binaryURL = binaryURLResolver() else {
+            hookSetupStatus = .unavailable
+            return
+        }
+
+        hookSetupStatus = .checking
+        let exitCode = await runAgtmuxCommand(binaryURL, args: ["setup-hooks"])
+        guard exitCode >= 0 else {
+            hookSetupStatus = .unavailable
+            return
+        }
+        await performStartupHookCheck()
+    }
+
+    func unregisterHooks() async {
+        guard let binaryURL = binaryURLResolver() else {
+            hookSetupStatus = .unavailable
+            return
+        }
+
+        hookSetupStatus = .checking
+        let exitCode = await runAgtmuxCommand(binaryURL, args: ["setup-hooks", "--unregister"])
+        guard exitCode >= 0 else {
+            hookSetupStatus = .unavailable
+            return
+        }
+        await performStartupHookCheck()
+    }
+
+    private nonisolated func runAgtmuxCommand(_ binaryURL: URL, args: [String]) async -> Int32 {
+        await withCheckedContinuation { continuation in
+            let process = Process()
+            process.executableURL = binaryURL
+            process.arguments = args
+            process.standardOutput = Pipe()
+            process.standardError = Pipe()
+            process.terminationHandler = { proc in
+                continuation.resume(returning: proc.terminationStatus)
+            }
+
+            do {
+                try process.run()
+            } catch {
+                continuation.resume(returning: -1)
+            }
+        }
     }
 
     // MARK: - Private

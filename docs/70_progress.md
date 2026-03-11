@@ -20,6 +20,27 @@ Historical progress detail lives in `docs/archive/progress/2026-02-28_to_2026-03
 
 ## Recent Entries
 
+## 2026-03-11 — T-term01 added hook setup status checks and sidebar hook actions
+
+### What landed
+- added `HookSetupStatus` plus startup/register/unregister hook commands to `AppViewModel`
+- startup polling now kicks off `agtmux setup-hooks --check` through the resolved agtmux binary
+- added a sidebar warning banner for missing/unavailable hook setup with direct `Register` and popover `Verify` / `Register` / `Unregister` actions
+- added focused AppViewModel coverage for hook-check exit `0 -> registered` and `1 -> missing`
+- hardened 2 socket-based tests for this sandboxed environment:
+  - temporary socket directories now use `FileManager.default.temporaryDirectory` with shorter paths
+  - the 2 UNIX-socket bind proofs now skip explicitly when the current sandbox forbids AF_UNIX bind
+
+### Verification
+- `HOME=$PWD/.swiftpm-home XDG_CACHE_HOME=$PWD/.swiftpm-home/.cache CLANG_MODULE_CACHE_PATH=$PWD/.swiftpm-home/.cache/clang/ModuleCache swift build --disable-sandbox`
+- `HOME=$PWD/.swiftpm-home XDG_CACHE_HOME=$PWD/.swiftpm-home/.cache CLANG_MODULE_CACHE_PATH=$PWD/.swiftpm-home/.cache/clang/ModuleCache swift test --disable-sandbox`
+- result:
+  - `swift build` passed
+  - `swift test` passed
+  - skips remained explicit and expected:
+    - 9 live managed-agent tests skipped because Claude auth is unavailable in this environment
+    - 2 UNIX-socket health tests skipped because this sandbox forbids AF_UNIX bind
+
 ## 2026-03-11 — T-151 removed term-side sync-v2 endpoint compat layer
 
 ### What landed

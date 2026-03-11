@@ -147,6 +147,21 @@ Commit closeout is clear; next implementation proceeds on the new Workbench path
 
 ## Recently Closed
 
+### T-term01 — hook setup status check and register/unregister sidebar controls
+- **Status**: DONE
+- **Priority**: P1
+- **Depends**: none
+- **Owner**: direct implementation
+- **Description**:
+  - add startup-time `agtmux setup-hooks --check` state tracking to `AppViewModel`
+  - surface missing/unavailable hook setup in the sidebar with direct register/verify/unregister actions
+- **Acceptance Criteria**:
+  - [x] `HookSetupStatus` exists with `unknown` / `checking` / `registered` / `missing` / `unavailable`
+  - [x] `AppViewModel` publishes hook setup status and can verify/register/unregister via the resolved agtmux binary
+  - [x] startup polling triggers an initial hook verification automatically
+  - [x] sidebar surfaces a warning banner when hooks are missing or unavailable, including register and settings actions
+  - [x] `swift build` and `swift test` pass
+
 ### T-131 — extract local metadata async refresh coordinator
 - **Status**: DONE
 - **Priority**: P1

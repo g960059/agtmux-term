@@ -132,7 +132,13 @@ final class AgtmuxDaemonXPCServiceBoundaryTests: XCTestCase {
 
         let socketURL = tempDirectory.appendingPathComponent("agtmuxd.sock", isDirectory: false)
         let responseLine = #"{"jsonrpc":"2.0","error":{"code":-32601,"message":"Method not found"},"id":1}"#
-        let server = try OneShotUnixSocketServer(socketPath: socketURL.path, responseLine: responseLine)
+        let server: OneShotUnixSocketServer
+        do {
+            server = try OneShotUnixSocketServer(socketPath: socketURL.path, responseLine: responseLine)
+        } catch let error as NSError
+            where error.domain == NSPOSIXErrorDomain && error.code == Int(EPERM) {
+            throw XCTSkip("unix domain socket bind is unavailable in the current sandbox")
+        }
         defer { server.cleanup() }
 
         let served = expectation(description: "ui.health.v1 service-boundary server responded")
@@ -307,8 +313,10 @@ private enum AgtmuxXPCHealthTestSupport {
     }
 
     static func makeTemporaryDirectory(prefix: String) throws -> URL {
-        let url = URL(fileURLWithPath: "/tmp", isDirectory: true)
-            .appendingPathComponent("\(prefix)-\(UUID().uuidString)", isDirectory: true)
+        let shortPrefix = String(prefix.prefix(8))
+        let token = UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(8)
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(shortPrefix)-\(token)", isDirectory: true)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)
         return url
     }

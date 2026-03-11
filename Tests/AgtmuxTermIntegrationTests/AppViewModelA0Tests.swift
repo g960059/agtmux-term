@@ -320,6 +320,20 @@ final class AppViewModelA0Tests: XCTestCase {
         )
     }
 
+    private func makeHookCheckScript(exitCode: Int32) throws -> URL {
+        let directoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+
+        let scriptURL = directoryURL.appendingPathComponent("agtmux", isDirectory: false)
+        try """
+        #!/bin/sh
+        exit \(exitCode)
+        """.write(to: scriptURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptURL.path)
+        return scriptURL
+    }
+
     private func makeManagedMetadataPane(
         paneId: String = "%101",
         sessionName: String = "dev",
@@ -4036,5 +4050,43 @@ final class AppViewModelA0Tests: XCTestCase {
         XCTAssertEqual(resetCount, 1)
         XCTAssertEqual(counts.bootstrapV3, 1)
         XCTAssertEqual(counts.changesV3, 1)
+    }
+
+    @MainActor
+    func testPerformStartupHookCheckMarksRegisteredWhenSetupHooksCheckReturnsZero() async throws {
+        let scriptURL = try makeHookCheckScript(exitCode: 0)
+        defer { try? FileManager.default.removeItem(at: scriptURL.deletingLastPathComponent()) }
+
+        let model = AppViewModel(
+            localClient: StubMetadataClient(bootstrapSteps: []),
+            localInventoryClient: StubInventoryClient(panes: []),
+            hostsConfig: .empty,
+            binaryURLResolver: { scriptURL }
+        )
+
+        XCTAssertEqual(model.hookSetupStatus, .unknown)
+
+        await model.performStartupHookCheck()
+
+        XCTAssertEqual(model.hookSetupStatus, .registered)
+    }
+
+    @MainActor
+    func testPerformStartupHookCheckMarksMissingWhenSetupHooksCheckReturnsOne() async throws {
+        let scriptURL = try makeHookCheckScript(exitCode: 1)
+        defer { try? FileManager.default.removeItem(at: scriptURL.deletingLastPathComponent()) }
+
+        let model = AppViewModel(
+            localClient: StubMetadataClient(bootstrapSteps: []),
+            localInventoryClient: StubInventoryClient(panes: []),
+            hostsConfig: .empty,
+            binaryURLResolver: { scriptURL }
+        )
+
+        XCTAssertEqual(model.hookSetupStatus, .unknown)
+
+        await model.performStartupHookCheck()
+
+        XCTAssertEqual(model.hookSetupStatus, .missing)
     }
 }

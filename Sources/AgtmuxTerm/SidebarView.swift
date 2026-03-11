@@ -1013,6 +1013,126 @@ private struct LocalDaemonHealthStrip: View {
     }
 }
 
+private struct HookWarningBanner: View {
+    let status: HookSetupStatus
+    let topPadding: CGFloat
+    let onVerify: () -> Void
+    let onRegister: () -> Void
+    let onUnregister: () -> Void
+
+    @State private var showsActions = false
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Color.orange.opacity(0.92))
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Claude hooks not registered")
+                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                    .foregroundStyle(Color.white.opacity(0.88))
+
+                Text(detailText)
+                    .font(.system(size: 11, weight: .regular, design: .rounded))
+                    .foregroundStyle(Color.white.opacity(0.60))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 0)
+
+            Button("Register") {
+                onRegister()
+            }
+            .buttonStyle(.plain)
+            .font(.system(size: 11, weight: .semibold, design: .rounded))
+            .foregroundStyle(Color.white.opacity(0.92))
+            .padding(.horizontal, 9)
+            .padding(.vertical, 5)
+            .background(
+                Capsule(style: .continuous)
+                    .fill(Color.orange.opacity(0.22))
+            )
+            .overlay(
+                Capsule(style: .continuous)
+                    .stroke(Color.orange.opacity(0.34), lineWidth: 1)
+            )
+
+            Button {
+                showsActions.toggle()
+            } label: {
+                Image(systemName: "slider.horizontal.3")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Color.white.opacity(0.78))
+                    .frame(width: 22, height: 22)
+                    .background(
+                        RoundedRectangle(cornerRadius: SidebarRowStyle.cornerRadius, style: .continuous)
+                            .fill(Color.white.opacity(0.06))
+                    )
+            }
+            .buttonStyle(.plain)
+            .popover(isPresented: $showsActions, arrowEdge: .top) {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Hooks")
+                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                        .foregroundStyle(Color.white.opacity(0.92))
+
+                    Text(status.settingsDetail)
+                        .font(.system(size: 11, weight: .regular, design: .rounded))
+                        .foregroundStyle(Color.white.opacity(0.64))
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    Button("Verify") {
+                        showsActions = false
+                        onVerify()
+                    }
+                    Button("Register") {
+                        showsActions = false
+                        onRegister()
+                    }
+                    Button("Unregister") {
+                        showsActions = false
+                        onUnregister()
+                    }
+                }
+                .padding(12)
+                .frame(width: 220, alignment: .leading)
+                .background(Color(red: 0.12, green: 0.16, blue: 0.20))
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 9)
+        .background(
+            RoundedRectangle(cornerRadius: SidebarRowStyle.cornerRadius, style: .continuous)
+                .fill(Color.orange.opacity(0.10))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: SidebarRowStyle.cornerRadius, style: .continuous)
+                .stroke(Color.orange.opacity(0.24), lineWidth: 1)
+        )
+        .padding(.horizontal, 8)
+        .padding(.top, topPadding)
+        .padding(.bottom, 4)
+        .help(status.settingsDetail)
+        .accessibilityElement(children: .contain)
+    }
+
+    private var detailText: String {
+        switch status {
+        case .missing:
+            return "Realtime Claude hook events are off for this project. Register hooks to stop relying on polling only."
+        case .unavailable:
+            return "agtmux could not verify hook setup. Check the resolved runtime, then verify or register again."
+        case .checking:
+            return "Checking Claude hook registration."
+        case .registered:
+            return "Claude hooks are registered."
+        case .unknown:
+            return "Claude hook status has not been checked yet."
+        }
+    }
+}
+
 private struct LocalDaemonHealthBadge: View {
     let badge: LocalDaemonHealthBadgeModel
 
@@ -1255,6 +1375,23 @@ private extension AgtmuxUIFocusHealth {
     }
 }
 
+private extension HookSetupStatus {
+    var settingsDetail: String {
+        switch self {
+        case .unknown:
+            return "Hook setup has not been checked yet."
+        case .checking:
+            return "Checking agtmux hook registration for this project."
+        case .registered:
+            return "Claude hooks are registered for this project."
+        case .missing:
+            return "Claude hooks are missing for this project. Register them to enable realtime hook events."
+        case .unavailable:
+            return "agtmux could not resolve or execute the hook setup command. Check AGTMUX_BIN or the bundled runtime."
+        }
+    }
+}
+
 private extension Date {
     var sidebarHealthTimestamp: String {
         formatted(date: .omitted, time: .standard)
@@ -1277,6 +1414,17 @@ struct SidebarView: View {
         )?.paneInventoryID
     }
 
+    private var showsLocalDaemonIssueBanner: Bool {
+        viewModel.localDaemonIssue != nil && !viewModel.panesBySession.isEmpty
+    }
+
+    private var hookWarningTopPadding: CGFloat {
+        if viewModel.localDaemonHealth != nil || showsLocalDaemonIssueBanner {
+            return 4
+        }
+        return 8
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             if let issue = viewModel.localDaemonIssue,
@@ -1288,6 +1436,28 @@ struct SidebarView: View {
                 LocalDaemonHealthStrip(
                     health: health,
                     topPadding: viewModel.localDaemonIssue == nil || viewModel.panesBySession.isEmpty ? 8 : 4
+                )
+            }
+
+            if viewModel.hookSetupStatus == .missing || viewModel.hookSetupStatus == .unavailable {
+                HookWarningBanner(
+                    status: viewModel.hookSetupStatus,
+                    topPadding: hookWarningTopPadding,
+                    onVerify: {
+                        Task {
+                            await viewModel.performStartupHookCheck()
+                        }
+                    },
+                    onRegister: {
+                        Task {
+                            await viewModel.registerHooks()
+                        }
+                    },
+                    onUnregister: {
+                        Task {
+                            await viewModel.unregisterHooks()
+                        }
+                    }
                 )
             }
 
