@@ -287,7 +287,7 @@ jobs:
 
       - name: Update cask formula
         run: |
-          DMG_URL="https://github.com/g960059/agtmux-term/releases/download/${GITHUB_REF_NAME}/AgtmuxTerm-${VERSION}.dmg"
+          DMG_URL="https://github.com/g960059/agtmux-term/releases/download/${GITHUB_REF_NAME}/AgtmuxTerm-v${VERSION}.dmg"
           CASK_FILE="homebrew-tap/Casks/agtmux-term.rb"
 
           sed -i \

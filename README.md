@@ -32,7 +32,13 @@ brew install agtmux
 
 ### DMG
 
-Download the latest `AgtmuxTerm-x.y.z.dmg` from [Releases](https://github.com/g960059/agtmux-term/releases), open it, and drag `AgtmuxTerm.app` to Applications.
+Download the latest `AgtmuxTerm-vx.y.z.dmg` from [Releases](https://github.com/g960059/agtmux-term/releases), open it, and drag `AgtmuxTerm.app` to Applications.
+
+> **Note (v0.1.0):** This build is ad-hoc signed (not yet notarized). On first launch, right-click → Open, or run:
+> ```bash
+> xattr -dr com.apple.quarantine /Applications/AgtmuxTerm.app
+> ```
+> Future releases will be fully notarized once Apple Developer signing is set up.
 
 ## Requirements
 
