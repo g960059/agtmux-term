@@ -286,13 +286,15 @@ struct SessionBlockView: View {
                 }
             }
 
-            // Window sub-blocks
+            // Window sub-blocks (hide header when session has only one window)
+            let multiWindow = session.windows.count > 1
             ForEach(session.windows) { window in
                 WindowBlockView(
                     window: window,
                     selectedPaneId: selectedPaneId,
                     highlightedRowID: $highlightedRowID,
-                    onSelect: onSelect
+                    onSelect: onSelect,
+                    showHeader: multiWindow
                 )
             }
         }
@@ -342,6 +344,7 @@ struct WindowBlockView: View {
     let selectedPaneId: String?
     @Binding var highlightedRowID: String?
     let onSelect: (AgtmuxPane, AgtmuxTermCore.WindowGroup) -> Void
+    var showHeader: Bool = true
 
     @State private var isExpanded: Bool = true
     @EnvironmentObject private var viewModel: AppViewModel
@@ -360,7 +363,8 @@ struct WindowBlockView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
-            // Window header row
+            // Window header row (hidden when session has only one window)
+            if showHeader {
             HStack(spacing: 6) {
                 Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
                     .font(.system(size: 8, weight: .regular))
@@ -463,9 +467,10 @@ struct WindowBlockView: View {
                     Label("Kill Window", systemImage: "trash")
                 }
             }
+            } // end if showHeader
 
-            // Pane rows (collapsible)
-            if isExpanded {
+            // Pane rows (always shown; collapsible only when header is visible)
+            if isExpanded || !showHeader {
                 ForEach(window.panes) { pane in
                     paneRow(pane)
                 }
@@ -584,10 +589,13 @@ struct PaneRowView: View {
         HStack(spacing: 8) {
             if isManaged, let provider {
                 ProviderStatusBadge(provider: provider, primaryState: primaryState)
+            } else {
+                // Align unmanaged title with managed title start position
+                Color.clear.frame(width: 18, height: 18)
             }
 
             Text(viewModel.paneDisplayTitle(for: pane))
-                .font(.system(size: 12, weight: isSelected ? .semibold : .regular, design: .rounded))
+                .font(.system(size: 12.5, weight: isSelected ? .semibold : .regular, design: .rounded))
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .foregroundStyle(isManaged ? Color.white.opacity(0.95) : Color.white.opacity(0.82))
@@ -602,7 +610,7 @@ struct PaneRowView: View {
             }
         }
         .padding(.horizontal, 10)
-        .padding(.vertical, 6)
+        .padding(.vertical, 5)
         .padding(.leading, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
@@ -920,6 +928,8 @@ struct FreshnessLabel: View {
         Text(text)
             .font(.system(size: 11, weight: .regular, design: .rounded).monospacedDigit())
             .foregroundStyle(Color.white.opacity(0.56))
+            .lineLimit(1)
+            .fixedSize()
     }
 }
 
@@ -1444,13 +1454,6 @@ struct SidebarView: View {
             if let issue = viewModel.localDaemonIssue,
                !viewModel.panesBySession.isEmpty {
                 LocalDaemonIssueBanner(issue: issue)
-            }
-
-            if let health = viewModel.localDaemonHealth {
-                LocalDaemonHealthStrip(
-                    health: health,
-                    topPadding: viewModel.localDaemonIssue == nil || viewModel.panesBySession.isEmpty ? 8 : 4
-                )
             }
 
             if viewModel.hookSetupStatus == .missing || viewModel.hookSetupStatus == .unavailable {

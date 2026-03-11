@@ -58,10 +58,8 @@ package struct PaneDisplayState: Equatable, Sendable {
         presentation: PanePresentationState
     ) -> String? {
         switch presentation.freshnessState {
-        case .down:
-            return "down"
-        case .degraded:
-            return "degraded"
+        case .down, .degraded:
+            return nil
         case .fresh:
             break
         }

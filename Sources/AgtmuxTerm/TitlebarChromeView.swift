@@ -14,7 +14,7 @@ struct TitlebarChromeView: View {
     @EnvironmentObject private var viewModel: AppViewModel
     @Environment(CockpitChromeState.self) private var chromeState
 
-    private let sidebarExpandedWidth: CGFloat = 252
+    private let sidebarExpandedWidth: CGFloat = 302
 
     var body: some View {
         HStack(spacing: 0) {
