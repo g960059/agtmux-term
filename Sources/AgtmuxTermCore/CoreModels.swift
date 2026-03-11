@@ -166,6 +166,7 @@ package struct AgtmuxPane: Identifiable, Codable, Equatable, Sendable {
     package let provider: Provider?     // which AI agent, if any
     package let evidenceMode: EvidenceMode
     package let conversationTitle: String?
+    package let sessionSubtitle: String?  // subtitle/summary, differs from conversationTitle
     package let currentPath: String?    // working directory (field: current_path)
     package let gitBranch: String?      // git branch derived from currentPath
     package let currentCmd: String?     // running process name
@@ -187,6 +188,7 @@ package struct AgtmuxPane: Identifiable, Codable, Equatable, Sendable {
                  provider: Provider? = nil,
                  evidenceMode: EvidenceMode = .none,
                  conversationTitle: String? = nil,
+                 sessionSubtitle: String? = nil,
                  currentPath: String? = nil,
                  gitBranch: String? = nil,
                  currentCmd: String? = nil,
@@ -206,6 +208,7 @@ package struct AgtmuxPane: Identifiable, Codable, Equatable, Sendable {
         self.provider          = provider
         self.evidenceMode      = evidenceMode
         self.conversationTitle = conversationTitle
+        self.sessionSubtitle   = sessionSubtitle
         self.currentPath       = currentPath
         self.gitBranch         = gitBranch
         self.currentCmd        = currentCmd
@@ -227,13 +230,22 @@ package struct AgtmuxPane: Identifiable, Codable, Equatable, Sendable {
 
     /// Display label for the sidebar row.
     ///
-    /// - managed pane: `conversationTitle` → `provider.rawValue` ("claude"/"codex") → `paneId`
+    /// - managed pane: `conversationTitle` → current working-directory leaf name → `paneId`
     ///   NOTE: `currentCmd` is intentionally skipped for managed panes because Claude Code
     ///   runs as a Node.js process, making `pane_current_command` = "node" (unhelpful).
     /// - unmanaged pane: `currentCmd` (e.g. "vim", "python", "bash") → `paneId`
     package var primaryLabel: String {
         if isManaged {
-            return conversationTitle ?? provider?.rawValue ?? paneId
+            if let conversationTitle, !conversationTitle.isEmpty {
+                return conversationTitle
+            }
+            if let currentPath, !currentPath.isEmpty {
+                let folderName = URL(fileURLWithPath: currentPath).lastPathComponent
+                if !folderName.isEmpty && folderName != "/" {
+                    return folderName
+                }
+            }
+            return paneId
         } else {
             return currentCmd ?? paneId
         }
@@ -262,6 +274,7 @@ extension AgtmuxPane {
                    provider: provider,
                    evidenceMode: evidenceMode,
                    conversationTitle: conversationTitle,
+                   sessionSubtitle: sessionSubtitle,
                    currentPath: currentPath,
                    gitBranch: gitBranch,
                    currentCmd: currentCmd,
@@ -285,6 +298,7 @@ extension AgtmuxPane {
                    provider: provider,
                    evidenceMode: evidenceMode,
                    conversationTitle: conversationTitle,
+                   sessionSubtitle: sessionSubtitle,
                    currentPath: currentPath,
                    gitBranch: gitBranch,
                    currentCmd: currentCmd,
@@ -352,6 +366,7 @@ package struct AgtmuxSnapshot: Codable, Equatable, Sendable {
                        provider: dto.provider,
                        evidenceMode: dto.evidenceMode ?? .none,
                        conversationTitle: dto.conversationTitle,
+                       sessionSubtitle: dto.sessionSubtitle,
                        currentPath: dto.currentPath,
                        gitBranch: dto.gitBranch,
                        currentCmd: dto.currentCmd,
@@ -381,6 +396,7 @@ private struct RawPane: Decodable {
     let provider: Provider?
     let evidenceMode: EvidenceMode?
     let conversationTitle: String?
+    let sessionSubtitle: String?
     let currentPath: String?
     let gitBranch: String?
     let currentCmd: String?
@@ -399,6 +415,7 @@ private struct RawPane: Decodable {
         case provider
         case evidenceMode      = "evidence_mode"
         case conversationTitle = "conversation_title"
+        case sessionSubtitle   = "session_subtitle"
         case currentPath       = "current_path"
         case gitBranch         = "git_branch"
         case currentCmd        = "current_cmd"

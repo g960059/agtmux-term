@@ -213,6 +213,11 @@ final class AppViewModel: ObservableObject {
         return pane.primaryLabel
     }
 
+    func paneDisplaySubtitle(for pane: AgtmuxPane) -> String? {
+        guard pane.presence == .managed else { return nil }
+        return pane.sessionSubtitle
+    }
+
     func setPaneDisplayTitleOverride(_ title: String?, for pane: AgtmuxPane) {
         let key = paneIdentityKey(for: pane)
         let trimmed = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -819,6 +824,7 @@ final class AppViewModel: ObservableObject {
                 provider: metadataPane.provider,
                 evidenceMode: metadataPane.evidenceMode,
                 conversationTitle: metadataPane.conversationTitle,
+                sessionSubtitle: metadataPane.sessionSubtitle,
                 currentPath: metadataPane.currentPath ?? inventoryPane.currentPath,
                 gitBranch: metadataPane.gitBranch,
                 currentCmd: metadataPane.currentCmd ?? inventoryPane.currentCmd,

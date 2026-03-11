@@ -303,6 +303,7 @@ final class AppViewModelA0Tests: XCTestCase {
         windowName: String? = nil,
         activityState: ActivityState = .unknown,
         presence: PanePresence = .unmanaged,
+        currentPath: String? = nil,
         currentCmd: String? = "zsh"
     ) -> AgtmuxPane {
         AgtmuxPane(
@@ -316,6 +317,7 @@ final class AppViewModelA0Tests: XCTestCase {
             activityState: activityState,
             presence: presence,
             evidenceMode: .none,
+            currentPath: currentPath,
             currentCmd: currentCmd
         )
     }
@@ -344,6 +346,7 @@ final class AppViewModelA0Tests: XCTestCase {
         provider: Provider = .codex,
         activityState: ActivityState = .running,
         conversationTitle: String = "Implement A0",
+        sessionSubtitle: String? = nil,
         metadataSessionKey: String? = nil,
         paneInstanceID: AgtmuxSyncV2PaneInstanceID? = nil
     ) -> AgtmuxPane {
@@ -360,6 +363,7 @@ final class AppViewModelA0Tests: XCTestCase {
             provider: provider,
             evidenceMode: .deterministic,
             conversationTitle: conversationTitle,
+            sessionSubtitle: sessionSubtitle,
             currentCmd: "node",
             metadataSessionKey: metadataSessionKey ?? sessionName,
             paneInstanceID: paneInstanceID
@@ -541,6 +545,7 @@ final class AppViewModelA0Tests: XCTestCase {
             paneID: pane.paneId,
             paneInstanceID: paneInstance,
             provider: pane.presence == .managed ? pane.provider : nil,
+            sessionSubtitle: pane.sessionSubtitle,
             presence: presence,
             agent: AgtmuxSyncV3AgentState(lifecycle: makeV3AgentLifecycle(from: pane.activityState, presence: presence)),
             thread: thread,
@@ -570,6 +575,7 @@ final class AppViewModelA0Tests: XCTestCase {
                 birthTs: paneState.paneInstanceID.birthTs ?? updatedAt
             ),
             provider: provider,
+            sessionSubtitle: base.sessionSubtitle,
             presence: presence,
             agent: AgtmuxSyncV3AgentState(lifecycle: makeV3AgentLifecycle(from: paneState.activityState, presence: presence)),
             thread: makeV3ThreadState(from: paneState.activityState, updatedAt: updatedAt),
@@ -1280,6 +1286,55 @@ final class AppViewModelA0Tests: XCTestCase {
         if let paneB = panesBySession[sessionB] {
             XCTAssertEqual(model.paneDisplayTitle(for: paneB), "zsh")
         }
+    }
+
+    @MainActor
+    func testBootstrapV3ManagedPaneUsesWorkingDirectoryTitleFallbackAndSessionSubtitle() async {
+        let inventoryPane = makeInventoryPane(
+            paneId: "%41",
+            sessionName: "dev",
+            windowId: "@4",
+            activityState: .idle,
+            currentPath: "/Users/virtualmachine/ghq/github.com/g960059/agtmux-term",
+            currentCmd: "zsh"
+        )
+        let metadataPane = makeManagedMetadataPane(
+            paneId: "%41",
+            sessionName: "dev",
+            windowId: "@4",
+            provider: .codex,
+            activityState: .running,
+            conversationTitle: "",
+            sessionSubtitle: "Resume the sidebar metadata follow-up",
+            metadataSessionKey: "dev"
+        )
+
+        let model = AppViewModel(
+            localClient: StubMetadataClient(
+                bootstrapV3Steps: [
+                    BootstrapV3Step(
+                        delayMs: 20,
+                        result: .success(Self.makeBootstrapV3(from: makeBootstrap(panes: [metadataPane])))
+                    )
+                ],
+                bootstrapSteps: []
+            ),
+            localInventoryClient: StubInventoryClient(panes: [inventoryPane]),
+            hostsConfig: .empty
+        )
+
+        await model.fetchAll()
+
+        let displayApplied = await waitUntil {
+            guard let pane = model.panes.first else { return false }
+            return model.paneIsManaged(pane)
+                && model.paneDisplayTitle(for: pane) == "agtmux-term"
+                && model.paneDisplaySubtitle(for: pane) == "Resume the sidebar metadata follow-up"
+        }
+
+        XCTAssertTrue(displayApplied, "managed row should fall back to cwd leaf name and keep sync-v3 session subtitle")
+        XCTAssertEqual(model.panes.count, 1)
+        XCTAssertNil(model.localDaemonIssue)
     }
 
     @MainActor

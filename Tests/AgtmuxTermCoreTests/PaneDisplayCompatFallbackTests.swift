@@ -46,7 +46,7 @@ final class PaneDisplayCompatFallbackTests: XCTestCase {
         XCTAssertEqual(quietPane.needsAttention, PaneDisplayCompatFallback.needsAttention(for: quietPane))
     }
 
-    func testManagedFreshnessTextUsesLegacyAgeCollapseButRunningStaysNil() {
+    func testManagedFreshnessTextUsesLegacyAgeCollapseIncludingRunning() {
         let idlePane = AgtmuxPane(
             source: "local",
             paneId: "%3",
@@ -71,7 +71,7 @@ final class PaneDisplayCompatFallbackTests: XCTestCase {
         )
 
         XCTAssertEqual(PaneDisplayCompatFallback.freshnessText(for: idlePane), "18s")
-        XCTAssertNil(PaneDisplayCompatFallback.freshnessText(for: runningPane))
+        XCTAssertEqual(PaneDisplayCompatFallback.freshnessText(for: runningPane), "18s")
         XCTAssertTrue(PaneDisplayCompatFallback.needsAttention(for: idlePane))
         XCTAssertFalse(PaneDisplayCompatFallback.needsAttention(for: runningPane))
     }

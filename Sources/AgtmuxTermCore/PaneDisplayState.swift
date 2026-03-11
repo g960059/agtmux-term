@@ -66,9 +66,6 @@ package struct PaneDisplayState: Equatable, Sendable {
             break
         }
 
-        if presentation.primaryState == .running {
-            return nil
-        }
         return PaneDisplayCompatFallback.freshnessText(ageSecs: ageSecs, activityState: pane.activityState)
     }
 }

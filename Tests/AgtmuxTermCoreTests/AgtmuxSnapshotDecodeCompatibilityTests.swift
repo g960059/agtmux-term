@@ -63,4 +63,31 @@ final class AgtmuxSnapshotDecodeCompatibilityTests: XCTestCase {
         XCTAssertEqual(snapshot.panes[0].activityState, .unknown)
         XCTAssertEqual(snapshot.panes[0].presence, .unmanaged)
     }
+
+    func testDecodePreservesSessionSubtitleAndUsesWorkingDirectoryLeafAsManagedTitleFallback() throws {
+        let json = """
+        {
+          "version": 1,
+          "panes": [
+            {
+              "pane_id": "%7",
+              "session_name": "dev",
+              "window_id": "@1",
+              "presence": "managed",
+              "activity_state": "running",
+              "provider": "codex",
+              "conversation_title": "",
+              "session_subtitle": "Review sidebar metadata",
+              "current_path": "/Users/test/src/agtmux-term"
+            }
+          ]
+        }
+        """
+
+        let snapshot = try AgtmuxSnapshot.decode(from: Data(json.utf8), source: "local")
+        let pane = try XCTUnwrap(snapshot.panes.first)
+
+        XCTAssertEqual(pane.sessionSubtitle, "Review sidebar metadata")
+        XCTAssertEqual(pane.primaryLabel, "agtmux-term")
+    }
 }

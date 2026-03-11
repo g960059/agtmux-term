@@ -39,8 +39,8 @@ package enum PaneDisplayCompatFallback {
         return freshnessText(ageSecs: pane.ageSecs, activityState: pane.activityState)
     }
 
-    package static func freshnessText(ageSecs: Int?, activityState: ActivityState) -> String? {
-        guard activityState != .running, let ageSecs else { return nil }
+    package static func freshnessText(ageSecs: Int?, activityState _: ActivityState) -> String? {
+        guard let ageSecs else { return nil }
         switch ageSecs {
         case 0..<60:
             return "\(ageSecs)s"

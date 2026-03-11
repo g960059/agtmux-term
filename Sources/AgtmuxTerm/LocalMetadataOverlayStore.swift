@@ -197,6 +197,7 @@ struct LocalMetadataOverlayStore {
             presence: legacyPresence(from: snapshot.presence),
             provider: snapshot.provider,
             evidenceMode: legacyEvidenceMode(from: snapshot),
+            sessionSubtitle: snapshot.sessionSubtitle,
             updatedAt: snapshot.updatedAt,
             metadataSessionKey: snapshot.sessionKey,
             paneInstanceID: legacyPaneInstanceID(from: snapshot.paneInstanceID)
@@ -219,6 +220,7 @@ struct LocalMetadataOverlayStore {
             provider: paneState.provider,
             evidenceMode: paneState.evidenceMode,
             conversationTitle: isManaged ? basePane.conversationTitle : nil,
+            sessionSubtitle: isManaged ? basePane.sessionSubtitle : nil,
             currentPath: basePane.currentPath,
             gitBranch: isManaged ? basePane.gitBranch : nil,
             currentCmd: basePane.currentCmd,

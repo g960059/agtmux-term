@@ -99,6 +99,69 @@ final class AgtmuxSyncV3DecodingTests: XCTestCase {
         XCTAssertEqual(pane.freshness.execution, .stale)
     }
 
+    func testDecodeBootstrapPreservesSessionSubtitle() throws {
+        let json = """
+        {
+          "version": 3,
+          "generated_at": "2026-03-09T20:11:05Z",
+          "panes": [
+            {
+              "session_name": "demo",
+              "window_id": "@1",
+              "session_key": "codex:%4",
+              "pane_id": "%4",
+              "pane_instance_id": {
+                "pane_id": "%4",
+                "generation": 2,
+                "birth_ts": "2026-03-09T21:00:00Z"
+              },
+              "provider": "codex",
+              "session_subtitle": "Pick up the sync-v3 follow-up",
+              "presence": "managed",
+              "agent": {
+                "lifecycle": "running"
+              },
+              "thread": {
+                "lifecycle": "active",
+                "blocking": "none",
+                "execution": "thinking",
+                "flags": {
+                  "review_mode": false,
+                  "subagent_active": false
+                },
+                "turn": {
+                  "outcome": "none",
+                  "sequence": null,
+                  "started_at": null,
+                  "completed_at": null
+                }
+              },
+              "pending_requests": [],
+              "attention": {
+                "active_kinds": [],
+                "highest_priority": "none",
+                "unresolved_count": 0,
+                "generation": 0,
+                "latest_at": null
+              },
+              "freshness": {
+                "snapshot": "fresh",
+                "blocking": "fresh",
+                "execution": "fresh"
+              },
+              "updated_at": "2026-03-09T21:00:09Z"
+            }
+          ]
+        }
+        """
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let bootstrap = try decoder.decode(AgtmuxSyncV3Bootstrap.self, from: Data(json.utf8))
+
+        XCTAssertEqual(bootstrap.panes.first?.sessionSubtitle, "Pick up the sync-v3 follow-up")
+    }
+
     func testDecodeBootstrapFailsWhenExactIdentityFieldsAreMissing() throws {
         let json = """
         {

@@ -383,6 +383,7 @@ package struct AgtmuxSyncV3PaneSnapshot: Codable, Equatable, Sendable {
     package let paneID: String
     package let paneInstanceID: AgtmuxSyncV3PaneInstanceID
     package let provider: Provider?
+    package let sessionSubtitle: String?
     package let presence: AgtmuxSyncV3Presence
     package let agent: AgtmuxSyncV3AgentState
     package let thread: AgtmuxSyncV3ThreadState
@@ -398,6 +399,7 @@ package struct AgtmuxSyncV3PaneSnapshot: Codable, Equatable, Sendable {
                  paneID: String,
                  paneInstanceID: AgtmuxSyncV3PaneInstanceID,
                  provider: Provider?,
+                 sessionSubtitle: String? = nil,
                  presence: AgtmuxSyncV3Presence,
                  agent: AgtmuxSyncV3AgentState,
                  thread: AgtmuxSyncV3ThreadState,
@@ -412,6 +414,7 @@ package struct AgtmuxSyncV3PaneSnapshot: Codable, Equatable, Sendable {
         self.paneID = paneID
         self.paneInstanceID = paneInstanceID
         self.provider = provider
+        self.sessionSubtitle = sessionSubtitle
         self.presence = presence
         self.agent = agent
         self.thread = thread
@@ -429,6 +432,7 @@ package struct AgtmuxSyncV3PaneSnapshot: Codable, Equatable, Sendable {
         case paneID = "pane_id"
         case paneInstanceID = "pane_instance_id"
         case provider
+        case sessionSubtitle = "session_subtitle"
         case presence
         case agent
         case thread
@@ -451,6 +455,7 @@ package struct AgtmuxSyncV3PaneSnapshot: Codable, Equatable, Sendable {
             forKey: .paneInstanceID
         )
         provider = try container.decodeIfPresent(Provider.self, forKey: .provider)
+        sessionSubtitle = try container.decodeIfPresent(String.self, forKey: .sessionSubtitle)
         presence = try container.decode(AgtmuxSyncV3Presence.self, forKey: .presence)
         agent = try container.decode(AgtmuxSyncV3AgentState.self, forKey: .agent)
         thread = try container.decode(AgtmuxSyncV3ThreadState.self, forKey: .thread)

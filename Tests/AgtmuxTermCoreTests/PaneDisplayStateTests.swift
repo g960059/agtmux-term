@@ -59,4 +59,36 @@ final class PaneDisplayStateTests: XCTestCase {
         XCTAssertTrue(display.isManaged)
         XCTAssertFalse(display.needsAttention)
     }
+
+    func testV3PresentationKeepsRunningAgeVisibleWhenFresh() throws {
+        let bootstrap = try AgtmuxSyncV3FixtureLoader.bootstrap(named: "codex-running", filePath: #filePath)
+        let snapshot = try XCTUnwrap(bootstrap.panes.first)
+        let pane = AgtmuxPane(
+            source: "local",
+            paneId: snapshot.paneID,
+            sessionName: snapshot.sessionName,
+            windowId: snapshot.windowID,
+            activityState: .running,
+            presence: .managed,
+            provider: snapshot.provider,
+            currentCmd: "zsh",
+            ageSecs: 45,
+            metadataSessionKey: snapshot.sessionKey,
+            paneInstanceID: AgtmuxSyncV2PaneInstanceID(
+                paneId: snapshot.paneInstanceID.paneId,
+                generation: snapshot.paneInstanceID.generation,
+                birthTs: snapshot.paneInstanceID.birthTs
+            )
+        )
+
+        let display = PaneDisplayState(
+            pane: pane,
+            presentation: PanePresentationState(snapshot: snapshot)
+        )
+
+        XCTAssertEqual(display.primaryState, .running)
+        XCTAssertEqual(display.freshnessText, "45s")
+        XCTAssertTrue(display.isManaged)
+        XCTAssertFalse(display.needsAttention)
+    }
 }
