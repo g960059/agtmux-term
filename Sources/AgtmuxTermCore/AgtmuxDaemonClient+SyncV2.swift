@@ -1,6 +1,7 @@
 import Foundation
 import Darwin
 
+// sync-v2 compat: remove after daemon drops v2 endpoints.
 extension AgtmuxDaemonClient: AgtmuxSyncV2Transport, AgtmuxSyncV3Transport {
     package func fetchBootstrapV3() async throws -> AgtmuxSyncV3Bootstrap {
         if let inlineJSON = ProcessInfo.processInfo.environment["AGTMUX_UI_BOOTSTRAP_V3_JSON"] {

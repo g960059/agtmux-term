@@ -25,14 +25,6 @@ protocol ProductLocalMetadataClient: LocalSnapshotClient {
     func resetUIChangesV3() async
 }
 
-/// Compatibility-only metadata surface for low-level transport/XPC coverage.
-/// Product `AppViewModel` code should not depend on these sync-v2 helpers.
-protocol LocalMetadataClient: ProductLocalMetadataClient {
-    func fetchUIBootstrapV2() async throws -> AgtmuxSyncV2Bootstrap
-    func fetchUIChangesV2(limit: Int) async throws -> AgtmuxSyncV2ChangesResponse
-    func resetUIChangesV2() async
-}
-
 extension ProductLocalMetadataClient {
     func fetchUIBootstrapV3() async throws -> AgtmuxSyncV3Bootstrap {
         throw LocalMetadataClientError.unsupportedMethod("ui.bootstrap.v3")

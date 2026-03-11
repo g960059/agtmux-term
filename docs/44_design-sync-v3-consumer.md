@@ -126,6 +126,10 @@ The current term rollout is additive bootstrap-v3 plus additive changes-v3.
 - surfaced detail for that issue should describe metadata protocol / exact-identity failures first; factual RPC names may still appear when they are the real failing surface
 - the product-facing metadata abstraction now also resets only sync-v3 replay state; sync-v2 reset APIs remain compatibility-only below that boundary
 - the product-facing client/protocol surface is now explicitly `ProductLocalMetadataClient`; `LocalMetadataClient` remains a compat-only surface for low-level sync-v2 transport/XPC coverage
+- the product refresh boundary no longer carries a mixed v2/v3 transport-version or bootstrap union:
+  - `LocalMetadataTransportBridge` fetches required `ui.bootstrap.v3` only
+  - `LocalMetadataRefreshBoundary` and `LocalMetadataRefreshCoordinator` now model bootstrap/defer/reset decisions in sync-v3 terms only
+  - remaining sync-v2 models/sessions/transport helpers are explicitly compat-only and should continue shrinking until daemon v2 endpoints are deleted
 - remaining sync-v2 transport/service-boundary/workbench code is compatibility-only
 - the current product UI still renders through legacy `AgtmuxPane` / `ActivityState`
 

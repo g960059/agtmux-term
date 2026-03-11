@@ -1,5 +1,6 @@
 import Foundation
 
+/// sync-v2 compat: remove after daemon drops v2 endpoints.
 package enum AgtmuxSyncV2ProtocolError: LocalizedError, Equatable, Sendable {
     case missingBootstrapPaneField(String)
     case legacyPaneField(String)

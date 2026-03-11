@@ -10,6 +10,20 @@ Commit closeout is clear; next implementation proceeds on the new Workbench path
 
 ## Active / Next
 
+### T-150 — shrink remaining sync-v2 residue from the product metadata boundary
+- **Status**: DONE
+- **Priority**: P1
+- **Depends**: T-144
+- **Owner**: direct implementation
+- **Description**:
+  - Prepare for daemon-side `T-SV2-P2` endpoint deletion by removing the remaining sync-v2 transport-version/bootstrap-union residue from the product refresh boundary.
+  - Keep low-level sync-v2 transport/XPC/service-boundary code alive as compat-only for now, but stop letting product refresh helpers model a mixed v2/v3 world.
+- **Acceptance Criteria**:
+  - [x] `LocalMetadataTransportBridge` remains product-facing and sync-v3-only
+  - [x] `LocalMetadataRefreshBoundary` / `LocalMetadataRefreshCoordinator` no longer model product bootstrap/defer/reset decisions with a v2 bootstrap union or `.v2` transport version
+  - [x] compat-only sync-v2 surfaces are explicitly isolated/commented as removal targets after daemon drops v2 endpoints
+  - [x] `swift build` + `swift test` pass
+
 ### T-119 — Retire stale live Codex `waiting_input` expectation
 - **Status**: DONE
 - **Priority**: P1

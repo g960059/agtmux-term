@@ -46,39 +46,32 @@ final class LocalMetadataRefreshCoordinator {
             )
         }
 
-        switch context.transportVersion ?? .v3 {
-        case .v2, .v3:
-            do {
-                let response = try await client.fetchUIChangesV3(limit: context.changeLimit)
-                switch response {
-                case let .changes(payload):
-                    return LocalMetadataRefreshExecution(
-                        preApplyLogMessages: [],
-                        replayResetVersions: [],
-                        plan: LocalMetadataRefreshBoundary.publishPlan(
-                            cache: overlayStore.apply(payload),
-                            inventoryCount: context.inventoryCount,
-                            successInterval: context.successInterval,
-                            syncPrimed: true,
-                            transportVersion: .v3,
-                            daemonIssue: nil,
-                            now: now()
-                        ),
-                        postApplyLogMessages: []
-                    )
-                case let .resyncRequired(payload):
-                    return try await bootstrapExecution(
-                        context: context,
-                        overlayStore: overlayStore,
-                        preApplyLogMessages: [
-                            "sync-v3 resync required; reason=\(payload.reason) latest_snapshot_seq=\(payload.latestSnapshotSeq)"
-                        ],
-                        additionalResetVersions: [.v3]
-                    )
-                }
-            } catch {
-                throw error
-            }
+        let response = try await client.fetchUIChangesV3(limit: context.changeLimit)
+        switch response {
+        case let .changes(payload):
+            return LocalMetadataRefreshExecution(
+                preApplyLogMessages: [],
+                replayResetVersions: [],
+                plan: LocalMetadataRefreshBoundary.publishPlan(
+                    cache: overlayStore.apply(payload),
+                    inventoryCount: context.inventoryCount,
+                    successInterval: context.successInterval,
+                    syncPrimed: true,
+                    transportVersion: .v3,
+                    daemonIssue: nil,
+                    now: now()
+                ),
+                postApplyLogMessages: []
+            )
+        case let .resyncRequired(payload):
+            return try await bootstrapExecution(
+                context: context,
+                overlayStore: overlayStore,
+                preApplyLogMessages: [
+                    "sync-v3 resync required; reason=\(payload.reason) latest_snapshot_seq=\(payload.latestSnapshotSeq)"
+                ],
+                additionalResetVersions: [.v3]
+            )
         }
     }
 
@@ -110,11 +103,10 @@ final class LocalMetadataRefreshCoordinator {
         additionalResetVersions: [LocalMetadataTransportVersion]
     ) async throws -> LocalMetadataRefreshExecution {
         let snapshot = try await transportBridge.fetchRequiredBootstrapV3(using: client)
-        let bootstrap = LocalMetadataBootstrapSnapshot.v3(snapshot)
         let cache = try overlayStore.bootstrapCaches(from: snapshot)
 
         switch LocalMetadataRefreshBoundary.bootstrapResult(
-            from: bootstrap,
+            from: snapshot,
             cache: cache,
             inventoryCount: context.inventoryCount,
             bootstrapNotReadyBackoff: context.bootstrapNotReadyBackoff,

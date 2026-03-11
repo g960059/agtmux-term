@@ -36,13 +36,13 @@ enum LocalBootstrapMetadataResult: Equatable {
 
 enum LocalMetadataRefreshBoundary {
     static func bootstrapResult(
-        from bootstrap: LocalMetadataBootstrapSnapshot,
+        from bootstrap: AgtmuxSyncV3Bootstrap,
         cache: LocalMetadataOverlayCache,
         inventoryCount: Int,
         bootstrapNotReadyBackoff: TimeInterval,
         now: Date = Date()
     ) -> LocalBootstrapMetadataResult {
-        if inventoryCount > 0, bootstrapPaneCount(bootstrap) == 0 {
+        if inventoryCount > 0, bootstrap.panes.isEmpty {
             let state = LocalMetadataRefreshState(
                 syncPrimed: false,
                 transportVersion: nil,
@@ -54,11 +54,8 @@ enum LocalMetadataRefreshBoundary {
                     state: state,
                     cacheAction: .clear,
                     shouldPublishSnapshotCache: true,
-                    replayResetVersion: bootstrap.transportVersion,
-                    logMessage: bootstrapNotReadyMessage(
-                        version: bootstrap.transportVersion,
-                        inventoryCount: inventoryCount
-                    )
+                    replayResetVersion: .v3,
+                    logMessage: "sync-v3 bootstrap not ready; local inventory has \(inventoryCount) panes but bootstrap returned panes=0"
                 )
             )
         }
@@ -66,7 +63,7 @@ enum LocalMetadataRefreshBoundary {
         return .metadata(
             LocalBootstrapMetadataPayload(
                 cache: cache,
-                transportVersion: bootstrap.transportVersion
+                transportVersion: .v3
             )
         )
     }
@@ -113,26 +110,5 @@ enum LocalMetadataRefreshBoundary {
             replayResetVersion: nil,
             logMessage: nil
         )
-    }
-
-    private static func bootstrapPaneCount(_ bootstrap: LocalMetadataBootstrapSnapshot) -> Int {
-        switch bootstrap {
-        case .v2(let snapshot):
-            return snapshot.panes.count
-        case .v3(let snapshot):
-            return snapshot.panes.count
-        }
-    }
-
-    private static func bootstrapNotReadyMessage(
-        version: LocalMetadataTransportVersion,
-        inventoryCount: Int
-    ) -> String {
-        switch version {
-        case .v2:
-            return "sync-v2 bootstrap not ready; local inventory has \(inventoryCount) panes but bootstrap returned panes=0"
-        case .v3:
-            return "sync-v3 bootstrap not ready; local inventory has \(inventoryCount) panes but bootstrap returned panes=0"
-        }
     }
 }

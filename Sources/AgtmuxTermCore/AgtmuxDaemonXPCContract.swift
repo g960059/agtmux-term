@@ -12,6 +12,7 @@ public enum AgtmuxDaemonXPC {
 /// - `fetchSnapshot`: UTF-8 JSON encoded `AgtmuxSnapshot` (ISO8601 dates)
 /// - `fetchUIBootstrapV3`: UTF-8 JSON encoded `AgtmuxSyncV3Bootstrap` (ISO8601 dates)
 /// - `fetchUIChangesV3`: UTF-8 JSON encoded `AgtmuxSyncV3ChangesResponse` (ISO8601 dates)
+/// - sync-v2 compat: remove after daemon drops v2 endpoints
 /// - `fetchUIBootstrapV2`: UTF-8 JSON encoded `AgtmuxSyncV2Bootstrap` (ISO8601 dates)
 /// - `fetchUIChangesV2`: UTF-8 JSON encoded `AgtmuxSyncV2ChangesResponse` (ISO8601 dates)
 /// - `fetchUIHealthV1`: UTF-8 JSON encoded `AgtmuxUIHealthV1` (ISO8601 dates)

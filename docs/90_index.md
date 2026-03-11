@@ -115,6 +115,8 @@ Mainline product truth is now:
   product metadata reset/orchestration now depends on a v3-only abstraction; sync-v2 reset survives only on compat surfaces
 - `T-144`
   product-facing metadata clients/tests now depend on `ProductLocalMetadataClient`; `LocalMetadataClient` survives only as a compat-only surface
+- `T-150`
+  product metadata refresh helpers no longer model mixed sync-v2/sync-v3 bootstrap state; remaining sync-v2 code is compat-only below the product boundary
 - `T-145`
   `PaneDisplayState` now reads legacy `ActivityState` collapse through explicit compat helper `PaneDisplayCompatFallback`
 - `T-146`

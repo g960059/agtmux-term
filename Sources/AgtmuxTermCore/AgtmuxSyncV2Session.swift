@@ -1,5 +1,6 @@
 import Foundation
 
+/// sync-v2 compat: remove after daemon drops v2 endpoints.
 package protocol AgtmuxSyncV2Transport: Sendable {
     func fetchBootstrapV2() async throws -> AgtmuxSyncV2Bootstrap
     func fetchChangesV2(cursor: AgtmuxSyncV2Cursor, limit: Int) async throws -> AgtmuxSyncV2ChangesResponse

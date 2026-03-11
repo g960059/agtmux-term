@@ -134,6 +134,7 @@ actor AgtmuxDaemonXPCClient: AgtmuxDaemonXPCClientMetadataConformance {
     }
 
     // MARK: - Compatibility-only sync-v2 metadata convenience
+    // sync-v2 compat: remove after daemon drops v2 endpoints.
 
     func fetchUIBootstrapV2() async throws -> AgtmuxSyncV2Bootstrap {
         try await startManagedDaemonIfNeeded()

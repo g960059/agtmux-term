@@ -12,11 +12,38 @@ Historical progress detail lives in `docs/archive/progress/2026-02-28_to_2026-03
 - current follow-up boundary is explicit: if a fresh live disagreement appears, validate daemon payload truth before reopening the term consumer
 - the broad `AppViewModelA0Tests` product suite now matches the sync-v3-only product path; remaining sync-v2 assumptions are compat-only
 - `LocalMetadataTransportBridge` now exposes only the required sync-v3 bootstrap passthrough; the dead sync-v3->v2 fallback selector surface has been removed
+- the product metadata refresh boundary no longer models a mixed sync-v2/sync-v3 bootstrap union; remaining sync-v2 code is now explicitly compat-only below that boundary
 - the product-facing daemon incompatibility identity is now `LocalDaemonIssue.incompatibleMetadataProtocol`; current product text no longer implies a sync-v2-specific issue
 - the old metadata-enabled plain-zsh Codex XCUITest lane is now explicitly environment-blocked/deferred; the semantic replacement is the green live AppViewModel managed-agent proof with explicit Codex freshness coverage
 - the remaining strict live Codex `running` proof is green again on exec parity; interactive launch is kept only as a narrow sentinel
 
 ## Recent Entries
+
+## 2026-03-11 — T-150 removed product-boundary sync-v2 transport/version residue
+
+### What landed
+- kept the product metadata client surface on sync-v3 only and removed the leftover mixed bootstrap/transport-version modeling from:
+  - `LocalMetadataTransportBridge`
+  - `LocalMetadataRefreshBoundary`
+  - `LocalMetadataRefreshCoordinator`
+- moved `LocalMetadataClient` into an explicit compat-only file so product code reads `ProductLocalMetadataClient` by default
+- marked the remaining sync-v2 model/session/transport files as compat-only removal targets after daemon drops v2 endpoints
+
+### Evidence
+- `AppViewModel` already consumed only `fetchUIBootstrapV3()` / `fetchUIChangesV3()` in the product path
+- after this slice, the product refresh helpers no longer carry:
+  - `.v2` transport-version branches
+  - v2/v3 bootstrap unions
+  - product-facing v2 bootstrap-not-ready wording
+- broad product coverage still passes with the same sync-v3-only behavior
+
+### Verification
+- `swift build`
+- `swift test -q --filter LocalMetadataRefreshBoundaryTests`
+- `swift test -q --filter LocalMetadataRefreshCoordinatorTests`
+- `swift test -q --filter LocalMetadataTransportBridgeTests`
+- `swift test -q --filter AppViewModelA0Tests`
+- `swift test`
 
 ## 2026-03-10 — strict live Codex running lane moved to exec parity; interactive remains sentinel
 

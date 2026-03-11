@@ -140,6 +140,10 @@
 - `T-144` is now closed:
   - product-facing tests and injected metadata stubs now type against `ProductLocalMetadataClient`
   - `LocalMetadataClient` is now an explicit compat-only surface for low-level sync-v2 coverage
+- `T-150` is now closed:
+  - the product refresh boundary no longer carries a mixed sync-v2/sync-v3 bootstrap union or `.v2` transport version
+  - `LocalMetadataTransportBridge`, `LocalMetadataRefreshBoundary`, and `LocalMetadataRefreshCoordinator` now model product bootstrap/defer/reset flow in sync-v3 terms only
+  - remaining sync-v2 models/session/transport code is explicitly compat-only and documented as a later deletion target
 - `T-145` is now closed:
   - `PaneDisplayState` is still presentation-first, but its legacy `ActivityState` collapse now lives in explicit compat-only helper `PaneDisplayCompatFallback`
   - visible sidebar/accessibility behavior is unchanged; the cleanup only narrows the fallback seam

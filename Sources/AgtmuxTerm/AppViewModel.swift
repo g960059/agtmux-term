@@ -777,12 +777,8 @@ final class AppViewModel: ObservableObject {
         }
 
         for version in execution.replayResetVersions {
-            switch version {
-            case .v3:
-                await localClient.resetUIChangesV3()
-            case .v2:
-                break
-            }
+            _ = version
+            await localClient.resetUIChangesV3()
         }
 
         await applyLocalMetadataRefreshPlan(execution.plan)

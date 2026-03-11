@@ -5,17 +5,13 @@ import AgtmuxTermCore
 final class LocalMetadataRefreshBoundaryTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_700_000_000)
 
-    func testBootstrapResultDefersAndClearsOnInventoryPresentEmptyV2Bootstrap() {
+    func testBootstrapResultDefersAndClearsOnInventoryPresentEmptyV3Bootstrap() {
         let result = LocalMetadataRefreshBoundary.bootstrapResult(
-            from: .v2(
-                AgtmuxSyncV2Bootstrap(
-                    epoch: 1,
-                    snapshotSeq: 0,
-                    panes: [],
-                    sessions: [],
-                    generatedAt: now,
-                    replayCursor: AgtmuxSyncV2Cursor(epoch: 1, seq: 0)
-                )
+            from: AgtmuxSyncV3Bootstrap(
+                version: 3,
+                panes: [],
+                generatedAt: now,
+                replayCursor: AgtmuxSyncV3Cursor(seq: 0)
             ),
             cache: LocalMetadataOverlayCache(metadataByPaneKey: [:], presentationByPaneKey: [:]),
             inventoryCount: 2,
@@ -32,23 +28,21 @@ final class LocalMetadataRefreshBoundaryTests: XCTestCase {
         XCTAssertNil(plan.state.daemonIssue)
         XCTAssertEqual(plan.state.nextRefreshAt, now.addingTimeInterval(0.5))
         XCTAssertEqual(plan.cacheAction, .clear)
-        XCTAssertEqual(plan.replayResetVersion, .v2)
+        XCTAssertEqual(plan.replayResetVersion, .v3)
         XCTAssertEqual(
             plan.logMessage,
-            "sync-v2 bootstrap not ready; local inventory has 2 panes but bootstrap returned panes=0"
+            "sync-v3 bootstrap not ready; local inventory has 2 panes but bootstrap returned panes=0"
         )
         XCTAssertEqual(plan.shouldPublishSnapshotCache, true)
     }
 
-    func testBootstrapResultDefersAndClearsOnInventoryPresentEmptyV3Bootstrap() {
+    func testBootstrapResultDefersAndClearsOnInventoryPresentEmptyV3BootstrapWithDifferentBackoff() {
         let result = LocalMetadataRefreshBoundary.bootstrapResult(
-            from: .v3(
-                AgtmuxSyncV3Bootstrap(
-                    version: 3,
-                    panes: [],
-                    generatedAt: now,
-                    replayCursor: AgtmuxSyncV3Cursor(seq: 0)
-                )
+            from: AgtmuxSyncV3Bootstrap(
+                version: 3,
+                panes: [],
+                generatedAt: now,
+                replayCursor: AgtmuxSyncV3Cursor(seq: 0)
             ),
             cache: LocalMetadataOverlayCache(metadataByPaneKey: [:], presentationByPaneKey: [:]),
             inventoryCount: 1,
