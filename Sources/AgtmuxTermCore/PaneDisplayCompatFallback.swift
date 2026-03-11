@@ -36,7 +36,9 @@ package enum PaneDisplayCompatFallback {
 
     package static func freshnessText(for pane: AgtmuxPane) -> String? {
         guard pane.isManaged else { return nil }
-        return freshnessText(ageSecs: pane.ageSecs, activityState: pane.activityState)
+        // Daemon does not send age_secs; compute from updatedAt when available.
+        let ageSecs = pane.ageSecs ?? pane.updatedAt.map { max(0, Int(-$0.timeIntervalSinceNow)) }
+        return freshnessText(ageSecs: ageSecs, activityState: pane.activityState)
     }
 
     package static func freshnessText(ageSecs: Int?, activityState _: ActivityState) -> String? {

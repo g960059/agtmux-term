@@ -66,6 +66,8 @@ package struct PaneDisplayState: Equatable, Sendable {
             break
         }
 
-        return PaneDisplayCompatFallback.freshnessText(ageSecs: ageSecs, activityState: pane.activityState)
+        // Daemon does not send age_secs; compute from updatedAt when available.
+        let effectiveAgeSecs = ageSecs ?? pane.updatedAt.map { max(0, Int(-$0.timeIntervalSinceNow)) }
+        return PaneDisplayCompatFallback.freshnessText(ageSecs: effectiveAgeSecs, activityState: pane.activityState)
     }
 }
