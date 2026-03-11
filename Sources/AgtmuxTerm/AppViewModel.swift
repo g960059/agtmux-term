@@ -299,7 +299,7 @@ final class AppViewModel: ObservableObject {
     private let localHealthClient: (any LocalHealthClient)?
     private let localInventoryClient: any LocalPaneInventoryClient
     private var remotePaneSources: [RemotePaneInventorySource] = []
-    let hostsConfig: HostsConfig
+    @Published var hostsConfig: HostsConfig
     private var lastSuccessfulRemotePanesBySource: [String: [AgtmuxPane]] = [:]
     private var lastSuccessfulLocalInventory: [AgtmuxPane] = []
     private var cachedLocalMetadataByPaneKey: [String: AgtmuxPane] = [:]
@@ -572,6 +572,37 @@ final class AppViewModel: ObservableObject {
                 )
             }
         }
+    }
+
+    // MARK: - Host Management
+
+    func addHost(_ host: RemoteHost) {
+        var hosts = hostsConfig.hosts
+        hosts.removeAll { $0.id == host.id }
+        hosts.append(host)
+        hostsConfig = HostsConfig(hosts: hosts)
+        remotePaneSources = hostsConfig.hosts.map { h in
+            let client = RemoteTmuxClient(host: h)
+            return RemotePaneInventorySource(
+                source: h.hostname,
+                fetchPanes: { try await client.fetchPanes() }
+            )
+        }
+        HostsConfig.save(hostsConfig)
+    }
+
+    func removeHost(id: String) {
+        var hosts = hostsConfig.hosts
+        hosts.removeAll { $0.id == id }
+        hostsConfig = HostsConfig(hosts: hosts)
+        remotePaneSources = hostsConfig.hosts.map { h in
+            let client = RemoteTmuxClient(host: h)
+            return RemotePaneInventorySource(
+                source: h.hostname,
+                fetchPanes: { try await client.fetchPanes() }
+            )
+        }
+        HostsConfig.save(hostsConfig)
     }
 
     // MARK: - Polling

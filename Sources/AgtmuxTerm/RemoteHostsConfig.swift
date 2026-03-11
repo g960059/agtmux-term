@@ -76,9 +76,21 @@ struct HostsConfig: Codable {
         host(for: source)?.id ?? source
     }
 
+    static func save(_ config: HostsConfig) {
+        let configURL = hostsConfigURL()
+        do {
+            let dir = configURL.deletingLastPathComponent()
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let data = try JSONEncoder().encode(config)
+            try data.write(to: configURL, options: .atomic)
+        } catch {
+            fputs("agtmux-term: failed to save hosts config: \(error)\n", stderr)
+        }
+    }
+
     // MARK: - Private
 
-    private static func hostsConfigURL() -> URL {
+    fileprivate static func hostsConfigURL() -> URL {
         let home = FileManager.default.homeDirectoryForCurrentUser
         return home
             .appendingPathComponent(".config")

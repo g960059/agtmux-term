@@ -10,6 +10,25 @@ Commit closeout is clear; next implementation proceeds on the new Workbench path
 
 ## Active / Next
 
+### T-SM03 — sidebar 1-line compact row with provider-left status badge
+- **Status**: IN_PROGRESS
+- **Priority**: P1
+- **Depends**: T-SM02
+- **Owner**: direct implementation
+- **Description**:
+  - Replaced the temporary managed-row 2-line sidebar layout with a compact single-line row.
+  - Moved provider identity to the left edge and encoded primary state on the surrounding badge ring so the title regains horizontal space.
+  - Inline subtitle rendering is intentionally removed; subtitle metadata remains available through the row tooltip.
+  - Review pack: `docs/85_reviews/review-pack-T-SM03.md`; external `codex review --uncommitted` was blocked by the current network-restricted sandbox and is recorded there and in `docs/70_progress.md`.
+  - Commit closeout is currently blocked in this sandbox because `git add` / `git commit` cannot create `.git/index.lock`.
+- **Acceptance Criteria**:
+  - [x] managed pane rows render a left `ProviderStatusBadge` (provider icon plus state ring) instead of the old dot/icon `stateIndicator`
+  - [x] running uses an animated green ring; waiting-approval/input, error, idle/completed-idle, and inactive map to the specified ring treatments
+  - [x] the right edge no longer repeats `ProviderIcon`; it only keeps managed freshness text
+  - [x] unmanaged pane rows stay single-line and do not show a badge
+  - [x] `swift build` + deterministic `swift test` pass
+  - [ ] changes are committed as `feat: sidebar 1-line compact row -- provider+status ring on left (T-SM03)`
+
 ### T-151 — remove sync-v2 compat endpoint layer after daemon T-SV2-P2
 - **Status**: DONE
 - **Priority**: P1
@@ -146,6 +165,24 @@ Commit closeout is clear; next implementation proceeds on the new Workbench path
   - [x] the metadata-enabled XCUITest lane is explicitly recorded as environment-blocked/deferred
 
 ## Recently Closed
+
+### T-SM02 — improve sidebar session metadata display
+- **Status**: IN_PROGRESS
+- **Priority**: P1
+- **Depends**: T-SM01 (daemon `session_subtitle` producer)
+- **Owner**: direct implementation
+- **Description**:
+  - Improved managed pane sidebar metadata so the row title identifies the workspace without repeating provider identity already shown by iconography.
+  - Freshness/updated-at age now stays visible for managed panes while running, and daemon `session_subtitle` now surfaces as an optional second line.
+  - Review pack: `docs/85_reviews/review-pack-T-SM02.md`; external Codex CLI review attempt was blocked by the current network-restricted sandbox and is recorded there and in `docs/70_progress.md`.
+  - Commit closeout is also currently blocked in this sandbox because `git add` / `git commit` cannot create `.git/index.lock`.
+- **Acceptance Criteria**:
+  - [x] managed pane title fallback uses working-directory leaf name before `paneId`
+  - [x] managed pane freshness text stays visible while running
+  - [x] `AgtmuxPane` decodes and carries `session_subtitle`
+  - [x] managed pane rows render an optional subtitle line without layout jump; unmanaged rows stay single-line
+  - [x] `swift build` + deterministic `swift test` pass
+  - [ ] changes are committed as `feat: session metadata display -- dir fallback, always-visible age, 2-line subtitle (T-SM02)`
 
 ### T-term01 — hook setup status check and register/unregister sidebar controls
 - **Status**: DONE

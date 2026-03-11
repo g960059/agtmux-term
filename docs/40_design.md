@@ -103,6 +103,7 @@ It should:
 
 - show real tmux sessions from local and remote sources
 - surface pane/window-derived agent metadata
+- keep pane rows compact and single-line; managed rows use a left-aligned provider badge whose ring carries primary-state truth, while freshness stays on the right
 - show where a session is already open
 - remain lightweight
 

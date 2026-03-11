@@ -20,6 +20,65 @@ Historical progress detail lives in `docs/archive/progress/2026-02-28_to_2026-03
 
 ## Recent Entries
 
+## 2026-03-11 — T-SM03 sidebar 1-line compact row with provider-left status badge
+
+### What landed
+- replaced the temporary managed-row inline 2-line layout in `PaneRowView` with a compact single-line row
+- added `ProviderStatusBadge`, which centers the existing provider icon inside a state ring on the left edge
+- reused `SpinnerView` animation logic for the running badge ring by making trim/line-width parameters configurable
+- removed the right-edge provider icon so managed rows now render `badge + title + freshness`
+- kept `sessionSubtitle` metadata available through the row tooltip instead of inline row-height expansion
+
+### Verification
+- `HOME=$PWD/.swiftpm-home XDG_CACHE_HOME=$PWD/.swiftpm-home/.cache CLANG_MODULE_CACHE_PATH=$PWD/.swiftpm-home/.cache/clang/ModuleCache swift build --disable-sandbox`
+- `HOME=$PWD/.swiftpm-home XDG_CACHE_HOME=$PWD/.swiftpm-home/.cache CLANG_MODULE_CACHE_PATH=$PWD/.swiftpm-home/.cache/clang/ModuleCache swift test --disable-sandbox --skip AppViewModelLiveManagedAgentTests`
+- result:
+  - `swift build` passed
+  - deterministic `swift test` passed
+  - 299 tests passed, 2 tests skipped as expected under the current sandbox/socket constraints
+
+### Review note
+- created `docs/85_reviews/review-pack-T-SM03.md`
+- attempted `codex review --uncommitted`, but the CLI could not reach the Codex backend from this network-restricted sandbox:
+  - websocket setup failed with `failed to lookup address information`
+  - HTTPS fallback also failed sending the request to `https://chatgpt.com/backend-api/codex/responses`
+  - no fallback reviewer was substituted silently; the blocker is recorded explicitly here and in the review pack
+
+### Commit blocker
+- attempted `git add docs/40_design.md docs/60_tasks.md docs/70_progress.md docs/85_reviews/review-pack-T-SM03.md && git commit -m "feat: sidebar 1-line compact row -- provider+status ring on left (T-SM03)"`
+- sandbox denied `.git/index.lock` creation (`Operation not permitted`), so the requested commit could not be created from this environment
+
+## 2026-03-11 — T-SM02 improved sidebar session metadata display
+
+### What landed
+- changed managed pane title fallback from provider name to working-directory leaf name in `AgtmuxPane.primaryLabel`
+- made managed freshness text visible while running in both compat-only and presentation-backed display paths
+- added `sessionSubtitle` to `AgtmuxPane`, raw snapshot decoding, sync-v3 snapshot decoding, local overlay merge, and sidebar display helpers
+- updated managed sidebar rows to an optional 2-line layout with fixed managed-row minimum height to reduce layout jump
+- added focused regressions for:
+  - raw snapshot decode + cwd title fallback
+  - sync-v3 `session_subtitle` decode
+  - running freshness visibility
+  - AppViewModel sync-v3 subtitle/title merge behavior
+
+### Verification
+- `HOME=$PWD/.swiftpm-home XDG_CACHE_HOME=$PWD/.swiftpm-home/.cache CLANG_MODULE_CACHE_PATH=$PWD/.swiftpm-home/.cache/clang/ModuleCache swift build --disable-sandbox`
+- `HOME=$PWD/.swiftpm-home XDG_CACHE_HOME=$PWD/.swiftpm-home/.cache CLANG_MODULE_CACHE_PATH=$PWD/.swiftpm-home/.cache/clang/ModuleCache swift test --disable-sandbox --skip AppViewModelLiveManagedAgentTests`
+- result:
+  - `swift build` passed
+  - deterministic `swift test` passed
+  - 299 tests passed, 2 tests skipped as expected under the current sandbox/socket constraints
+  - the same build/test commands were rerun and stayed green after the final `SidebarView.swift` 2-line row patch
+
+### Review note
+- created `docs/85_reviews/review-pack-T-SM02.md`
+- attempted `codex review --uncommitted` after green build/test, but the CLI could not reach the Codex backend from this network-restricted sandbox (`failed to lookup address information` / HTTPS request failure), so no external verdict was available
+  - no fallback reviewer was substituted silently; the blocker is recorded explicitly here and in the review pack
+
+### Commit blocker
+- attempted `git add Sources/AgtmuxTerm/SidebarView.swift docs/60_tasks.md docs/70_progress.md docs/85_reviews/review-pack-T-SM02.md && git commit -m "feat: session metadata display -- dir fallback, always-visible age, 2-line subtitle (T-SM02)"`
+- sandbox denied `.git/index.lock` creation (`Operation not permitted`), so the requested commit could not be created from this environment
+
 ## 2026-03-11 — T-term01 added hook setup status checks and sidebar hook actions
 
 ### What landed

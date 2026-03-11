@@ -21,6 +21,7 @@ private enum SidebarRowStyle {
 struct FilterBarView: View {
     let onToggleSidebar: () -> Void
     @EnvironmentObject var viewModel: AppViewModel
+    @State private var isPresentingHostsSheet = false
 
     var body: some View {
         HStack(spacing: 8) {
@@ -72,6 +73,21 @@ struct FilterBarView: View {
             .help("Pinned")
 
             Spacer(minLength: 0)
+
+            Button {
+                isPresentingHostsSheet = true
+            } label: {
+                Image(systemName: "plus")
+                    .font(.system(size: 12, weight: .semibold))
+                    .frame(width: 18, height: 18)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(Color.white.opacity(0.78))
+            .help("Add SSH Target")
+            .sheet(isPresented: $isPresentingHostsSheet) {
+                HostsManagementView()
+                    .environmentObject(viewModel)
+            }
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
