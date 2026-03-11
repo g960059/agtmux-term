@@ -1289,7 +1289,7 @@ final class AppViewModelA0Tests: XCTestCase {
     }
 
     @MainActor
-    func testBootstrapV3ManagedPaneUsesWorkingDirectoryTitleFallbackAndSessionSubtitle() async {
+    func testBootstrapV3ManagedPaneUsesSessionSubtitleAsTitleFallbackWhenConversationTitleEmpty() async {
         let inventoryPane = makeInventoryPane(
             paneId: "%41",
             sessionName: "dev",
@@ -1328,11 +1328,11 @@ final class AppViewModelA0Tests: XCTestCase {
         let displayApplied = await waitUntil {
             guard let pane = model.panes.first else { return false }
             return model.paneIsManaged(pane)
-                && model.paneDisplayTitle(for: pane) == "agtmux-term"
+                && model.paneDisplayTitle(for: pane) == "Resume the sidebar metadata follow-up"
                 && model.paneDisplaySubtitle(for: pane) == "Resume the sidebar metadata follow-up"
         }
 
-        XCTAssertTrue(displayApplied, "managed row should fall back to cwd leaf name and keep sync-v3 session subtitle")
+        XCTAssertTrue(displayApplied, "managed row should use session_subtitle as title fallback when conversation_title is empty")
         XCTAssertEqual(model.panes.count, 1)
         XCTAssertNil(model.localDaemonIssue)
     }
