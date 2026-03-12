@@ -105,11 +105,25 @@ private struct WorkbenchEmptyStateV2: View {
     }
 }
 
+// MARK: - TerminalTileInventorySnapshot
+
+/// A minimal snapshot of AppViewModel state relevant to a single terminal tile.
+/// Passed as a `let` to `WorkbenchTerminalTileViewV2` so the tile only re-renders
+/// when its own inventory state changes, not on unrelated pane-list updates.
+struct TerminalTileInventorySnapshot: Equatable {
+    let isOffline: Bool
+    let hasCompletedInitialFetch: Bool
+    let paneIsLive: Bool
+    let localDaemonIssue: LocalDaemonIssue?
+}
+
 private struct WorkbenchTileViewV2: View {
     let workbenchID: UUID
     let tile: WorkbenchTile
     let isFocused: Bool
     let hostsConfig: HostsConfig
+
+    @EnvironmentObject private var viewModel: AppViewModel
 
     var body: some View {
         switch tile.kind {
@@ -119,7 +133,8 @@ private struct WorkbenchTileViewV2: View {
                 tile: tile,
                 sessionRef: sessionRef,
                 isFocused: isFocused,
-                hostsConfig: hostsConfig
+                hostsConfig: hostsConfig,
+                inventorySnapshot: makeInventorySnapshot(for: sessionRef)
             )
         case .browser(let url, let sourceContext):
             WorkbenchBrowserTileViewV2(
@@ -137,6 +152,29 @@ private struct WorkbenchTileViewV2: View {
             )
         }
     }
+
+    private func makeInventorySnapshot(for sessionRef: SessionRef) -> TerminalTileInventorySnapshot {
+        let source: String
+        let isOffline: Bool
+        switch sessionRef.target {
+        case .local:
+            source = "local"
+            isOffline = viewModel.offlineHosts.contains("local")
+        case .remote(let hostKey):
+            let hostname = hostsConfig.host(id: hostKey)?.hostname ?? hostKey
+            source = hostname
+            isOffline = viewModel.offlineHosts.contains(hostname)
+        }
+        let paneIsLive = viewModel.panes.contains { pane in
+            pane.source == source && pane.sessionName == sessionRef.sessionName
+        }
+        return TerminalTileInventorySnapshot(
+            isOffline: isOffline,
+            hasCompletedInitialFetch: viewModel.hasCompletedInitialFetch,
+            paneIsLive: paneIsLive,
+            localDaemonIssue: viewModel.localDaemonIssue
+        )
+    }
 }
 
 private struct WorkbenchTerminalTileViewV2: View {
@@ -145,6 +183,7 @@ private struct WorkbenchTerminalTileViewV2: View {
     let sessionRef: SessionRef
     let isFocused: Bool
     let hostsConfig: HostsConfig
+    let inventorySnapshot: TerminalTileInventorySnapshot
 
     @Environment(WorkbenchStoreV2.self) private var store
     @EnvironmentObject private var viewModel: AppViewModel
@@ -161,14 +200,45 @@ private struct WorkbenchTerminalTileViewV2: View {
     }
 
     private var terminalState: WorkbenchV2TerminalTileState {
-        WorkbenchV2TerminalTileState.resolve(
-            sessionRef: sessionRef,
-            hostsConfig: hostsConfig,
-            panes: viewModel.panes,
-            offlineHostnames: viewModel.offlineHosts,
-            localDaemonIssue: viewModel.localDaemonIssue,
-            inventoryReady: viewModel.hasCompletedInitialFetch
-        )
+        // Derive state from the pre-computed snapshot (computed by WorkbenchTileViewV2)
+        // to avoid subscribing to the full AppViewModel pane list.
+        if !inventorySnapshot.hasCompletedInitialFetch {
+            if case .remote(let hostKey) = sessionRef.target,
+               hostsConfig.host(id: hostKey) == nil {
+                return .broken(.hostMissing(hostKey))
+            }
+            return .bootstrapping
+        }
+
+        switch sessionRef.target {
+        case .local:
+            if inventorySnapshot.isOffline {
+                return .broken(.tmuxUnavailable)
+            }
+            if inventorySnapshot.paneIsLive {
+                return .ready
+            }
+            if let localDaemonIssue = inventorySnapshot.localDaemonIssue {
+                switch localDaemonIssue {
+                case .localDaemonUnavailable(let detail):
+                    return .broken(.daemonUnavailable(detail))
+                case .incompatibleMetadataProtocol(let detail):
+                    return .broken(.daemonIncompatible(detail))
+                }
+            }
+            return .broken(.sessionMissing(sessionRef.sessionName))
+        case .remote(let hostKey):
+            guard let host = hostsConfig.host(id: hostKey) else {
+                return .broken(.hostMissing(hostKey))
+            }
+            if inventorySnapshot.isOffline {
+                return .broken(.hostOffline(host.id))
+            }
+            if !inventorySnapshot.paneIsLive {
+                return .broken(.sessionMissing(sessionRef.sessionName))
+            }
+            return .ready
+        }
     }
 
     private var liveAttachResolution: Result<WorkbenchV2TerminalAttachPlan, WorkbenchV2TerminalAttachError> {

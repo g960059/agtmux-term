@@ -88,9 +88,15 @@ final class AppViewModel: ObservableObject {
     @Published var selectedPane: AgtmuxPane?
     /// Set of source identifiers that are currently unreachable ("local" or hostname).
     @Published var offlineHosts: Set<String> = []
-    @Published var statusFilter: StatusFilter = .all
-    @Published var showAgentsOnly: Bool = false
-    @Published var showPinnedOnly: Bool = false
+    @Published var statusFilter: StatusFilter = .all {
+        didSet { triggerPanesBySessionRecompute() }
+    }
+    @Published var showAgentsOnly: Bool = false {
+        didSet { triggerPanesBySessionRecompute() }
+    }
+    @Published var showPinnedOnly: Bool = false {
+        didSet { triggerPanesBySessionRecompute() }
+    }
     @Published var autoLaunchSessionName: String {
         didSet { UserDefaults.standard.set(autoLaunchSessionName, forKey: "autoLaunchSessionName") }
     }
@@ -99,6 +105,7 @@ final class AppViewModel: ObservableObject {
     @Published private(set) var sessionOrderBySource: [String: [String]] = [:]
     @Published private(set) var hasCompletedInitialFetch = false
     @Published private(set) var localDaemonIssue: LocalDaemonIssue?
+    @Published private(set) var panesBySession: [(source: String, sessions: [SessionGroup])] = []
     @Published private(set) var localDaemonHealth: AgtmuxUIHealthV1?
     @Published private(set) var hookSetupStatus: HookSetupStatus = .unknown
 
@@ -115,21 +122,27 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    /// Panes grouped by source → session → window. Used by the sidebar 4-level layout.
+    /// Compute panes grouped by source → session → window.
     ///
+    /// `static` so it can be called off the main actor.
     /// Within each source, sessions follow user-managed order (DnD) when present,
     /// then append unknown sessions alphabetically.
     /// Within each session, windows are sorted by windowIndex (if available), else by windowId.
     /// Within each window, panes are sorted by paneId.
-    var panesBySession: [(source: String, sessions: [SessionGroup])] {
+    private nonisolated static func computePanesBySession(
+        filteredPanes: [AgtmuxPane],
+        sessionOrderBySource: [String: [String]],
+        sortedSources: ([String]) -> [String]
+    ) -> [(source: String, sessions: [SessionGroup])] {
         let bySource = Dictionary(grouping: filteredPanes, by: \.source)
-        return sortedSources(bySource.keys).map { source in
+        return sortedSources(Array(bySource.keys)).map { source in
             let sourcePanes = bySource[source] ?? []
             let bySession = Dictionary(grouping: sourcePanes, by: \.sessionName)
-            let orderedNames = orderedSessionNames(
-                source: source,
-                currentNames: Set(bySession.keys)
-            )
+            let currentNames = Set(bySession.keys)
+            let existing = sessionOrderBySource[source] ?? []
+            let kept = existing.filter { currentNames.contains($0) }
+            let unknown = currentNames.subtracting(kept).sorted()
+            let orderedNames = kept + unknown
             let sessions = orderedNames.map { sessionName -> SessionGroup in
                 let sessionPanes = bySession[sessionName] ?? []
                 let byWindow = Dictionary(grouping: sessionPanes, by: \.windowId)
@@ -153,6 +166,28 @@ final class AppViewModel: ObservableObject {
                 return SessionGroup(source: source, sessionName: sessionName, windows: windows)
             }
             return (source: source, sessions: sessions)
+        }
+    }
+
+    /// Schedule an off-main recomputation of `panesBySession` from the current
+    /// `filteredPanes` and `sessionOrderBySource`.
+    private func triggerPanesBySessionRecompute() {
+        let snapshot = filteredPanes
+        let orderSnapshot = sessionOrderBySource
+        Task.detached(priority: .userInitiated) { [weak self] in
+            guard let self else { return }
+            let computed = Self.computePanesBySession(
+                filteredPanes: snapshot,
+                sessionOrderBySource: orderSnapshot,
+                sortedSources: { keys in
+                    keys.sorted { a, b in
+                        if a == "local" { return true }
+                        if b == "local" { return false }
+                        return a < b
+                    }
+                }
+            )
+            await MainActor.run { self.panesBySession = computed }
         }
     }
 
@@ -298,6 +333,7 @@ final class AppViewModel: ObservableObject {
         let moving = ordered.remove(at: from)
         ordered.insert(moving, at: to)
         sessionOrderBySource[source] = ordered
+        triggerPanesBySessionRecompute()
     }
 
     // MARK: - Clients
@@ -1041,6 +1077,7 @@ final class AppViewModel: ObservableObject {
         if normalized != panes {
             reconcileSessionOrder(with: normalized)
             panes = normalized
+            triggerPanesBySessionRecompute()
         }
         let livePaneKeys = Set(normalized.map(paneIdentityKey(for:)))
         let newPinnedPaneKeys = pinnedPaneKeys.intersection(livePaneKeys)
