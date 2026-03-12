@@ -112,6 +112,9 @@ actor TmuxCommandRunner {
     }
 
     func run(_ args: [String], source: String = "local") async throws -> String {
+        let runID = AgtmuxSignpost.tmuxRunner.makeSignpostID()
+        let runState = AgtmuxSignpost.tmuxRunner.beginInterval("run", id: runID)
+        defer { AgtmuxSignpost.tmuxRunner.endInterval("run", runState) }
         let process = Process()
 
         if source == "local" {

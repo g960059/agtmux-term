@@ -1007,10 +1007,13 @@ final class AppViewModel: ObservableObject {
             defer { self.localMetadataRefreshTask = nil }
 
             do {
+                let syncID = AgtmuxSignpost.metadataSync.makeSignpostID()
+                let syncState = AgtmuxSignpost.metadataSync.beginInterval("runStep", id: syncID)
                 let execution = try await self.makeLocalMetadataRefreshCoordinator().runStep(
                     context: self.makeLocalMetadataRefreshContext(),
                     overlayStore: self.makeLocalMetadataOverlayStore()
                 )
+                AgtmuxSignpost.metadataSync.endInterval("runStep", syncState)
                 try Task.checkCancellation()
                 await self.applyLocalMetadataRefreshExecution(execution)
             } catch is CancellationError {
@@ -1079,6 +1082,9 @@ final class AppViewModel: ObservableObject {
     }
 
     private func publishFromSnapshotCache(offlineHosts newOffline: Set<String>? = nil) async {
+        let pubID = AgtmuxSignpost.publish.makeSignpostID()
+        let pubState = AgtmuxSignpost.publish.beginInterval("publish", id: pubID)
+        defer { AgtmuxSignpost.publish.endInterval("publish", pubState) }
         trimSnapshotCacheToKnownSources()
         var panesBySource = lastSuccessfulRemotePanesBySource
         if !lastSuccessfulLocalInventory.isEmpty || panesBySource["local"] != nil {
@@ -1110,6 +1116,9 @@ final class AppViewModel: ObservableObject {
     /// Fetch from all sources concurrently, merge results, update state.
     /// Internal access so TmuxManager can trigger an immediate refresh.
     func fetchAll() async {
+        let fetchID = AgtmuxSignpost.fetchAll.makeSignpostID()
+        let fetchState = AgtmuxSignpost.fetchAll.beginInterval("fetchAll", id: fetchID)
+        defer { AgtmuxSignpost.fetchAll.endInterval("fetchAll", fetchState) }
         var successfulRemoteBySource: [String: [AgtmuxPane]] = [:]
         var newOffline: Set<String> = []
 

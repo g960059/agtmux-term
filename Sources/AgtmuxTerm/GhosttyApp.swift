@@ -203,6 +203,9 @@ final class GhosttyApp {
     @MainActor
     private func tick() {
         guard let app else { return }
+        let tickID = AgtmuxSignpost.ghosttyTick.makeSignpostID()
+        let tickState = AgtmuxSignpost.ghosttyTick.beginInterval("tick", id: tickID)
+        defer { AgtmuxSignpost.ghosttyTick.endInterval("tick", tickState) }
         wakeupLock.lock()
         wakeupPending = false
         wakeupLock.unlock()
@@ -212,7 +215,10 @@ final class GhosttyApp {
         let activeIDs = SurfacePool.shared.activeSurfaceViewIDs
         for view in activeSurfaces.allObjects {
             guard activeIDs.contains(ObjectIdentifier(view)) else { continue }
+            let drawID = AgtmuxSignpost.surfaceDraw.makeSignpostID()
+            let drawState = AgtmuxSignpost.surfaceDraw.beginInterval("draw", id: drawID)
             view.triggerDraw()
+            AgtmuxSignpost.surfaceDraw.endInterval("draw", drawState)
         }
     }
 
