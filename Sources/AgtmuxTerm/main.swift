@@ -141,6 +141,9 @@ let chromeState: CockpitChromeState = MainActor.assumeIsolated {
 // 5. Build the SwiftUI view hierarchy wrapped in NSHostingView.
 let cockpit = CockpitView()
     .environmentObject(viewModel)
+    .environment(viewModel.sidebarStore)
+    .environment(viewModel.runtimeStore)
+    .environment(viewModel.healthStore)
     .environment(workbenchStoreV2)
     .environment(chromeState)
 

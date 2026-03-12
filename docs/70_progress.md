@@ -20,6 +20,17 @@ Historical progress detail lives in `docs/archive/progress/2026-02-28_to_2026-03
 
 ## Recent Entries
 
+## 2026-03-12 — T-PERF-P12: AppViewModel property migration to 3-store split
+
+### What landed
+- **Phase A**: private `sync*()` helpers in `AppViewModel` mirror all writes to stores; `paneIdentityIndex` added to `TerminalRuntimeStore`; stores injected via `.environment()` in `main.swift` + `WindowChromeController.swift`; `@Published` storage kept as baseline
+- **Phase B**: repo-wide consumer read switch — all SwiftUI views read from stores; `@EnvironmentObject AppViewModel` removed from entire Workbench subtree (`WorkbenchAreaV2`, `WorkbenchTileViewV2`, `WorkbenchTerminalTileViewV2`, `WorkbenchV2DocumentTile`, `WorkbenchV2TerminalRestore`); `livePaneInstanceID(for:)` rewritten to O(1) `runtimeStore.paneIdentityIndex` lookup; `SettingsView` + `HostsManagementView` + `CockpitView` + `TitlebarChromeView` reads migrated to stores; gate: `rg '@EnvironmentObject.*AppViewModel' Workbench*.swift` → 0
+- **Phase C**: `@Published var` replaced with computed forwarders to stores; `sync*()` helpers write only to stores; `SessionFilterPopover` bindings rewritten with explicit `Binding(get:set:)` to preserve `triggerPanesBySessionRecompute()` side effect; `selectedPane` + `autoLaunchSessionName` remain `@Published`
+
+### Outcome
+- `WorkbenchTerminalTileViewV2.body` no longer re-evaluates on sidebar filter/pin changes
+- 308/308 tests pass; 0 build errors
+
 ## 2026-03-12 — T-PERF-P9+P10+P11+P13: Remote control mode + navigation precision + SurfacePool
 
 ### What landed

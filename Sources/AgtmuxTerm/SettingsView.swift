@@ -77,6 +77,7 @@ struct SettingsView: View {
 
 private struct SSHTargetsSection: View {
     @EnvironmentObject var viewModel: AppViewModel
+    @Environment(TerminalRuntimeStore.self) private var runtimeStore
     @State private var hostname = ""
     @State private var username = ""
     @State private var displayName = ""
@@ -84,14 +85,14 @@ private struct SSHTargetsSection: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if viewModel.hostsConfig.hosts.isEmpty {
+            if runtimeStore.hostsConfig.hosts.isEmpty {
                 Text("No SSH targets configured.")
                     .font(.system(size: 13))
                     .foregroundStyle(Color.white.opacity(0.48))
                     .padding(.horizontal, 20)
                     .padding(.bottom, 12)
             } else {
-                ForEach(viewModel.hostsConfig.hosts) { host in
+                ForEach(runtimeStore.hostsConfig.hosts) { host in
                     HStack(spacing: 10) {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(host.displayName ?? host.hostname)
@@ -190,6 +191,7 @@ private struct SSHTargetsSection: View {
 
 private struct HooksSection: View {
     @EnvironmentObject var viewModel: AppViewModel
+    @Environment(HealthAndHooksStore.self) private var healthStore
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -202,7 +204,7 @@ private struct HooksSection: View {
                     .font(.system(size: 13))
                     .foregroundStyle(Color.white.opacity(0.82))
                 Spacer()
-                if viewModel.hookSetupStatus == .checking {
+                if healthStore.hookSetupStatus == .checking {
                     ProgressView().scaleEffect(0.7)
                 }
             }
@@ -220,26 +222,26 @@ private struct HooksSection: View {
                     Task { await viewModel.registerHooks() }
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(viewModel.hookSetupStatus == .checking || viewModel.hookSetupStatus == .unavailable)
+                .disabled(healthStore.hookSetupStatus == .checking || healthStore.hookSetupStatus == .unavailable)
 
                 Button("Unregister") {
                     Task { await viewModel.unregisterHooks() }
                 }
                 .buttonStyle(.bordered)
-                .disabled(viewModel.hookSetupStatus == .checking || viewModel.hookSetupStatus == .unavailable)
+                .disabled(healthStore.hookSetupStatus == .checking || healthStore.hookSetupStatus == .unavailable)
 
                 Button("Verify") {
                     Task { await viewModel.performStartupHookCheck() }
                 }
                 .buttonStyle(.bordered)
-                .disabled(viewModel.hookSetupStatus == .checking || viewModel.hookSetupStatus == .unavailable)
+                .disabled(healthStore.hookSetupStatus == .checking || healthStore.hookSetupStatus == .unavailable)
             }
         }
         .padding(.horizontal, 20)
     }
 
     private var statusLabel: String {
-        switch viewModel.hookSetupStatus {
+        switch healthStore.hookSetupStatus {
         case .unknown:      return "Status unknown"
         case .checking:     return "Checking…"
         case .registered:   return "Hooks registered"
@@ -249,7 +251,7 @@ private struct HooksSection: View {
     }
 
     private var statusColor: Color {
-        switch viewModel.hookSetupStatus {
+        switch healthStore.hookSetupStatus {
         case .registered:   return .green
         case .missing:      return .orange
         case .unavailable:  return .red
@@ -258,7 +260,7 @@ private struct HooksSection: View {
     }
 
     private var statusDetail: String? {
-        switch viewModel.hookSetupStatus {
+        switch healthStore.hookSetupStatus {
         case .missing:
             return "Claude Code hooks are not installed. Register them so agtmux receives live activity events."
         case .unavailable:

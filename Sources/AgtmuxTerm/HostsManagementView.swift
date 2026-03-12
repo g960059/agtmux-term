@@ -3,6 +3,7 @@ import SwiftUI
 struct HostsManagementView: View {
     @EnvironmentObject var viewModel: AppViewModel
     @Environment(\.dismiss) private var dismiss
+    @Environment(TerminalRuntimeStore.self) private var runtimeStore
 
     @State private var hostname = ""
     @State private var username = ""
@@ -26,14 +27,14 @@ struct HostsManagementView: View {
             Divider().opacity(0.2)
 
             // Existing hosts
-            if viewModel.hostsConfig.hosts.isEmpty {
+            if runtimeStore.hostsConfig.hosts.isEmpty {
                 Text("No targets configured.")
                     .font(.system(size: 13))
                     .foregroundStyle(Color.white.opacity(0.56))
                     .padding(.horizontal, 16)
                     .padding(.vertical, 12)
             } else {
-                ForEach(viewModel.hostsConfig.hosts) { host in
+                ForEach(runtimeStore.hostsConfig.hosts) { host in
                     HStack(spacing: 12) {
                         VStack(alignment: .leading, spacing: 3) {
                             Text(host.displayName ?? host.hostname)

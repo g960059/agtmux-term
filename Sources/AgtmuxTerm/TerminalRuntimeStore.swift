@@ -6,22 +6,27 @@ import AgtmuxTermCore
 //
 // Owns host configuration and per-tile routing state that the terminal subtree consumes.
 //
-// TODO (T-PERF-P4 follow-up): migrate the corresponding @Published properties
-// out of AppViewModel and pass this store to the terminal subtree environment
-// instead of the full AppViewModel.
+// T-PERF-P12: Properties are kept in sync with AppViewModel via sync helpers.
+// Full migration of @Published storage to this store is deferred to a later phase.
 
 @Observable
 @MainActor
 final class TerminalRuntimeStore {
     // MARK: - Hosts
-    // TODO: migrate from AppViewModel.hostsConfig
     var hostsConfig: HostsConfig = HostsConfig(hosts: [])
 
     // MARK: - Offline set
-    // TODO: migrate from AppViewModel.offlineHosts
     var offlineHosts: Set<String> = []
 
     // MARK: - Fetch readiness
-    // TODO: migrate from AppViewModel.hasCompletedInitialFetch
     var hasCompletedInitialFetch: Bool = false
+
+    // MARK: - Live pane tracking
+    var livePaneSessionKeys: Set<String> = []
+
+    /// Identity index: "\(source):\(sessionName):\(windowId):\(paneId)" → paneInstanceID
+    var paneIdentityIndex: [String: AgtmuxSyncV2PaneInstanceID] = [:]
+
+    // MARK: - Refresh callback
+    var onRefreshInventory: (@MainActor @Sendable () async -> Void)?
 }

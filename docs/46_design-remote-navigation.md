@@ -129,20 +129,105 @@ A practical approach without a custom AsyncSequence: check
 ### P12: AppViewModel property migration (finish P4b)
 
 P4b created `SidebarInventoryStore`, `TerminalRuntimeStore`, `HealthAndHooksStore` as
-`@Observable @MainActor` skeletons. The actual property migration is deferred here.
+`@Observable @MainActor` skeletons. The actual property migration is done here.
 
-Migration target:
+#### Architecture decision
 
-| Properties | Target store |
-|---|---|
-| `panes`, `panesBySession`, `livePaneSessionKeys`, `pinnedPaneKeys`, `offlineHosts`, `paneDisplayTitleOverrides`, `sessionGroupAliases` | `SidebarInventoryStore` |
-| `localDaemonIssue`, `localDaemonHealth`, `hasCompletedInitialFetch` | `HealthAndHooksStore` |
-| `hooksStatusCache` | `HealthAndHooksStore` |
+**Keep `AppViewModel` as `ObservableObject`**. Add the 3 stores as `let` properties.
+Inject them via `.environment()` alongside `viewModel`. Views migrate their reads to
+store environment access. `AppViewModel` retains `selectedPane`, `autoLaunchSessionName`,
+all daemon tasks / orchestration, and derived helpers (`attentionCount`, `filteredPanes`).
 
-Navigation runtime state stays in `WorkbenchStoreV2` (already separate).
+Reason: converting `AppViewModel` itself to `@Observable` would require changing all
+`@EnvironmentObject` call sites in one shot — high blast radius. Keeping it as
+`ObservableObject` + delegating storage to `@Observable` sub-stores achieves the same
+SwiftUI isolation with lower risk.
 
-`AppViewModel` becomes a thin coordinator that owns the three stores, preserving all
-public API via forwarding for backward compatibility.
+#### Property distribution
+
+| Property | Target store | Why |
+|---|---|---|
+| `panes` | `SidebarInventoryStore` | sidebar primary consumer |
+| `panesBySession` | `SidebarInventoryStore` | sidebar grouped view |
+| `sessionOrderBySource` | `SidebarInventoryStore` | DnD ordering |
+| `pinnedPaneKeys` | `SidebarInventoryStore` | pin state |
+| `paneDisplayTitleOverrides` | `SidebarInventoryStore` | title editing |
+| `statusFilter` | `SidebarInventoryStore` | filter pill |
+| `showAgentsOnly` | `SidebarInventoryStore` | filter toggle |
+| `showPinnedOnly` | `SidebarInventoryStore` | filter toggle |
+| `offlineHosts` | `TerminalRuntimeStore` | workbench tile routing |
+| `hasCompletedInitialFetch` | `TerminalRuntimeStore` | workbench tile readiness |
+| `livePaneSessionKeys` | `TerminalRuntimeStore` | workbench tile live check |
+| `hostsConfig` | `TerminalRuntimeStore` | remote host routing |
+| `localDaemonIssue` | `HealthAndHooksStore` | daemon error banner |
+| `localDaemonHealth` | `HealthAndHooksStore` | daemon health strip |
+| `hookSetupStatus` | `HealthAndHooksStore` | hooks setup banner |
+
+**Critical**: `offlineHosts`/`hasCompletedInitialFetch`/`livePaneSessionKeys` go into
+`TerminalRuntimeStore`, NOT `SidebarInventoryStore`. Placing them in `SidebarInventoryStore`
+would drag workbench tile evaluation into sidebar invalidation — defeating the purpose.
+
+#### Pre-conditions (address Codex plan-review Critical/High findings)
+
+Before migrating any reads, two structural changes must land:
+
+1. **Centralize AppViewModel write sites** — introduce private store-sync helpers in
+   `AppViewModel` so that all writes go through one call and mirror to the store atomically.
+   Example:
+   ```swift
+   private func setOfflineHosts(_ v: Set<String>) { offlineHosts = v; runtimeStore.offlineHosts = v }
+   ```
+   This prevents mirror-write drift when properties are scattered across
+   `publishFromSnapshotCache`, host add/remove, hook/health updates, etc.
+
+2. **Add `paneIdentityIndex` to `TerminalRuntimeStore`** — a dictionary
+   `[String: AgtmuxSyncV2PaneInstanceID]` keyed on `"source:sessionName:windowID:paneID"`
+   updated whenever `runtimeStore.offlineHosts` / panes publish fires.
+   This replaces the `WorkbenchAreaV2.livePaneInstanceID(for:)` → `viewModel.panes` read.
+
+#### Migration phases
+
+**Phase A — stores injected + mirror writes centralized**
+- Add stores as `let` public properties on `AppViewModel`: `sidebarStore`, `runtimeStore`, `healthStore`
+- Add `livePaneSessionKeys` to `TerminalRuntimeStore`; add `paneIdentityIndex` to `TerminalRuntimeStore`
+- Replace all raw write sites in `AppViewModel` with private store-sync helpers
+- Inject all three into SwiftUI environment in `main.swift` and `WindowChromeController.swift`
+- `swift build` + `swift test` green
+
+**Phase B — repo-wide consumer read switch**
+All SwiftUI consumers switch to store reads in one sweep (not two sub-phases — Codex
+finding: file-list sub-phases leave `@EnvironmentObject AppViewModel` in terminal
+subtree which still subscribes to `objectWillChange`).
+
+Target files and the store(s) each reads:
+- `SidebarView` → `SidebarInventoryStore` (panes, panesBySession, statusFilter, showAgentsOnly, showPinnedOnly, pinnedPaneKeys, paneDisplayTitleOverrides) + `TerminalRuntimeStore` (hostsConfig) + `HealthAndHooksStore` (localDaemonIssue)
+- `CockpitView` → `SidebarInventoryStore` (statusFilter, attentionCount)
+- `TitlebarChromeView` → `SidebarInventoryStore` / `HealthAndHooksStore`
+- `HostsManagementView` → `TerminalRuntimeStore` (hostsConfig)
+- **`SettingsView`** → `TerminalRuntimeStore` (hostsConfig) + `HealthAndHooksStore` (hookSetupStatus) — *(previously missed)*
+- `WorkbenchAreaV2` / `WorkbenchTileViewV2` → remove `@EnvironmentObject AppViewModel`; pass only `TerminalRuntimeStore` + `HealthAndHooksStore` + action closures (`onRetry: () -> Void`) — *(critical: must remove @EnvironmentObject entirely)*
+- `WorkbenchV2TerminalRestore`, `WorkbenchV2DocumentTile` → `TerminalRuntimeStore` (hostsConfig)
+
+Gate before proceeding: `rg '@EnvironmentObject.*AppViewModel' Sources/AgtmuxTerm/Workbench*.swift` must return zero matches.
+
+- `swift build` + `swift test` green
+
+**Phase C — remove @Published storage**
+- Replace `@Published var panes: [AgtmuxPane]` etc. with computed forwarders:
+  ```swift
+  var panes: [AgtmuxPane] {
+      get { sidebarStore.panes }
+      set { sidebarStore.panes = newValue }
+  }
+  ```
+- Tests and UITest bridge continue to work via forwarders
+- `rg 'viewModel\.(panes|panesBySession|offlineHosts|livePaneSessionKeys|localDaemonIssue|hookSetupStatus|hostsConfig|statusFilter|showAgentsOnly|showPinnedOnly)' Sources/AgtmuxTerm` → zero matches in SwiftUI body files
+- `swift build` + `swift test` green
+
+#### Verification
+- `rg '@EnvironmentObject.*AppViewModel' Sources/AgtmuxTerm/Workbench*.swift` → zero (Phase B gate)
+- `rg 'viewModel\.(panes|offlineHosts|livePaneSessionKeys|localDaemonIssue|hookSetupStatus|hostsConfig|statusFilter|showAgentsOnly|showPinnedOnly)' Sources/AgtmuxTerm` → zero in body files (Phase C gate)
+- `_printChanges()` on `WorkbenchTerminalTileViewV2`: `statusFilter`/pin change must NOT fire body
 
 ### P13: SurfacePool active set (minor)
 

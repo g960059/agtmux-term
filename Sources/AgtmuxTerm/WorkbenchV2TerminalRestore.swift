@@ -224,7 +224,8 @@ struct WorkbenchTerminalRebindSheetV2: View {
 
     @Environment(WorkbenchStoreV2.self) private var store
     @Environment(\.dismiss) private var dismiss
-    @EnvironmentObject private var viewModel: AppViewModel
+    @Environment(SidebarInventoryStore.self) private var sidebarStore
+    @Environment(TerminalRuntimeStore.self) private var runtimeStore
 
     @State private var selectedOptionID: String
 
@@ -304,10 +305,10 @@ struct WorkbenchTerminalRebindSheetV2: View {
 
     private var rebindOptions: [WorkbenchV2TerminalRebindOption] {
         WorkbenchV2TerminalRebindOption.liveOptions(
-            panes: viewModel.panes,
+            panes: sidebarStore.panes,
             hostsConfig: hostsConfig,
-            offlineHostnames: viewModel.offlineHosts,
-            inventoryReady: viewModel.hasCompletedInitialFetch
+            offlineHostnames: runtimeStore.offlineHosts,
+            inventoryReady: runtimeStore.hasCompletedInitialFetch
         )
     }
 

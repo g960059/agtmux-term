@@ -28,6 +28,9 @@ final class WindowChromeController: NSObject {
 
         let rootView = TitlebarChromeView()
             .environmentObject(viewModel)
+            .environment(viewModel.sidebarStore)
+            .environment(viewModel.runtimeStore)
+            .environment(viewModel.healthStore)
             .environment(workbenchStoreV2)
             .environment(chromeState)
         let hostingView = NSHostingView(rootView: rootView)

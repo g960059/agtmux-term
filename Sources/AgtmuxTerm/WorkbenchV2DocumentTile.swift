@@ -197,7 +197,7 @@ struct WorkbenchDocumentTileViewV2: View {
     let hostsConfig: HostsConfig
 
     @Environment(WorkbenchStoreV2.self) private var store
-    @EnvironmentObject private var viewModel: AppViewModel
+    @Environment(TerminalRuntimeStore.self) private var runtimeStore
     @State private var loadCoordinator = WorkbenchV2DocumentLoadCoordinator()
     @State private var retryGeneration = 0
     @State private var isPresentingRebindSheet = false
@@ -317,8 +317,8 @@ struct WorkbenchDocumentTileViewV2: View {
     private var loadRequest: WorkbenchV2DocumentLoadRequest {
         WorkbenchV2DocumentLoadRequest(
             token: loadToken,
-            offlineHostnames: viewModel.offlineHosts,
-            inventoryReady: viewModel.hasCompletedInitialFetch
+            offlineHostnames: runtimeStore.offlineHosts,
+            inventoryReady: runtimeStore.hasCompletedInitialFetch
         )
     }
 
@@ -379,7 +379,7 @@ struct WorkbenchDocumentTileViewV2: View {
 
     private func retryLoad() {
         Task {
-            await viewModel.fetchAll()
+            await runtimeStore.onRefreshInventory?()
             await MainActor.run {
                 retryGeneration += 1
             }

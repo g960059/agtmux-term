@@ -81,47 +81,113 @@ struct RemotePaneInventorySource {
 ///
 /// Polls the local agtmux daemon and any configured remote hosts every 1 second.
 /// Remote hosts are discovered via SSH + `tmux list-panes` — no agtmux required on remote.
-/// All @Published properties are mutated on the main actor.
 ///
-/// T-PERF-P4: AppViewModel owns three sub-stores. Actual property migration is deferred
-/// to a follow-up task — for now the stores are skeleton placeholders.
+/// T-PERF-P12 (Phase C): @Published storage has been replaced with computed forwarders
+/// that delegate to the sub-stores. The stores are the source of truth; AppViewModel's
+/// objectWillChange fires only for selectedPane and autoLaunchSessionName.
 ///
 /// Sub-stores:
 ///   - sidebarStore (SidebarInventoryStore): panes, filters, pinned, panesBySession
-///   - runtimeStore (TerminalRuntimeStore): hostsConfig, offlineHosts, hasCompletedInitialFetch
+///   - runtimeStore (TerminalRuntimeStore): hostsConfig, offlineHosts, hasCompletedInitialFetch, livePaneSessionKeys
 ///   - healthStore (HealthAndHooksStore): hookSetupStatus, localDaemonHealth, localDaemonIssue
 @MainActor
 final class AppViewModel: ObservableObject {
-    // MARK: - Sub-stores (T-PERF-P4 skeleton — migration of @Published props is deferred)
+    // MARK: - Sub-stores (T-PERF-P12: stores are the source of truth for migrated properties)
     let sidebarStore = SidebarInventoryStore()
     let runtimeStore = TerminalRuntimeStore()
     let healthStore = HealthAndHooksStore()
 
-    @Published var panes: [AgtmuxPane] = []
-    @Published var selectedPane: AgtmuxPane?
+    // MARK: - Computed forwarders → SidebarInventoryStore
+
+    var panes: [AgtmuxPane] {
+        get { sidebarStore.panes }
+        set { sidebarStore.panes = newValue }
+    }
+
+    var statusFilter: StatusFilter {
+        get { sidebarStore.statusFilter }
+        set {
+            sidebarStore.statusFilter = newValue
+            triggerPanesBySessionRecompute()
+        }
+    }
+
+    var showAgentsOnly: Bool {
+        get { sidebarStore.showAgentsOnly }
+        set {
+            sidebarStore.showAgentsOnly = newValue
+            triggerPanesBySessionRecompute()
+        }
+    }
+
+    var showPinnedOnly: Bool {
+        get { sidebarStore.showPinnedOnly }
+        set {
+            sidebarStore.showPinnedOnly = newValue
+            triggerPanesBySessionRecompute()
+        }
+    }
+
+    private(set) var pinnedPaneKeys: Set<String> {
+        get { sidebarStore.pinnedPaneKeys }
+        set { sidebarStore.pinnedPaneKeys = newValue }
+    }
+
+    private(set) var paneDisplayTitleOverrides: [String: String] {
+        get { sidebarStore.paneDisplayTitleOverrides }
+        set { sidebarStore.paneDisplayTitleOverrides = newValue }
+    }
+
+    private(set) var sessionOrderBySource: [String: [String]] {
+        get { sidebarStore.sessionOrderBySource }
+        set { sidebarStore.sessionOrderBySource = newValue }
+    }
+
+    private(set) var panesBySession: [(source: String, sessions: [SessionGroup])] {
+        get { sidebarStore.panesBySession }
+        set { sidebarStore.panesBySession = newValue }
+    }
+
+    // MARK: - Computed forwarders → TerminalRuntimeStore
+
     /// Set of source identifiers that are currently unreachable ("local" or hostname).
-    @Published var offlineHosts: Set<String> = []
-    @Published var statusFilter: StatusFilter = .all {
-        didSet { triggerPanesBySessionRecompute() }
+    var offlineHosts: Set<String> {
+        get { runtimeStore.offlineHosts }
+        set { runtimeStore.offlineHosts = newValue }
     }
-    @Published var showAgentsOnly: Bool = false {
-        didSet { triggerPanesBySessionRecompute() }
+
+    private(set) var hasCompletedInitialFetch: Bool {
+        get { runtimeStore.hasCompletedInitialFetch }
+        set { runtimeStore.hasCompletedInitialFetch = newValue }
     }
-    @Published var showPinnedOnly: Bool = false {
-        didSet { triggerPanesBySessionRecompute() }
+
+    private(set) var livePaneSessionKeys: Set<String> {
+        get { runtimeStore.livePaneSessionKeys }
+        set { runtimeStore.livePaneSessionKeys = newValue }
     }
+
+    // MARK: - Computed forwarders → HealthAndHooksStore
+
+    private(set) var localDaemonIssue: LocalDaemonIssue? {
+        get { healthStore.localDaemonIssue }
+        set { healthStore.localDaemonIssue = newValue }
+    }
+
+    private(set) var localDaemonHealth: AgtmuxUIHealthV1? {
+        get { healthStore.localDaemonHealth }
+        set { healthStore.localDaemonHealth = newValue }
+    }
+
+    private(set) var hookSetupStatus: HookSetupStatus {
+        get { healthStore.hookSetupStatus }
+        set { healthStore.hookSetupStatus = newValue }
+    }
+
+    // MARK: - Remaining @Published properties (no store mirror)
+    @Published var selectedPane: AgtmuxPane?
     @Published var autoLaunchSessionName: String {
         didSet { UserDefaults.standard.set(autoLaunchSessionName, forKey: "autoLaunchSessionName") }
     }
-    @Published private(set) var pinnedPaneKeys: Set<String> = []
-    @Published private(set) var paneDisplayTitleOverrides: [String: String] = [:]
-    @Published private(set) var sessionOrderBySource: [String: [String]] = [:]
-    @Published private(set) var hasCompletedInitialFetch = false
-    @Published private(set) var localDaemonIssue: LocalDaemonIssue?
-    @Published private(set) var panesBySession: [(source: String, sessions: [SessionGroup])] = []
-    @Published private(set) var livePaneSessionKeys: Set<String> = []
-    @Published private(set) var localDaemonHealth: AgtmuxUIHealthV1?
-    @Published private(set) var hookSetupStatus: HookSetupStatus = .unknown
 
     /// True if any source is offline.
     var isOffline: Bool { !offlineHosts.isEmpty }
@@ -205,7 +271,7 @@ final class AppViewModel: ObservableObject {
             )
             await MainActor.run {
                 guard self.panesBySessionGeneration == generation else { return }
-                self.panesBySession = computed
+                self.syncPanesBySession(computed)
             }
         }
     }
@@ -246,11 +312,13 @@ final class AppViewModel: ObservableObject {
 
     func setPanePinned(_ pane: AgtmuxPane, pinned: Bool) {
         let key = paneIdentityKey(for: pane)
+        var updated = pinnedPaneKeys
         if pinned {
-            pinnedPaneKeys.insert(key)
+            updated.insert(key)
         } else {
-            pinnedPaneKeys.remove(key)
+            updated.remove(key)
         }
+        syncPinnedPaneKeys(updated)
     }
 
     func setWindowPinned(_ window: WindowGroup, pinned: Bool) {
@@ -282,11 +350,13 @@ final class AppViewModel: ObservableObject {
     func setPaneDisplayTitleOverride(_ title: String?, for pane: AgtmuxPane) {
         let key = paneIdentityKey(for: pane)
         let trimmed = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        var updated = paneDisplayTitleOverrides
         if trimmed.isEmpty {
-            paneDisplayTitleOverrides.removeValue(forKey: key)
+            updated.removeValue(forKey: key)
         } else {
-            paneDisplayTitleOverrides[key] = trimmed
+            updated[key] = trimmed
         }
+        syncPaneDisplayTitleOverrides(updated)
     }
 
     private func paneIdentityKey(for pane: AgtmuxPane) -> String {
@@ -351,7 +421,7 @@ final class AppViewModel: ObservableObject {
 
         let moving = ordered.remove(at: from)
         ordered.insert(moving, at: to)
-        sessionOrderBySource[source] = ordered
+        syncSessionOrderBySource(sessionOrderBySource.merging([source: ordered]) { _, new in new })
         triggerPanesBySessionRecompute()
     }
 
@@ -361,7 +431,10 @@ final class AppViewModel: ObservableObject {
     private let localHealthClient: (any LocalHealthClient)?
     private let localInventoryClient: any LocalPaneInventoryClient
     private var remotePaneSources: [RemotePaneInventorySource] = []
-    @Published var hostsConfig: HostsConfig
+    var hostsConfig: HostsConfig {
+        get { runtimeStore.hostsConfig }
+        set { runtimeStore.hostsConfig = newValue }
+    }
     private var lastSuccessfulRemotePanesBySource: [String: [AgtmuxPane]] = [:]
     private var lastSuccessfulLocalInventory: [AgtmuxPane] = []
     private var cachedLocalMetadataByPaneKey: [String: AgtmuxPane] = [:]
@@ -528,6 +601,69 @@ final class AppViewModel: ObservableObject {
         return .localDaemonUnavailable(detail: fallbackDetail)
     }
 
+    // MARK: - Store sync helpers (T-PERF-P12)
+
+    private func syncPanes(_ newPanes: [AgtmuxPane]) {
+        sidebarStore.panes = newPanes
+        sidebarStore.attentionCount = newPanes.filter { paneNeedsAttention($0) }.count
+        var index: [String: AgtmuxSyncV2PaneInstanceID] = [:]
+        for pane in newPanes {
+            if let instanceID = pane.paneInstanceID {
+                let key = "\(pane.source):\(pane.sessionName):\(pane.windowId):\(pane.paneId)"
+                index[key] = instanceID
+            }
+        }
+        runtimeStore.paneIdentityIndex = index
+    }
+
+    private func syncPanesBySession(_ v: [(source: String, sessions: [SessionGroup])]) {
+        sidebarStore.panesBySession = v
+    }
+
+    private func syncSessionOrderBySource(_ v: [String: [String]]) {
+        sidebarStore.sessionOrderBySource = v
+    }
+
+    private func syncPinnedPaneKeys(_ v: Set<String>) {
+        sidebarStore.pinnedPaneKeys = v
+    }
+
+    private func syncPaneDisplayTitleOverrides(_ v: [String: String]) {
+        sidebarStore.paneDisplayTitleOverrides = v
+    }
+
+    private func syncStatusFilter(_ v: StatusFilter) {
+        sidebarStore.statusFilter = v
+    }
+
+    private func syncOfflineHosts(_ v: Set<String>) {
+        runtimeStore.offlineHosts = v
+    }
+
+    private func syncLivePaneSessionKeys(_ v: Set<String>) {
+        runtimeStore.livePaneSessionKeys = v
+    }
+
+    private func syncHasCompletedInitialFetch(_ v: Bool) {
+        runtimeStore.hasCompletedInitialFetch = v
+    }
+
+    private func syncLocalDaemonIssue(_ v: LocalDaemonIssue?) {
+        healthStore.localDaemonIssue = v
+    }
+
+    private func syncLocalDaemonHealth(_ v: AgtmuxUIHealthV1?) {
+        healthStore.localDaemonHealth = v
+    }
+
+    private func syncHookSetupStatus(_ v: HookSetupStatus) {
+        healthStore.hookSetupStatus = v
+    }
+
+    private func syncHostsConfig(_ v: HostsConfig) {
+        runtimeStore.hostsConfig = v
+    }
+
     private func localHealthErrorDescription(from error: any Error) -> String {
         if let healthError = error as? LocalHealthClientError {
             switch healthError {
@@ -638,6 +774,7 @@ final class AppViewModel: ObservableObject {
                 )
             }
         }
+        runtimeStore.onRefreshInventory = { [weak self] in await self?.fetchAll() }
     }
 
     // MARK: - Host Management
@@ -646,7 +783,7 @@ final class AppViewModel: ObservableObject {
         var hosts = hostsConfig.hosts
         hosts.removeAll { $0.id == host.id }
         hosts.append(host)
-        hostsConfig = HostsConfig(hosts: hosts)
+        syncHostsConfig(HostsConfig(hosts: hosts))
         remotePaneSources = hostsConfig.hosts.map { h in
             let client = RemoteTmuxClient(host: h)
             return RemotePaneInventorySource(
@@ -660,7 +797,7 @@ final class AppViewModel: ObservableObject {
     func removeHost(id: String) {
         var hosts = hostsConfig.hosts
         hosts.removeAll { $0.id == id }
-        hostsConfig = HostsConfig(hosts: hosts)
+        syncHostsConfig(HostsConfig(hosts: hosts))
         remotePaneSources = hostsConfig.hosts.map { h in
             let client = RemoteTmuxClient(host: h)
             return RemotePaneInventorySource(
@@ -728,32 +865,32 @@ final class AppViewModel: ObservableObject {
 
     func performStartupHookCheck() async {
         guard let binaryURL = binaryURLResolver() else {
-            hookSetupStatus = .unavailable
+            syncHookSetupStatus(.unavailable)
             return
         }
 
-        hookSetupStatus = .checking
+        syncHookSetupStatus(.checking)
         let exitCode = await runAgtmuxCommand(binaryURL, args: ["setup-hooks", "--check"])
         switch exitCode {
         case 0:
-            hookSetupStatus = .registered
+            syncHookSetupStatus(.registered)
         case 1:
-            hookSetupStatus = .missing
+            syncHookSetupStatus(.missing)
         default:
-            hookSetupStatus = .unavailable
+            syncHookSetupStatus(.unavailable)
         }
     }
 
     func registerHooks() async {
         guard let binaryURL = binaryURLResolver() else {
-            hookSetupStatus = .unavailable
+            syncHookSetupStatus(.unavailable)
             return
         }
 
-        hookSetupStatus = .checking
+        syncHookSetupStatus(.checking)
         let exitCode = await runAgtmuxCommand(binaryURL, args: ["setup-hooks"])
         guard exitCode >= 0 else {
-            hookSetupStatus = .unavailable
+            syncHookSetupStatus(.unavailable)
             return
         }
         await performStartupHookCheck()
@@ -761,14 +898,14 @@ final class AppViewModel: ObservableObject {
 
     func unregisterHooks() async {
         guard let binaryURL = binaryURLResolver() else {
-            hookSetupStatus = .unavailable
+            syncHookSetupStatus(.unavailable)
             return
         }
 
-        hookSetupStatus = .checking
+        syncHookSetupStatus(.checking)
         let exitCode = await runAgtmuxCommand(binaryURL, args: ["setup-hooks", "--unregister"])
         guard exitCode >= 0 else {
-            hookSetupStatus = .unavailable
+            syncHookSetupStatus(.unavailable)
             return
         }
         await performStartupHookCheck()
@@ -820,7 +957,7 @@ final class AppViewModel: ObservableObject {
             updated[source] = orderedSessionNames(source: source, currentNames: names)
         }
         if updated != sessionOrderBySource {
-            sessionOrderBySource = updated
+            syncSessionOrderBySource(updated)
         }
     }
 
@@ -945,7 +1082,7 @@ final class AppViewModel: ObservableObject {
         }
         localMetadataSyncPrimed = plan.state.syncPrimed
         localMetadataTransportVersion = plan.state.transportVersion
-        if localDaemonIssue != plan.state.daemonIssue { localDaemonIssue = plan.state.daemonIssue }
+        if localDaemonIssue != plan.state.daemonIssue { syncLocalDaemonIssue(plan.state.daemonIssue) }
         nextLocalMetadataRefreshAt = plan.state.nextRefreshAt
 
         switch plan.cacheAction {
@@ -995,7 +1132,7 @@ final class AppViewModel: ObservableObject {
             do {
                 let health = try await localHealthClient.fetchUIHealthV1()
                 try Task.checkCancellation()
-                if self.localDaemonHealth != health { self.localDaemonHealth = health }
+                if self.localDaemonHealth != health { self.syncLocalDaemonHealth(health) }
                 self.nextLocalHealthRefreshAt = Date().addingTimeInterval(self.localHealthSuccessInterval)
             } catch is CancellationError {
                 return
@@ -1005,7 +1142,7 @@ final class AppViewModel: ObservableObject {
                 }
                 switch self.classifyLocalHealthRefreshFailure(from: error) {
                 case .unsupportedMethod:
-                    self.localDaemonHealth = nil
+                    self.syncLocalDaemonHealth(nil)
                     self.nextLocalHealthRefreshAt = Date().addingTimeInterval(self.localHealthUnsupportedBackoff)
                 case .transientFailure:
                     self.nextLocalHealthRefreshAt = Date().addingTimeInterval(self.localHealthFailureBackoff)
@@ -1112,23 +1249,23 @@ final class AppViewModel: ObservableObject {
         let normalized = normalizePanes(merged)
         if normalized != panes {
             reconcileSessionOrder(with: normalized)
-            panes = normalized
+            syncPanes(normalized)
             triggerPanesBySessionRecompute()
         }
         let livePaneKeys = Set(normalized.map(paneIdentityKey(for:)))
         let newLivePaneSessionKeys = Set(normalized.map { "\($0.source):\($0.sessionName)" })
-        if newLivePaneSessionKeys != livePaneSessionKeys { livePaneSessionKeys = newLivePaneSessionKeys }
+        if newLivePaneSessionKeys != livePaneSessionKeys { syncLivePaneSessionKeys(newLivePaneSessionKeys) }
         let newPinnedPaneKeys = pinnedPaneKeys.intersection(livePaneKeys)
         if newPinnedPaneKeys != pinnedPaneKeys {
-            pinnedPaneKeys = newPinnedPaneKeys
+            syncPinnedPaneKeys(newPinnedPaneKeys)
         }
         let newPaneDisplayTitleOverrides = paneDisplayTitleOverrides.filter { livePaneKeys.contains($0.key) }
         if newPaneDisplayTitleOverrides != paneDisplayTitleOverrides {
-            paneDisplayTitleOverrides = newPaneDisplayTitleOverrides
+            syncPaneDisplayTitleOverrides(newPaneDisplayTitleOverrides)
         }
         retainSelection(in: normalized)
         if let newOffline, newOffline != offlineHosts {
-            offlineHosts = newOffline
+            syncOfflineHosts(newOffline)
         }
     }
 
@@ -1185,11 +1322,11 @@ final class AppViewModel: ObservableObject {
             localMetadataSyncPrimed = false
             localMetadataTransportVersion = nil
             localMetadataUseLongPoll = nil
-            localDaemonIssue = nil
+            syncLocalDaemonIssue(nil)
             await localClient.resetUIChangesV3()
         }
         await publishFromSnapshotCache(offlineHosts: newOffline)
-        if !hasCompletedInitialFetch { hasCompletedInitialFetch = true }
+        if !hasCompletedInitialFetch { syncHasCompletedInitialFetch(true) }
         maybeAutoLaunchSession()
     }
 

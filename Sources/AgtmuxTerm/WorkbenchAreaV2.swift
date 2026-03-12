@@ -3,7 +3,7 @@ import AgtmuxTermCore
 
 struct WorkbenchAreaV2: View {
     @Environment(WorkbenchStoreV2.self) private var store
-    @EnvironmentObject private var viewModel: AppViewModel
+    @Environment(TerminalRuntimeStore.self) private var runtimeStore
 
     var body: some View {
         Group {
@@ -12,7 +12,7 @@ struct WorkbenchAreaV2: View {
                     workbenchID: workbench.id,
                     node: workbench.root,
                     focusedTileID: workbench.focusedTileID,
-                    hostsConfig: viewModel.hostsConfig
+                    hostsConfig: runtimeStore.hostsConfig
                 )
             } else {
                 WorkbenchEmptyStateV2()
@@ -123,7 +123,8 @@ private struct WorkbenchTileViewV2: View {
     let isFocused: Bool
     let hostsConfig: HostsConfig
 
-    @EnvironmentObject private var viewModel: AppViewModel
+    @Environment(TerminalRuntimeStore.self) private var runtimeStore
+    @Environment(HealthAndHooksStore.self) private var healthStore
 
     var body: some View {
         switch tile.kind {
@@ -159,18 +160,18 @@ private struct WorkbenchTileViewV2: View {
         switch sessionRef.target {
         case .local:
             source = "local"
-            isOffline = viewModel.offlineHosts.contains("local")
+            isOffline = runtimeStore.offlineHosts.contains("local")
         case .remote(let hostKey):
             let hostname = hostsConfig.host(id: hostKey)?.hostname ?? hostKey
             source = hostname
-            isOffline = viewModel.offlineHosts.contains(hostname)
+            isOffline = runtimeStore.offlineHosts.contains(hostname)
         }
-        let paneIsLive = viewModel.livePaneSessionKeys.contains("\(source):\(sessionRef.sessionName)")
+        let paneIsLive = runtimeStore.livePaneSessionKeys.contains("\(source):\(sessionRef.sessionName)")
         return TerminalTileInventorySnapshot(
             isOffline: isOffline,
-            hasCompletedInitialFetch: viewModel.hasCompletedInitialFetch,
+            hasCompletedInitialFetch: runtimeStore.hasCompletedInitialFetch,
             paneIsLive: paneIsLive,
-            localDaemonIssue: viewModel.localDaemonIssue
+            localDaemonIssue: healthStore.localDaemonIssue
         )
     }
 }
@@ -184,7 +185,7 @@ private struct WorkbenchTerminalTileViewV2: View {
     let inventorySnapshot: TerminalTileInventorySnapshot
 
     @Environment(WorkbenchStoreV2.self) private var store
-    @EnvironmentObject private var viewModel: AppViewModel
+    @Environment(TerminalRuntimeStore.self) private var runtimeStore
     @State private var isPresentingRebindSheet = false
     @State private var navigationSyncErrorMessage: String?
     @State private var frozenAttachPlan: WorkbenchV2TerminalAttachPlan?
@@ -445,7 +446,7 @@ private struct WorkbenchTerminalTileViewV2: View {
 
     private func retryAttach() {
         Task {
-            await viewModel.fetchAll()
+            await runtimeStore.onRefreshInventory?()
         }
     }
 
@@ -884,14 +885,8 @@ private struct WorkbenchTerminalTileViewV2: View {
     private func livePaneInstanceID(
         for liveTarget: WorkbenchV2TerminalLiveTarget
     ) -> AgtmuxSyncV2PaneInstanceID? {
-        let matches = viewModel.panes.filter { pane in
-            pane.source == selectionSource
-                && pane.sessionName == liveTarget.sessionName
-                && pane.windowId == liveTarget.windowID
-                && pane.paneId == liveTarget.paneID
-        }
-        guard matches.count == 1 else { return nil }
-        return matches[0].paneInstanceID
+        let key = "\(selectionSource):\(liveTarget.sessionName):\(liveTarget.windowID):\(liveTarget.paneID)"
+        return runtimeStore.paneIdentityIndex[key]
     }
 
     private func liveObservedPaneRef(

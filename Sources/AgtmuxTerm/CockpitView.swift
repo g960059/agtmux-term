@@ -16,6 +16,7 @@ private enum CockpitChrome {
 private struct FullScreenTopBar: View {
     @EnvironmentObject private var viewModel: AppViewModel
     @Environment(CockpitChromeState.self) private var chromeState
+    @Environment(SidebarInventoryStore.self) private var sidebarStore
 
     private let sidebarExpandedWidth: CGFloat = 302
     private let iconSize: CGFloat = 20
@@ -55,14 +56,14 @@ private struct FullScreenTopBar: View {
             .buttonStyle(.plain)
 
             Button {
-                viewModel.statusFilter = viewModel.statusFilter == .attention ? .all : .attention
+                viewModel.statusFilter = sidebarStore.statusFilter == .attention ? .all : .attention
             } label: {
                 ZStack(alignment: .topTrailing) {
-                    Image(systemName: viewModel.statusFilter == .attention ? "bell.fill" : "bell")
+                    Image(systemName: sidebarStore.statusFilter == .attention ? "bell.fill" : "bell")
                         .font(.system(size: 13, weight: .semibold))
                         .frame(width: iconSize, height: iconSize)
-                    if viewModel.attentionCount > 0 {
-                        Text("\(viewModel.attentionCount)")
+                    if sidebarStore.attentionCount > 0 {
+                        Text("\(sidebarStore.attentionCount)")
                             .font(.system(size: 8, weight: .bold))
                             .foregroundStyle(.white)
                             .padding(.horizontal, 2)

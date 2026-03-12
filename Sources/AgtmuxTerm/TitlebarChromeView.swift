@@ -13,6 +13,7 @@ private enum TitlebarChromeMetrics {
 struct TitlebarChromeView: View {
     @EnvironmentObject private var viewModel: AppViewModel
     @Environment(CockpitChromeState.self) private var chromeState
+    @Environment(SidebarInventoryStore.self) private var sidebarStore
 
     private let sidebarExpandedWidth: CGFloat = 302
 
@@ -79,18 +80,18 @@ struct TitlebarChromeView: View {
             }
 
             TitlebarIconButton(
-                isActive: viewModel.statusFilter == .attention,
+                isActive: sidebarStore.statusFilter == .attention,
                 action: { toggleFilter(.attention) },
                 accessibilityLabel: "Attention",
                 ignoreAccessibilityChildren: false,
                 accessibilityID: AccessibilityID.sidebarFilterAttention
             ) {
                 ZStack(alignment: .topTrailing) {
-                    Image(systemName: viewModel.statusFilter == .attention ? "bell.fill" : "bell")
+                    Image(systemName: sidebarStore.statusFilter == .attention ? "bell.fill" : "bell")
                         .font(.system(size: TitlebarChromeMetrics.iconGlyphSize, weight: .semibold))
                         .frame(width: TitlebarChromeMetrics.iconGlyphSize, height: TitlebarChromeMetrics.iconGlyphSize)
-                    if viewModel.attentionCount > 0 {
-                        Text("\(viewModel.attentionCount)")
+                    if sidebarStore.attentionCount > 0 {
+                        Text("\(sidebarStore.attentionCount)")
                             .font(.system(size: 8, weight: .bold))
                             .foregroundStyle(.white)
                             .padding(.horizontal, 2)

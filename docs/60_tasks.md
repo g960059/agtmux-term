@@ -74,18 +74,26 @@ Design: `docs/46_design-remote-navigation.md` (Phase 5–7), `docs/45_design-ter
   - [ ] committed: `"perf: coalesce latest-only nav events before MainActor (T-PERF-P11)"`
 
 ### T-PERF-P12 — AppViewModel property migration to 3-store split
-- **Status**: TODO
+- **Status**: DONE
 - **Priority**: P2
 - **Depends**: T-PERF-P4 (skeleton already exists)
 - **Design**: `docs/46_design-remote-navigation.md` §Phase 6 / P12
-- **Files**: `AppViewModel.swift`, `SidebarInventoryStore.swift`, `TerminalRuntimeStore.swift`, `HealthAndHooksStore.swift`
+- **Files**: `AppViewModel.swift`, `SidebarInventoryStore.swift`, `TerminalRuntimeStore.swift`, `HealthAndHooksStore.swift`, `main.swift`, `WindowChromeController.swift`, `SidebarView.swift`, `WorkbenchAreaV2.swift` (+ consumers)
 - **Owner**: codex
+- **Sub-phases**:
+  - **Phase A** (centralize writes + store injection): private store-sync helpers in AppViewModel; `paneIdentityIndex` added to TerminalRuntimeStore; stores injected in environment; keep @Published; build + test green
+  - **Phase B** (repo-wide consumer read switch): ALL SwiftUI consumers switch to store reads; `@EnvironmentObject AppViewModel` removed from Workbench subtree; SettingsView included; build + test green
+  - **Phase C** (remove @Published): replace storage with computed forwarders; build + test green
 - **Acceptance Criteria**:
-  - [ ] `panes`, `panesBySession`, `livePaneSessionKeys`, `pinnedPaneKeys`, `offlineHosts`, `paneDisplayTitleOverrides`, `sessionGroupAliases` live in `SidebarInventoryStore`
-  - [ ] `localDaemonIssue`, `localDaemonHealth`, `hasCompletedInitialFetch`, `hooksStatusCache` live in `HealthAndHooksStore`
-  - [ ] `AppViewModel` forwards all public API via computed properties / delegation
-  - [ ] Sidebar update does NOT trigger terminal tile `body` re-evaluation (verify with `_printChanges`)
-  - [ ] `swift build` + `swift test` pass
+  - [ ] `SidebarInventoryStore`: owns `panes`, `panesBySession`, `sessionOrderBySource`, `pinnedPaneKeys`, `paneDisplayTitleOverrides`, `statusFilter`, `showAgentsOnly`, `showPinnedOnly`
+  - [ ] `TerminalRuntimeStore`: owns `offlineHosts`, `hasCompletedInitialFetch`, `livePaneSessionKeys`, `hostsConfig`; adds `paneIdentityIndex: [String: AgtmuxSyncV2PaneInstanceID]`
+  - [ ] `HealthAndHooksStore`: owns `localDaemonIssue`, `localDaemonHealth`, `hookSetupStatus`
+  - [ ] Stores injected via `.environment()` in `main.swift` + `WindowChromeController.swift`
+  - [ ] `rg '@EnvironmentObject.*AppViewModel' Sources/AgtmuxTerm/Workbench*.swift` → **zero matches** (Phase B gate)
+  - [ ] `AppViewModel` retains `selectedPane`, `autoLaunchSessionName`, task orchestration; migrated props become computed forwarders
+  - [ ] Zero `viewModel.(panes|offlineHosts|livePaneSessionKeys|localDaemonIssue|hookSetupStatus|hostsConfig|statusFilter|showAgentsOnly|showPinnedOnly)` in SwiftUI body files after Phase B
+  - [ ] Sidebar filter/pin change does NOT trigger `WorkbenchTerminalTileViewV2.body` re-evaluation (`_printChanges`)
+  - [ ] `swift build` + `swift test` pass at each phase
   - [ ] committed: `"perf: migrate AppViewModel properties to 3-store split (T-PERF-P12)"`
 
 ### T-PERF-P13 — SurfacePool active set maintenance

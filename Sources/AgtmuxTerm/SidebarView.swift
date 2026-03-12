@@ -22,6 +22,7 @@ private enum SidebarRowStyle {
 struct FilterBarView: View {
     let onToggleSidebar: () -> Void
     @EnvironmentObject var viewModel: AppViewModel
+    @Environment(SidebarInventoryStore.self) private var sidebarStore
 
     var body: some View {
         HStack(spacing: 8) {
@@ -34,13 +35,13 @@ struct FilterBarView: View {
             .foregroundStyle(Color.white.opacity(0.78))
             .help("Toggle Sidebar")
 
-            filterPill(isActive: viewModel.statusFilter == .attention) {
+            filterPill(isActive: sidebarStore.statusFilter == .attention) {
                 ZStack(alignment: .topTrailing) {
-                    Image(systemName: viewModel.statusFilter == .attention ? "bell.fill" : "bell")
+                    Image(systemName: sidebarStore.statusFilter == .attention ? "bell.fill" : "bell")
                         .font(.system(size: 12, weight: .semibold))
                         .frame(width: 13, height: 13)
-                    if viewModel.attentionCount > 0 {
-                        Text("\(viewModel.attentionCount)")
+                    if sidebarStore.attentionCount > 0 {
+                        Text("\(sidebarStore.attentionCount)")
                             .font(.system(size: 8, weight: .bold))
                             .foregroundColor(.white)
                             .padding(.horizontal, 3)
@@ -142,11 +143,13 @@ struct SourceHeaderView: View {
 /// target management, and a filter popover for agents / pinned filters.
 private struct SessionsHeaderView: View {
     @EnvironmentObject private var viewModel: AppViewModel
+    @Environment(SidebarInventoryStore.self) private var sidebarStore
+    @Environment(TerminalRuntimeStore.self) private var runtimeStore
     @State private var isPresentingHostsSheet = false
     @State private var isPresentingFilterPopover = false
 
     private var isFilterActive: Bool {
-        viewModel.showAgentsOnly || viewModel.showPinnedOnly
+        sidebarStore.showAgentsOnly || sidebarStore.showPinnedOnly
     }
 
     var body: some View {
@@ -159,7 +162,7 @@ private struct SessionsHeaderView: View {
 
             // "+" menu: new session + target management (no arrow indicator)
             Menu {
-                if viewModel.hostsConfig.hosts.isEmpty {
+                if runtimeStore.hostsConfig.hosts.isEmpty {
                     Button("New Session") {
                         TmuxManager.shared.createSession(source: "local", viewModel: viewModel)
                     }
@@ -167,7 +170,7 @@ private struct SessionsHeaderView: View {
                     Button("New Local Session") {
                         TmuxManager.shared.createSession(source: "local", viewModel: viewModel)
                     }
-                    ForEach(viewModel.hostsConfig.hosts) { host in
+                    ForEach(runtimeStore.hostsConfig.hosts) { host in
                         Button("New \(host.displayName ?? host.hostname) Session") {
                             TmuxManager.shared.createSession(source: host.hostname, viewModel: viewModel)
                         }
@@ -177,7 +180,7 @@ private struct SessionsHeaderView: View {
                 Button("Add SSH Target...") {
                     isPresentingHostsSheet = true
                 }
-                if !viewModel.hostsConfig.hosts.isEmpty {
+                if !runtimeStore.hostsConfig.hosts.isEmpty {
                     Button("Manage Targets...") {
                         isPresentingHostsSheet = true
                     }
@@ -223,12 +226,19 @@ private struct SessionsHeaderView: View {
 
 private struct SessionFilterPopover: View {
     @EnvironmentObject private var viewModel: AppViewModel
+    @Environment(SidebarInventoryStore.self) private var sidebarStore
 
     var body: some View {
         VStack(spacing: 0) {
-            filterRow(label: "Show Agents Only", isOn: $viewModel.showAgentsOnly)
+            filterRow(label: "Show Agents Only", isOn: Binding(
+                get: { sidebarStore.showAgentsOnly },
+                set: { viewModel.showAgentsOnly = $0 }
+            ))
             Divider().opacity(0.15)
-            filterRow(label: "Show Pinned Only", isOn: $viewModel.showPinnedOnly)
+            filterRow(label: "Show Pinned Only", isOn: Binding(
+                get: { sidebarStore.showPinnedOnly },
+                set: { viewModel.showPinnedOnly = $0 }
+            ))
         }
         .frame(width: 188)
         .padding(.vertical, 4)
@@ -480,6 +490,7 @@ struct WindowBlockView: View {
     @State private var isExpanded: Bool = true
     @EnvironmentObject private var viewModel: AppViewModel
     @Environment(WorkbenchStoreV2.self) private var workbenchStoreV2
+    @Environment(TerminalRuntimeStore.self) private var runtimeStore
 
     private var rowID: String { "window:\(window.id)" }
     private var isHighlighted: Bool { highlightedRowID == rowID }
@@ -548,7 +559,7 @@ struct WindowBlockView: View {
                 let allPinned = viewModel.areAllPanesPinned(in: window)
                 Button {
                     guard let pane = window.panes.first else { return }
-                    workbenchStoreV2.openTerminal(for: pane, hostsConfig: viewModel.hostsConfig)
+                    workbenchStoreV2.openTerminal(for: pane, hostsConfig: runtimeStore.hostsConfig)
                 } label: {
                     Label("Open in Workspace", systemImage: "rectangle.3.group")
                 }
@@ -695,6 +706,7 @@ struct PaneRowView: View {
 
     @EnvironmentObject private var viewModel: AppViewModel
     @Environment(WorkbenchStoreV2.self) private var workbenchStoreV2
+    @Environment(TerminalRuntimeStore.self) private var runtimeStore
 
     private var rowID: String { "pane:\(pane.id)" }
     private var isHighlighted: Bool { highlightedRowID == rowID }
@@ -763,7 +775,7 @@ struct PaneRowView: View {
         .contextMenu {
             let isPinned = viewModel.isPanePinned(pane)
             Button {
-                workbenchStoreV2.openTerminal(for: pane, hostsConfig: viewModel.hostsConfig)
+                workbenchStoreV2.openTerminal(for: pane, hostsConfig: runtimeStore.hostsConfig)
             } label: {
                 Label("Open", systemImage: "arrow.up.right.square")
             }
@@ -1554,7 +1566,6 @@ private extension Date {
 /// Compact 2-line info strip at sidebar bottom when hooks aren't registered.
 private struct SidebarHookInfoStrip: View {
     let status: HookSetupStatus
-    @EnvironmentObject var viewModel: AppViewModel
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
@@ -1588,22 +1599,25 @@ private struct SidebarHookInfoStrip: View {
 struct SidebarView: View {
     @EnvironmentObject var viewModel: AppViewModel
     @Environment(WorkbenchStoreV2.self) private var workbenchStoreV2
+    @Environment(SidebarInventoryStore.self) private var sidebarStore
+    @Environment(TerminalRuntimeStore.self) private var runtimeStore
+    @Environment(HealthAndHooksStore.self) private var healthStore
     @State private var highlightedRowID: String?
     @State private var draggedSession: DraggedSession?
 
     private var selectedPaneID: String? {
         workbenchStoreV2.activePaneSelection(
-            panes: viewModel.panes,
-            hostsConfig: viewModel.hostsConfig
+            panes: sidebarStore.panes,
+            hostsConfig: runtimeStore.hostsConfig
         )?.paneInventoryID
     }
 
     private var showsLocalDaemonIssueBanner: Bool {
-        viewModel.localDaemonIssue != nil && !viewModel.panesBySession.isEmpty
+        healthStore.localDaemonIssue != nil && !sidebarStore.panesBySession.isEmpty
     }
 
     private var hookWarningTopPadding: CGFloat {
-        if viewModel.localDaemonHealth != nil || showsLocalDaemonIssueBanner {
+        if healthStore.localDaemonHealth != nil || showsLocalDaemonIssueBanner {
             return 4
         }
         return 8
@@ -1616,21 +1630,21 @@ struct SidebarView: View {
             SessionsHeaderView()
                 .environmentObject(viewModel)
 
-            if let issue = viewModel.localDaemonIssue,
-               !viewModel.panesBySession.isEmpty {
+            if let issue = healthStore.localDaemonIssue,
+               !sidebarStore.panesBySession.isEmpty {
                 LocalDaemonIssueBanner(issue: issue)
             }
 
-            if viewModel.panesBySession.isEmpty {
+            if sidebarStore.panesBySession.isEmpty {
                 sidebarEmptyState
             } else {
                 ScrollViewReader { proxy in
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 0, pinnedViews: []) {
-                            ForEach(viewModel.panesBySession, id: \.source) { group in
+                            ForEach(sidebarStore.panesBySession, id: \.source) { group in
                                 let badge: String? = group.source == "local"
                                     ? nil
-                                    : (viewModel.hostsConfig.displayName(for: group.source) ?? group.source)
+                                    : (runtimeStore.hostsConfig.displayName(for: group.source) ?? group.source)
                                 ForEach(group.sessions) { session in
                                     SessionBlockView(
                                         session: session,
@@ -1641,7 +1655,7 @@ struct SidebarView: View {
                                         onSelect: { pane, _ in
                                             workbenchStoreV2.openTerminal(
                                                 for: pane,
-                                                hostsConfig: viewModel.hostsConfig
+                                                hostsConfig: runtimeStore.hostsConfig
                                             )
                                         }
                                     )
@@ -1664,9 +1678,8 @@ struct SidebarView: View {
             VStack(spacing: 0) {
                 Divider().opacity(0.12)
 
-                if viewModel.hookSetupStatus == .missing || viewModel.hookSetupStatus == .unavailable {
-                    SidebarHookInfoStrip(status: viewModel.hookSetupStatus)
-                        .environmentObject(viewModel)
+                if healthStore.hookSetupStatus == .missing || healthStore.hookSetupStatus == .unavailable {
+                    SidebarHookInfoStrip(status: healthStore.hookSetupStatus)
                 }
 
                 Button {
@@ -1723,10 +1736,10 @@ struct SidebarView: View {
     }
 
     private var emptyStateDetail: String {
-        if let issue = viewModel.localDaemonIssue {
+        if let issue = healthStore.localDaemonIssue {
             return issue.emptyStateMessage
         }
-        if viewModel.offlineHosts.contains("local") {
+        if runtimeStore.offlineHosts.contains("local") {
             return "Local agtmux daemon is unavailable. Check AGTMUX_BIN or daemon startup."
         }
         return "No tracked panes are currently available."
