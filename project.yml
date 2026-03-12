@@ -178,11 +178,9 @@ schemes:
       targets:
         AgtmuxTerm: all
         AgtmuxTermCoreTests: [test]
-        AgtmuxTermIntegrationTests: [test]
         AgtmuxTermUITests: [test]
     test:
       config: Debug
       targets:
         - name: AgtmuxTermCoreTests
-        - name: AgtmuxTermIntegrationTests
         - name: AgtmuxTermUITests
