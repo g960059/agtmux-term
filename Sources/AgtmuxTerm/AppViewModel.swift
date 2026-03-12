@@ -82,8 +82,21 @@ struct RemotePaneInventorySource {
 /// Polls the local agtmux daemon and any configured remote hosts every 1 second.
 /// Remote hosts are discovered via SSH + `tmux list-panes` — no agtmux required on remote.
 /// All @Published properties are mutated on the main actor.
+///
+/// T-PERF-P4: AppViewModel owns three sub-stores. Actual property migration is deferred
+/// to a follow-up task — for now the stores are skeleton placeholders.
+///
+/// Sub-stores:
+///   - sidebarStore (SidebarInventoryStore): panes, filters, pinned, panesBySession
+///   - runtimeStore (TerminalRuntimeStore): hostsConfig, offlineHosts, hasCompletedInitialFetch
+///   - healthStore (HealthAndHooksStore): hookSetupStatus, localDaemonHealth, localDaemonIssue
 @MainActor
 final class AppViewModel: ObservableObject {
+    // MARK: - Sub-stores (T-PERF-P4 skeleton — migration of @Published props is deferred)
+    let sidebarStore = SidebarInventoryStore()
+    let runtimeStore = TerminalRuntimeStore()
+    let healthStore = HealthAndHooksStore()
+
     @Published var panes: [AgtmuxPane] = []
     @Published var selectedPane: AgtmuxPane?
     /// Set of source identifiers that are currently unreachable ("local" or hostname).
