@@ -284,7 +284,7 @@ final class AgtmuxDaemonServiceEndpoint: NSObject, AgtmuxDaemonServiceXPCProtoco
         }
         Task {
             do {
-                let response = try await daemonClient.waitForUIChangesV1(timeoutMs: UInt64(timeoutMs.intValue))
+                let response = try await syncV3Session.waitForChangesV1(timeoutMs: UInt64(timeoutMs.intValue))
                 reply(try encode(response) as NSData, nil)
             } catch {
                 reply(nil, errorText(for: error) as NSString)

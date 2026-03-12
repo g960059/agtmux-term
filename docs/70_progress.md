@@ -20,6 +20,18 @@ Historical progress detail lives in `docs/archive/progress/2026-02-28_to_2026-03
 
 ## Recent Entries
 
+## 2026-03-12 — T-PERF-P7+P8: XPC cursor owner fix + TmuxControlMode hardening
+
+### What landed
+- **P7** (cursor owner bug fix): `ServiceEndpoint.waitForUIChangesV1` now calls `syncV3Session.waitForChangesV1(timeoutMs:)` — same cursor owner as `fetchUIBootstrapV3` / `fetchUIChangesV3` / `resetUIChangesV3`; previously split across two `AgtmuxSyncV3Session` instances
+- **P8a**: `TmuxControlMode.events` buffer policy changed from `.unbounded` → `.bufferingNewest(1024)` — prevents memory growth under heavy terminal output
+- **P8b**: `runNavigationSyncLoopControlMode` skips `.output` events immediately — main actor no longer wakes for terminal output
+- **P8c**: After each navigation event, if `desiredPaneRef.paneID` differs from observed pane, `select-pane -t <paneID>` is sent via `controlMode.send(command:)` — control-mode path now applies navigation intent
+- **P8d**: After `runNavigationSyncLoopControlMode` exits, `stopMonitoring` is called for local sessions — `tmux -C` processes no longer persist after focus changes
+
+### Acceptance criteria
+- All: `swift build` PASS, `swift test` PASS
+
 ## 2026-03-12 — T-PERF-P5+P6: XPC long-poll wiring + AppViewModel publish guards
 
 ### What landed

@@ -72,7 +72,7 @@ actor TmuxControlMode {
 
     init(sessionName: String, source: String = "local") {
         let (stream, continuation) = AsyncStream<ControlModeEvent>.makeStream(
-            bufferingPolicy: .unbounded
+            bufferingPolicy: .bufferingNewest(1024)
         )
         self.events = stream
         self.eventContinuation = continuation

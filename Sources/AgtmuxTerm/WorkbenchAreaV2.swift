@@ -634,6 +634,14 @@ private struct WorkbenchTerminalTileViewV2: View {
         // TmuxControlMode が利用可能なら event-driven パスへ
         if let controlMode = resolveControlMode(for: sessionRef) {
             await runNavigationSyncLoopControlMode(controlMode: controlMode)
+            // Release the focus lease: stop the tmux -C process when this tile's
+            // navigation task exits (cancelled on blur or snapshot stale).
+            if case .local = sessionRef.target {
+                await TmuxControlModeRegistry.shared.stopMonitoring(
+                    sessionName: sessionRef.sessionName,
+                    source: "local"
+                )
+            }
             return
         }
 
@@ -736,6 +744,8 @@ private struct WorkbenchTerminalTileViewV2: View {
     private func runNavigationSyncLoopControlMode(controlMode: TmuxControlMode) async {
         for await event in controlMode.events {
             guard !Task.isCancelled else { return }
+            // Skip terminal output events — navigation only cares about layout/session events
+            if case .output = event { continue }
             guard navigationTaskSnapshotIsCurrent else { return }
 
             switch event {
@@ -748,6 +758,10 @@ private struct WorkbenchTerminalTileViewV2: View {
                     preferredPaneID: paneId,
                     paneInstanceID: nil
                 )
+                // If a desired pane is set and differs, apply intent via control mode
+                if let desired = desiredPaneRef, desired.paneID != paneId {
+                    try? await controlMode.send(command: "select-pane -t \(desired.paneID)")
+                }
 
             case .sessionChanged(_, let sessionName):
                 // The client switched to a different session
@@ -769,6 +783,10 @@ private struct WorkbenchTerminalTileViewV2: View {
                     preferredPaneID: nil,
                     paneInstanceID: nil
                 )
+                // If a desired pane is set, apply intent via control mode
+                if let desired = desiredPaneRef {
+                    try? await controlMode.send(command: "select-pane -t \(desired.paneID)")
+                }
 
             default:
                 break

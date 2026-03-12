@@ -1466,6 +1466,26 @@ Design: `docs/45_design-terminal-performance.md`.
   - A1 and A2 local daemon/runtime/health work is complete.
   - See archive task board and progress ledger for full detail.
 
+### T-PERF-P7 — XPC cursor owner fix + TmuxControlMode hardening
+- **Status**: DONE
+- **Priority**: P0 (P7 is a regression introduced in T-PERF-P5)
+- **Design**: AI review synthesis (2026-03-12)
+- **Files**: `Sources/AgtmuxDaemonService/ServiceEndpoint.swift`, `Sources/AgtmuxTerm/TmuxControlMode.swift`, `Sources/AgtmuxTerm/WorkbenchAreaV2.swift`
+- **Description**:
+  - P7 (cursor owner bug): `ServiceEndpoint.waitForUIChangesV1` forwards to `daemonClient.waitForUIChangesV1` which uses the client's own internal `AgtmuxSyncV3Session`. But `fetchUIBootstrapV3` / `fetchUIChangesV3` / `resetUIChangesV3` all use the endpoint's `syncV3Session`. This splits cursor ownership across two session instances over the XPC path — long-poll never tracks the right seq.
+  - P8a: `TmuxControlMode.events` uses `.unbounded` buffer — terminal output floods unbounded. Change to `.bufferingNewest(1024)`.
+  - P8b: `runNavigationSyncLoopControlMode` iterates all events including `.output` — main actor wakes for every terminal output byte. Skip `.output` events early with `continue`.
+  - P8c: Control-mode path is observe-only — `desiredPaneRef` changes are never applied. After each navigation event, if `desiredPaneRef.paneID` differs from the observed pane, send `select-pane -t <paneID>` via `controlMode.send(command:)`.
+  - P8d: `resolveControlMode` calls `startMonitoring` but the task never calls `stopMonitoring` — `tmux -C` processes persist after focus changes. After `runNavigationSyncLoopControlMode` returns (cancel or snapshot stale), call `TmuxControlModeRegistry.shared.stopMonitoring`.
+- **Acceptance Criteria**:
+  - [x] `ServiceEndpoint.waitForUIChangesV1` calls `syncV3Session.waitForChangesV1(timeoutMs:)` — same cursor owner as bootstrap/changes/reset
+  - [x] `TmuxControlMode.events` uses `.bufferingNewest(1024)`
+  - [x] `runNavigationSyncLoopControlMode` skips `.output` events immediately
+  - [x] After navigation event, `desiredPaneRef` mismatch triggers `select-pane` via control mode
+  - [x] After control-mode loop exits, `stopMonitoring` is called for local sessions
+  - [x] `swift build` passes
+  - [x] `swift test` passes
+
 ### T-PERF-P5 — XPC long-poll wiring
 - **Status**: DONE
 - **Priority**: P0
