@@ -13,6 +13,15 @@ jobs:
         with:
           lfs: true
 
+      - name: Checkout agtmux fixtures (sparse)
+        run: |
+          git clone --filter=blob:none --sparse \
+            https://github.com/g960059/agtmux.git \
+            ../agtmux
+          cd ../agtmux
+          git sparse-checkout set fixtures
+          git checkout cb198cca7226666fbb26df34d4e17582a208c3e6 -- fixtures
+
       - name: Install XcodeGen
         run: brew install xcodegen
 
