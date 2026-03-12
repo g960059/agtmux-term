@@ -142,6 +142,16 @@ final class SurfacePool {
         }
     }
 
+    // MARK: - Active surface query
+
+    /// Returns the ObjectIdentifiers of all views currently in the `.active` state.
+    /// Used by GhosttyApp.tick() to skip triggerDraw() on backgrounded surfaces.
+    var activeSurfaceViewIDs: Set<ObjectIdentifier> {
+        Set(pool.values
+            .filter { $0.state == .active }
+            .map { ObjectIdentifier($0.view) })
+    }
+
     // MARK: - Helpers
 
     private func startGCTimerIfNeeded() {

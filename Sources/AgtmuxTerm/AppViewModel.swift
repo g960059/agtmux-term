@@ -1038,13 +1038,21 @@ final class AppViewModel: ObservableObject {
         let merged = sortedSources(panesBySource.keys)
             .flatMap { panesBySource[$0] ?? [] }
         let normalized = normalizePanes(merged)
-        reconcileSessionOrder(with: normalized)
-        panes = normalized
+        if normalized != panes {
+            reconcileSessionOrder(with: normalized)
+            panes = normalized
+        }
         let livePaneKeys = Set(normalized.map(paneIdentityKey(for:)))
-        pinnedPaneKeys = pinnedPaneKeys.intersection(livePaneKeys)
-        paneDisplayTitleOverrides = paneDisplayTitleOverrides.filter { livePaneKeys.contains($0.key) }
+        let newPinnedPaneKeys = pinnedPaneKeys.intersection(livePaneKeys)
+        if newPinnedPaneKeys != pinnedPaneKeys {
+            pinnedPaneKeys = newPinnedPaneKeys
+        }
+        let newPaneDisplayTitleOverrides = paneDisplayTitleOverrides.filter { livePaneKeys.contains($0.key) }
+        if newPaneDisplayTitleOverrides != paneDisplayTitleOverrides {
+            paneDisplayTitleOverrides = newPaneDisplayTitleOverrides
+        }
         retainSelection(in: normalized)
-        if let newOffline {
+        if let newOffline, newOffline != offlineHosts {
             offlineHosts = newOffline
         }
     }

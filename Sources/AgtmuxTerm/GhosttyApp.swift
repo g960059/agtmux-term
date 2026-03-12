@@ -42,7 +42,11 @@ final class GhosttyApp {
     /// Weak collection of all live terminal views.
     /// NSHashTable.weakObjects() nil-ifies entries when the view is deallocated.
     private var activeSurfaces: NSHashTable<GhosttyTerminalView> = .weakObjects()
-    private var tickCount = 0
+
+    // Wakeup coalescing: prevents N queue items from accumulating when
+    // libghostty fires wakeup_cb multiple times before tick() runs.
+    private let wakeupLock = NSLock()
+    private var wakeupPending = false
 
     private init() {
         var runtimeConfig = ghostty_runtime_config_s()
@@ -54,7 +58,13 @@ final class GhosttyApp {
         // GhosttyApp.shared is a static reference, not a capture.
         runtimeConfig.wakeup_cb = { _ in
             // libghostty calls this from an internal timer thread.
-            // Marshal tick() to the main thread.
+            // Coalesce: schedule exactly one tick() dispatch per pending cycle.
+            let app = GhosttyApp.shared
+            app.wakeupLock.lock()
+            let shouldSchedule = !app.wakeupPending
+            app.wakeupPending = true
+            app.wakeupLock.unlock()
+            guard shouldSchedule else { return }
             DispatchQueue.main.async {
                 GhosttyApp.shared.tick()
             }
@@ -190,15 +200,20 @@ final class GhosttyApp {
 
     // MARK: - Tick
 
+    @MainActor
     private func tick() {
         guard let app else { return }
-        tickCount += 1
-        if tickCount <= 5 || tickCount % 100 == 0 {
-            print("[tick] #\(tickCount) activeSurfaces=\(activeSurfaces.count)")
-        }
+        wakeupLock.lock()
+        wakeupPending = false
+        wakeupLock.unlock()
         ghostty_app_tick(app)
-        // Trigger a Metal draw on every active surface.
-        activeSurfaces.allObjects.forEach { $0.triggerDraw() }
+        // Trigger a Metal draw only on surfaces that are currently active
+        // (visible) in the pool, skipping backgrounded tiles.
+        let activeIDs = SurfacePool.shared.activeSurfaceViewIDs
+        for view in activeSurfaces.allObjects {
+            guard activeIDs.contains(ObjectIdentifier(view)) else { continue }
+            view.triggerDraw()
+        }
     }
 
     // MARK: - Surface Management
