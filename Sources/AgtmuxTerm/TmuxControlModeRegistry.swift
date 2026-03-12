@@ -26,6 +26,15 @@ final class TmuxControlModeRegistry {
         return mode
     }
 
+    /// Returns an existing TmuxControlMode only if already registered; never creates one.
+    ///
+    /// Use this when you want to subscribe to events only if monitoring is already underway
+    /// (e.g. for remote sessions where you don't want to initiate a new SSH connection).
+    func existingMode(for sessionName: String, source: String = "local") -> TmuxControlMode? {
+        let key = "\(source):\(sessionName)"
+        return modes[key]
+    }
+
     /// Start monitoring a session (idempotent).
     func startMonitoring(sessionName: String, source: String = "local") {
         let m = mode(for: sessionName, source: source)

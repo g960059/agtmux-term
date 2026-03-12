@@ -633,6 +633,13 @@ private struct WorkbenchTerminalTileViewV2: View {
             return
         }
 
+        // TmuxControlMode が利用可能なら event-driven パスへ
+        if let controlMode = resolveControlMode(for: sessionRef) {
+            await runNavigationSyncLoopControlMode(controlMode: controlMode)
+            return
+        }
+
+        // fallback: polling loop (1500ms — reduced from 400ms to cut subprocess spawn rate)
         do {
             while !Task.isCancelled {
                 guard let renderedState = GhosttyTerminalSurfaceRegistry.shared.renderedState(forTileID: tile.id),
@@ -667,7 +674,7 @@ private struct WorkbenchTerminalTileViewV2: View {
                         paneInstanceID: livePaneInstanceID(for: liveTarget)
                     )
                     navigationSyncErrorMessage = nil
-                    try await Task.sleep(for: .milliseconds(didChange ? 100 : 400))
+                    try await Task.sleep(for: .milliseconds(didChange ? 100 : 1500))
                     continue
                 }
                 if WorkbenchV2NavigationSyncResolver.shouldApplyNavigationIntent(
@@ -692,7 +699,7 @@ private struct WorkbenchTerminalTileViewV2: View {
                     preferredPaneID: liveTarget.paneID,
                     paneInstanceID: livePaneInstanceID(for: liveTarget)
                 )
-                try await Task.sleep(for: .milliseconds(400))
+                try await Task.sleep(for: .milliseconds(1500))
             }
         } catch is CancellationError {
             return
@@ -700,6 +707,74 @@ private struct WorkbenchTerminalTileViewV2: View {
             navigationSyncErrorMessage = error.localizedDescription
         } catch {
             navigationSyncErrorMessage = error.localizedDescription
+        }
+    }
+
+    /// Returns a TmuxControlMode for this session if one is available.
+    ///
+    /// For local sessions: gets-or-creates the control mode and starts monitoring.
+    /// For remote sessions: only returns an existing (already-started) mode to avoid
+    /// creating unnecessary SSH connections.
+    @MainActor
+    private func resolveControlMode(for ref: SessionRef) -> TmuxControlMode? {
+        switch ref.target {
+        case .local:
+            // Get-or-create and start monitoring for local sessions
+            TmuxControlModeRegistry.shared.startMonitoring(
+                sessionName: ref.sessionName,
+                source: "local"
+            )
+            return TmuxControlModeRegistry.shared.mode(for: ref.sessionName, source: "local")
+        case .remote:
+            // For remote sessions, only use a control mode if already registered
+            return TmuxControlModeRegistry.shared.existingMode(
+                for: ref.sessionName,
+                source: selectionSource
+            )
+        }
+    }
+
+    @MainActor
+    private func runNavigationSyncLoopControlMode(controlMode: TmuxControlMode) async {
+        for await event in controlMode.events {
+            guard !Task.isCancelled else { return }
+            guard navigationTaskSnapshotIsCurrent else { return }
+
+            switch event {
+            case .windowPaneChanged(let windowId, let paneId):
+                // Active pane changed within the current session
+                navigationSyncErrorMessage = nil
+                store.syncTerminalNavigation(
+                    tileID: tile.id,
+                    preferredWindowID: windowId,
+                    preferredPaneID: paneId,
+                    paneInstanceID: nil
+                )
+
+            case .sessionChanged(_, let sessionName):
+                // The client switched to a different session
+                navigationSyncErrorMessage = nil
+                _ = try? store.syncTerminalObservation(
+                    tileID: tile.id,
+                    observedSessionName: sessionName,
+                    preferredWindowID: nil,
+                    preferredPaneID: nil,
+                    paneInstanceID: nil
+                )
+
+            case .sessionWindowChanged(_, let windowId):
+                // Active window changed within the current session
+                navigationSyncErrorMessage = nil
+                store.syncTerminalNavigation(
+                    tileID: tile.id,
+                    preferredWindowID: windowId,
+                    preferredPaneID: nil,
+                    paneInstanceID: nil
+                )
+
+            default:
+                break
+            }
         }
     }
 
