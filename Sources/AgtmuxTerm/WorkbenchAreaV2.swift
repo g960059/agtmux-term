@@ -362,7 +362,7 @@ private struct WorkbenchTerminalTileViewV2: View {
                 if !rendersGhosttySurface {
                     Color.clear
                 } else {
-                    GhosttySurfaceHostView(
+                    GhosttyIslandRepresentable(
                         surfaceID: tile.id,
                         poolKey: plan.surfaceKey,
                         attachCommand: plan.command,
@@ -375,7 +375,7 @@ private struct WorkbenchTerminalTileViewV2: View {
                         isFocused: isFocused,
                         focusRestoreNonce: focusRestoreNonce
                     )
-                    .id("ghostty-surface:\(tile.id.uuidString):\(plan.command)")
+                    .id("ghostty-island:\(tile.id.uuidString):\(plan.command)")
                 }
 
             case .failure:
