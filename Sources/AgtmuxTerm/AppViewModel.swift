@@ -809,7 +809,9 @@ final class AppViewModel: ObservableObject {
             let names = Set((bySource[source] ?? []).map(\.sessionName))
             updated[source] = orderedSessionNames(source: source, currentNames: names)
         }
-        sessionOrderBySource = updated
+        if updated != sessionOrderBySource {
+            sessionOrderBySource = updated
+        }
     }
 
     /// Normalize panes so UI identity and grouping stay stable while preserving
