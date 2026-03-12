@@ -11,7 +11,7 @@ Design: `docs/45_design-terminal-performance.md`.
 ## Active / Next
 
 ### T-PERF-P1 — Wakeup coalescing + diff publish + visible-only draw
-- **Status**: TODO
+- **Status**: DONE
 - **Priority**: P0
 - **Design**: `docs/45_design-terminal-performance.md` §Phase 1
 - **Files**: `GhosttyApp.swift`, `SurfacePool.swift`, `AppViewModel.swift`
@@ -26,7 +26,7 @@ Design: `docs/45_design-terminal-performance.md`.
   - [ ] committed: `"perf: coalesce wakeup, visible-only draw, diff publish (T-PERF-P1)"`
 
 ### T-PERF-P2 — panesBySession caching + terminal ViewModel isolation
-- **Status**: TODO
+- **Status**: DONE
 - **Priority**: P1
 - **Depends**: T-PERF-P1
 - **Design**: `docs/45_design-terminal-performance.md` §Phase 2
@@ -41,7 +41,7 @@ Design: `docs/45_design-terminal-performance.md`.
   - [ ] committed: `"perf: cache panesBySession + isolate terminal tile from ViewModel (T-PERF-P2)"`
 
 ### T-PERF-P3 — Navigation sync: TmuxControlMode event-driven + fallback slowdown
-- **Status**: TODO
+- **Status**: DONE
 - **Priority**: P1
 - **Depends**: T-PERF-P1
 - **Design**: `docs/45_design-terminal-performance.md` §Phase 3
@@ -55,7 +55,7 @@ Design: `docs/45_design-terminal-performance.md`.
   - [ ] committed: `"perf: event-driven nav sync via TmuxControlMode, fallback 1500ms (T-PERF-P3)"`
 
 ### T-PERF-P4 — AppKit island + 3-store AppViewModel split
-- **Status**: TODO
+- **Status**: DONE (island + skeleton stores; property migration deferred to T-PERF-P4-followup)
 - **Priority**: P2
 - **Depends**: T-PERF-P2, T-PERF-P3
 - **Design**: `docs/45_design-terminal-performance.md` §Phase 4

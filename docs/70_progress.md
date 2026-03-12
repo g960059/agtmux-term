@@ -20,6 +20,30 @@ Historical progress detail lives in `docs/archive/progress/2026-02-28_to_2026-03
 
 ## Recent Entries
 
+## 2026-03-11 — T-PERF-P1 through T-PERF-P4: Terminal performance implementation complete
+
+### What landed
+- **P1** (`8856d17`): wakeup coalescing (`NSLock` + `wakeupPending`), visible-only draw in `tick()`, diff guards in `publishFromSnapshotCache`
+- **P2** (`5306673`): `panesBySession` converted to `@Published` with background recompute; `TerminalTileInventorySnapshot: Equatable` breaks direct AppViewModel dependency in terminal tile
+- **P3** (`a80447b`): `runNavigationSyncLoop()` subscribes to `TmuxControlMode.events` AsyncStream; fallback polling 400ms → 1500ms
+- **P4a** (`3255088`): `GhosttyIslandRepresentable: NSViewControllerRepresentable` replaces `GhosttySurfaceHostView` in terminal tile; SwiftUI recomposition never triggers Metal draw
+- **P4b** (`04e1449`): `SidebarInventoryStore`, `TerminalRuntimeStore`, `HealthAndHooksStore` created as `@Observable @MainActor` skeletons; `AppViewModel` wired to own all three
+
+### Acceptance criteria met
+- All phases: `swift build` PASS, `swift test` PASS (deterministic suite)
+- P4 island: `GhosttyIslandRepresentable` has no `@EnvironmentObject`; all state via value-type params
+- P4 stores: skeleton architecture in place; property migration deferred to `T-PERF-P4-followup`
+
+### Main thread load reduction (expected)
+| Bottleneck | Before | After |
+|---|---|---|
+| Wakeup fan-out | N `DispatchQueue.main.async` per scroll frame | 1 coalesced per N wakeups |
+| Backgrounded surface draws | All surfaces drawn every tick | Only `.active` surfaces drawn |
+| panes publish | Every 1s unconditional | Only when `normalized != panes` |
+| `panesBySession` compute | On every read (computed property) | Once on panes change, off-main |
+| Navigation subprocess spawns | 400ms → `Process()` spawn | Event-driven (0 spawns) or 1500ms |
+| Terminal tile recomposition | On any AppViewModel publish | Only when `TerminalTileInventorySnapshot` changes |
+
 ## 2026-03-11 — Terminal performance analysis + Phase 1-4 plan
 
 ### What landed
