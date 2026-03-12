@@ -83,9 +83,18 @@ targets:
         basedOnDependencyAnalysis: false
         script: |
           set -euo pipefail
-          src="${AGTMUX_BIN:-$SRCROOT/../agtmux/target/debug/agtmux}"
+          if [ -n "${AGTMUX_BIN:-}" ]; then
+            src="$AGTMUX_BIN"
+          elif [ "${CONFIGURATION:-Debug}" = "Release" ]; then
+            src="$SRCROOT/../agtmux/target/release/agtmux"
+          else
+            src="$SRCROOT/../agtmux/target/debug/agtmux"
+          fi
           if [ ! -x "$src" ]; then
-            echo "error: agtmux binary not found at $src; set AGTMUX_BIN or build ../agtmux/target/debug/agtmux" >&2
+            echo "error: agtmux binary not found at $src" >&2
+            echo "  For Debug:   build ../agtmux/target/debug/agtmux" >&2
+            echo "  For Release: cargo build -p agtmux --release in ../agtmux" >&2
+            echo "  Override:    set AGTMUX_BIN=/path/to/agtmux" >&2
             exit 1
           fi
           dest="$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/Tools/agtmux"
