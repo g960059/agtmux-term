@@ -66,7 +66,7 @@ xcodebuild \
     CODE_SIGNING_ALLOWED=YES \
     ENABLE_HARDENED_RUNTIME=NO \
     AGTMUX_BIN="$DAEMON_BIN" \
-    build 2>&1 | grep -E 'error:|warning:|Build succeeded|** BUILD'
+    build 2>&1 | grep -E 'error:|warning:|Build succeeded|\*\* BUILD'
 
 APP_PATH="$BUILD_DIR/${APP_NAME}.app"
 if [ ! -d "$APP_PATH" ]; then
