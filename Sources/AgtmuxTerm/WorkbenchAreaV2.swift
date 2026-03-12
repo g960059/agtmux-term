@@ -634,14 +634,6 @@ private struct WorkbenchTerminalTileViewV2: View {
         // TmuxControlMode が利用可能なら event-driven パスへ
         if let controlMode = resolveControlMode(for: sessionRef) {
             await runNavigationSyncLoopControlMode(controlMode: controlMode)
-            // Release the focus lease: stop the tmux -C process when this tile's
-            // navigation task exits (cancelled on blur or snapshot stale).
-            if case .local = sessionRef.target {
-                await TmuxControlModeRegistry.shared.stopMonitoring(
-                    sessionName: sessionRef.sessionName,
-                    source: "local"
-                )
-            }
             return
         }
 
@@ -742,6 +734,14 @@ private struct WorkbenchTerminalTileViewV2: View {
 
     @MainActor
     private func runNavigationSyncLoopControlMode(controlMode: TmuxControlMode) async {
+        // Proactively apply pending navigation intent on task entry.
+        // Required because the task restarts on every pane selection (identity change),
+        // but the event loop only fires on tmux-reported changes — without this,
+        // clicking a sidebar row would do nothing until the next spontaneous tmux event.
+        if let desired = desiredPaneRef, desired.paneID != observedPaneRef?.paneID {
+            try? await controlMode.send(command: "select-pane -t \(desired.paneID)")
+        }
+
         for await event in controlMode.events {
             guard !Task.isCancelled else { return }
             // Skip terminal output events — navigation only cares about layout/session events
