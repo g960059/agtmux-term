@@ -322,6 +322,16 @@ private struct WorkbenchTerminalTileViewV2: View {
             }
             frozenAttachPlan = nil
         }
+        .onChange(of: isFocused) { _, newFocused in
+            guard !newFocused else { return }
+            // Tile lost focus — schedule remote control mode stop after 30s
+            if case .remote(let hostKey) = sessionRef.target,
+               let host = hostsConfig.host(id: hostKey) {
+                TmuxControlModeRegistry.shared.scheduleStop(
+                    sessionName: sessionRef.sessionName,
+                    source: host.sshTarget)
+            }
+        }
         .task(id: attachPlanFreezeIdentity) {
             freezeAttachPlanIfNeeded()
         }
@@ -723,13 +733,30 @@ private struct WorkbenchTerminalTileViewV2: View {
                 source: "local"
             )
             return TmuxControlModeRegistry.shared.mode(for: ref.sessionName, source: "local")
-        case .remote:
-            // For remote sessions, only use a control mode if already registered
-            return TmuxControlModeRegistry.shared.existingMode(
-                for: ref.sessionName,
-                source: selectionSource
-            )
+        case .remote(let hostKey):
+            guard let host = hostsConfig.host(id: hostKey) else { return nil }
+            let sshTarget = host.sshTarget
+            // Cancel any pending stop (tile re-focused before 30s elapsed)
+            TmuxControlModeRegistry.shared.cancelScheduledStop(
+                sessionName: ref.sessionName, source: sshTarget)
+            // Get-or-create and start the SSH-backed control mode.
+            // TmuxControlMode.connect() uses source as the SSH target when source != "local".
+            TmuxControlModeRegistry.shared.startMonitoring(
+                sessionName: ref.sessionName, source: sshTarget)
+            return TmuxControlModeRegistry.shared.mode(
+                for: ref.sessionName, source: sshTarget)
         }
+    }
+
+    /// Returns the most precise tmux navigation command for the given pane.
+    /// Uses `switch-client -c <tty>` when the rendered client TTY is available,
+    /// falling back to `select-pane` otherwise.
+    private func navCommand(to paneID: String) -> String {
+        if let tty = GhosttyTerminalSurfaceRegistry.shared
+                .renderedState(forTileID: tile.id)?.clientTTY {
+            return "switch-client -c \(tty) -t \(paneID)"
+        }
+        return "select-pane -t \(paneID)"
     }
 
     @MainActor
@@ -739,13 +766,17 @@ private struct WorkbenchTerminalTileViewV2: View {
         // but the event loop only fires on tmux-reported changes — without this,
         // clicking a sidebar row would do nothing until the next spontaneous tmux event.
         if let desired = desiredPaneRef, desired.paneID != observedPaneRef?.paneID {
-            try? await controlMode.send(command: "select-pane -t \(desired.paneID)")
+            try? await controlMode.send(command: navCommand(to: desired.paneID))
         }
 
         for await event in controlMode.events {
             guard !Task.isCancelled else { return }
             // Skip terminal output events — navigation only cares about layout/session events
             if case .output = event { continue }
+            // Yield once to flush the cooperative queue.
+            // If the task was cancelled during yield (new pane selection), we exit cleanly.
+            await Task.yield()
+            guard !Task.isCancelled else { return }
             guard navigationTaskSnapshotIsCurrent else { return }
 
             switch event {
@@ -760,7 +791,7 @@ private struct WorkbenchTerminalTileViewV2: View {
                 )
                 // If a desired pane is set and differs, apply intent via control mode
                 if let desired = desiredPaneRef, desired.paneID != paneId {
-                    try? await controlMode.send(command: "select-pane -t \(desired.paneID)")
+                    try? await controlMode.send(command: navCommand(to: desired.paneID))
                 }
 
             case .sessionChanged(_, let sessionName):
@@ -785,7 +816,7 @@ private struct WorkbenchTerminalTileViewV2: View {
                 )
                 // If a desired pane is set, apply intent via control mode
                 if let desired = desiredPaneRef {
-                    try? await controlMode.send(command: "select-pane -t \(desired.paneID)")
+                    try? await controlMode.send(command: navCommand(to: desired.paneID))
                 }
 
             default:

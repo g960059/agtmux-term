@@ -5,10 +5,42 @@ Historical task detail lives in `docs/archive/tasks/2026-02-28_to_2026-03-06.md`
 
 ## Current Phase
 
-Terminal performance improvement (Phases 1–4).
-Design: `docs/45_design-terminal-performance.md`.
+Remote navigation + Phase 5–7 performance.
+Design: `docs/46_design-remote-navigation.md` (Phase 5–7), `docs/45_design-terminal-performance.md` (Phase 1–4).
 
-## Active / Next
+## Active / Next — Phase 5
+
+### T-PERF-P9 — SSH-backed TmuxControlMode + remote lifecycle
+- **Status**: DONE
+- **Priority**: P0 (primary use-case gap)
+- **Design**: `docs/46_design-remote-navigation.md` §Phase 5 / P9 + P9b
+- **Files**: `TmuxControlMode.swift`, `TmuxControlModeRegistry.swift`, `WorkbenchAreaV2.swift`
+- **Owner**: codex
+- **Acceptance Criteria**:
+  - [ ] `TmuxControlMode.init(sessionName:sshTarget:source:)` runs `ssh -o BatchMode=yes <sshTarget> tmux -C attach-session -t <session>` instead of local tmux
+  - [ ] `TmuxControlModeRegistry` gains `startMonitoringRemote`, `scheduleStop`, `cancelScheduledStop`
+  - [ ] `resolveControlMode` for `.remote` calls `startMonitoringRemote` (not `existingMode`)
+  - [ ] Focus/blur lifecycle: start on tile focus, schedule 30s stop on blur, cancel on re-focus
+  - [ ] Mosh hosts use SSH control mode (SSH key access assumed)
+  - [ ] SSH degraded state falls back to 1500ms polling gracefully
+  - [ ] `swift build` + `swift test` pass
+  - [ ] committed: `"perf: SSH control mode transport + remote lifecycle (T-PERF-P9)"`
+
+### T-PERF-P10 — `switch-client -c <tty>` precision in control mode navigation
+- **Status**: DONE
+- **Priority**: P1
+- **Depends**: T-PERF-P9 (control mode loop already exists; P10 adds precision)
+- **Design**: `docs/46_design-remote-navigation.md` §Phase 5 / P10
+- **Files**: `WorkbenchAreaV2.swift`
+- **Owner**: codex
+- **Acceptance Criteria**:
+  - [ ] `runNavigationSyncLoopControlMode` uses `switch-client -c <renderedClientTTY> -t <paneID>` when `renderedClientTTY` is available
+  - [ ] Falls back to `select-pane -t <paneID>` when `renderedClientTTY` is nil (before bind_client fires)
+  - [ ] No regression on local navigation
+  - [ ] `swift build` + `swift test` pass
+  - [ ] committed: `"perf: switch-client -c tty precision in control mode nav (T-PERF-P10)"`
+
+## Phase 1–4 Tasks (DONE)
 
 ### T-PERF-P1 — Wakeup coalescing + diff publish + visible-only draw
 - **Status**: DONE
@@ -24,6 +56,52 @@ Design: `docs/45_design-terminal-performance.md`.
   - [ ] `swift build` passes
   - [ ] `swift test` passes
   - [ ] committed: `"perf: coalesce wakeup, visible-only draw, diff publish (T-PERF-P1)"`
+
+## Phase 6 Tasks (TODO)
+
+### T-PERF-P11 — Navigation event coalescing (latest-only before MainActor)
+- **Status**: DONE
+- **Priority**: P2
+- **Depends**: T-PERF-P9
+- **Design**: `docs/46_design-remote-navigation.md` §Phase 6 / P11
+- **Files**: `WorkbenchAreaV2.swift`
+- **Owner**: codex
+- **Acceptance Criteria**:
+  - [ ] Consecutive `windowPaneChanged` / `sessionWindowChanged` events delivered within one run-loop turn are coalesced; only the latest triggers MainActor work
+  - [ ] `.output` events still skipped (P8b unchanged)
+  - [ ] No regression on navigation correctness
+  - [ ] `swift build` + `swift test` pass
+  - [ ] committed: `"perf: coalesce latest-only nav events before MainActor (T-PERF-P11)"`
+
+### T-PERF-P12 — AppViewModel property migration to 3-store split
+- **Status**: TODO
+- **Priority**: P2
+- **Depends**: T-PERF-P4 (skeleton already exists)
+- **Design**: `docs/46_design-remote-navigation.md` §Phase 6 / P12
+- **Files**: `AppViewModel.swift`, `SidebarInventoryStore.swift`, `TerminalRuntimeStore.swift`, `HealthAndHooksStore.swift`
+- **Owner**: codex
+- **Acceptance Criteria**:
+  - [ ] `panes`, `panesBySession`, `livePaneSessionKeys`, `pinnedPaneKeys`, `offlineHosts`, `paneDisplayTitleOverrides`, `sessionGroupAliases` live in `SidebarInventoryStore`
+  - [ ] `localDaemonIssue`, `localDaemonHealth`, `hasCompletedInitialFetch`, `hooksStatusCache` live in `HealthAndHooksStore`
+  - [ ] `AppViewModel` forwards all public API via computed properties / delegation
+  - [ ] Sidebar update does NOT trigger terminal tile `body` re-evaluation (verify with `_printChanges`)
+  - [ ] `swift build` + `swift test` pass
+  - [ ] committed: `"perf: migrate AppViewModel properties to 3-store split (T-PERF-P12)"`
+
+### T-PERF-P13 — SurfacePool active set maintenance
+- **Status**: DONE
+- **Priority**: P3
+- **Depends**: T-PERF-P1
+- **Design**: `docs/46_design-remote-navigation.md` §Phase 6 / P13
+- **Files**: `SurfacePool.swift`, `GhosttyApp.swift`
+- **Owner**: codex
+- **Acceptance Criteria**:
+  - [ ] `SurfacePool.activeSurfaceViewIDs` is maintained incrementally (updated on state transitions), not rebuilt per-tick
+  - [ ] `tick()` reads the maintained set without allocation
+  - [ ] `swift build` + `swift test` pass
+  - [ ] committed: `"perf: maintain SurfacePool active set incrementally (T-PERF-P13)"`
+
+## Phase 1–4 Tasks (DONE)
 
 ### T-PERF-P2 — panesBySession caching + terminal ViewModel isolation
 - **Status**: DONE

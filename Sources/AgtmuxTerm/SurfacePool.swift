@@ -42,6 +42,12 @@ final class SurfacePool {
     private var pool: [UUID: ManagedSurface] = [:]
     private var leafIDsByPaneID: [String: Set<UUID>] = [:]
 
+    // MARK: - Active surface set (maintained incrementally)
+
+    /// ObjectIdentifiers of views currently in the `.active` state.
+    /// Maintained incrementally rather than recomputed on every tick().
+    private(set) var activeSurfaceViewIDs: Set<ObjectIdentifier> = []
+
     // MARK: - GC timer
 
     private var gcTimer: Timer?
@@ -65,6 +71,7 @@ final class SurfacePool {
         )
         pool[leafID] = managed
         leafIDsByPaneID[tmuxPaneID, default: []].insert(leafID)
+        activeSurfaceViewIDs.insert(ObjectIdentifier(view))
     }
 
     // MARK: - Occlusion
@@ -77,6 +84,7 @@ final class SurfacePool {
               managed.state != .defunct,
               managed.state != .active else { return }
         pool[leafID]?.state = .active
+        activeSurfaceViewIDs.insert(ObjectIdentifier(managed.view))
         if let surface = managed.view.surface {
             ghostty_surface_set_occlusion(surface, true)
         }
@@ -88,6 +96,7 @@ final class SurfacePool {
         guard let managed = pool[leafID],
               managed.state == .active else { return }
         pool[leafID]?.state = .backgrounded
+        activeSurfaceViewIDs.remove(ObjectIdentifier(managed.view))
         if let surface = managed.view.surface {
             ghostty_surface_set_occlusion(surface, false)
         }
@@ -101,6 +110,10 @@ final class SurfacePool {
         guard var managed = pool[leafID],
               managed.state != .pendingGC,
               managed.state != .defunct else { return }
+        // Remove from active set before transitioning away from .active
+        if managed.state == .active {
+            activeSurfaceViewIDs.remove(ObjectIdentifier(managed.view))
+        }
         managed.state = .pendingGC
         managed.pendingGCDeadline = Date().addingTimeInterval(5)
         pool[leafID] = managed
@@ -142,16 +155,6 @@ final class SurfacePool {
         }
     }
 
-    // MARK: - Active surface query
-
-    /// Returns the ObjectIdentifiers of all views currently in the `.active` state.
-    /// Used by GhosttyApp.tick() to skip triggerDraw() on backgrounded surfaces.
-    var activeSurfaceViewIDs: Set<ObjectIdentifier> {
-        Set(pool.values
-            .filter { $0.state == .active }
-            .map { ObjectIdentifier($0.view) })
-    }
-
     // MARK: - Helpers
 
     private func startGCTimerIfNeeded() {
@@ -163,6 +166,10 @@ final class SurfacePool {
 
     private func deregisterInternal(leafID: UUID) {
         guard let managed = pool[leafID] else { return }
+        // Remove from active set if this entry was active
+        if managed.state == .active {
+            activeSurfaceViewIDs.remove(ObjectIdentifier(managed.view))
+        }
         leafIDsByPaneID[managed.tmuxPaneID]?.remove(leafID)
         if leafIDsByPaneID[managed.tmuxPaneID]?.isEmpty == true {
             leafIDsByPaneID.removeValue(forKey: managed.tmuxPaneID)

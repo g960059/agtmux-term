@@ -12,6 +12,7 @@ final class TmuxControlModeRegistry {
     static let shared = TmuxControlModeRegistry()
 
     private var modes: [String: TmuxControlMode] = [:]  // key: "source:sessionName"
+    private var scheduledStops: [String: Task<Void, Never>] = [:]  // key: "source:sessionName"
 
     private init() {}
 
@@ -47,6 +48,33 @@ final class TmuxControlModeRegistry {
         guard let m = modes[key] else { return }
         modes.removeValue(forKey: key)  // Remove first to prevent new start racing
         await m.stop()
+    }
+
+    // MARK: - Blur lifecycle
+
+    /// Schedule a stop after a delay (for remote session blur lifecycle).
+    /// Cancels any previously scheduled stop for the same key.
+    func scheduleStop(sessionName: String, source: String, afterDelay: TimeInterval = 30) {
+        let key = "\(source):\(sessionName)"
+        scheduledStops[key]?.cancel()
+        scheduledStops[key] = Task { [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: UInt64(afterDelay * 1_000_000_000))
+            } catch {
+                return  // cancelled
+            }
+            await self?.stopMonitoring(sessionName: sessionName, source: source)
+            // Capture key by value to avoid capturing mutable self across actor boundary.
+            let capturedKey = key
+            Task { @MainActor [weak self] in self?.scheduledStops.removeValue(forKey: capturedKey) }
+        }
+    }
+
+    /// Cancel a previously scheduled stop (called on re-focus).
+    func cancelScheduledStop(sessionName: String, source: String) {
+        let key = "\(source):\(sessionName)"
+        scheduledStops[key]?.cancel()
+        scheduledStops.removeValue(forKey: key)
     }
 
     // MARK: - Safe kill

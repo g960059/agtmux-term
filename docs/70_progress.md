@@ -20,6 +20,67 @@ Historical progress detail lives in `docs/archive/progress/2026-02-28_to_2026-03
 
 ## Recent Entries
 
+## 2026-03-12 — T-PERF-P9+P10+P11+P13: Remote control mode + navigation precision + SurfacePool
+
+### What landed
+- **P9** (remote control mode lifecycle):
+  - `TmuxControlModeRegistry` gains `scheduleStop` / `cancelScheduledStop` for blur lifecycle
+  - `resolveControlMode` for `.remote` now calls `startMonitoring` (get-or-create SSH mode) instead of `existingMode` — remote sessions now get event-driven navigation
+  - `TmuxControlMode.connect()` already handled SSH (`source != "local"` → runs `ssh -o BatchMode=yes <source> tmux -C attach-session -t <session>`)
+  - `.onChange(of: isFocused)` schedules 30s stop on tile blur; re-focus cancels it
+  - Mosh hosts use SSH control mode (SSH key access assumed)
+- **P10** (`switch-client -c <tty>` precision):
+  - `navCommand(to:)` helper returns `switch-client -c <tty> -t <paneID>` when rendered client TTY available, falls back to `select-pane -t <paneID>`
+  - All 3 send sites in `runNavigationSyncLoopControlMode` use `navCommand(to:)`
+- **P11** (nav event coalescing): `await Task.yield()` + second cancellation check added in `runNavigationSyncLoopControlMode` before MainActor work — rapid nav event bursts exit stale tasks cleanly
+- **P13** (SurfacePool active set): `activeSurfaceViewIDs` changed from computed (O(n) filter per tick) to maintained `private(set) var` updated at all state-transition sites
+
+### Verification
+- `swift build` PASS
+- `swift test` 308/308 PASS
+- Live e2e `AppViewModelLiveManagedAgentTests` 9/9 PASS
+
+## 2026-03-12 — Phase 5–7 planning: remote navigation architecture
+
+### What landed
+- `docs/46_design-remote-navigation.md`: root-cause analysis of remote navigation gap + 3-phase plan
+- `docs/60_tasks.md`: T-PERF-P9 through T-PERF-P13 task entries
+- Two external AI reviews synthesized; remote-first lens applied to prioritization
+
+### Root cause confirmed
+Remote sessions never get a control mode — `resolveControlMode` for `.remote` only calls
+`existingMode()`, which is never populated (no lifecycle starts it). Result: remote users
+always fall back to 1500ms polling regardless of Phase 3 improvements.
+
+### Phase 5 plan
+- **T-PERF-P9**: `TmuxControlMode` SSH transport + focus/blur lifecycle for remote sessions
+- **T-PERF-P10**: `switch-client -c <tty>` precision replaces `select-pane` in control mode loop
+
+### Phase 6 plan
+- **T-PERF-P11**: Latest-only nav event coalescing before MainActor
+- **T-PERF-P12**: AppViewModel property migration to 3-store split (finish P4b skeleton)
+- **T-PERF-P13**: SurfacePool active set maintenance (minor)
+
+### Phase 7 (long-term)
+- Daemon as tmux navigation authority — daemon owns control mode subprocesses, exposes
+  `tmux.nav.events.v1` RPC; eliminates per-session SSH management from term
+
+## 2026-03-12 — Navigation bug fix: P8d + proactive intent
+
+### What landed
+- Removed P8d (`stopMonitoring` after `runNavigationSyncLoopControlMode` exits) — P8d was
+  killing the control mode stream on every sidebar pane selection because
+  `navigationSyncTaskIdentity` changes with `activePaneRef.paneID`
+- Added proactive `select-pane -t <paneID>` at entry of `runNavigationSyncLoopControlMode`
+  so clicking a sidebar row applies intent immediately instead of waiting for the next tmux event
+
+### Root cause (P8d regression)
+Task restarts on every `activePaneRef.paneID` change. P8d's `stopMonitoring` was called by
+the exiting task → stream finished → new task's for-await immediately exited → `return`
+before fallback polling → navigation permanently dead for any pane selection.
+
+### 9/9 live e2e PASS after fix
+
 ## 2026-03-12 — T-PERF-P7+P8: XPC cursor owner fix + TmuxControlMode hardening
 
 ### What landed
