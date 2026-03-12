@@ -14,7 +14,7 @@ settings:
     # CRITICAL: -package-name makes both targets share the 'agtmux_term' Swift package namespace.
     # This allows 'package' access modifier to work across XcodeGen targets just like SwiftPM.
     OTHER_SWIFT_FLAGS: "$(inherited) -package-name agtmux_term"
-    MARKETING_VERSION: "0.1.3"
+    MARKETING_VERSION: "0.1.4"
     CURRENT_PROJECT_VERSION: "1"
 
 targetTemplates:
