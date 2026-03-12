@@ -1173,6 +1173,8 @@ final class AppViewModelA0Tests: XCTestCase {
             "session_group metadata must not collapse exact sessions in the normal sidebar path"
         )
         XCTAssertEqual(model.panes.count, 2)
+        let panesBySessionReady = await waitUntil { model.panesBySession.first != nil }
+        XCTAssertTrue(panesBySessionReady, "panesBySession should populate within timeout")
         XCTAssertEqual(model.panesBySession.first?.sessions.count, 2)
     }
 

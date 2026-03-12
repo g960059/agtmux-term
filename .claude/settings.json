@@ -1,0 +1,70 @@
+{
+  "hooks": {
+    "Notification": [
+      {
+        "command": "AGTMUX_HOOK_TYPE=Notification agtmux-claude-hook.sh",
+        "type": "command"
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "command": "AGTMUX_HOOK_TYPE=PermissionRequest agtmux-claude-hook.sh",
+        "type": "command"
+      }
+    ],
+    "PostToolUse": [
+      {
+        "command": "AGTMUX_HOOK_TYPE=PostToolUse agtmux-claude-hook.sh",
+        "type": "command"
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "command": "AGTMUX_HOOK_TYPE=PostToolUseFailure agtmux-claude-hook.sh",
+        "type": "command"
+      }
+    ],
+    "PreCompact": [
+      {
+        "command": "AGTMUX_HOOK_TYPE=PreCompact agtmux-claude-hook.sh",
+        "type": "command"
+      }
+    ],
+    "PreToolUse": [
+      {
+        "command": "AGTMUX_HOOK_TYPE=PreToolUse agtmux-claude-hook.sh",
+        "type": "command"
+      }
+    ],
+    "SessionEnd": [
+      {
+        "command": "AGTMUX_HOOK_TYPE=SessionEnd agtmux-claude-hook.sh",
+        "type": "command"
+      }
+    ],
+    "SessionStart": [
+      {
+        "command": "AGTMUX_HOOK_TYPE=SessionStart agtmux-claude-hook.sh",
+        "type": "command"
+      }
+    ],
+    "Stop": [
+      {
+        "command": "AGTMUX_HOOK_TYPE=Stop agtmux-claude-hook.sh",
+        "type": "command"
+      }
+    ],
+    "SubagentStop": [
+      {
+        "command": "AGTMUX_HOOK_TYPE=SubagentStop agtmux-claude-hook.sh",
+        "type": "command"
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "command": "AGTMUX_HOOK_TYPE=UserPromptSubmit agtmux-claude-hook.sh",
+        "type": "command"
+      }
+    ]
+  }
+}
