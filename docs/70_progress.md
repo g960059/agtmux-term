@@ -20,6 +20,26 @@ Historical progress detail lives in `docs/archive/progress/2026-02-28_to_2026-03
 
 ## Recent Entries
 
+## 2026-03-11 — Terminal performance analysis + Phase 1-4 plan
+
+### What landed
+- `docs/45_design-terminal-performance.md`: root-cause analysis and 4-phase implementation plan
+- `docs/60_tasks.md`: T-PERF-P1 through T-PERF-P4 task entries
+
+### Root causes confirmed (code review)
+1. `GhosttyApp.wakeup_cb` enqueues unbounded `DispatchQueue.main.async` items → main queue backlog during scroll
+2. `tick()` calls `triggerDraw()` on ALL activeSurfaces including backgrounded ones
+3. `publishFromSnapshotCache()` unconditionally assigns `panes =` every second → all SwiftUI subscribers re-evaluate
+4. `panesBySession` is computed (full grouping+sort on every read)
+5. `runNavigationSyncLoop()` spawns `Process()` (list-clients) every 400ms on @MainActor
+6. `TmuxControlMode` actor exists with AsyncStream events but nav sync loop doesn't use it
+
+### Next
+- T-PERF-P1: codex implementation (GhosttyApp coalescing + diff publish)
+- T-PERF-P2: codex (panesBySession cache + terminal isolation) — after P1
+- T-PERF-P3: codex (TmuxControlMode event-driven nav sync) — after P1
+- T-PERF-P4: codex (AppKit island + 3-store split) — after P2+P3
+
 ## 2026-03-11 — T-SM03 sidebar 1-line compact row with provider-left status badge
 
 ### What landed

@@ -5,10 +5,69 @@ Historical task detail lives in `docs/archive/tasks/2026-02-28_to_2026-03-06.md`
 
 ## Current Phase
 
-Mainline docs are aligned to the V2 tmux-first cockpit.
-Commit closeout is clear; next implementation proceeds on the new Workbench path.
+Terminal performance improvement (Phases 1–4).
+Design: `docs/45_design-terminal-performance.md`.
 
 ## Active / Next
+
+### T-PERF-P1 — Wakeup coalescing + diff publish + visible-only draw
+- **Status**: TODO
+- **Priority**: P0
+- **Design**: `docs/45_design-terminal-performance.md` §Phase 1
+- **Files**: `GhosttyApp.swift`, `SurfacePool.swift`, `AppViewModel.swift`
+- **Owner**: codex
+- **Acceptance Criteria**:
+  - [ ] `GhosttyApp.wakeup_cb` uses `wakeupPending` atomic flag — only one `DispatchQueue.main.async` enqueued at a time
+  - [ ] `tick()` draws only surfaces with `SurfacePool.state == .active`; backgrounded surfaces skipped
+  - [ ] `print("[tick] #...")` log removed from `tick()`
+  - [ ] `publishFromSnapshotCache`: `panes =` guarded by `if normalized != panes`; same for `offlineHosts`, `pinnedPaneKeys`
+  - [ ] `swift build` passes
+  - [ ] `swift test` passes
+  - [ ] committed: `"perf: coalesce wakeup, visible-only draw, diff publish (T-PERF-P1)"`
+
+### T-PERF-P2 — panesBySession caching + terminal ViewModel isolation
+- **Status**: TODO
+- **Priority**: P1
+- **Depends**: T-PERF-P1
+- **Design**: `docs/45_design-terminal-performance.md` §Phase 2
+- **Files**: `AppViewModel.swift`, `WorkbenchAreaV2.swift`
+- **Owner**: codex
+- **Acceptance Criteria**:
+  - [ ] `panesBySession` is `@Published private(set) var`, not computed; recomputed off-main when `panes` changes
+  - [ ] `computePanesBySession(...)` is a `static func` (no captures)
+  - [ ] `TerminalTileInventorySnapshot: Equatable` introduced
+  - [ ] `WorkbenchTerminalTileViewV2` no longer reads `viewModel.panes` / `viewModel.offlineHosts` directly; uses snapshot
+  - [ ] `swift build` passes; `swift test` passes
+  - [ ] committed: `"perf: cache panesBySession + isolate terminal tile from ViewModel (T-PERF-P2)"`
+
+### T-PERF-P3 — Navigation sync: TmuxControlMode event-driven + fallback slowdown
+- **Status**: TODO
+- **Priority**: P1
+- **Depends**: T-PERF-P1
+- **Design**: `docs/45_design-terminal-performance.md` §Phase 3
+- **Files**: `WorkbenchAreaV2.swift`, `TmuxControlModeRegistry.swift`
+- **Owner**: codex
+- **Acceptance Criteria**:
+  - [ ] `runNavigationSyncLoop()` subscribes to `TmuxControlMode.events` when control mode available
+  - [ ] Fallback polling interval increased from 400ms → 1500ms
+  - [ ] Navigation sync still correctly reflects session/window/pane changes (manual verification)
+  - [ ] `swift build` passes; `swift test` passes
+  - [ ] committed: `"perf: event-driven nav sync via TmuxControlMode, fallback 1500ms (T-PERF-P3)"`
+
+### T-PERF-P4 — AppKit island + 3-store AppViewModel split
+- **Status**: TODO
+- **Priority**: P2
+- **Depends**: T-PERF-P2, T-PERF-P3
+- **Design**: `docs/45_design-terminal-performance.md` §Phase 4
+- **Files**: new `WorkbenchGhosttyIsland.swift`, new `SidebarInventoryStore.swift`, new `TerminalRuntimeStore.swift`, new `HealthAndHooksStore.swift`, `AppViewModel.swift`, `WorkbenchAreaV2.swift`
+- **Owner**: codex
+- **Acceptance Criteria**:
+  - [ ] `GhosttyIslandRepresentable: NSViewControllerRepresentable` introduced; no `@EnvironmentObject` in the island
+  - [ ] `SidebarInventoryStore` / `TerminalRuntimeStore` / `HealthAndHooksStore` exist as `@Observable @MainActor` classes
+  - [ ] `AppViewModel` delegates to the three stores; public API preserved via forwarding
+  - [ ] Sidebar update does NOT trigger island body re-evaluation (verified with `_printChanges`)
+  - [ ] `swift build` passes; `swift test` passes
+  - [ ] committed: `"perf: AppKit island + 3-store split (T-PERF-P4)"`
 
 ### T-SM03 — sidebar 1-line compact row with provider-left status badge
 - **Status**: IN_PROGRESS
