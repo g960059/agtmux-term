@@ -1466,6 +1466,40 @@ Design: `docs/45_design-terminal-performance.md`.
   - A1 and A2 local daemon/runtime/health work is complete.
   - See archive task board and progress ledger for full detail.
 
+### T-PERF-P5 — XPC long-poll wiring
+- **Status**: DONE
+- **Priority**: P0
+- **Design**: AI review synthesis (2026-03-12)
+- **Files**: `Sources/AgtmuxTermCore/AgtmuxDaemonXPCContract.swift`, `Sources/AgtmuxTerm/AgtmuxDaemonXPCClient.swift`, `Sources/AgtmuxDaemonService/ServiceEndpoint.swift`
+- **Description**:
+  - `AgtmuxDaemonXPCProtocol` was missing `waitForUIChangesV1`, so `LocalMetadataRefreshCoordinator` fell through to `unsupportedMethod` and disabled long-poll, forcing 1-second poll-only mode through XPC.
+  - Add the method to the XPC protocol, client, and service endpoint to wire long-poll through XPC the same way the direct-socket client does.
+- **Acceptance Criteria**:
+  - [x] `AgtmuxDaemonServiceXPCProtocol` includes `waitForUIChangesV1(_ timeoutMs: NSNumber, reply:)`
+  - [x] `AgtmuxDaemonXPCClient.waitForUIChangesV1(timeoutMs:)` calls through via `invoke`
+  - [x] `AgtmuxDaemonServiceEndpoint` implements the method by forwarding to `daemonClient.waitForUIChangesV1`
+  - [x] `swift build` passes
+  - [x] `swift test` passes
+
+### T-PERF-P6 — AppViewModel publish guards + panesBySession race fix + O(1) pane check
+- **Status**: DONE
+- **Priority**: P1
+- **Design**: AI review synthesis (2026-03-12)
+- **Files**: `Sources/AgtmuxTerm/AppViewModel.swift`, `Sources/AgtmuxTerm/WorkbenchAreaV2.swift`
+- **Description**:
+  - C1: `localDaemonIssue`, `localDaemonHealth`, `hasCompletedInitialFetch` are assigned every cycle without equality guards, causing unnecessary `@Published` fires and SwiftUI re-renders.
+  - C2: `triggerPanesBySessionRecompute()` uses `Task.detached` with unconditional assignment — stale tasks from a previous snapshot can overwrite a fresher result.
+  - C3: `WorkbenchTileViewV2` calls `viewModel.panes.contains { ... }` — O(n) scan per tile per render cycle. Replace with a `@Published livePaneSessionKeys: Set<String>` for O(1) lookup.
+- **Acceptance Criteria**:
+  - [x] `localDaemonIssue` assignment guarded by `!=`
+  - [x] `localDaemonHealth` assignment guarded by `!=`
+  - [x] `hasCompletedInitialFetch = true` guarded by `if !hasCompletedInitialFetch`
+  - [x] `triggerPanesBySessionRecompute` uses a generation counter; stale tasks are discarded
+  - [x] `AppViewModel` exposes `@Published private(set) var livePaneSessionKeys: Set<String>`
+  - [x] `WorkbenchTileViewV2.inventorySnapshot(...)` uses `livePaneSessionKeys` for O(1) lookup
+  - [x] `swift build` passes
+  - [x] `swift test` passes
+
 ## Archive
 
 - Full historical task board:

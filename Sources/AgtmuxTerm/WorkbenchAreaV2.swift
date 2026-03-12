@@ -165,9 +165,7 @@ private struct WorkbenchTileViewV2: View {
             source = hostname
             isOffline = viewModel.offlineHosts.contains(hostname)
         }
-        let paneIsLive = viewModel.panes.contains { pane in
-            pane.source == source && pane.sessionName == sessionRef.sessionName
-        }
+        let paneIsLive = viewModel.livePaneSessionKeys.contains("\(source):\(sessionRef.sessionName)")
         return TerminalTileInventorySnapshot(
             isOffline: isOffline,
             hasCompletedInitialFetch: viewModel.hasCompletedInitialFetch,

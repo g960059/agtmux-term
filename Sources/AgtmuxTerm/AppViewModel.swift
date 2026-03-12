@@ -119,6 +119,7 @@ final class AppViewModel: ObservableObject {
     @Published private(set) var hasCompletedInitialFetch = false
     @Published private(set) var localDaemonIssue: LocalDaemonIssue?
     @Published private(set) var panesBySession: [(source: String, sessions: [SessionGroup])] = []
+    @Published private(set) var livePaneSessionKeys: Set<String> = []
     @Published private(set) var localDaemonHealth: AgtmuxUIHealthV1?
     @Published private(set) var hookSetupStatus: HookSetupStatus = .unknown
 
@@ -185,6 +186,8 @@ final class AppViewModel: ObservableObject {
     /// Schedule an off-main recomputation of `panesBySession` from the current
     /// `filteredPanes` and `sessionOrderBySource`.
     private func triggerPanesBySessionRecompute() {
+        panesBySessionGeneration &+= 1
+        let generation = panesBySessionGeneration
         let snapshot = filteredPanes
         let orderSnapshot = sessionOrderBySource
         Task.detached(priority: .userInitiated) { [weak self] in
@@ -200,7 +203,10 @@ final class AppViewModel: ObservableObject {
                     }
                 }
             )
-            await MainActor.run { self.panesBySession = computed }
+            await MainActor.run {
+                guard self.panesBySessionGeneration == generation else { return }
+                self.panesBySession = computed
+            }
         }
     }
 
@@ -361,6 +367,7 @@ final class AppViewModel: ObservableObject {
     private var cachedLocalMetadataByPaneKey: [String: AgtmuxPane] = [:]
     private var cachedLocalPresentationByPaneKey: [String: PanePresentationState] = [:]
     private var hasAttemptedAutoLaunch = false
+    private var panesBySessionGeneration = 0
     private var localMetadataRefreshTask: Task<Void, Never>?
     private var localHealthRefreshTask: Task<Void, Never>?
     private var localMetadataSyncPrimed = false
@@ -938,7 +945,7 @@ final class AppViewModel: ObservableObject {
         }
         localMetadataSyncPrimed = plan.state.syncPrimed
         localMetadataTransportVersion = plan.state.transportVersion
-        localDaemonIssue = plan.state.daemonIssue
+        if localDaemonIssue != plan.state.daemonIssue { localDaemonIssue = plan.state.daemonIssue }
         nextLocalMetadataRefreshAt = plan.state.nextRefreshAt
 
         switch plan.cacheAction {
@@ -988,7 +995,7 @@ final class AppViewModel: ObservableObject {
             do {
                 let health = try await localHealthClient.fetchUIHealthV1()
                 try Task.checkCancellation()
-                self.localDaemonHealth = health
+                if self.localDaemonHealth != health { self.localDaemonHealth = health }
                 self.nextLocalHealthRefreshAt = Date().addingTimeInterval(self.localHealthSuccessInterval)
             } catch is CancellationError {
                 return
@@ -1109,6 +1116,8 @@ final class AppViewModel: ObservableObject {
             triggerPanesBySessionRecompute()
         }
         let livePaneKeys = Set(normalized.map(paneIdentityKey(for:)))
+        let newLivePaneSessionKeys = Set(normalized.map { "\($0.source):\($0.sessionName)" })
+        if newLivePaneSessionKeys != livePaneSessionKeys { livePaneSessionKeys = newLivePaneSessionKeys }
         let newPinnedPaneKeys = pinnedPaneKeys.intersection(livePaneKeys)
         if newPinnedPaneKeys != pinnedPaneKeys {
             pinnedPaneKeys = newPinnedPaneKeys
@@ -1180,7 +1189,7 @@ final class AppViewModel: ObservableObject {
             await localClient.resetUIChangesV3()
         }
         await publishFromSnapshotCache(offlineHosts: newOffline)
-        hasCompletedInitialFetch = true
+        if !hasCompletedInitialFetch { hasCompletedInitialFetch = true }
         maybeAutoLaunchSession()
     }
 

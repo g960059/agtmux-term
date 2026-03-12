@@ -516,6 +516,10 @@ private final class HealthServiceBridge: NSObject, AgtmuxDaemonServiceXPCProtoco
         }
     }
 
+    func waitForUIChangesV1(_ timeoutMs: NSNumber, reply: @escaping (NSData?, NSString?) -> Void) {
+        reply(nil, "unexpected waitForUIChangesV1 call" as NSString)
+    }
+
     func resetUIChangesV3(_ reply: @escaping () -> Void) {
         reply()
     }
@@ -568,6 +572,10 @@ private final class BootstrapV3ServiceBridge: NSObject, AgtmuxDaemonServiceXPCPr
 
     func fetchUIHealthV1(_ reply: @escaping (NSData?, NSString?) -> Void) {
         reply(nil, "unexpected fetchUIHealthV1 call" as NSString)
+    }
+
+    func waitForUIChangesV1(_ timeoutMs: NSNumber, reply: @escaping (NSData?, NSString?) -> Void) {
+        reply(nil, "unexpected waitForUIChangesV1 call" as NSString)
     }
 
     func resetUIChangesV3(_ reply: @escaping () -> Void) {

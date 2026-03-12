@@ -20,6 +20,7 @@ public enum AgtmuxDaemonXPC {
     func fetchUIBootstrapV3(_ reply: @escaping (NSData?, NSString?) -> Void)
     func fetchUIChangesV3(_ limit: NSNumber, reply: @escaping (NSData?, NSString?) -> Void)
     func fetchUIHealthV1(_ reply: @escaping (NSData?, NSString?) -> Void)
+    func waitForUIChangesV1(_ timeoutMs: NSNumber, reply: @escaping (NSData?, NSString?) -> Void)
     func resetUIChangesV3(_ reply: @escaping () -> Void)
     func stopManagedDaemon(_ reply: @escaping () -> Void)
 }

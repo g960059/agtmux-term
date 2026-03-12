@@ -20,6 +20,17 @@ Historical progress detail lives in `docs/archive/progress/2026-02-28_to_2026-03
 
 ## Recent Entries
 
+## 2026-03-12 — T-PERF-P5+P6: XPC long-poll wiring + AppViewModel publish guards
+
+### What landed
+- **T-PERF-P5**: `waitForUIChangesV1` wired through XPC protocol, XPC client, and XPC service endpoint — long-poll now works via the XPC path (previously fell back to `unsupportedMethod`, disabling long-poll)
+- **T-PERF-P6a** (C1): `localDaemonIssue`, `localDaemonHealth`, `hasCompletedInitialFetch` assignments guarded by equality checks to suppress unnecessary `@Published` fires
+- **T-PERF-P6b** (C2): `triggerPanesBySessionRecompute` uses a generation counter; stale `Task.detached` results are discarded so the latest snapshot always wins
+- **T-PERF-P6c** (C3): `AppViewModel.livePaneSessionKeys: Set<String>` replaces the O(n) `panes.contains { ... }` scan in `WorkbenchTileViewV2.inventorySnapshot`
+
+### Acceptance criteria
+- All: `swift build` PASS, `swift test` PASS
+
 ## 2026-03-11 — T-PERF-P1 through T-PERF-P4: Terminal performance implementation complete
 
 ### What landed

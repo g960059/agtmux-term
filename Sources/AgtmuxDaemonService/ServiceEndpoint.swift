@@ -277,6 +277,21 @@ final class AgtmuxDaemonServiceEndpoint: NSObject, AgtmuxDaemonServiceXPCProtoco
         }
     }
 
+    func waitForUIChangesV1(_ timeoutMs: NSNumber, reply: @escaping (NSData?, NSString?) -> Void) {
+        guard supervisor.startIfNeeded() else {
+            reply(nil, "agtmux daemon unavailable" as NSString)
+            return
+        }
+        Task {
+            do {
+                let response = try await daemonClient.waitForUIChangesV1(timeoutMs: UInt64(timeoutMs.intValue))
+                reply(try encode(response) as NSData, nil)
+            } catch {
+                reply(nil, errorText(for: error) as NSString)
+            }
+        }
+    }
+
     func resetUIChangesV3(_ reply: @escaping () -> Void) {
         Task {
             await syncV3Session.reset()

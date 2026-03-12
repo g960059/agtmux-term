@@ -40,6 +40,10 @@ final class AgtmuxDaemonXPCClientTests: XCTestCase {
             reply(healthReply.0.map { $0 as NSData }, healthReply.1.map { $0 as NSString })
         }
 
+        func waitForUIChangesV1(_ timeoutMs: NSNumber, reply: @escaping (NSData?, NSString?) -> Void) {
+            reply(nil, "unsupported" as NSString)
+        }
+
         func resetUIChangesV3(_ reply: @escaping () -> Void) {
             resetUIChangesV3Calls += 1
             reply()

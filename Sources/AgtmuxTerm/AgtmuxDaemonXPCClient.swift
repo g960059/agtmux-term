@@ -153,6 +153,26 @@ actor AgtmuxDaemonXPCClient: AgtmuxDaemonXPCClientMetadataConformance {
         return try decode(AgtmuxUIHealthV1.self, from: payload)
     }
 
+    func waitForUIChangesV1(timeoutMs: UInt64 = 3000) async throws -> AgtmuxSyncV3ChangesResponse {
+        try await startManagedDaemonIfNeeded()
+
+        let payload: Data = try await invoke(timeout: Double(timeoutMs) / 1000.0 + 2.0, operation: "waitForUIChangesV1") { proxy, done in
+            proxy.waitForUIChangesV1(NSNumber(value: timeoutMs)) { data, errorText in
+                if let errorText {
+                    done(.failure(XPCClientError.remote(errorText as String)))
+                    return
+                }
+                guard let data else {
+                    done(.failure(XPCClientError.remote("no wait_for_changes payload")))
+                    return
+                }
+                done(.success(data as Data))
+            }
+        }
+
+        return try decode(AgtmuxSyncV3ChangesResponse.self, from: payload)
+    }
+
     func resetUIChangesV3() async {
         _ = try? await invoke(timeout: 2.0, operation: "resetUIChangesV3") { proxy, done in
             proxy.resetUIChangesV3 {
