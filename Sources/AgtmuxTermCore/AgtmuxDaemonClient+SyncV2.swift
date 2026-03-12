@@ -32,6 +32,15 @@ extension AgtmuxDaemonClient: AgtmuxSyncV3Transport {
         )
     }
 
+    package func waitForChangesV1(cursor: AgtmuxSyncV3Cursor, timeoutMs: UInt64) async throws -> AgtmuxSyncV3ChangesResponse {
+        let serverTimeout = Double(timeoutMs) / 1000.0
+        return try rpcCall(
+            method: "ui.wait_for_changes.v1",
+            params: WaitForChangesV1Params(cursor: cursor, timeoutMs: timeoutMs),
+            timeout: serverTimeout + 2.0
+        )
+    }
+
     package func fetchUIHealthV1() async throws -> AgtmuxUIHealthV1 {
         if let inlineJSON = ProcessInfo.processInfo.environment["AGTMUX_UI_HEALTH_V1_JSON"] {
             guard let data = inlineJSON.data(using: .utf8) else {
@@ -54,6 +63,15 @@ private extension AgtmuxDaemonClient {
     struct ChangesV3RPCParams: Encodable {
         let cursor: AgtmuxSyncV3Cursor
         let limit: Int
+    }
+
+    struct WaitForChangesV1Params: Encodable {
+        let cursor: AgtmuxSyncV3Cursor
+        let timeoutMs: UInt64
+        enum CodingKeys: String, CodingKey {
+            case cursor
+            case timeoutMs = "timeout_ms"
+        }
     }
 
     struct RPCRequest<Params: Encodable>: Encodable {
@@ -122,7 +140,7 @@ private extension AgtmuxDaemonClient {
         let message = error.message.trimmingCharacters(in: .whitespacesAndNewlines)
         if isMethodNotFound(error: error) {
             switch method {
-            case "ui.bootstrap.v3", "ui.changes.v3":
+            case "ui.bootstrap.v3", "ui.changes.v3", "ui.wait_for_changes.v1":
                 return .makeSyncV3MethodNotFoundError(
                     method: method,
                     rpcCode: error.code,

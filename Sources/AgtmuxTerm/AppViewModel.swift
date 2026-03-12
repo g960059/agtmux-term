@@ -365,6 +365,7 @@ final class AppViewModel: ObservableObject {
     private var localHealthRefreshTask: Task<Void, Never>?
     private var localMetadataSyncPrimed = false
     private var localMetadataTransportVersion: LocalMetadataTransportVersion?
+    private var localMetadataUseLongPoll: Bool? = nil  // nil=unknown, optimistically try on first call
     private var localMetadataTransportBridge = LocalMetadataTransportBridge()
     private var uiTestMetadataModeEnabled = false
     private var nextLocalMetadataRefreshAt: Date = .distantPast
@@ -698,6 +699,7 @@ final class AppViewModel: ObservableObject {
         localHealthRefreshTask = nil
         localMetadataSyncPrimed = false
         localMetadataTransportVersion = nil
+        localMetadataUseLongPoll = nil
         nextLocalHealthRefreshAt = .distantPast
         Task {
             await localClient.resetUIChangesV3()
@@ -712,6 +714,7 @@ final class AppViewModel: ObservableObject {
         localHealthRefreshTask = nil
         localMetadataSyncPrimed = false
         localMetadataTransportVersion = nil
+        localMetadataUseLongPoll = nil
         nextLocalMetadataRefreshAt = .distantPast
         nextLocalHealthRefreshAt = .distantPast
     }
@@ -874,7 +877,9 @@ final class AppViewModel: ObservableObject {
             successInterval: localMetadataSuccessInterval,
             failureBackoff: localMetadataFailureBackoff,
             bootstrapNotReadyBackoff: localMetadataBootstrapNotReadyBackoff,
-            changeLimit: localMetadataChangeLimit
+            changeLimit: localMetadataChangeLimit,
+            useLongPoll: localMetadataUseLongPoll ?? true,
+            longPollTimeoutMs: 3000
         )
     }
 
@@ -928,6 +933,9 @@ final class AppViewModel: ObservableObject {
     }
 
     private func applyLocalMetadataRefreshPlan(_ plan: LocalMetadataRefreshPlan) async {
+        if plan.disableLongPoll {
+            localMetadataUseLongPoll = false
+        }
         localMetadataSyncPrimed = plan.state.syncPrimed
         localMetadataTransportVersion = plan.state.transportVersion
         localDaemonIssue = plan.state.daemonIssue
@@ -1167,6 +1175,7 @@ final class AppViewModel: ObservableObject {
             localMetadataRefreshTask = nil
             localMetadataSyncPrimed = false
             localMetadataTransportVersion = nil
+            localMetadataUseLongPoll = nil
             localDaemonIssue = nil
             await localClient.resetUIChangesV3()
         }

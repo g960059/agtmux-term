@@ -27,6 +27,7 @@ struct LocalMetadataRefreshPlan: Equatable {
     let shouldPublishSnapshotCache: Bool
     let replayResetVersion: LocalMetadataTransportVersion?
     let logMessage: String?
+    let disableLongPoll: Bool
 }
 
 enum LocalBootstrapMetadataResult: Equatable {
@@ -55,7 +56,8 @@ enum LocalMetadataRefreshBoundary {
                     cacheAction: .clear,
                     shouldPublishSnapshotCache: true,
                     replayResetVersion: .v3,
-                    logMessage: "sync-v3 bootstrap not ready; local inventory has \(inventoryCount) panes but bootstrap returned panes=0"
+                    logMessage: "sync-v3 bootstrap not ready; local inventory has \(inventoryCount) panes but bootstrap returned panes=0",
+                    disableLongPoll: false
                 )
             )
         }
@@ -75,7 +77,8 @@ enum LocalMetadataRefreshBoundary {
         syncPrimed: Bool,
         transportVersion: LocalMetadataTransportVersion?,
         daemonIssue: LocalDaemonIssue?,
-        now: Date = Date()
+        now: Date = Date(),
+        disableLongPoll: Bool = false
     ) -> LocalMetadataRefreshPlan {
         LocalMetadataRefreshPlan(
             state: LocalMetadataRefreshState(
@@ -87,7 +90,8 @@ enum LocalMetadataRefreshBoundary {
             cacheAction: .replace(cache),
             shouldPublishSnapshotCache: inventoryCount > 0,
             replayResetVersion: nil,
-            logMessage: nil
+            logMessage: nil,
+            disableLongPoll: disableLongPoll
         )
     }
 
@@ -108,7 +112,8 @@ enum LocalMetadataRefreshBoundary {
             cacheAction: .clear,
             shouldPublishSnapshotCache: inventoryCount > 0,
             replayResetVersion: nil,
-            logMessage: nil
+            logMessage: nil,
+            disableLongPoll: false
         )
     }
 }

@@ -9,6 +9,8 @@ struct LocalMetadataRefreshContext: Equatable {
     let failureBackoff: TimeInterval
     let bootstrapNotReadyBackoff: TimeInterval
     let changeLimit: Int
+    let useLongPoll: Bool
+    let longPollTimeoutMs: UInt64
 }
 
 struct LocalMetadataRefreshExecution: Equatable {
@@ -46,33 +48,35 @@ final class LocalMetadataRefreshCoordinator {
             )
         }
 
-        let response = try await client.fetchUIChangesV3(limit: context.changeLimit)
-        switch response {
-        case let .changes(payload):
-            return LocalMetadataRefreshExecution(
-                preApplyLogMessages: [],
-                replayResetVersions: [],
-                plan: LocalMetadataRefreshBoundary.publishPlan(
-                    cache: overlayStore.apply(payload),
-                    inventoryCount: context.inventoryCount,
-                    successInterval: context.successInterval,
-                    syncPrimed: true,
-                    transportVersion: .v3,
-                    daemonIssue: nil,
-                    now: now()
-                ),
-                postApplyLogMessages: []
-            )
-        case let .resyncRequired(payload):
-            return try await bootstrapExecution(
-                context: context,
-                overlayStore: overlayStore,
-                preApplyLogMessages: [
-                    "sync-v3 resync required; reason=\(payload.reason) latest_snapshot_seq=\(payload.latestSnapshotSeq)"
-                ],
-                additionalResetVersions: [.v3]
-            )
+        var disableLongPoll = false
+
+        if context.useLongPoll {
+            do {
+                let response = try await client.waitForUIChangesV1(timeoutMs: context.longPollTimeoutMs)
+                return try await changesExecution(
+                    from: response,
+                    context: context,
+                    overlayStore: overlayStore,
+                    successInterval: 0.05,
+                    disableLongPoll: false
+                )
+            } catch let error as DaemonError where error.isSyncV3MethodNotFound {
+                disableLongPoll = true
+            } catch is LocalMetadataClientError {
+                // Client doesn't support long-poll (e.g. XPC client or test stub)
+                disableLongPoll = true
+            }
+            // Other errors propagate normally
         }
+
+        let response = try await client.fetchUIChangesV3(limit: context.changeLimit)
+        return try await changesExecution(
+            from: response,
+            context: context,
+            overlayStore: overlayStore,
+            successInterval: context.successInterval,
+            disableLongPoll: disableLongPoll
+        )
     }
 
     func failureExecution(
@@ -94,6 +98,42 @@ final class LocalMetadataRefreshCoordinator {
                 "sync metadata unavailable; cleared cached overlay: \(error)"
             ]
         )
+    }
+
+    private func changesExecution(
+        from response: AgtmuxSyncV3ChangesResponse,
+        context: LocalMetadataRefreshContext,
+        overlayStore: LocalMetadataOverlayStore,
+        successInterval: TimeInterval,
+        disableLongPoll: Bool
+    ) async throws -> LocalMetadataRefreshExecution {
+        switch response {
+        case let .changes(payload):
+            return LocalMetadataRefreshExecution(
+                preApplyLogMessages: [],
+                replayResetVersions: [],
+                plan: LocalMetadataRefreshBoundary.publishPlan(
+                    cache: overlayStore.apply(payload),
+                    inventoryCount: context.inventoryCount,
+                    successInterval: successInterval,
+                    syncPrimed: true,
+                    transportVersion: .v3,
+                    daemonIssue: nil,
+                    now: now(),
+                    disableLongPoll: disableLongPoll
+                ),
+                postApplyLogMessages: []
+            )
+        case let .resyncRequired(payload):
+            return try await bootstrapExecution(
+                context: context,
+                overlayStore: overlayStore,
+                preApplyLogMessages: [
+                    "sync-v3 resync required; reason=\(payload.reason) latest_snapshot_seq=\(payload.latestSnapshotSeq)"
+                ],
+                additionalResetVersions: [.v3]
+            )
+        }
     }
 
     private func bootstrapExecution(

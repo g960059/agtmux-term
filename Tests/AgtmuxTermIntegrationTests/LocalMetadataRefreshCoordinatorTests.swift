@@ -226,7 +226,9 @@ final class LocalMetadataRefreshCoordinatorTests: XCTestCase {
             successInterval: 1.0,
             failureBackoff: 3.0,
             bootstrapNotReadyBackoff: 0.5,
-            changeLimit: 256
+            changeLimit: 256,
+            useLongPoll: false,
+            longPollTimeoutMs: 3000
         )
     }
 

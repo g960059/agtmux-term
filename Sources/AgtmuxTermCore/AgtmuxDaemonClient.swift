@@ -69,6 +69,12 @@ package actor AgtmuxDaemonClient {
         return try await session.pollChanges(limit: limit)
     }
 
+    package func waitForUIChangesV1(timeoutMs: UInt64 = 3000) async throws -> AgtmuxSyncV3ChangesResponse {
+        try ensureManagedRuntimeConfigured(forInlineOverrideKeys: ["AGTMUX_UI_CHANGES_V3_JSON"])
+        let session = syncV3SessionInstance()
+        return try await session.waitForChangesV1(timeoutMs: timeoutMs)
+    }
+
     package func resetUIChangesV3() async {
         syncV3Session = nil
     }
@@ -277,6 +283,12 @@ package extension DaemonError {
             return .processError(exitCode: Int32(rpcCode ?? -32601), stderr: message)
         }
         return .processError(exitCode: Int32(rpcCode ?? -32601), stderr: "\(Self.uiErrorPrefix)\(json)")
+    }
+
+    var isSyncV3MethodNotFound: Bool {
+        guard case let .processError(_, stderr) = self,
+              let envelope = Self.decodeUIErrorEnvelope(from: stderr) else { return false }
+        return envelope.code == DaemonUIErrorCode.syncV3MethodNotFound.rawValue
     }
 
     static func decodeUIErrorEnvelope(from text: String) -> DaemonUIErrorEnvelope? {

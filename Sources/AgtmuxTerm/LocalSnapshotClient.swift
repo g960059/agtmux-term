@@ -22,6 +22,7 @@ protocol LocalHealthClient {
 protocol ProductLocalMetadataClient: LocalSnapshotClient {
     func fetchUIBootstrapV3() async throws -> AgtmuxSyncV3Bootstrap
     func fetchUIChangesV3(limit: Int) async throws -> AgtmuxSyncV3ChangesResponse
+    func waitForUIChangesV1(timeoutMs: UInt64) async throws -> AgtmuxSyncV3ChangesResponse
     func resetUIChangesV3() async
 }
 
@@ -32,6 +33,10 @@ extension ProductLocalMetadataClient {
 
     func fetchUIChangesV3(limit: Int) async throws -> AgtmuxSyncV3ChangesResponse {
         throw LocalMetadataClientError.unsupportedMethod("ui.changes.v3")
+    }
+
+    func waitForUIChangesV1(timeoutMs: UInt64) async throws -> AgtmuxSyncV3ChangesResponse {
+        throw LocalMetadataClientError.unsupportedMethod("ui.wait_for_changes.v1")
     }
 
     func resetUIChangesV3() async {}
