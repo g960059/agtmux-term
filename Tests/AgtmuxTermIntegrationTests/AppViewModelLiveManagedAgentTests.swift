@@ -519,6 +519,10 @@ final class AppViewModelLiveManagedAgentTests: XCTestCase {
             text: "cd \(shellQuote(claudeDir.path))"
         )
         Thread.sleep(forTimeInterval: 1.0)
+        // Unset CLAUDECODE so Claude can start even when tests run inside a Claude Code session.
+        try tmuxSendLine(path: tmuxPath, socketName: socketName, paneID: claudePaneID,
+                         text: "unset CLAUDECODE")
+        Thread.sleep(forTimeInterval: 0.2)
         let resolvedClaudePrompt = claudePrompt?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         try tmuxSendLine(
