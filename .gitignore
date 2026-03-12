@@ -68,3 +68,6 @@ vendor/
 # XcodeGen generated (regenerate with: xcodegen generate)
 *.xcodeproj
 *.xcworkspace
+
+# Swift PM home cache (set via SWIFTPM_CACHE_DIR in CI)
+.swiftpm-home/
