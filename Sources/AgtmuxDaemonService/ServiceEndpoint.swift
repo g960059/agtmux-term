@@ -65,14 +65,22 @@ final class ServiceDaemonSupervisor {
             )
             stopIfOwnedLocked()
             AgtmuxManagedDaemonRuntime.terminateDaemonProcesses(socketPath: socketPath)
+            removeStaleSocketIfPresent()
         }
         if env["AGTMUX_AUTOSTART"] == "0" { return false }
         guard ensureSocketParentDirectoryExists() else { return false }
 
+        // Remove stale socket before launching: handles incompatible (old-generation)
+        // daemons that answer the socket but don't speak our RPC protocol.
+        // Without this, the new Rust daemon waits up to 2 s querying the old daemon
+        // before forcefully removing the socket — exceeding the Swift probe window.
+        removeStaleSocketIfPresent()
+
         for binary in candidates where FileManager.default.isExecutableFile(atPath: binary.path) {
-            if launchDaemon(using: binary), isDaemonReachable(via: binary, retries: 20) {
+            if launchDaemon(using: binary), isDaemonReachable(via: binary, retries: 50) {
                 return true
             }
+            fputs("AgtmuxTerm XPC: managed daemon launch or probe failed for \(socketPath) using \(binary.path).\n", stderr)
             stopIfOwnedLocked()
         }
         return false
@@ -85,6 +93,16 @@ final class ServiceDaemonSupervisor {
         } catch {
             fputs("Failed to create agtmux socket directory for \(socketPath): \(error)\n", stderr)
             return false
+        }
+    }
+
+    private func removeStaleSocketIfPresent() {
+        let socketURL = URL(fileURLWithPath: socketPath)
+        guard FileManager.default.fileExists(atPath: socketURL.path) else { return }
+        do {
+            try FileManager.default.removeItem(at: socketURL)
+        } catch {
+            fputs("AgtmuxTerm XPC: failed to remove stale socket at \(socketPath): \(error)\n", stderr)
         }
     }
 
@@ -115,8 +133,9 @@ final class ServiceDaemonSupervisor {
         proc.arguments = arguments
         proc.environment = env
         proc.standardInput = FileHandle.nullDevice
-        proc.standardOutput = FileHandle.nullDevice
-        proc.standardError = FileHandle.nullDevice
+        let logHandle = productionDaemonLogHandle()
+        proc.standardOutput = logHandle
+        proc.standardError = logHandle
 
         proc.terminationHandler = { [weak self] finished in
             self?.queue.async { [weak self] in
@@ -130,6 +149,7 @@ final class ServiceDaemonSupervisor {
         do {
             try proc.run()
             process = proc
+            fputs("AgtmuxTerm XPC: started managed daemon (pid=\(proc.processIdentifier)) for \(socketPath) using \(binaryURL.path).\n", stderr)
             AgtmuxManagedDaemonRuntime.recordLaunch(
                 socketPath: socketPath,
                 binaryPath: binaryURL.path,
@@ -139,8 +159,24 @@ final class ServiceDaemonSupervisor {
             )
             return true
         } catch {
+            fputs("AgtmuxTerm XPC: failed to launch managed daemon \(binaryURL.path): \(error)\n", stderr)
             return false
         }
+    }
+
+    private func productionDaemonLogHandle() -> Any {
+        let logsDir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Logs/AgtmuxTerm")
+        try? FileManager.default.createDirectory(at: logsDir, withIntermediateDirectories: true)
+        let logURL = logsDir.appendingPathComponent("daemon.log")
+        if !FileManager.default.fileExists(atPath: logURL.path) {
+            FileManager.default.createFile(atPath: logURL.path, contents: nil)
+        }
+        guard let handle = try? FileHandle(forWritingTo: logURL) else {
+            return FileHandle.nullDevice
+        }
+        handle.seekToEndOfFile()
+        return handle
     }
 
     private func isDaemonReachable(via binaryURL: URL, retries: Int = 1) -> Bool {

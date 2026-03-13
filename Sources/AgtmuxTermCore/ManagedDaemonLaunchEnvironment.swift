@@ -20,6 +20,7 @@ package enum ManagedDaemonLaunchEnvironment {
         var normalized = env
         normalized["TMUX"] = nil
         normalized["TMUX_PANE"] = nil
+        normalized["CLAUDECODE"] = nil
 
         let username = normalized["USER"]?.trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty
             ?? NSUserName()

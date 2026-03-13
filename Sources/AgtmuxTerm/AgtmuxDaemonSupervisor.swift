@@ -110,11 +110,16 @@ final class AgtmuxDaemonSupervisor {
             )
             stopIfOwnedLocked()
             AgtmuxManagedDaemonRuntime.terminateDaemonProcesses(socketPath: socketPath)
+            removeStaleSocketIfPresent()
         }
         guard ensureSocketParentDirectoryExists() else { return }
 
+        // Remove stale socket before launching: handles incompatible (old-generation)
+        // daemons that answer the socket but don't speak our RPC protocol.
+        removeStaleSocketIfPresent()
+
         for binary in candidates where FileManager.default.isExecutableFile(atPath: binary.path) {
-            if launchDaemon(using: binary), isDaemonReachable(via: binary, retries: 20) {
+            if launchDaemon(using: binary), isDaemonReachable(via: binary, retries: 50) {
                 fputs("AgtmuxTerm: started managed daemon for \(socketPath) using \(binary.path).\n", stderr)
                 return
             }
@@ -133,6 +138,16 @@ final class AgtmuxDaemonSupervisor {
         } catch {
             fputs("Failed to create agtmux socket directory for \(socketPath): \(error)\n", stderr)
             return false
+        }
+    }
+
+    private func removeStaleSocketIfPresent() {
+        let socketURL = URL(fileURLWithPath: socketPath)
+        guard FileManager.default.fileExists(atPath: socketURL.path) else { return }
+        do {
+            try FileManager.default.removeItem(at: socketURL)
+        } catch {
+            fputs("AgtmuxTerm: failed to remove stale socket at \(socketPath): \(error)\n", stderr)
         }
     }
 
@@ -242,19 +257,33 @@ final class AgtmuxDaemonSupervisor {
     }
 
     private func managedDaemonLogHandle(env: [String: String], key: String) -> Any {
-        guard env["AGTMUX_UITEST"] == "1" else { return FileHandle.nullDevice }
-        guard let path = env[key]?.trimmingCharacters(in: .whitespacesAndNewlines), !path.isEmpty else {
-            return FileHandle.nullDevice
+        // UI test: use the specified log path (or /dev/null if not set).
+        if env["AGTMUX_UITEST"] == "1" {
+            guard let path = env[key]?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !path.isEmpty else { return FileHandle.nullDevice }
+            let url = URL(fileURLWithPath: path)
+            try? FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            FileManager.default.createFile(atPath: url.path, contents: Data())
+            guard let handle = try? FileHandle(forWritingTo: url) else {
+                return FileHandle.nullDevice
+            }
+            try? handle.truncate(atOffset: 0)
+            return handle
         }
 
-        let url = URL(fileURLWithPath: path)
-        let directory = url.deletingLastPathComponent()
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        FileManager.default.createFile(atPath: url.path, contents: Data())
-        guard let handle = try? FileHandle(forWritingTo: url) else {
+        // Production: append to ~/Library/Logs/AgtmuxTerm/daemon.log.
+        let logsDir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Logs/AgtmuxTerm")
+        try? FileManager.default.createDirectory(at: logsDir, withIntermediateDirectories: true)
+        let logURL = logsDir.appendingPathComponent("daemon.log")
+        if !FileManager.default.fileExists(atPath: logURL.path) {
+            FileManager.default.createFile(atPath: logURL.path, contents: nil)
+        }
+        guard let handle = try? FileHandle(forWritingTo: logURL) else {
             return FileHandle.nullDevice
         }
-        try? handle.truncate(atOffset: 0)
+        handle.seekToEndOfFile()
         return handle
     }
 }
