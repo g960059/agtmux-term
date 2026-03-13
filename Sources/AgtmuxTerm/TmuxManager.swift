@@ -23,19 +23,21 @@ final class TmuxManager {
     /// Create a new tmux session, prompting the user for a name via NSAlert.
     ///
     /// - Parameters:
-    ///   - source: `"local"` or SSH hostname.
-    ///   - viewModel: Used to trigger an immediate sidebar refresh on success.
+    ///   - source: `"local"` or SSH hostname (used as the pane source identifier).
+    ///   - viewModel: Used to look up `hostsConfig` (for sshTarget) and trigger sidebar refresh.
     func createSession(source: String = "local", viewModel: AppViewModel) {
         guard let name = promptForName(title: "New Session",
                                        message: "Enter a name for the new tmux session:",
                                        placeholder: "session-name",
                                        actionTitle: "Create"),
               !name.isEmpty else { return }
+        let sshTarget = viewModel.hostsConfig.host(for: source)?.sshTarget
         Task {
             do {
                 _ = try await TmuxCommandRunner.shared.run(
                     ["new-session", "-d", "-s", name],
-                    source: source
+                    source: source,
+                    sshTarget: sshTarget
                 )
                 await viewModel.fetchAll()
             } catch {
@@ -67,11 +69,13 @@ final class TmuxManager {
         !newName.isEmpty,
         newName != sessionName else { return }
 
+        let sshTarget = viewModel.hostsConfig.host(for: source)?.sshTarget
         Task {
             do {
                 _ = try await TmuxCommandRunner.shared.run(
                     ["rename-session", "-t", sessionName, newName],
-                    source: source
+                    source: source,
+                    sshTarget: sshTarget
                 )
                 await viewModel.fetchAll()
             } catch {
@@ -84,11 +88,13 @@ final class TmuxManager {
 
     /// Create a new window in the given session.
     func createWindow(sessionName: String, source: String = "local", viewModel: AppViewModel) {
+        let sshTarget = viewModel.hostsConfig.host(for: source)?.sshTarget
         Task {
             do {
                 _ = try await TmuxCommandRunner.shared.run(
                     ["new-window", "-t", sessionName],
-                    source: source
+                    source: source,
+                    sshTarget: sshTarget
                 )
                 await viewModel.fetchAll()
             } catch {
@@ -100,11 +106,13 @@ final class TmuxManager {
     /// Kill the window identified by `windowId` (e.g. `"@510"`) in `sessionName`.
     func killWindow(_ windowId: String, sessionName: String,
                     source: String = "local", viewModel: AppViewModel) {
+        let sshTarget = viewModel.hostsConfig.host(for: source)?.sshTarget
         Task {
             do {
                 _ = try await TmuxCommandRunner.shared.run(
                     ["kill-window", "-t", "\(sessionName):\(windowId)"],
-                    source: source
+                    source: source,
+                    sshTarget: sshTarget
                 )
                 await viewModel.fetchAll()
             } catch {
@@ -124,11 +132,13 @@ final class TmuxManager {
         ),
         !newName.isEmpty else { return }
 
+        let sshTarget = viewModel.hostsConfig.host(for: source)?.sshTarget
         Task {
             do {
                 _ = try await TmuxCommandRunner.shared.run(
                     ["rename-window", "-t", "\(sessionName):\(windowId)", newName],
-                    source: source
+                    source: source,
+                    sshTarget: sshTarget
                 )
                 await viewModel.fetchAll()
             } catch {
@@ -145,11 +155,13 @@ final class TmuxManager {
                     source: String = "local",
                     viewModel: AppViewModel) {
         let flag = splitAxis == .horizontal ? "-h" : "-v"
+        let sshTarget = viewModel.hostsConfig.host(for: source)?.sshTarget
         Task {
             do {
                 _ = try await TmuxCommandRunner.shared.run(
                     ["split-window", flag, "-t", paneId],
-                    source: source
+                    source: source,
+                    sshTarget: sshTarget
                 )
                 await viewModel.fetchAll()
             } catch {
@@ -160,11 +172,13 @@ final class TmuxManager {
 
     /// Kill the pane identified by `paneId`.
     func killPane(_ paneId: String, source: String = "local", viewModel: AppViewModel) {
+        let sshTarget = viewModel.hostsConfig.host(for: source)?.sshTarget
         Task {
             do {
                 _ = try await TmuxCommandRunner.shared.run(
                     ["kill-pane", "-t", paneId],
-                    source: source
+                    source: source,
+                    sshTarget: sshTarget
                 )
                 await viewModel.fetchAll()
             } catch {
@@ -184,11 +198,13 @@ final class TmuxManager {
         ),
         !newTitle.isEmpty else { return }
 
+        let sshTarget = viewModel.hostsConfig.host(for: source)?.sshTarget
         Task {
             do {
                 _ = try await TmuxCommandRunner.shared.run(
                     ["select-pane", "-t", pane.paneId, "-T", newTitle],
-                    source: source
+                    source: source,
+                    sshTarget: sshTarget
                 )
                 viewModel.setPaneDisplayTitleOverride(newTitle, for: pane)
                 await viewModel.fetchAll()

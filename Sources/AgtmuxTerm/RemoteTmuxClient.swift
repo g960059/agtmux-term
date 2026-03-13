@@ -47,6 +47,13 @@ actor RemoteTmuxClient {
 
                 guard proc.terminationStatus == 0 else {
                     let stderrStr = String(data: stderrData, encoding: .utf8) ?? ""
+                    // "no server running" / "no sessions" → treat as empty pane list, not error.
+                    // tmux exits 1 in both cases; this is normal when the remote server isn't started yet.
+                    if proc.terminationStatus == 1,
+                       stderrStr.contains("no server running") || stderrStr.contains("no sessions") {
+                        continuation.resume(returning: [])
+                        return
+                    }
                     continuation.resume(
                         throwing: DaemonError.processError(
                             exitCode: proc.terminationStatus,

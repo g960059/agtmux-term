@@ -111,7 +111,16 @@ actor TmuxCommandRunner {
         return URL(fileURLWithPath: resolvedPath)
     }
 
-    func run(_ args: [String], source: String = "local") async throws -> String {
+    /// Run a tmux command locally or via SSH.
+    ///
+    /// - Parameters:
+    ///   - args: tmux subcommand arguments (e.g. ["new-session", "-d", "-s", "main"]).
+    ///   - source: Source identifier used for routing. `"local"` runs tmux directly;
+    ///     any other value runs via SSH. For remote sources this is the hostname.
+    ///   - sshTarget: Full SSH connection target (e.g. "user@host"). When provided,
+    ///     overrides `source` as the SSH connection string. This is needed when the
+    ///     hostname and username are configured separately in `RemoteHost`.
+    func run(_ args: [String], source: String = "local", sshTarget: String? = nil) async throws -> String {
         let runID = AgtmuxSignpost.tmuxRunner.makeSignpostID()
         let runState = AgtmuxSignpost.tmuxRunner.beginInterval("run", id: runID)
         defer { AgtmuxSignpost.tmuxRunner.endInterval("run", runState) }
@@ -131,11 +140,16 @@ actor TmuxCommandRunner {
             env["TMUX_PANE"] = nil
             process.environment = env
         } else {
+            // Use sshTarget (user@host) when provided; fall back to source (hostname only).
+            // StrictHostKeyChecking=accept-new: silently accept new host keys instead of
+            // blocking the connection with an interactive prompt under BatchMode.
+            let target = sshTarget ?? source
             process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
             process.arguments = [
                 "-o", "BatchMode=yes",
                 "-o", "ConnectTimeout=5",
-                source,
+                "-o", "StrictHostKeyChecking=accept-new",
+                target,
                 "tmux",
             ] + args
         }
