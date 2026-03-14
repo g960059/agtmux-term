@@ -1,5 +1,6 @@
 import AppKit
 import GhosttyKit
+import CoreFoundation
 
 /// Singleton that owns the ghostty_app_t lifecycle.
 ///
@@ -7,10 +8,11 @@ import GhosttyKit
 /// - wakeup_cb must be a @convention(c) function pointer (no captures).
 ///   We reference GhosttyApp.shared which is a static property and thus
 ///   not a closure capture in the C-function-pointer sense.
-/// - activeSurfaces uses NSHashTable<GhosttyTerminalView>.weakObjects() so that
-///   ARC-deallocated views are automatically removed, preventing dangling pointers.
 final class GhosttyApp {
     static let shared = GhosttyApp()
+    private static var initializedShared: GhosttyApp?
+    private static let schedulerExperimentDisabled =
+        ProcessInfo.processInfo.environment["AGTMUX_GHOSTTY_SCHEDULER_EXPERIMENT_DISABLED"] == "1"
 
     typealias BridgeActionDispatcher = @MainActor (
         ghostty_target_s,
@@ -39,16 +41,15 @@ final class GhosttyApp {
 
     private(set) var app: ghostty_app_t?
 
-    /// Weak collection of all live terminal views.
-    /// NSHashTable.weakObjects() nil-ifies entries when the view is deallocated.
-    private var activeSurfaces: NSHashTable<GhosttyTerminalView> = .weakObjects()
-
     // Wakeup coalescing: prevents N queue items from accumulating when
     // libghostty fires wakeup_cb multiple times before tick() runs.
     private let wakeupLock = NSLock()
     private var wakeupPending = false
+    @MainActor
+    private var tickExecutionDepth = 0
 
     private init() {
+        Self.initializedShared = self
         var runtimeConfig = ghostty_runtime_config_s()
 
         // Pass self as userdata (passUnretained — singleton, never deallocated).
@@ -58,16 +59,7 @@ final class GhosttyApp {
         // GhosttyApp.shared is a static reference, not a capture.
         runtimeConfig.wakeup_cb = { _ in
             // libghostty calls this from an internal timer thread.
-            // Coalesce: schedule exactly one tick() dispatch per pending cycle.
-            let app = GhosttyApp.shared
-            app.wakeupLock.lock()
-            let shouldSchedule = !app.wakeupPending
-            app.wakeupPending = true
-            app.wakeupLock.unlock()
-            guard shouldSchedule else { return }
-            DispatchQueue.main.async {
-                GhosttyApp.shared.tick()
-            }
+            GhosttyApp.shared.enqueueTick()
         }
 
         // action_cb is required by libghostty during surface init.
@@ -99,6 +91,24 @@ final class GhosttyApp {
         app = ghostty_app_new(&runtimeConfig, config)
     }
 
+    static func scheduleTickIfInitialized() {
+        guard shouldScheduleTickOnMain() else { return }
+
+        if Thread.isMainThread {
+            MainActor.assumeIsolated {
+                tickScheduleObserver()
+            }
+        } else {
+            DispatchQueue.main.sync {
+                MainActor.assumeIsolated {
+                    tickScheduleObserver()
+                }
+            }
+        }
+
+        initializedShared?.enqueueTick()
+    }
+
     // MARK: - Runtime callbacks
 
     /// Internal so integration tests can invoke the exact libghostty action callback seam.
@@ -127,6 +137,8 @@ final class GhosttyApp {
             return true
         case GHOSTTY_ACTION_SET_TITLE:
             return true
+        case GHOSTTY_ACTION_RENDER:
+            return handleRender(target: target)
         case GHOSTTY_ACTION_CUSTOM_OSC:
             return handleCustomOSC(target: target, action: action)
 
@@ -152,6 +164,25 @@ final class GhosttyApp {
                     bridgeFailureReporter(error)
                     return true
                 }
+            }
+        }
+
+        if Thread.isMainThread {
+            return runOnMain()
+        }
+
+        return DispatchQueue.main.sync(execute: runOnMain)
+    }
+
+    private static func handleRender(target: ghostty_target_s) -> Bool {
+        let runOnMain = {
+            MainActor.assumeIsolated {
+                guard target.tag == GHOSTTY_TARGET_SURFACE,
+                      let rawSurface = target.target.surface else { return true }
+                SurfacePool.shared.markDirty(
+                    surfaceHandle: GhosttySurfaceHandle(surface: rawSurface)
+                )
+                return true
             }
         }
 
@@ -194,6 +225,34 @@ final class GhosttyApp {
         assertionFailure(message)
     }
 
+    @MainActor
+    private static var tickScheduleObserver: @MainActor () -> Void = {}
+
+    @MainActor
+    private static var tickExecutionOverrideForTesting: Bool?
+
+    @MainActor
+    static func withTestTickScheduleObserver<T>(
+        _ observer: @escaping @MainActor () -> Void,
+        _ body: () throws -> T
+    ) rethrows -> T {
+        let originalObserver = tickScheduleObserver
+        tickScheduleObserver = observer
+        defer { tickScheduleObserver = originalObserver }
+        return try body()
+    }
+
+    @MainActor
+    static func withTestTickExecutionState<T>(
+        _ isExecuting: Bool,
+        _ body: () throws -> T
+    ) rethrows -> T {
+        let originalOverride = tickExecutionOverrideForTesting
+        tickExecutionOverrideForTesting = isExecuting
+        defer { tickExecutionOverrideForTesting = originalOverride }
+        return try body()
+    }
+
     deinit {
         if let app { ghostty_app_free(app) }
     }
@@ -209,17 +268,15 @@ final class GhosttyApp {
         wakeupLock.lock()
         wakeupPending = false
         wakeupLock.unlock()
+        tickExecutionDepth += 1
+        defer { tickExecutionDepth -= 1 }
         ghostty_app_tick(app)
-        // Trigger a Metal draw only on surfaces that are currently active
-        // (visible) in the pool, skipping backgrounded tiles.
-        let activeIDs = SurfacePool.shared.activeSurfaceViewIDs
-        for view in activeSurfaces.allObjects {
-            guard activeIDs.contains(ObjectIdentifier(view)) else { continue }
-            let drawID = AgtmuxSignpost.surfaceDraw.makeSignpostID()
-            let drawState = AgtmuxSignpost.surfaceDraw.beginInterval("draw", id: drawID)
-            view.triggerDraw()
-            AgtmuxSignpost.surfaceDraw.endInterval("draw", drawState)
-        }
+        Self.runDirtyDrawPass()
+    }
+
+    @MainActor
+    static func runDirtyDrawPassForTesting() {
+        runDirtyDrawPass()
     }
 
     // MARK: - Surface Management
@@ -244,7 +301,12 @@ final class GhosttyApp {
                     nsview: Unmanaged.passUnretained(view).toOpaque()
                 )
             )
-            cfg.scale_factor = Double(NSScreen.main?.backingScaleFactor ?? 1.0)
+            cfg.scale_factor = Double(
+                view.window?.backingScaleFactor
+                    ?? view.window?.screen?.backingScaleFactor
+                    ?? NSScreen.main?.backingScaleFactor
+                    ?? 1.0
+            )
             cfg.userdata = Unmanaged.passUnretained(view).toOpaque()
             cfg.command = cmd       // nil → default shell
             cfg.font_size = 0       // 0 = use Ghostty config default
@@ -263,14 +325,65 @@ final class GhosttyApp {
             surface = build(nil)
         }
 
-        if surface != nil {
-            activeSurfaces.add(view)
-        }
         return surface
     }
 
-    /// Remove a view from the active surface set (called from deinit / attachSurface).
-    func releaseSurface(for view: GhosttyTerminalView) {
-        activeSurfaces.remove(view)
+    private func enqueueTick() {
+        wakeupLock.lock()
+        let shouldSchedule = !wakeupPending
+        wakeupPending = true
+        wakeupLock.unlock()
+        guard shouldSchedule else { return }
+
+        if Self.schedulerExperimentDisabled {
+            DispatchQueue.main.async {
+                GhosttyApp.shared.tick()
+            }
+            return
+        }
+
+        let mainRunLoop = CFRunLoopGetMain()
+        CFRunLoopPerformBlock(mainRunLoop, CFRunLoopMode.commonModes.rawValue) {
+            MainActor.assumeIsolated {
+                GhosttyApp.shared.tick()
+            }
+        }
+        CFRunLoopWakeUp(mainRunLoop)
+    }
+
+    @MainActor
+    private static func runDirtyDrawPass() {
+        let dirtyViews = SurfacePool.shared.consumeDirtyActiveSurfaceViews()
+        guard dirtyViews.isEmpty == false else {
+            SurfacePool.shared.recordDrawPassCount(0)
+            return
+        }
+
+        var drawnSurfaceCount = 0
+        for view in dirtyViews {
+            let drawID = AgtmuxSignpost.surfaceDraw.makeSignpostID()
+            let drawState = AgtmuxSignpost.surfaceDraw.beginInterval("draw", id: drawID)
+            view.triggerDraw()
+            AgtmuxSignpost.surfaceDraw.endInterval("draw", drawState)
+            drawnSurfaceCount += 1
+        }
+        SurfacePool.shared.recordDrawPassCount(drawnSurfaceCount)
+    }
+
+    private static func shouldScheduleTickOnMain() -> Bool {
+        let runOnMain = {
+            MainActor.assumeIsolated {
+                if let override = tickExecutionOverrideForTesting {
+                    return override == false
+                }
+                return (initializedShared?.tickExecutionDepth ?? 0) == 0
+            }
+        }
+
+        if Thread.isMainThread {
+            return runOnMain()
+        }
+
+        return DispatchQueue.main.sync(execute: runOnMain)
     }
 }

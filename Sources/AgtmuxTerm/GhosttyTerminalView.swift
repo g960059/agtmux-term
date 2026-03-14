@@ -10,11 +10,21 @@ import GhosttyKit
 /// - Routes keyboard, mouse, and scroll input to libghostty.
 /// - Implements NSTextInputClient for IME (Japanese, Chinese, etc.).
 class GhosttyTerminalView: NSView, NSTextInputClient {
+    struct SurfaceMetrics: Equatable {
+        let pixelWidth: UInt32
+        let pixelHeight: UInt32
+        let xScale: Double
+        let yScale: Double
+        let displayID: UInt32
+    }
 
     // MARK: - State
 
     private(set) var surface: ghostty_surface_t?
     private var drawCount = 0
+    private var observedWindow: NSWindow?
+    private var windowObserverTokens: [NSObjectProtocol] = []
+    private var lastAppliedSurfaceMetrics: SurfaceMetrics?
 
     // MARK: - IME state
 
@@ -27,12 +37,12 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     // MARK: - Lifecycle
 
     deinit {
+        removeWindowObservers()
         // clearSurface() may have already freed the surface (SurfacePool GC path).
         // If surface is still non-nil, free it here.
         if let surface {
             ghostty_surface_free(surface)
         }
-        releaseSurfaceFromApp()
     }
 
     /// Free the current surface and nil it out.
@@ -42,37 +52,41 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     func clearSurface() {
         if let s = surface {
             ghostty_surface_free(s)
-            releaseSurfaceFromApp()
             surface = nil
         }
+        lastAppliedSurfaceMetrics = nil
     }
 
     /// Replace the current surface with a new one.
     ///
-    /// Frees the old surface (if any), removes it from GhosttyApp.activeSurfaces,
-    /// then installs the new surface and requests a redraw.
+    /// Frees the old surface (if any), then installs the new surface and requests a redraw.
     func attachSurface(_ newSurface: ghostty_surface_t) {
         if let old = surface {
             ghostty_surface_free(old)
-            releaseSurfaceFromApp()
         }
         surface = newSurface
+        lastAppliedSurfaceMetrics = nil
+        syncSurfaceMetrics(shouldMarkDirty: false, force: true)
         needsDisplay = true
-    }
-
-    func releaseSurfaceFromApp() {
-        GhosttyApp.shared.releaseSurface(for: self)
     }
 
     // MARK: - Layout
 
     override func layout() {
         super.layout()
-        guard let surface else { return }
-        let scale = window?.backingScaleFactor ?? 1.0
-        ghostty_surface_set_size(surface,
-                                 UInt32(bounds.width * scale),
-                                 UInt32(bounds.height * scale))
+        syncSurfaceMetrics(shouldMarkDirty: true)
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        updateWindowObservers()
+        guard window != nil else { return }
+        syncSurfaceMetrics(shouldMarkDirty: true, force: true)
+    }
+
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        syncSurfaceMetrics(shouldMarkDirty: true)
     }
 
     // MARK: - Tracking areas (required for mouseMoved / scroll to work)
@@ -96,9 +110,6 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     func triggerDraw() {
         guard let surface else { return }
         drawCount += 1
-        if drawCount <= 3 {
-            print("[triggerDraw] #\(drawCount) surface=\(surface)")
-        }
         ghostty_surface_draw(surface)
     }
 
@@ -258,6 +269,38 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         // or short-circuit composition/commit flows.
     }
 
+    @MainActor
+    func applySurfaceMetricsForTesting(
+        _ metrics: SurfaceMetrics,
+        shouldMarkDirty: Bool = true,
+        force: Bool = false
+    ) {
+        applySurfaceMetricsIfNeeded(
+            metrics,
+            shouldMarkDirty: shouldMarkDirty,
+            force: force
+        )
+    }
+
+    func hasSurfaceForMetricsSync() -> Bool {
+        surface != nil
+    }
+
+    func updateSurfaceContentScale(xScale: Double, yScale: Double) {
+        guard let surface else { return }
+        ghostty_surface_set_content_scale(surface, xScale, yScale)
+    }
+
+    func updateSurfaceSize(pixelWidth: UInt32, pixelHeight: UInt32) {
+        guard let surface else { return }
+        ghostty_surface_set_size(surface, pixelWidth, pixelHeight)
+    }
+
+    func updateSurfaceDisplayID(_ displayID: UInt32) {
+        guard let surface else { return }
+        ghostty_surface_set_display_id(surface, displayID)
+    }
+
     // MARK: - Mouse
 
     override func mouseDown(with event: NSEvent) {
@@ -338,5 +381,127 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
             y *= 2
         }
         ghostty_surface_mouse_scroll(surface, x, y, GhosttyInput.toScrollMods(event))
+    }
+
+    private func updateWindowObservers() {
+        guard observedWindow !== window else { return }
+        removeWindowObservers()
+        observedWindow = window
+
+        guard let window else { return }
+        let center = NotificationCenter.default
+        windowObserverTokens = [
+            center.addObserver(
+                forName: NSWindow.didChangeScreenNotification,
+                object: window,
+                queue: nil
+            ) { [weak self] _ in
+                self?.syncSurfaceMetrics(shouldMarkDirty: true, force: true)
+            },
+            center.addObserver(
+                forName: NSWindow.didChangeBackingPropertiesNotification,
+                object: window,
+                queue: nil
+            ) { [weak self] _ in
+                self?.syncSurfaceMetrics(shouldMarkDirty: true)
+            }
+        ]
+    }
+
+    private func removeWindowObservers() {
+        let center = NotificationCenter.default
+        for token in windowObserverTokens {
+            center.removeObserver(token)
+        }
+        windowObserverTokens.removeAll()
+        observedWindow = nil
+    }
+
+    private func syncSurfaceMetrics(
+        shouldMarkDirty: Bool,
+        force: Bool = false
+    ) {
+        guard let metrics = currentSurfaceMetrics() else { return }
+        applySurfaceMetricsIfNeeded(
+            metrics,
+            shouldMarkDirty: shouldMarkDirty,
+            force: force
+        )
+    }
+
+    private func currentSurfaceMetrics() -> SurfaceMetrics? {
+        guard hasSurfaceForMetricsSync(),
+              let window else { return nil }
+
+        let viewBounds = bounds
+        let backingBounds = convertToBacking(viewBounds)
+        let pixelWidth = UInt32(max(0, Int(backingBounds.width.rounded())))
+        let pixelHeight = UInt32(max(0, Int(backingBounds.height.rounded())))
+        let fallbackScale = Double(window.backingScaleFactor)
+        let xScale = viewBounds.width > 0
+            ? Double(backingBounds.width / viewBounds.width)
+            : fallbackScale
+        let yScale = viewBounds.height > 0
+            ? Double(backingBounds.height / viewBounds.height)
+            : fallbackScale
+        return SurfaceMetrics(
+            pixelWidth: pixelWidth,
+            pixelHeight: pixelHeight,
+            xScale: xScale,
+            yScale: yScale,
+            displayID: window.screen?.agtmuxDisplayID ?? 0
+        )
+    }
+
+    private func applySurfaceMetricsIfNeeded(
+        _ metrics: SurfaceMetrics,
+        shouldMarkDirty: Bool,
+        force: Bool = false
+    ) {
+        let previousMetrics = lastAppliedSurfaceMetrics
+        guard force || previousMetrics != metrics else { return }
+        lastAppliedSurfaceMetrics = metrics
+
+        if let window {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            layer?.contentsScale = window.backingScaleFactor
+            CATransaction.commit()
+        }
+
+        if force
+            || previousMetrics?.xScale != metrics.xScale
+            || previousMetrics?.yScale != metrics.yScale {
+            updateSurfaceContentScale(
+                xScale: metrics.xScale,
+                yScale: metrics.yScale
+            )
+        }
+
+        if force
+            || previousMetrics?.pixelWidth != metrics.pixelWidth
+            || previousMetrics?.pixelHeight != metrics.pixelHeight {
+            updateSurfaceSize(
+                pixelWidth: metrics.pixelWidth,
+                pixelHeight: metrics.pixelHeight
+            )
+        }
+
+        if force || previousMetrics?.displayID != metrics.displayID {
+            updateSurfaceDisplayID(metrics.displayID)
+        }
+
+        if shouldMarkDirty {
+            SurfacePool.shared.markDirty(view: self)
+        }
+    }
+}
+
+private extension NSScreen {
+    var agtmuxDisplayID: UInt32? {
+        if let number = deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber {
+            return number.uint32Value
+        }
+        return deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? UInt32
     }
 }

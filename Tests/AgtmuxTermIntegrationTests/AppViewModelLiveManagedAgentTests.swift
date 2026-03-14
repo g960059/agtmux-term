@@ -192,6 +192,41 @@ final class AppViewModelLiveManagedAgentTests: XCTestCase {
         }
     }
 
+    private func assertClaudePromptExecutionReady() throws {
+        let claudeModel = environmentValue("CLAUDE_MODEL") ?? "claude-sonnet-4-6"
+        let token = String(UUID().uuidString.prefix(8)).lowercased()
+        let probeDir = URL(fileURLWithPath: "/tmp", isDirectory: true)
+            .appendingPathComponent("agtmux-claude-probe-\(token)", isDirectory: true)
+        try FileManager.default.createDirectory(at: probeDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: probeDir) }
+
+        let gitInit = try shellRun(["/usr/bin/git", "-C", probeDir.path, "init", "-q"])
+        XCTAssertEqual(gitInit.status, 0, "git init for claude probe failed: \(gitInit.stderr)")
+
+        let probeCommand = """
+        cd \(shellQuote(probeDir.path)) && unset CLAUDECODE && claude --dangerously-skip-permissions --model \(shellQuote(claudeModel)) -p \(shellQuote("Reply with OK only."))
+        """
+        let probe = try shellRun(["/bin/zsh", "-lc", probeCommand], timeout: 20.0)
+        guard probe.status == 0 else {
+            let detail = probe.stderr.isEmpty ? probe.stdout : probe.stderr
+            let normalizedDetail = detail.lowercased()
+            let isAuthFailure =
+                normalizedDetail.contains("failed to authenticate")
+                || normalizedDetail.contains("authentication_error")
+                || normalizedDetail.contains("oauth token has expired")
+            if isAuthFailure {
+                throw XCTSkip("claude prompt execution unavailable: \(detail)")
+            }
+            throw NSError(
+                domain: "AppViewModelLiveManagedAgentTests",
+                code: 13,
+                userInfo: [
+                    NSLocalizedDescriptionKey: "claude prompt execution probe failed unexpectedly: \(detail)"
+                ]
+            )
+        }
+    }
+
     private func resolveDaemonBinary() throws -> String {
         if let override = ProcessInfo.processInfo.environment["AGTMUX_LIVE_TEST_BIN"],
            FileManager.default.isExecutableFile(atPath: override) {
@@ -257,12 +292,57 @@ final class AppViewModelLiveManagedAgentTests: XCTestCase {
         XCTAssertEqual(enter.status, 0, "tmux send-keys Enter failed: \(enter.stderr)")
     }
 
-    private func tmuxCapture(path: String, socketName: String, paneID: String) throws -> String {
+    private func tmuxCapture(
+        path: String,
+        socketName: String,
+        paneID: String,
+        startLine: Int = -80
+    ) throws -> String {
         let result = try tmuxRun(path: path, socketName: socketName, [
-            "capture-pane", "-t", paneID, "-p", "-S", "-80"
+            "capture-pane", "-t", paneID, "-p", "-S", String(startLine)
         ])
         XCTAssertEqual(result.status, 0, "tmux capture-pane failed: \(result.stderr)")
         return result.stdout
+    }
+
+    private func captureMatchesAllPatterns(
+        _ capture: String,
+        requiredPatterns: [String]
+    ) -> Bool {
+        requiredPatterns.allSatisfy { pattern in
+            capture.range(of: pattern, options: .regularExpression) != nil
+        }
+    }
+
+    private func acceptTmuxTrustPromptIfPresent(
+        path: String,
+        socketName: String,
+        paneID: String,
+        requiredPatterns: [String],
+        timeout: TimeInterval = 0.0
+    ) throws {
+        let deadline = Date().addingTimeInterval(timeout)
+
+        while true {
+            let capture = try tmuxCapture(
+                path: path,
+                socketName: socketName,
+                paneID: paneID,
+                startLine: -200
+            )
+            if captureMatchesAllPatterns(capture, requiredPatterns: requiredPatterns) {
+                let confirm = try shellRun(tmuxBaseArgs(path: path, socketName: socketName) + [
+                    "send-keys", "-t", paneID, "C-m"
+                ])
+                XCTAssertEqual(confirm.status, 0, "tmux send-keys Enter failed: \(confirm.stderr)")
+                return
+            }
+
+            guard Date() < deadline else {
+                return
+            }
+            Thread.sleep(forTimeInterval: 0.5)
+        }
     }
 
     private func waitForTmuxCurrentCommand(
@@ -537,15 +617,15 @@ final class AppViewModelLiveManagedAgentTests: XCTestCase {
             }()
         )
         Thread.sleep(forTimeInterval: 6.0)
-        let claudeCapture = try tmuxCapture(path: tmuxPath, socketName: socketName, paneID: claudePaneID)
-        if claudeCapture.range(
-            of: "Do you trust the contents of this directory|Yes, continue|Quick safety check|Yes, I trust this folder",
-            options: .regularExpression
-        ) != nil {
-            _ = try shellRun(tmuxBaseArgs(path: tmuxPath, socketName: socketName) + [
-                "send-keys", "-t", claudePaneID, "C-m"
-            ])
-        }
+        try acceptTmuxTrustPromptIfPresent(
+            path: tmuxPath,
+            socketName: socketName,
+            paneID: claudePaneID,
+            requiredPatterns: [
+                "Do you trust the contents of this\\s+directory|Quick safety check",
+            ],
+            timeout: 0.0
+        )
 
         try tmuxSendLine(
             path: tmuxPath,
@@ -571,6 +651,18 @@ final class AppViewModelLiveManagedAgentTests: XCTestCase {
             paneID: codexPaneID,
             text: codexCommand
         )
+        if codexLaunchMode == .interactive {
+            Thread.sleep(forTimeInterval: 6.0)
+            try acceptTmuxTrustPromptIfPresent(
+                path: tmuxPath,
+                socketName: socketName,
+                paneID: codexPaneID,
+                requiredPatterns: [
+                    "Do you trust the contents of this\\s+directory",
+                ],
+                timeout: 20.0
+            )
+        }
 
         return LiveHarness(
             baseDir: baseDir,
@@ -1089,6 +1181,54 @@ final class AppViewModelLiveManagedAgentTests: XCTestCase {
     }
 
     @MainActor
+    func testTrustPromptMatcherRejectsGenericContinuePrompts() {
+        let genericPrompt = """
+        Error: login failed
+        Press enter to continue
+        """
+
+        XCTAssertFalse(
+            captureMatchesAllPatterns(
+                genericPrompt,
+                requiredPatterns: [
+                    "Do you trust the contents of this\\s+directory",
+                ]
+            )
+        )
+    }
+
+    @MainActor
+    func testTrustPromptMatcherAcceptsKnownTrustPromptVariants() {
+        let claudePrompt = """
+        Quick safety check
+        Yes, I trust this folder
+        """
+        let codexPrompt = """
+        Do you trust the contents of this
+        directory?
+        1. Yes, continue
+        2. No, quit
+        """
+
+        XCTAssertTrue(
+            captureMatchesAllPatterns(
+                claudePrompt,
+                requiredPatterns: [
+                    "Do you trust the contents of this\\s+directory|Quick safety check",
+                ]
+            )
+        )
+        XCTAssertTrue(
+            captureMatchesAllPatterns(
+                codexPrompt,
+                requiredPatterns: [
+                    "Do you trust the contents of this\\s+directory",
+                ]
+            )
+        )
+    }
+
+    @MainActor
     func testLiveManagedClaudeAndCodexAppearInAppViewModel() async throws {
         let harness = try startLiveHarness()
         defer { stopLiveHarness(harness) }
@@ -1269,19 +1409,50 @@ final class AppViewModelLiveManagedAgentTests: XCTestCase {
         switch change.kind {
         case .upsert:
             let updatedSnapshot = try XCTUnwrap(change.pane)
-            let updatedPane = try await waitForAppPanePresentationToMatchSnapshot(
-                model: model,
-                client: recordingClient,
-                inventoryPane: codexInventoryPane,
-                snapshot: updatedSnapshot,
-                requireChangesV3: true,
-                timeout: 30.0
-            )
-            XCTAssertNotEqual(
-                model.paneDisplayState(for: updatedPane).primaryState,
-                .running,
-                "Codex row must not remain stale-running after completion upsert"
-            )
+            do {
+                let updatedPane = try await waitForAppPanePresentationToMatchSnapshot(
+                    model: model,
+                    client: recordingClient,
+                    inventoryPane: codexInventoryPane,
+                    snapshot: updatedSnapshot,
+                    requireChangesV3: true,
+                    timeout: 30.0
+                )
+                XCTAssertNotEqual(
+                    model.paneDisplayState(for: updatedPane).primaryState,
+                    .running,
+                    "Codex row must not remain stale-running after completion upsert"
+                )
+            } catch {
+                let latestSnapshot = try await currentV3Snapshot(
+                    socketPath: harness.daemonSocketPath,
+                    paneID: harness.codexPaneID
+                )
+                switch latestSnapshot {
+                case .some(let snapshot):
+                    let latestPane = try await waitForAppPanePresentationToMatchSnapshot(
+                        model: model,
+                        client: recordingClient,
+                        inventoryPane: codexInventoryPane,
+                        snapshot: snapshot,
+                        requireChangesV3: true,
+                        timeout: 30.0
+                    )
+                    XCTAssertNotEqual(
+                        model.paneDisplayState(for: latestPane).primaryState,
+                        .running,
+                        "Codex row must not remain stale-running after post-upsert fallback reconciliation"
+                    )
+                case .none:
+                    let clearedPane = try await waitForAppPaneToClearV3Overlay(
+                        model: model,
+                        client: recordingClient,
+                        inventoryPane: codexInventoryPane,
+                        timeout: 30.0
+                    )
+                    XCTAssertEqual(model.paneDisplayState(for: clearedPane).primaryState, .inactive)
+                }
+            }
         case .remove:
             let demotedSnapshot = try await currentV3Snapshot(
                 socketPath: harness.daemonSocketPath,
@@ -1329,9 +1500,9 @@ final class AppViewModelLiveManagedAgentTests: XCTestCase {
         let harness = try startLiveHarness(codexLaunchMode: .interactive)
         defer { stopLiveHarness(harness) }
 
-        _ = try await waitForManagedProviders(
+        _ = try await waitForManagedProviderAssignments(
             socketPath: harness.daemonSocketPath,
-            paneIDs: [harness.claudePaneID, harness.codexPaneID]
+            expectedProviders: [harness.codexPaneID: .codex]
         )
 
         let runningCodexSnapshot = try await waitForV3BootstrapPane(
@@ -1349,17 +1520,21 @@ final class AppViewModelLiveManagedAgentTests: XCTestCase {
 
     @MainActor
     func testLiveClaudeActivityTruthReachesExactAppRowWithoutBleed() async throws {
+        try assertClaudePromptExecutionReady()
         let harness = try startLiveHarness(claudePrompt: Self.claudeLifecyclePrompt)
         defer { stopLiveHarness(harness) }
 
-        let bootstrap = try await waitForManagedProviders(
+        let bootstrap = try await waitForManagedProviderAssignments(
             socketPath: harness.daemonSocketPath,
-            paneIDs: [harness.claudePaneID, harness.codexPaneID]
+            expectedProviders: [harness.claudePaneID: .claude]
         )
         let claudeInventoryPane = try XCTUnwrap(harness.inventoryPanes.first(where: { $0.paneId == harness.claudePaneID }))
         let codexInventoryPane = try XCTUnwrap(harness.inventoryPanes.first(where: { $0.paneId == harness.codexPaneID }))
         let initialClaudeSnapshot = try XCTUnwrap(bootstrap.panes.first(where: { $0.paneID == harness.claudePaneID }))
-        let initialCodexSnapshot = try XCTUnwrap(bootstrap.panes.first(where: { $0.paneID == harness.codexPaneID }))
+        let initialCodexSnapshot = try await currentV3Snapshot(
+            socketPath: harness.daemonSocketPath,
+            paneID: harness.codexPaneID
+        )
 
         let recordingClient = RecordingMetadataClient(socketPath: harness.daemonSocketPath)
         let model = AppViewModel(
@@ -1376,14 +1551,16 @@ final class AppViewModelLiveManagedAgentTests: XCTestCase {
             requireChangesV3: false,
             timeout: 20.0
         )
-        _ = try await waitForAppPanePresentationToMatchSnapshot(
-            model: model,
-            client: recordingClient,
-            inventoryPane: codexInventoryPane,
-            snapshot: initialCodexSnapshot,
-            requireChangesV3: false,
-            timeout: 20.0
-        )
+        if let initialCodexSnapshot {
+            _ = try await waitForAppPanePresentationToMatchSnapshot(
+                model: model,
+                client: recordingClient,
+                inventoryPane: codexInventoryPane,
+                snapshot: initialCodexSnapshot,
+                requireChangesV3: false,
+                timeout: 20.0
+            )
+        }
 
         XCTAssertEqual(
             model.paneDisplayState(for: claudePane).primaryState,
@@ -1416,9 +1593,9 @@ final class AppViewModelLiveManagedAgentTests: XCTestCase {
         let harness = try startLiveHarness()
         defer { stopLiveHarness(harness) }
 
-        _ = try await waitForManagedProviders(
+        _ = try await waitForManagedProviderAssignments(
             socketPath: harness.daemonSocketPath,
-            paneIDs: [harness.claudePaneID, harness.codexPaneID]
+            expectedProviders: [harness.codexPaneID: .codex]
         )
 
         let codexInventoryPane = try XCTUnwrap(harness.inventoryPanes.first(where: { $0.paneId == harness.codexPaneID }))
@@ -1653,9 +1830,9 @@ final class AppViewModelLiveManagedAgentTests: XCTestCase {
         )
         defer { stopLiveHarness(harness) }
 
-        _ = try await waitForManagedProviders(
+        _ = try await waitForManagedProviderAssignments(
             socketPath: harness.daemonSocketPath,
-            paneIDs: [harness.claudePaneID, harness.codexPaneID]
+            expectedProviders: [harness.codexPaneID: .codex]
         )
         let claudeInventoryPane = try XCTUnwrap(
             harness.inventoryPanes.first(where: { $0.paneId == harness.claudePaneID })

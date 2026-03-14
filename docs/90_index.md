@@ -19,10 +19,13 @@ When rebuilding context, read in this order:
 8. `docs/42_design-cli-bridge.md`
 9. `docs/43_design-companion-surfaces.md`
 10. `docs/44_design-sync-v3-consumer.md`
-11. `docs/30_architecture.md`
-12. `docs/50_plan.md`
-13. `docs/70_progress.md`
-14. `docs/archive/README.md`
+11. `docs/47_design-local-first-fast-path.md`
+12. `docs/45_design-terminal-performance.md`
+13. `docs/46_design-remote-navigation.md`
+14. `docs/30_architecture.md`
+15. `docs/50_plan.md`
+16. `docs/70_progress.md`
+17. `docs/archive/README.md`
 
 ## Documents
 
@@ -40,6 +43,9 @@ When rebuilding context, read in this order:
 | `docs/42_design-cli-bridge.md` | Design | `agt open`, OSC bridge, remote semantics |
 | `docs/43_design-companion-surfaces.md` | Design | browser/document surfaces and future directory extension |
 | `docs/44_design-sync-v3-consumer.md` | Design | term-side sync-v3 consumer foundation and truth/presentation split |
+| `docs/45_design-terminal-performance.md` | Design | completed Phase 1-4 terminal performance work |
+| `docs/46_design-remote-navigation.md` | Design | completed Phase 5-7 remote navigation work and deferred remote follow-on |
+| `docs/47_design-local-first-fast-path.md` | Design | active local-first fast-path plan and local/remote parity gates |
 | `docs/50_plan.md` | Design | V2 implementation phases and risks |
 | `docs/60_tasks.md` | Tracking | active and next tasks |
 | `docs/70_progress.md` | Tracking | recent progress summary |
@@ -79,6 +85,48 @@ Mainline product truth is now:
 
 ## Current Tracking Focus
 
+- `Gate-L`
+  local-first implementation slices are now closed; Gate-L measurement is in progress:
+  - repo-local signpost / idle / pane-switch scripts now exist
+  - the last false-green risks are now closed:
+    - idle CPU sampling uses interval-based `top` delta samples
+    - signpost / pane-switch percentile summaries use nearest-rank `p95`
+    - empty signpost windows fail loudly
+  - the pane-switch root cause was term-side:
+    - local control-mode events were session-scoped and could drift away from rendered-client truth
+    - `WorkbenchFocusedNavigationActor` now re-reads exact rendered-client state on control-mode startup and non-output events
+  - the repo-local pane-switch proxy bench is now green:
+    - `scripts/perf/gate_l_pane_switch_bench.sh --iterations 4 --timeout 20` => PASS
+    - this is a 2-pane internal-bridge proxy, not the final 4-pane/sidebar-click Gate-L proof
+    - latest proxy sample: `p95_ms = 2339.612`
+    - `FetchAll` is absent in the captured pane-switch signpost window
+  - the vendored native Ghostty bundle exists and launches from this repo:
+    - `vendor/ghostty/zig-out/Ghostty.app`
+    - `ghostty +version` => `1.2.3`
+    - `scripts/perf/gate_l_native_ghostty_probe.sh` => launch/activation/key injection PASS
+  - `scripts/perf/gate_l_ax_key_sender.sh` now builds an app-backed helper:
+    - `scripts/perf/.apps/GateLAXKeySender.app`
+    - `scripts/perf/gate_l_ax_key_sender.sh --prompt --dry-run` => PASS (`trusted = true`)
+  - helper-based native input smoke is also green:
+    - `scripts/perf/gate_l_native_ghostty_input_smoke.sh --timeout 15` => PASS
+    - tmux capture matches the receive-marker pattern `__GATE_L_RECV__:\s*a`
+  - the current blocker is final same-host parity-number capture, not native input automation
+- `T-152`
+  live Codex full-lane drift is closed; `AppViewModelLiveManagedAgentTests` now returns success again after the interactive trust-prompt wrap fix and Codex-only canary precondition cleanup
+- live Claude prompt proof
+  the suite currently records one explicit skip because local `claude -p` execution returns `401` expired-token auth on March 13, 2026; this is tracked as environment/auth signal, not a reopened term regression
+- `T-LF-08`
+  render scheduler cleanup / multi-display audit is closed on fresh SwiftPM + Xcode verification and dual Codex re-review `GO`
+- `T-LF-07`
+  dirty-only draw is closed on fresh SwiftPM + Xcode verification and dual Codex review `GO`
+- `T-LF-06`
+  local fallback / command-broker hardening is closed on fresh SwiftPM + Xcode verification and Codex review `GO`; remote `sshTarget` drift now invalidates frozen attach plans as well as focused navigation ownership
+- `T-LF-05`
+  focused navigation actor extraction is closed on fresh SwiftPM + Xcode verification and Codex CLI review `GO`
+- `T-LF-01` + `T-LF-02`
+  local metadata/health steady state is coordinator-owned, local inventory converges automatically outside the global `fetchAll()` loop, and startup/poll rewiring is closed on fresh SwiftPM + Xcode verification and review `GO`
+- `T-LF-00`
+  local-first kickoff baseline is closed on docs, signposts, runnable perf script, and fresh verification
 - `T-090` through `T-094`
   Workbench V2 implementation kickoff track
 - `T-120` through `T-128`
@@ -128,11 +176,11 @@ Mainline product truth is now:
 - `T-148`
   `AgtmuxPane.needsAttention` now delegates to `PaneDisplayCompatFallback`; duplicated legacy attention collapse is gone from `CoreModels`
 - `T-119`
-  live product Codex completion no longer expects `waiting_input`; sync-v3 truth is `completed_idle` without attention unless pending requests explicitly exist
+  live product Codex completion targets `completed_idle` without attention unless pending requests explicitly exist, and the dedicated live completed-idle canary is green again after the March 13, 2026 harness fix
 - `T-116`
   metadata-enabled plain-zsh Codex XCUITest is now recorded as environment-blocked/deferred; the semantic replacement is the green live AppViewModel managed-agent proof, with explicit Codex freshness coverage on sync-v3 bootstrap truth
-- strict live Codex running-state proof is also green again on the current local exec-parity daemon build:
-  `testLiveCodexActivityTruthReachesExactAppRowWithoutBleed` now uses exec launch for the main semantic-state observation of `primary=.running`, while `testLiveCodexInteractiveRunningSentinelStillSurfacesExactRunningTruth` remains as the interactive sentinel
+- strict live Codex running-state proof is green again on both lanes:
+  `testLiveCodexActivityTruthReachesExactAppRowWithoutBleed` remains the main exec-mode proof, and `testLiveCodexInteractiveRunningSentinelStillSurfacesExactRunningTruth` is back to green after the wrapped trust-prompt fix
 - `T-087`
   docs compaction and active-context redesign complete
 - `T-076` through `T-084`

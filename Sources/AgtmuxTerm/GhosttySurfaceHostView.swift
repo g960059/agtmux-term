@@ -101,8 +101,12 @@ struct GhosttySurfaceHostView: NSViewRepresentable {
         coordinator.registeredSurfaceContext = nil
 
         if let surfaceID = coordinator.surfaceID {
+            let expectedViewID = ObjectIdentifier(nsView)
             Task { @MainActor in
-                SurfacePool.shared.release(leafID: surfaceID)
+                SurfacePool.shared.release(
+                    leafID: surfaceID,
+                    expectedViewID: expectedViewID
+                )
             }
         }
     }
@@ -117,9 +121,7 @@ struct GhosttySurfaceHostView: NSViewRepresentable {
     ) -> Bool {
         guard nsView.window != nil else { return false }
 
-        print("[updateNSView] Creating surface for id \(surfaceID) cmd=\(command)")
         guard let surface = GhosttyApp.shared.newSurface(for: nsView, command: command) else {
-            print("[updateNSView] Surface created: false")
             return false
         }
 
@@ -136,7 +138,8 @@ struct GhosttySurfaceHostView: NSViewRepresentable {
         SurfacePool.shared.register(
             view: nsView,
             leafID: surfaceID,
-            tmuxPaneID: poolKey
+            tmuxPaneID: poolKey,
+            surfaceHandle: surfaceHandle
         )
         if let surfaceContext {
             GhosttyTerminalSurfaceRegistry.shared.register(
@@ -152,7 +155,6 @@ struct GhosttySurfaceHostView: NSViewRepresentable {
         }
         coordinator.currentCommand = command
         cancelPendingSurfaceRetry(for: coordinator)
-        print("[updateNSView] Surface created: true")
         return true
     }
 

@@ -45,6 +45,11 @@ final class UITestTmuxBridge {
         let sessionName: String
         let windowID: String
         let paneID: String
+        let desiredWindowID: String
+        let desiredPaneID: String
+        let observedWindowID: String
+        let observedPaneID: String
+        let focusRequestNonce: UInt64
         let selectedPaneInventoryID: String
         let attachCommand: String
         let renderedAttachCommand: String
@@ -62,6 +67,7 @@ final class UITestTmuxBridge {
     private let activeTerminalTargetCommand = "__agtmux_dump_active_terminal_target__"
     private let sidebarStateCommand = "__agtmux_dump_sidebar_state__"
     private let enableMetadataCommand = "__agtmux_enable_metadata__"
+    private let openTerminalForPaneCommand = "__agtmux_open_terminal_for_pane__"
 
     init(
         viewModel: AppViewModel,
@@ -295,6 +301,9 @@ final class UITestTmuxBridge {
                 let snapshot = try await activeTerminalTargetSnapshot()
                 let data = try JSONEncoder().encode(snapshot)
                 stdout = String(decoding: data, as: UTF8.self)
+            case openTerminalForPaneCommand:
+                try openTerminalForPane(request.args)
+                stdout = "ok"
             case sidebarStateCommand:
                 let bootstrapProbeSummary: UITestBootstrapProbeSummary
                 let bootstrapTargetSummary: UITestBootstrapTargetSummary?
@@ -458,6 +467,11 @@ final class UITestTmuxBridge {
             sessionName: sessionRef.sessionName,
             windowID: selection.windowID,
             paneID: selection.paneID,
+            desiredWindowID: activePaneContext.activePaneRef.windowID,
+            desiredPaneID: activePaneContext.activePaneRef.paneID,
+            observedWindowID: workbenchStoreV2.activePaneRuntimeContext?.observedPaneRef?.windowID ?? "",
+            observedPaneID: workbenchStoreV2.activePaneRuntimeContext?.observedPaneRef?.paneID ?? "",
+            focusRequestNonce: activePaneContext.focusRequestNonce,
             selectedPaneInventoryID: selectedPaneInventoryID,
             attachCommand: attachPlan.command,
             renderedAttachCommand: renderedState.attachCommand,
@@ -465,6 +479,41 @@ final class UITestTmuxBridge {
             renderedClientWindowID: renderedClientTarget.windowID,
             renderedClientPaneID: renderedClientTarget.paneID,
             renderedSurfaceGeneration: renderedState.generation
+        )
+    }
+
+    private func openTerminalForPane(_ args: [String]) throws {
+        guard args.count >= 4 else {
+            throw NSError(
+                domain: "UITestTmuxBridge",
+                code: 10,
+                userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "\(openTerminalForPaneCommand) requires <source> <sessionName> <paneID>"
+                ]
+            )
+        }
+
+        let source = args[1]
+        let sessionName = args[2]
+        let paneID = args[3]
+
+        guard let pane = viewModel.panes.first(where: {
+            $0.source == source && $0.sessionName == sessionName && $0.paneId == paneID
+        }) else {
+            throw NSError(
+                domain: "UITestTmuxBridge",
+                code: 11,
+                userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "Pane not found for source=\(source) session=\(sessionName) pane=\(paneID)"
+                ]
+            )
+        }
+
+        workbenchStoreV2.openTerminal(
+            for: pane,
+            hostsConfig: viewModel.hostsConfig
         )
     }
 

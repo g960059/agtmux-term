@@ -59,8 +59,6 @@ private final class GhosttyTerminalViewSpy: GhosttyTerminalView {
         interpretation?()
     }
 
-    override func releaseSurfaceFromApp() {}
-
     override func sendKeyToSurface(event: NSEvent, text: String?, composing: Bool) -> Bool {
         sentRawKeys.append((characters: text ?? event.characters, composing: composing))
         return sendKeyResult

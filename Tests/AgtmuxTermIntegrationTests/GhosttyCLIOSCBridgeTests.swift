@@ -1,4 +1,5 @@
 import XCTest
+import AppKit
 @testable import AgtmuxTerm
 import AgtmuxTermCore
 import GhosttyKit
@@ -692,6 +693,438 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
         }
     }
 
+    @MainActor
+    func testSurfacePoolRegisterRequestsInitialDirtyTickAndDrawsOnce() {
+        SurfacePool.shared.resetForTesting()
+        defer { SurfacePool.shared.resetForTesting() }
+
+        let view = GhosttyTerminalViewDrawSpy()
+        let leafID = UUID()
+        var scheduledTicks = 0
+
+        GhosttyApp.withTestTickScheduleObserver({
+            scheduledTicks += 1
+        }) {
+            SurfacePool.shared.register(
+                view: view,
+                leafID: leafID,
+                tmuxPaneID: "%1",
+                surfaceHandle: GhosttySurfaceHandle(rawValue: 0x610)
+            )
+
+            XCTAssertEqual(scheduledTicks, 1)
+
+            GhosttyApp.runDirtyDrawPassForTesting()
+            XCTAssertEqual(view.triggerDrawCallCount, 1)
+
+            GhosttyApp.runDirtyDrawPassForTesting()
+            XCTAssertEqual(view.triggerDrawCallCount, 1)
+        }
+    }
+
+    @MainActor
+    func testHandleActionRenderRequestsTickAndDrawsOnlyTargetSurface() {
+        SurfacePool.shared.resetForTesting()
+        defer { SurfacePool.shared.resetForTesting() }
+
+        let dirtyView = GhosttyTerminalViewDrawSpy()
+        let cleanView = GhosttyTerminalViewDrawSpy()
+        let dirtyHandle = GhosttySurfaceHandle(rawValue: 0x611)
+        let cleanHandle = GhosttySurfaceHandle(rawValue: 0x612)
+        var scheduledTicks = 0
+
+        GhosttyApp.withTestTickScheduleObserver({
+            scheduledTicks += 1
+        }) {
+            SurfacePool.shared.register(
+                view: dirtyView,
+                leafID: UUID(),
+                tmuxPaneID: "%11",
+                surfaceHandle: dirtyHandle
+            )
+            SurfacePool.shared.register(
+                view: cleanView,
+                leafID: UUID(),
+                tmuxPaneID: "%12",
+                surfaceHandle: cleanHandle
+            )
+
+            GhosttyApp.runDirtyDrawPassForTesting()
+            dirtyView.resetDrawTracking()
+            cleanView.resetDrawTracking()
+            scheduledTicks = 0
+
+            XCTAssertTrue(
+                GhosttyApp.handleAction(
+                    nil,
+                    target: makeSurfaceTarget(dirtyHandle),
+                    action: makeRenderAction()
+                )
+            )
+
+            XCTAssertEqual(scheduledTicks, 1)
+            GhosttyApp.runDirtyDrawPassForTesting()
+            XCTAssertEqual(dirtyView.triggerDrawCallCount, 1)
+            XCTAssertEqual(cleanView.triggerDrawCallCount, 0)
+        }
+    }
+
+    @MainActor
+    func testHandleActionRenderDuringTickDoesNotScheduleFollowUpTick() {
+        SurfacePool.shared.resetForTesting()
+        defer { SurfacePool.shared.resetForTesting() }
+
+        let view = GhosttyTerminalViewDrawSpy()
+        let handle = GhosttySurfaceHandle(rawValue: 0x620)
+        var scheduledTicks = 0
+
+        GhosttyApp.withTestTickScheduleObserver({
+            scheduledTicks += 1
+        }) {
+            SurfacePool.shared.register(
+                view: view,
+                leafID: UUID(),
+                tmuxPaneID: "%18",
+                surfaceHandle: handle
+            )
+            GhosttyApp.runDirtyDrawPassForTesting()
+            view.resetDrawTracking()
+            scheduledTicks = 0
+
+            GhosttyApp.withTestTickExecutionState(true) {
+                XCTAssertTrue(
+                    GhosttyApp.handleAction(
+                        nil,
+                        target: makeSurfaceTarget(handle),
+                        action: makeRenderAction()
+                    )
+                )
+            }
+
+            XCTAssertEqual(scheduledTicks, 0)
+
+            GhosttyApp.runDirtyDrawPassForTesting()
+            XCTAssertEqual(view.triggerDrawCallCount, 1)
+        }
+    }
+
+    @MainActor
+    func testBackgroundedDirtySurfaceRequestsTickOnlyAfterReactivation() {
+        SurfacePool.shared.resetForTesting()
+        defer { SurfacePool.shared.resetForTesting() }
+
+        let view = GhosttyTerminalViewDrawSpy()
+        let leafID = UUID()
+        let surfaceHandle = GhosttySurfaceHandle(rawValue: 0x613)
+        var scheduledTicks = 0
+
+        GhosttyApp.withTestTickScheduleObserver({
+            scheduledTicks += 1
+        }) {
+            SurfacePool.shared.register(
+                view: view,
+                leafID: leafID,
+                tmuxPaneID: "%13",
+                surfaceHandle: surfaceHandle
+            )
+
+            GhosttyApp.runDirtyDrawPassForTesting()
+            view.resetDrawTracking()
+            scheduledTicks = 0
+
+            SurfacePool.shared.background(leafID: leafID)
+            SurfacePool.shared.markDirty(surfaceHandle: surfaceHandle)
+            XCTAssertEqual(scheduledTicks, 0)
+
+            GhosttyApp.runDirtyDrawPassForTesting()
+            XCTAssertEqual(view.triggerDrawCallCount, 0)
+
+            SurfacePool.shared.activate(leafID: leafID)
+            XCTAssertEqual(scheduledTicks, 1)
+
+            GhosttyApp.runDirtyDrawPassForTesting()
+            XCTAssertEqual(view.triggerDrawCallCount, 1)
+        }
+    }
+
+    @MainActor
+    func testReRegisterReplacesSurfaceHandleDirtyRouting() {
+        SurfacePool.shared.resetForTesting()
+        defer { SurfacePool.shared.resetForTesting() }
+
+        let originalView = GhosttyTerminalViewDrawSpy()
+        let replacementView = GhosttyTerminalViewDrawSpy()
+        let leafID = UUID()
+        let originalHandle = GhosttySurfaceHandle(rawValue: 0x614)
+        let replacementHandle = GhosttySurfaceHandle(rawValue: 0x615)
+        var scheduledTicks = 0
+
+        GhosttyApp.withTestTickScheduleObserver({
+            scheduledTicks += 1
+        }) {
+            SurfacePool.shared.register(
+                view: originalView,
+                leafID: leafID,
+                tmuxPaneID: "%14",
+                surfaceHandle: originalHandle
+            )
+            GhosttyApp.runDirtyDrawPassForTesting()
+            originalView.resetDrawTracking()
+            scheduledTicks = 0
+
+            SurfacePool.shared.register(
+                view: replacementView,
+                leafID: leafID,
+                tmuxPaneID: "%14",
+                surfaceHandle: replacementHandle
+            )
+            XCTAssertEqual(scheduledTicks, 1)
+
+            GhosttyApp.runDirtyDrawPassForTesting()
+            XCTAssertEqual(replacementView.triggerDrawCallCount, 1)
+            replacementView.resetDrawTracking()
+            scheduledTicks = 0
+
+            XCTAssertTrue(
+                GhosttyApp.handleAction(
+                    nil,
+                    target: makeSurfaceTarget(originalHandle),
+                    action: makeRenderAction()
+                )
+            )
+            XCTAssertEqual(scheduledTicks, 0)
+
+            GhosttyApp.runDirtyDrawPassForTesting()
+            XCTAssertEqual(originalView.triggerDrawCallCount, 0)
+            XCTAssertEqual(replacementView.triggerDrawCallCount, 0)
+
+            XCTAssertTrue(
+                GhosttyApp.handleAction(
+                    nil,
+                    target: makeSurfaceTarget(replacementHandle),
+                    action: makeRenderAction()
+                )
+            )
+            XCTAssertEqual(scheduledTicks, 1)
+
+            GhosttyApp.runDirtyDrawPassForTesting()
+            XCTAssertEqual(replacementView.triggerDrawCallCount, 1)
+        }
+    }
+
+    @MainActor
+    func testStaleReleaseDoesNotTearDownReplacementSurface() {
+        SurfacePool.shared.resetForTesting()
+        defer { SurfacePool.shared.resetForTesting() }
+
+        let originalView = GhosttyTerminalViewDrawSpy()
+        let replacementView = GhosttyTerminalViewDrawSpy()
+        let leafID = UUID()
+        let originalHandle = GhosttySurfaceHandle(rawValue: 0x616)
+        let replacementHandle = GhosttySurfaceHandle(rawValue: 0x617)
+        var scheduledTicks = 0
+
+        GhosttyApp.withTestTickScheduleObserver({
+            scheduledTicks += 1
+        }) {
+            SurfacePool.shared.register(
+                view: originalView,
+                leafID: leafID,
+                tmuxPaneID: "%15",
+                surfaceHandle: originalHandle
+            )
+            GhosttyApp.runDirtyDrawPassForTesting()
+
+            SurfacePool.shared.register(
+                view: replacementView,
+                leafID: leafID,
+                tmuxPaneID: "%15",
+                surfaceHandle: replacementHandle
+            )
+            GhosttyApp.runDirtyDrawPassForTesting()
+            replacementView.resetDrawTracking()
+            scheduledTicks = 0
+
+            SurfacePool.shared.release(
+                leafID: leafID,
+                expectedViewID: ObjectIdentifier(originalView)
+            )
+
+            XCTAssertTrue(
+                SurfacePool.shared.activeSurfaceViewIDs.contains(ObjectIdentifier(replacementView))
+            )
+
+            XCTAssertTrue(
+                GhosttyApp.handleAction(
+                    nil,
+                    target: makeSurfaceTarget(replacementHandle),
+                    action: makeRenderAction()
+                )
+            )
+            XCTAssertEqual(scheduledTicks, 1)
+
+            GhosttyApp.runDirtyDrawPassForTesting()
+            XCTAssertEqual(replacementView.triggerDrawCallCount, 1)
+        }
+    }
+
+    @MainActor
+    func testApplyingChangedSurfaceMetricsSchedulesDirtyDrawOnlyForActualMetricDrift() {
+        SurfacePool.shared.resetForTesting()
+        defer { SurfacePool.shared.resetForTesting() }
+
+        let view = GhosttyTerminalViewMetricsSpy()
+        let leafID = UUID()
+        var scheduledTicks = 0
+        let initialMetrics = GhosttyTerminalView.SurfaceMetrics(
+            pixelWidth: 800,
+            pixelHeight: 600,
+            xScale: 2.0,
+            yScale: 2.0,
+            displayID: 77
+        )
+        let movedDisplayMetrics = GhosttyTerminalView.SurfaceMetrics(
+            pixelWidth: 800,
+            pixelHeight: 600,
+            xScale: 2.0,
+            yScale: 2.0,
+            displayID: 88
+        )
+
+        GhosttyApp.withTestTickScheduleObserver({
+            scheduledTicks += 1
+        }) {
+            SurfacePool.shared.register(
+                view: view,
+                leafID: leafID,
+                tmuxPaneID: "%16",
+                surfaceHandle: GhosttySurfaceHandle(rawValue: 0x618)
+            )
+            GhosttyApp.runDirtyDrawPassForTesting()
+            view.resetMetricTracking()
+            scheduledTicks = 0
+
+            view.applySurfaceMetricsForTesting(initialMetrics)
+            XCTAssertEqual(
+                view.contentScaleUpdates,
+                [GhosttyTerminalViewMetricsSpy.ScaleUpdate(xScale: 2.0, yScale: 2.0)]
+            )
+            XCTAssertEqual(
+                view.sizeUpdates,
+                [GhosttyTerminalViewMetricsSpy.SizeUpdate(pixelWidth: 800, pixelHeight: 600)]
+            )
+            XCTAssertEqual(view.displayIDUpdates, [77])
+            XCTAssertEqual(scheduledTicks, 1)
+
+            GhosttyApp.runDirtyDrawPassForTesting()
+            view.resetMetricTracking()
+            scheduledTicks = 0
+
+            view.applySurfaceMetricsForTesting(initialMetrics)
+            XCTAssertTrue(view.contentScaleUpdates.isEmpty)
+            XCTAssertTrue(view.sizeUpdates.isEmpty)
+            XCTAssertTrue(view.displayIDUpdates.isEmpty)
+            XCTAssertEqual(scheduledTicks, 0)
+
+            view.applySurfaceMetricsForTesting(movedDisplayMetrics)
+            XCTAssertTrue(view.contentScaleUpdates.isEmpty)
+            XCTAssertTrue(view.sizeUpdates.isEmpty)
+            XCTAssertEqual(view.displayIDUpdates, [88])
+            XCTAssertEqual(scheduledTicks, 1)
+        }
+    }
+
+    @MainActor
+    func testApplyingSurfaceMetricsWhileBackgroundedQueuesDrawUntilActivate() {
+        SurfacePool.shared.resetForTesting()
+        defer { SurfacePool.shared.resetForTesting() }
+
+        let view = GhosttyTerminalViewMetricsSpy()
+        let leafID = UUID()
+        var scheduledTicks = 0
+        let metrics = GhosttyTerminalView.SurfaceMetrics(
+            pixelWidth: 1200,
+            pixelHeight: 900,
+            xScale: 2.0,
+            yScale: 2.0,
+            displayID: 91
+        )
+
+        GhosttyApp.withTestTickScheduleObserver({
+            scheduledTicks += 1
+        }) {
+            SurfacePool.shared.register(
+                view: view,
+                leafID: leafID,
+                tmuxPaneID: "%17",
+                surfaceHandle: GhosttySurfaceHandle(rawValue: 0x619)
+            )
+            GhosttyApp.runDirtyDrawPassForTesting()
+            view.resetMetricTracking()
+            scheduledTicks = 0
+
+            SurfacePool.shared.background(leafID: leafID)
+            view.applySurfaceMetricsForTesting(metrics)
+
+            XCTAssertEqual(
+                view.contentScaleUpdates,
+                [GhosttyTerminalViewMetricsSpy.ScaleUpdate(xScale: 2.0, yScale: 2.0)]
+            )
+            XCTAssertEqual(
+                view.sizeUpdates,
+                [GhosttyTerminalViewMetricsSpy.SizeUpdate(pixelWidth: 1200, pixelHeight: 900)]
+            )
+            XCTAssertEqual(view.displayIDUpdates, [91])
+            XCTAssertEqual(scheduledTicks, 0)
+
+            SurfacePool.shared.activate(leafID: leafID)
+            XCTAssertEqual(scheduledTicks, 1)
+        }
+    }
+
+    @MainActor
+    func testDetachingViewDoesNotApplyFallbackSurfaceMetricsOrScheduleDraw() {
+        SurfacePool.shared.resetForTesting()
+        defer { SurfacePool.shared.resetForTesting() }
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 900, height: 700),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 900, height: 700))
+        let view = GhosttyTerminalViewMetricsSpy(
+            frame: NSRect(x: 0, y: 0, width: 400, height: 300)
+        )
+        let leafID = UUID()
+        var scheduledTicks = 0
+
+        window.contentView = container
+        container.addSubview(view)
+
+        GhosttyApp.withTestTickScheduleObserver({
+            scheduledTicks += 1
+        }) {
+            SurfacePool.shared.register(
+                view: view,
+                leafID: leafID,
+                tmuxPaneID: "%19",
+                surfaceHandle: GhosttySurfaceHandle(rawValue: 0x621)
+            )
+            GhosttyApp.runDirtyDrawPassForTesting()
+            view.resetMetricTracking()
+            scheduledTicks = 0
+
+            view.removeFromSuperview()
+
+            XCTAssertTrue(view.contentScaleUpdates.isEmpty)
+            XCTAssertTrue(view.sizeUpdates.isEmpty)
+            XCTAssertTrue(view.displayIDUpdates.isEmpty)
+            XCTAssertEqual(scheduledTicks, 0)
+        }
+    }
+
     private func assertDecodeError(
         payload: String,
         expected: GhosttyCLIOSCBridgeError,
@@ -749,6 +1182,13 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
         )
     }
 
+    private func makeRenderAction() -> ghostty_action_s {
+        ghostty_action_s(
+            tag: GHOSTTY_ACTION_RENDER,
+            action: ghostty_action_u()
+        )
+    }
+
     private static func invokeHandleActionOffMainThread(
         osc: UInt16 = GhosttyCLIOSCBridge.command,
         surfaceHandle: GhosttySurfaceHandle,
@@ -781,5 +1221,59 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
                 continuation.resume(returning: consumed)
             }
         }
+    }
+}
+
+@MainActor
+private final class GhosttyTerminalViewDrawSpy: GhosttyTerminalView {
+    private(set) var triggerDrawCallCount = 0
+
+    override func triggerDraw() {
+        triggerDrawCallCount += 1
+    }
+
+    func resetDrawTracking() {
+        triggerDrawCallCount = 0
+    }
+}
+
+@MainActor
+private final class GhosttyTerminalViewMetricsSpy: GhosttyTerminalView {
+    struct ScaleUpdate: Equatable {
+        let xScale: Double
+        let yScale: Double
+    }
+
+    struct SizeUpdate: Equatable {
+        let pixelWidth: UInt32
+        let pixelHeight: UInt32
+    }
+
+    private(set) var contentScaleUpdates: [ScaleUpdate] = []
+    private(set) var sizeUpdates: [SizeUpdate] = []
+    private(set) var displayIDUpdates: [UInt32] = []
+
+    override func hasSurfaceForMetricsSync() -> Bool {
+        true
+    }
+
+    override func updateSurfaceContentScale(xScale: Double, yScale: Double) {
+        contentScaleUpdates.append(ScaleUpdate(xScale: xScale, yScale: yScale))
+    }
+
+    override func updateSurfaceSize(pixelWidth: UInt32, pixelHeight: UInt32) {
+        sizeUpdates.append(
+            SizeUpdate(pixelWidth: pixelWidth, pixelHeight: pixelHeight)
+        )
+    }
+
+    override func updateSurfaceDisplayID(_ displayID: UInt32) {
+        displayIDUpdates.append(displayID)
+    }
+
+    func resetMetricTracking() {
+        contentScaleUpdates.removeAll()
+        sizeUpdates.removeAll()
+        displayIDUpdates.removeAll()
     }
 }

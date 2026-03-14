@@ -79,19 +79,72 @@ if requiresGhosttyRuntime {
 // MainActor.assumeIsolated is correct and avoids forcing everything async.
 let xpcClient: AgtmuxDaemonXPCClient? = useXPCDaemonService ? AgtmuxDaemonXPCClient() : nil
 let daemonSupervisor: AgtmuxDaemonSupervisor? = useXPCDaemonService ? nil : AgtmuxDaemonSupervisor()
+let enableBroadPolling = !isUITest || enableUITestPolling
 
-func startManagedDaemonAsyncIfNeeded() {
-    if let xpcClient {
-        Task { try? await xpcClient.startManagedDaemonIfNeeded() }
-    } else {
-        daemonSupervisor?.startIfNeededAsync()
+final class XPCManagedDaemonBringUpLauncher: @unchecked Sendable {
+    private let xpcClient: AgtmuxDaemonXPCClient
+
+    init(xpcClient: AgtmuxDaemonXPCClient) {
+        self.xpcClient = xpcClient
+    }
+
+    func startIfNeeded() async {
+        try? await xpcClient.startManagedDaemonIfNeeded()
     }
 }
 
-// Keep normal launches on the existing eager async path, but avoid blocking the
-// metadata-enabled XCUITest launch handshake on daemon startup/probe work.
-if !isUITest {
-    startManagedDaemonAsyncIfNeeded()
+typealias DetachedAsyncLauncher = @Sendable (@escaping @Sendable () async -> Void) -> Void
+
+func kickOffManagedDaemonBringUp(
+    useXPCDaemonService: Bool,
+    startXPCManagedDaemonIfNeeded: @escaping @Sendable () async -> Void,
+    startManagedDaemonSupervisorIfNeededAsync: @escaping () -> Void,
+    launchDetachedAsyncWork: @escaping DetachedAsyncLauncher = { operation in
+        Task.detached(priority: .background) {
+            await operation()
+        }
+    }
+) {
+    if useXPCDaemonService {
+        launchDetachedAsyncWork(startXPCManagedDaemonIfNeeded)
+    } else {
+        startManagedDaemonSupervisorIfNeededAsync()
+    }
+}
+
+let xpcManagedDaemonBringUpLauncher = xpcClient.map(XPCManagedDaemonBringUpLauncher.init)
+
+func kickOffManagedDaemonBringUp() {
+    kickOffManagedDaemonBringUp(
+        useXPCDaemonService: xpcManagedDaemonBringUpLauncher != nil,
+        startXPCManagedDaemonIfNeeded: {
+            if let xpcManagedDaemonBringUpLauncher {
+                await xpcManagedDaemonBringUpLauncher.startIfNeeded()
+            }
+        },
+        startManagedDaemonSupervisorIfNeededAsync: {
+            daemonSupervisor?.startIfNeededAsync()
+        }
+    )
+}
+
+func runStartupSequence(
+    enableBroadPolling: Bool,
+    initialSync: @escaping () async -> Void,
+    kickOffManagedDaemonBringUp: @escaping () -> Void,
+    startPolling: @escaping @MainActor () -> Void
+) async {
+    if enableBroadPolling {
+        kickOffManagedDaemonBringUp()
+    }
+
+    await initialSync()
+
+    if enableBroadPolling {
+        await MainActor.run {
+            startPolling()
+        }
+    }
 }
 
 let localMetadataClient: any ProductLocalMetadataClient
@@ -112,11 +165,7 @@ let uiTestTmuxBridge: UITestTmuxBridge? = MainActor.assumeIsolated {
         viewModel: viewModel,
         enableMetadataMode: {
             viewModel.enableUITestMetadataMode()
-            if let xpcClient {
-                try? await xpcClient.startManagedDaemonIfNeeded()
-            } else {
-                daemonSupervisor?.startIfNeeded()
-            }
+            kickOffManagedDaemonBringUp()
             viewModel.startPolling()
         }
     )
@@ -210,17 +259,20 @@ func sustainForegroundForUITest(
 // 6. Kick async startup once run loop is alive.
 DispatchQueue.main.async {
     Task {
-        if let uiTestTmuxBridge {
-            await uiTestTmuxBridge.startIfNeeded()
-            if enableUITestPolling {
-                startManagedDaemonAsyncIfNeeded()
+        await runStartupSequence(
+            enableBroadPolling: enableBroadPolling,
+            initialSync: {
+                if let uiTestTmuxBridge {
+                    await uiTestTmuxBridge.startIfNeeded()
+                } else {
+                    await viewModel.performInitialSync()
+                }
+            },
+            kickOffManagedDaemonBringUp: kickOffManagedDaemonBringUp,
+            startPolling: {
+                viewModel.startPolling()
             }
-        } else {
-            await viewModel.fetchAll()
-        }
-    }
-    if !isUITest || enableUITestPolling {
-        viewModel.startPolling()
+        )
     }
 
     // XCTest may launch with dontMakeFrontmost=1. Re-activate after the

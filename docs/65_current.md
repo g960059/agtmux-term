@@ -4,6 +4,67 @@
 
 - Product mode: V2 tmux-first cockpit
 - Mainline docs are aligned to V2 and design-locked for MVP
+- Execution focus is now `local-first` fast-path work:
+  - prior `T-PERF-P1` through `T-PERF-P13` groundwork is considered landed
+  - the active design for the next slice is `docs/47_design-local-first-fast-path.md`
+  - `T-LF-00` (`PR-00`: perf baseline / signpost fixed) is now closed
+  - `T-LF-01` (`LocalProjectionCoordinator`) and `T-LF-02` (startup/poll rewiring) are now closed
+  - `T-LF-05` (focused navigation actor extraction) is now closed
+  - `T-LF-06` (local fallback / command-broker hardening) is now closed
+  - `T-LF-07` (dirty-only draw) is now closed
+  - `T-LF-08` (render scheduler cleanup / multi-display audit) is now closed
+  - the next active step is `Gate-L` measurement / parity proof
+  - the repo-local measurement lane has now been hardened against the last false-green risks:
+    - `gate_l_idle_sample.sh` uses interval-based `top` delta samples rather than decaying `ps %cpu`
+    - `gate_l_signpost_summary.sh` and `gate_l_pane_switch_bench.sh` use nearest-rank percentile selection for small-N `p95`
+    - signpost extraction still fails loudly on missing matches instead of returning an empty success payload
+  - the active Gate-L slice is now native-baseline parity capture bring-up:
+    - the pane-switch drift root cause was product-side, not harness-only:
+      - local control-mode events are session-scoped and can report `%0` even while the rendered client bound by `clientTTY` is still on `%1`
+      - `WorkbenchFocusedNavigationActor` now treats control-mode as a wake signal and reconciles exact-client truth through `liveTarget(renderedClientTTY:...)` on startup and every non-output event
+    - new focused regression coverage locks the exact-client behavior
+    - fresh repo-local pane-switch proxy proof is now green:
+      - `scripts/perf/gate_l_pane_switch_bench.sh --iterations 4 --timeout 20` => PASS
+      - this is a Phase A proxy, not the final 4-pane/sidebar-click Gate-L proof
+      - latest proxy sample is `p95_ms = 2339.612` across `4` iterations
+      - signpost capture shows `NavigationSync` activity, `TmuxRunner p95_ms = 0.144`, and no `FetchAll` category in the bench window
+    - vendored native Ghostty is available on the same host:
+      - `vendor/ghostty/zig-out/Ghostty.app`
+      - `scripts/perf/gate_l_native_ghostty_probe.sh` resolves/launches the bundle and reports `version = 1.2.3`
+      - app activation succeeds for `bundle_id = com.mitchellh.ghostty.debug`
+    - native Ghostty input reachability is now green on this host:
+      - `scripts/perf/gate_l_ax_key_sender.sh --print-app-path` => `scripts/perf/.apps/GateLAXKeySender.app`
+      - `scripts/perf/gate_l_ax_key_sender.sh --prompt --dry-run` => PASS (`trusted = true`)
+      - `scripts/perf/gate_l_native_ghostty_probe.sh` now passes launch, activation, and `System Events` key injection
+      - `scripts/perf/gate_l_native_ghostty_input_smoke.sh --timeout 15` now proves helper-driven input reaches tmux via the wrapped receive-marker pattern `__GATE_L_RECV__:\s*a`
+      - the next implementation move is final parity measurement capture rather than Accessibility setup
+- Current local hot-path gap is host architecture, not libghostty itself:
+  - `main.swift` now kicks managed-daemon bring-up without blocking the bounded initial sync
+  - `AppViewModel.startPolling()` no longer drives local steady-state through the global `fetchAll()` loop
+  - local metadata/health are coordinator-owned steady-state lanes, while local inventory now converges through its own automatic lane
+  - focused navigation ownership now lives in `WorkbenchFocusedNavigationActor`
+  - frozen remote attach plans now invalidate on host transport / `sshTarget` drift instead of keeping a stale remote Ghostty attach command alive
+  - dirty-only draw is now host-scheduler-owned through `SurfacePool` active-dirty routing instead of `GhosttyApp.activeSurfaces`
+  - render scheduling and multi-display drift are now cleaned up:
+    - no-window detach no longer applies placeholder backing/display metrics
+    - dirty marks raised during an in-flight `ghostty_app_tick()` no longer queue a redundant follow-up tick
+  - the remaining local-first work is Gate-L parity measurement, not tile-view-owned control-mode handling, remote blur lifecycle, active-only draw fan-out, or stale multi-display metric churn
+  - the current Gate-L blocker is baseline-side rather than product-side:
+    - the repo-local pane-switch proxy bench is green after the exact-client reconcile fix
+    - same-host native Ghostty exists via the vendored app bundle, and native input reachability is now green:
+      - the native Ghostty probe now passes launch, activation, and `System Events` key injection
+      - the AX helper app reports `trusted = true` and its smoke script matches the receive-marker pattern `__GATE_L_RECV__:\s*a`
+      - keypress / scroll / pane-switch parity is therefore not yet claimed, but it is no longer blocked on native input automation
+- user-requested post-implementation live full-lane rerun is passing again on March 13, 2026:
+  - `AppViewModelLiveManagedAgentTests` => PASS (`11` tests, `1` skipped)
+  - the reopened Codex reds were live-harness issues, not a reopened term-side product regression:
+    - interactive Codex trust-prompt detection now reads deeper tmux scrollback and matches wrapped `Do you trust the contents of this\s+directory` headings
+    - the Codex-only live canaries no longer require sibling Claude startup to remain managed when that sibling is not the subject under test
+  - the current skip is environment-only:
+    - `testLiveClaudeActivityTruthReachesExactAppRowWithoutBleed` performs a real `claude -p` probe and skips when the local Claude token is expired (`401`) instead of failing deep in the live suite
+- This shift does not change product truth:
+  - daemon `sync-v3` remains the metadata truth for local overlays
+  - term remains the presentation consumer
 - The older linked-session workspace path has been physically removed from the shipped target and stale linked-session-positive tests/docs are retired
 - T-090 Workbench V2 foundation landed behind an isolated feature-flagged path
 - T-090 review closeout is `GO`; T-091 code is landed, Claude review has returned a usable verdict, and all code-level review conditions are cleared
@@ -290,8 +351,42 @@
 
 ### Active
 
+- `Gate-L`
+  local parity gate is now the active local-first step:
+  - keep remote follow-on deferred until the gate is green
+  - use the now-closed `T-LF-08` scheduler/multi-display baseline for fresh measurement
+  - current Gate-L slice is native-baseline parity capture bring-up:
+    - repo-local pane-switch / idle / signpost capture is now executable from this repo
+    - vendored native Ghostty launch is available from this repo
+    - native input automation is now green through both `System Events` and the dedicated AX helper app
+    - the next proof is final parity-number capture, not permission or reachability bring-up
+  - fresh March 13, 2026 evidence from the new local scripts:
+    - idle sample on the current `AgtmuxTerm` process (`pid 40814`) averaged `2.82%` CPU over `5s` with `4.1%` max and `153.775 MiB` average RSS
+    - a fresh `1m` signpost summary on the same process showed `MetadataSync` dominating total interval time (`1245.34 ms`) while `TmuxRunner` stayed small (`9.902 ms`) and `FetchAll` was absent
+    - the fresh pane-switch proxy bench is now green:
+      - `scripts/perf/gate_l_pane_switch_bench.sh --iterations 4 --timeout 20` => PASS
+      - this script remains a 2-pane internal-bridge proxy, not the final 4-pane/sidebar-click contract
+      - latest proxy sample: `p95_ms = 2339.612`, `max_ms = 2339.612`
+      - captured signposts show `NavigationSync` events plus `TmuxRunner total_ms = 1.539`, `p95_ms = 0.144`
+      - `FetchAll` is absent in the captured pane-switch window
+    - vendored native Ghostty baseline probe is now green for availability and native input:
+      - `scripts/perf/gate_l_native_ghostty_probe.sh` => PASS
+      - resolved app path: `vendor/ghostty/zig-out/Ghostty.app`
+      - launch / activation / key injection: PASS
+    - dedicated native input helper is now app-backed and trusted:
+      - `scripts/perf/gate_l_ax_key_sender.sh --print-app-path` => `scripts/perf/.apps/GateLAXKeySender.app`
+      - `scripts/perf/gate_l_ax_key_sender.sh --prompt --dry-run` => PASS (`trusted = true`)
+      - `scripts/perf/gate_l_native_ghostty_input_smoke.sh --timeout 15` => PASS
+      - current open question is final parity-number capture rather than end-to-end native input delivery
+- `Live Claude prompt auth`
+  the current local environment cannot execute `claude -p` because the Claude OAuth token is expired (`401` on March 13, 2026):
+  - the dedicated Claude activity live proof now skips explicitly on that condition
+  - treat this as an environment/auth signal, not a reopened term-side product regression
+- `T-SM03`
+  sidebar compact-row closeout remains in progress, but it is not the blocker for the local-first fast-path track
 - `T-118`
   producer-side shell demotion with a non-agent child process still leaves a stale managed Codex row on the fresh desktop daemon
+  - keep tracked, but do not let it retake current-phase ownership from the local-first perf plan
 - `T-119`
   stale live Codex `waiting_input` expectation is retired:
   - sync-v3 product truth emits `completed_idle` without attention for plain live Codex completion unless a pending user-input request exists
@@ -299,6 +394,25 @@
 
 ### Done
 
+- `T-LF-00`
+  local-first kickoff baseline and instrumentation (`DONE`)
+- `T-LF-01`
+  `LocalProjectionCoordinator` now owns local metadata/health steady state (`DONE`)
+- `T-LF-02`
+  local steady-state is off the global `fetchAll()` loop; startup/poll rewiring is verified (`DONE`)
+- `T-LF-05`
+  focused navigation ownership is extracted behind `WorkbenchFocusedNavigationActor` and closed on fresh verification plus Codex review (`DONE`)
+- `T-LF-06`
+  remote blur lifecycle, remote control-mode source drift, and frozen remote attach-plan drift are now closed on fresh verification plus Codex review (`DONE`)
+- `T-LF-07`
+  dirty-only draw is now closed on fresh verification plus dual Codex review (`DONE`)
+- `T-LF-08`
+  render scheduler cleanup / multi-display audit is now closed on fresh SwiftPM + Xcode verification and dual Codex re-review (`DONE`)
+- `T-152`
+  live Codex full-lane drift is closed:
+  - tmux trust-prompt matching now tolerates wrapped headings and deeper scrollback
+  - Codex-only live canaries no longer depend on sibling Claude startup staying managed
+  - `AppViewModelLiveManagedAgentTests` now returns success again with one explicit Claude-auth skip (`DONE`)
 - `T-120`
   sync-v3 term consumer foundation and presentation scaffolding (`DONE`)
 - `T-121`
@@ -372,14 +486,19 @@
 
 ### Next
 
+- start `Gate-L` local parity measurement on top of the now-closed local-first implementation slices
+- do not begin `PR-09`+ remote fast-path work before `Gate-L`
 - keep the focused metadata-enabled plain-zsh Codex UI lane on hold until the post-launch `Running Background` activation blocker is resolved
 - rerun the held attention-filter lane only after the primary metadata-enabled lane is green again
-- keep lower-layer live managed entry/exit canaries green while the UI harness is being debugged
 
 ## Open Blockers
 
-- current non-product blocker:
-  - the current app-managed socket can still be served by an older reachable daemon process after local `AGTMUX_BIN` rebuilds, so metadata-enabled UI lanes are not yet running on trustworthy producer truth
+- current execution blockers:
+  - user-requested live full-lane rerun is not currently green:
+    - `testLiveCodexCompletedIdleWithoutPendingRequestDoesNotSurfaceAttentionFilter`
+    - `testLiveCodexInteractiveRunningSentinelStillSurfacesExactRunningTruth`
+    - `testLiveSyncV3BootstrapAndChangesUpdateExactCodexRowWithoutFallingBackToV2` failed once in the full-lane run but passed on isolated rerun
+  - `WorkbenchAreaV2.swift` carries unrelated uncommitted UI work, so local-first tasks should avoid depending on that file unless the slice explicitly requires it
 
 ## Read Next
 
@@ -389,11 +508,12 @@ For implementation:
 2. `docs/10_foundation.md`
 3. `docs/20_spec.md`
 4. `docs/40_design.md`
-5. `docs/41_design-workbench.md`
-6. `docs/42_design-cli-bridge.md`
-7. `docs/43_design-companion-surfaces.md`
-8. `docs/30_architecture.md`
-9. `docs/50_plan.md`
+5. `docs/47_design-local-first-fast-path.md`
+6. `docs/41_design-workbench.md`
+7. `docs/42_design-cli-bridge.md`
+8. `docs/43_design-companion-surfaces.md`
+9. `docs/30_architecture.md`
+10. `docs/50_plan.md`
 
 For history:
 

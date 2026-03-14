@@ -159,6 +159,7 @@ final class GhosttyIslandViewController: NSViewController {
         let capturedSurfaceID = surfaceID
         let capturedHandle = registeredSurfaceHandle
         let capturedView = terminalView
+        let capturedViewID = terminalView.map(ObjectIdentifier.init)
         let capturedWorkItem = pendingAttachRetryWorkItem
 
         capturedWorkItem?.cancel()
@@ -169,7 +170,10 @@ final class GhosttyIslandViewController: NSViewController {
             } else if let surface = capturedView?.surface {
                 GhosttyTerminalSurfaceRegistry.shared.unregister(surface: surface)
             }
-            SurfacePool.shared.release(leafID: capturedSurfaceID)
+            SurfacePool.shared.release(
+                leafID: capturedSurfaceID,
+                expectedViewID: capturedViewID
+            )
         }
     }
 
@@ -187,9 +191,7 @@ final class GhosttyIslandViewController: NSViewController {
             return
         }
 
-        print("[GhosttyIsland] Creating surface for id \(surfaceID) cmd=\(command)")
         guard let surface = GhosttyApp.shared.newSurface(for: tv, command: command) else {
-            print("[GhosttyIsland] Surface created: false")
             scheduleRetry(for: command, surfaceContext: surfaceContext)
             return
         }
@@ -207,7 +209,8 @@ final class GhosttyIslandViewController: NSViewController {
         SurfacePool.shared.register(
             view: tv,
             leafID: surfaceID,
-            tmuxPaneID: poolKey
+            tmuxPaneID: poolKey,
+            surfaceHandle: surfaceHandle
         )
 
         if let surfaceContext {
@@ -227,7 +230,6 @@ final class GhosttyIslandViewController: NSViewController {
         pendingAttachCommand = nil
         pendingSurfaceContext = nil
         cancelPendingRetry()
-        print("[GhosttyIsland] Surface created: true")
     }
 
     private func scheduleRetry(for command: String, surfaceContext: GhosttyTerminalSurfaceContext?) {

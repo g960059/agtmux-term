@@ -108,12 +108,16 @@ actor TmuxControlMode {
                                           stderr: "control mode not connected")
         }
         let data = (command + "\n").data(using: .utf8)!
+        let signpostID = AgtmuxSignpost.navigationSync.makeSignpostID()
+        let signpostState = AgtmuxSignpost.navigationSync.beginInterval("controlModeSend", id: signpostID)
+        defer { AgtmuxSignpost.navigationSync.endInterval("controlModeSend", signpostState) }
         try handle.write(contentsOf: data)
     }
 
     // MARK: - Private
 
     private func yield(_ event: ControlModeEvent) {
+        recordEventSignpost(for: event)
         eventContinuation.yield(event)
     }
 
@@ -153,7 +157,7 @@ actor TmuxControlMode {
         }
 
         do {
-            try process.run()
+            try runProcessWithSignpost(process)
         } catch {
             scheduleReconnect()
             return
@@ -290,6 +294,44 @@ actor TmuxControlMode {
             try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             await self?.connect()
         }
+    }
+
+    private func runProcessWithSignpost(_ process: Process) throws {
+        guard source != "local" else {
+            try process.run()
+            return
+        }
+        let signpostID = AgtmuxSignpost.remoteSSH.makeSignpostID()
+        let signpostState = AgtmuxSignpost.remoteSSH.beginInterval("sshControlConnect", id: signpostID)
+        defer { AgtmuxSignpost.remoteSSH.endInterval("sshControlConnect", signpostState) }
+        try process.run()
+    }
+
+    private func recordEventSignpost(for event: ControlModeEvent) {
+        switch event {
+        case .layoutChange:
+            recordNavigationSignpost("layoutChange")
+        case .windowPaneChanged:
+            recordNavigationSignpost("windowPaneChanged")
+        case .windowAdd:
+            recordNavigationSignpost("windowAdd")
+        case .windowClose:
+            recordNavigationSignpost("windowClose")
+        case .sessionChanged:
+            recordNavigationSignpost("sessionChanged")
+        case .sessionWindowChanged:
+            recordNavigationSignpost("sessionWindowChanged")
+        case .commandResponse:
+            recordNavigationSignpost("commandResponse")
+        case .output:
+            break
+        }
+    }
+
+    private func recordNavigationSignpost(_ name: StaticString) {
+        let signpostID = AgtmuxSignpost.navigationSync.makeSignpostID()
+        let signpostState = AgtmuxSignpost.navigationSync.beginInterval(name, id: signpostID)
+        AgtmuxSignpost.navigationSync.endInterval(name, signpostState)
     }
 
     private func terminateProcess() {

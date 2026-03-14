@@ -117,6 +117,66 @@ struct TerminalTileInventorySnapshot: Equatable {
     let localDaemonIssue: LocalDaemonIssue?
 }
 
+struct WorkbenchFrozenAttachPlan: Equatable {
+    let identity: String
+    let plan: WorkbenchV2TerminalAttachPlan
+
+    func resolved(
+        currentIdentity: String,
+        liveResolution: Result<WorkbenchV2TerminalAttachPlan, WorkbenchV2TerminalAttachError>
+    ) -> Result<WorkbenchV2TerminalAttachPlan, WorkbenchV2TerminalAttachError> {
+        guard identity == currentIdentity else { return liveResolution }
+        return .success(plan)
+    }
+
+    func rewritingIdentity(_ identity: String) -> Self {
+        Self(identity: identity, plan: plan)
+    }
+}
+
+enum WorkbenchTerminalAttachPlanFreezeIdentity {
+    static func make(
+        sessionRef: SessionRef,
+        desiredPaneRef: ActivePaneRef?,
+        observedPaneRef: ActivePaneRef?,
+        terminalState: WorkbenchV2TerminalTileState,
+        hostsConfig: HostsConfig
+    ) -> String {
+        let desiredWindowID = desiredPaneRef?.windowID ?? ""
+        let desiredPaneID = desiredPaneRef?.paneID ?? ""
+        let observedWindowID = observedPaneRef?.windowID ?? ""
+        let observedPaneID = observedPaneRef?.paneID ?? ""
+        let readiness = terminalState == .ready ? "ready" : "not-ready"
+        let attachSourceIdentity: String
+
+        switch sessionRef.target {
+        case .local:
+            attachSourceIdentity = "local"
+        case .remote(let hostKey):
+            if let host = hostsConfig.host(id: hostKey) {
+                attachSourceIdentity = [
+                    "remote",
+                    hostKey,
+                    host.transport.rawValue,
+                    host.sshTarget
+                ].joined(separator: ":")
+            } else {
+                attachSourceIdentity = "remote:\(hostKey):missing"
+            }
+        }
+
+        return [
+            attachSourceIdentity,
+            sessionRef.sessionName,
+            desiredWindowID,
+            desiredPaneID,
+            observedWindowID,
+            observedPaneID,
+            readiness
+        ].joined(separator: "|")
+    }
+}
+
 private struct WorkbenchTileViewV2: View {
     let workbenchID: UUID
     let tile: WorkbenchTile
@@ -187,8 +247,9 @@ private struct WorkbenchTerminalTileViewV2: View {
     @Environment(WorkbenchStoreV2.self) private var store
     @Environment(TerminalRuntimeStore.self) private var runtimeStore
     @State private var isPresentingRebindSheet = false
+    @State private var navigationActor = WorkbenchFocusedNavigationActor()
     @State private var navigationSyncErrorMessage: String?
-    @State private var frozenAttachPlan: WorkbenchV2TerminalAttachPlan?
+    @State private var frozenAttachPlan: WorkbenchFrozenAttachPlan?
 
     private var rendersGhosttySurface: Bool {
         let env = ProcessInfo.processInfo.environment
@@ -250,7 +311,10 @@ private struct WorkbenchTerminalTileViewV2: View {
 
     private var attachResolution: Result<WorkbenchV2TerminalAttachPlan, WorkbenchV2TerminalAttachError> {
         if let frozenAttachPlan {
-            return .success(frozenAttachPlan)
+            return frozenAttachPlan.resolved(
+                currentIdentity: attachPlanFreezeIdentity,
+                liveResolution: liveAttachResolution
+            )
         }
         return liveAttachResolution
     }
@@ -296,11 +360,30 @@ private struct WorkbenchTerminalTileViewV2: View {
 
             terminalBody
 
+            // Broken-state placeholder: restore issue body with Retry/Rebind/Remove actions.
+            if case .broken(let issue) = terminalState {
+                VStack(alignment: .leading, spacing: 0) {
+                    Spacer(minLength: 0)
+                    restoreIssueBody(issue)
+                }
+                .padding(12)
+            }
+
             Color.clear
                 .allowsHitTesting(false)
                 .accessibilityElement()
                 .accessibilityIdentifier(AccessibilityID.workspaceTilePrefix + tile.id.uuidString)
                 .accessibilityLabel(sessionRef.sessionName)
+                .accessibilityValue(accessibilityValue)
+
+            // Status accessibility element — always present so XCUITest assertions can match
+            // on the current status text (e.g. "Direct attach: local session X") without
+            // requiring a visible overlay on top of the Ghostty surface.
+            Color.clear
+                .allowsHitTesting(false)
+                .accessibilityElement()
+                .accessibilityIdentifier(AccessibilityID.workspaceTilePrefix + tile.id.uuidString + ".status")
+                .accessibilityLabel(accessibilityValue)
                 .accessibilityValue(accessibilityValue)
         }
         .contentShape(Rectangle())
@@ -319,25 +402,33 @@ private struct WorkbenchTerminalTileViewV2: View {
                 oldValue: oldValue,
                 newValue: newValue
             ) {
+                frozenAttachPlan = frozenAttachPlan?.rewritingIdentity(
+                    WorkbenchTerminalAttachPlanFreezeIdentity.make(
+                        sessionRef: newValue,
+                        desiredPaneRef: desiredPaneRef,
+                        observedPaneRef: observedPaneRef,
+                        terminalState: terminalState,
+                        hostsConfig: hostsConfig
+                    )
+                )
                 return
             }
             frozenAttachPlan = nil
-        }
-        .onChange(of: isFocused) { _, newFocused in
-            guard !newFocused else { return }
-            // Tile lost focus — schedule remote control mode stop after 30s
-            if case .remote(let hostKey) = sessionRef.target,
-               let host = hostsConfig.host(id: hostKey) {
-                TmuxControlModeRegistry.shared.scheduleStop(
-                    sessionName: sessionRef.sessionName,
-                    source: host.sshTarget)
-            }
         }
         .task(id: attachPlanFreezeIdentity) {
             freezeAttachPlanIfNeeded()
         }
         .task(id: navigationSyncTaskIdentity) {
-            await runNavigationSyncLoop()
+            navigationActor.update(
+                snapshot: navigationSnapshot,
+                store: store,
+                runtimeStore: runtimeStore
+            ) { message in
+                navigationSyncErrorMessage = message
+            }
+        }
+        .onDisappear {
+            navigationActor.stop()
         }
         .accessibilityElement(children: .contain)
     }
@@ -628,237 +719,58 @@ private struct WorkbenchTerminalTileViewV2: View {
     }
 
     private var navigationSyncTaskIdentity: String {
-        let focused = isFocused ? "1" : "0"
-        let ready = terminalState == .ready ? "1" : "0"
-        let windowID = activePaneRef?.windowID ?? ""
-        let paneID = activePaneRef?.paneID ?? ""
-        return "\(tile.id.uuidString)|\(focused)|\(ready)|\(sessionRef.target.label)|\(sessionRef.sessionName)|\(windowID)|\(paneID)"
+        WorkbenchFocusedNavigationIdentity.make(
+            tileID: tile.id,
+            isFocused: isFocused,
+            isReady: terminalState == .ready,
+            sessionRef: sessionRef,
+            controlModeKey: navigationControlModeKey,
+            desiredPaneRef: desiredPaneRef,
+            observedPaneRef: observedPaneRef
+        )
     }
 
-    @MainActor
-    private func runNavigationSyncLoop() async {
-        guard shouldRunNavigationSync else {
-            navigationSyncErrorMessage = nil
-            return
-        }
-
-        // TmuxControlMode が利用可能なら event-driven パスへ
-        if let controlMode = resolveControlMode(for: sessionRef) {
-            await runNavigationSyncLoopControlMode(controlMode: controlMode)
-            return
-        }
-
-        // fallback: polling loop (1500ms — reduced from 400ms to cut subprocess spawn rate)
-        do {
-            while !Task.isCancelled {
-                guard let renderedState = GhosttyTerminalSurfaceRegistry.shared.renderedState(forTileID: tile.id),
-                      let renderedClientTTY = renderedState.clientTTY else {
-                    try await Task.sleep(for: .milliseconds(100))
-                    continue
-                }
-                guard navigationTaskSnapshotIsCurrent else { return }
-                let liveTarget: WorkbenchV2TerminalLiveTarget
-                do {
-                    liveTarget = try await WorkbenchV2TerminalNavigationResolver.liveTarget(
-                        renderedClientTTY: renderedClientTTY,
-                        target: sessionRef.target,
-                        hostsConfig: hostsConfig
-                    )
-                } catch let error as WorkbenchV2TerminalNavigationError {
-                    switch error {
-                    case .renderedClientUnavailable:
-                        try await Task.sleep(for: .milliseconds(100))
-                        continue
-                    case .missingRemoteHostKey, .activePaneUnavailable:
-                        throw error
-                    }
-                }
-                guard navigationTaskSnapshotIsCurrent else { return }
-                if liveTarget.sessionName != sessionRef.sessionName {
-                    let didChange = try store.syncTerminalObservation(
-                        tileID: tile.id,
-                        observedSessionName: liveTarget.sessionName,
-                        preferredWindowID: liveTarget.windowID,
-                        preferredPaneID: liveTarget.paneID,
-                        paneInstanceID: livePaneInstanceID(for: liveTarget)
-                    )
-                    navigationSyncErrorMessage = nil
-                    try await Task.sleep(for: .milliseconds(didChange ? 100 : 1500))
-                    continue
-                }
-                if WorkbenchV2NavigationSyncResolver.shouldApplyNavigationIntent(
-                    desiredPaneRef: desiredPaneRef,
-                    observedPaneRef: liveObservedPaneRef(from: liveTarget),
-                    liveTarget: liveTarget
-                ) {
-                    if let desiredPaneRef {
-                        try await WorkbenchV2TerminalNavigationResolver.applyNavigationIntent(
-                            activePaneRef: desiredPaneRef,
-                            renderedClientTTY: renderedClientTTY,
-                            hostsConfig: hostsConfig
-                        )
-                        try await Task.sleep(for: .milliseconds(100))
-                        continue
-                    }
-                }
-                navigationSyncErrorMessage = nil
-                store.syncTerminalNavigation(
-                    tileID: tile.id,
-                    preferredWindowID: liveTarget.windowID,
-                    preferredPaneID: liveTarget.paneID,
-                    paneInstanceID: livePaneInstanceID(for: liveTarget)
-                )
-                try await Task.sleep(for: .milliseconds(1500))
-            }
-        } catch is CancellationError {
-            return
-        } catch let error as WorkbenchV2TerminalNavigationError {
-            navigationSyncErrorMessage = error.localizedDescription
-        } catch {
-            navigationSyncErrorMessage = error.localizedDescription
-        }
+    private var navigationControlModeKey: WorkbenchFocusedNavigationControlModeKey? {
+        WorkbenchFocusedNavigationControlModeKey.make(
+            sessionRef: sessionRef,
+            hostsConfig: hostsConfig
+        )
     }
 
-    /// Returns a TmuxControlMode for this session if one is available.
-    ///
-    /// For local sessions: gets-or-creates the control mode and starts monitoring.
-    /// For remote sessions: only returns an existing (already-started) mode to avoid
-    /// creating unnecessary SSH connections.
-    @MainActor
-    private func resolveControlMode(for ref: SessionRef) -> TmuxControlMode? {
-        switch ref.target {
-        case .local:
-            // Get-or-create and start monitoring for local sessions
-            TmuxControlModeRegistry.shared.startMonitoring(
-                sessionName: ref.sessionName,
-                source: "local"
-            )
-            return TmuxControlModeRegistry.shared.mode(for: ref.sessionName, source: "local")
-        case .remote(let hostKey):
-            guard let host = hostsConfig.host(id: hostKey) else { return nil }
-            let sshTarget = host.sshTarget
-            // Cancel any pending stop (tile re-focused before 30s elapsed)
-            TmuxControlModeRegistry.shared.cancelScheduledStop(
-                sessionName: ref.sessionName, source: sshTarget)
-            // Get-or-create and start the SSH-backed control mode.
-            // TmuxControlMode.connect() uses source as the SSH target when source != "local".
-            TmuxControlModeRegistry.shared.startMonitoring(
-                sessionName: ref.sessionName, source: sshTarget)
-            return TmuxControlModeRegistry.shared.mode(
-                for: ref.sessionName, source: sshTarget)
-        }
-    }
-
-    /// Returns the most precise tmux navigation command for the given pane.
-    /// Uses `switch-client -c <tty>` when the rendered client TTY is available,
-    /// falling back to `select-pane` otherwise.
-    private func navCommand(to paneID: String) -> String {
-        if let tty = GhosttyTerminalSurfaceRegistry.shared
-                .renderedState(forTileID: tile.id)?.clientTTY {
-            return "switch-client -c \(tty) -t \(paneID)"
-        }
-        return "select-pane -t \(paneID)"
-    }
-
-    @MainActor
-    private func runNavigationSyncLoopControlMode(controlMode: TmuxControlMode) async {
-        // Proactively apply pending navigation intent on task entry.
-        // Required because the task restarts on every pane selection (identity change),
-        // but the event loop only fires on tmux-reported changes — without this,
-        // clicking a sidebar row would do nothing until the next spontaneous tmux event.
-        if let desired = desiredPaneRef, desired.paneID != observedPaneRef?.paneID {
-            try? await controlMode.send(command: navCommand(to: desired.paneID))
-        }
-
-        for await event in controlMode.events {
-            guard !Task.isCancelled else { return }
-            // Skip terminal output events — navigation only cares about layout/session events
-            if case .output = event { continue }
-            // Yield once to flush the cooperative queue.
-            // If the task was cancelled during yield (new pane selection), we exit cleanly.
-            await Task.yield()
-            guard !Task.isCancelled else { return }
-            guard navigationTaskSnapshotIsCurrent else { return }
-
-            switch event {
-            case .windowPaneChanged(let windowId, let paneId):
-                // Active pane changed within the current session
-                navigationSyncErrorMessage = nil
-                store.syncTerminalNavigation(
-                    tileID: tile.id,
-                    preferredWindowID: windowId,
-                    preferredPaneID: paneId,
-                    paneInstanceID: nil
-                )
-                // If a desired pane is set and differs, apply intent via control mode
-                if let desired = desiredPaneRef, desired.paneID != paneId {
-                    try? await controlMode.send(command: navCommand(to: desired.paneID))
-                }
-
-            case .sessionChanged(_, let sessionName):
-                // The client switched to a different session
-                navigationSyncErrorMessage = nil
-                _ = try? store.syncTerminalObservation(
-                    tileID: tile.id,
-                    observedSessionName: sessionName,
-                    preferredWindowID: nil,
-                    preferredPaneID: nil,
-                    paneInstanceID: nil
-                )
-
-            case .sessionWindowChanged(_, let windowId):
-                // Active window changed within the current session
-                navigationSyncErrorMessage = nil
-                store.syncTerminalNavigation(
-                    tileID: tile.id,
-                    preferredWindowID: windowId,
-                    preferredPaneID: nil,
-                    paneInstanceID: nil
-                )
-                // If a desired pane is set, apply intent via control mode
-                if let desired = desiredPaneRef {
-                    try? await controlMode.send(command: navCommand(to: desired.paneID))
-                }
-
-            default:
-                break
-            }
-        }
-    }
-
-    private var navigationTaskSnapshotIsCurrent: Bool {
-        guard let context = store.focusedTerminalTileContext else { return false }
-        guard context.workbenchID == workbenchID else { return false }
-        guard context.tileID == tile.id else { return false }
-        guard context.sessionRef.target == sessionRef.target else { return false }
-        guard context.sessionRef.sessionName == sessionRef.sessionName else { return false }
-        return activePaneRuntimeContext?.desiredPaneRef == desiredPaneRef
-            && activePaneRuntimeContext?.observedPaneRef == observedPaneRef
+    private var navigationSnapshot: WorkbenchFocusedNavigationSnapshot {
+        WorkbenchFocusedNavigationSnapshot(
+            taskIdentity: navigationSyncTaskIdentity,
+            shouldRun: shouldRunNavigationSync,
+            workbenchID: workbenchID,
+            tileID: tile.id,
+            sessionRef: sessionRef,
+            controlModeKey: navigationControlModeKey,
+            hostsConfig: hostsConfig,
+            desiredPaneRef: desiredPaneRef,
+            observedPaneRef: observedPaneRef
+        )
     }
 
     private var attachPlanFreezeIdentity: String {
-        let desiredWindowID = desiredPaneRef?.windowID ?? ""
-        let desiredPaneID = desiredPaneRef?.paneID ?? ""
-        let observedWindowID = observedPaneRef?.windowID ?? ""
-        let observedPaneID = observedPaneRef?.paneID ?? ""
-        let readiness = terminalState == .ready ? "ready" : "not-ready"
-        return [
-            sessionRef.target.label,
-            sessionRef.sessionName,
-            desiredWindowID,
-            desiredPaneID,
-            observedWindowID,
-            observedPaneID,
-            readiness
-        ].joined(separator: "|")
+        WorkbenchTerminalAttachPlanFreezeIdentity.make(
+            sessionRef: sessionRef,
+            desiredPaneRef: desiredPaneRef,
+            observedPaneRef: observedPaneRef,
+            terminalState: terminalState,
+            hostsConfig: hostsConfig
+        )
     }
 
     @MainActor
     private func freezeAttachPlanIfNeeded() {
-        guard frozenAttachPlan == nil else { return }
         guard terminalState == .ready else { return }
         guard case .success(let plan) = liveAttachResolution else { return }
-        frozenAttachPlan = plan
+        let nextFrozenPlan = WorkbenchFrozenAttachPlan(
+            identity: attachPlanFreezeIdentity,
+            plan: plan
+        )
+        guard frozenAttachPlan != nextFrozenPlan else { return }
+        frozenAttachPlan = nextFrozenPlan
     }
 
     @MainActor
@@ -871,34 +783,6 @@ private struct WorkbenchTerminalTileViewV2: View {
         guard frozenAttachPlan != nil else { return false }
         guard terminalState == .ready else { return false }
         return GhosttyTerminalSurfaceRegistry.shared.renderedState(forTileID: tile.id)?.clientTTY != nil
-    }
-
-    private var selectionSource: String {
-        switch sessionRef.target {
-        case .local:
-            return "local"
-        case .remote(let hostKey):
-            return hostsConfig.host(id: hostKey)?.hostname ?? hostKey
-        }
-    }
-
-    private func livePaneInstanceID(
-        for liveTarget: WorkbenchV2TerminalLiveTarget
-    ) -> AgtmuxSyncV2PaneInstanceID? {
-        let key = "\(selectionSource):\(liveTarget.sessionName):\(liveTarget.windowID):\(liveTarget.paneID)"
-        return runtimeStore.paneIdentityIndex[key]
-    }
-
-    private func liveObservedPaneRef(
-        from liveTarget: WorkbenchV2TerminalLiveTarget
-    ) -> ActivePaneRef? {
-        ActivePaneRef(
-            target: sessionRef.target,
-            sessionName: liveTarget.sessionName,
-            windowID: liveTarget.windowID,
-            paneID: liveTarget.paneID,
-            paneInstanceID: livePaneInstanceID(for: liveTarget)
-        )
     }
 
     private var tileBackground: some View {

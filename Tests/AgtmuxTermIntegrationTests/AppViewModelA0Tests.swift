@@ -29,15 +29,73 @@ final class AppViewModelA0Tests: XCTestCase {
         let result: Result<AgtmuxSyncV3ChangesResponse, Error>
     }
 
+    private struct WaitV3Step {
+        let delayMs: UInt64
+        let result: Result<AgtmuxSyncV3ChangesResponse, Error>
+    }
+
     private struct HealthStep {
         let delayMs: UInt64
         let result: Result<AgtmuxUIHealthV1, Error>
+    }
+
+    private actor StartupSequenceProbe {
+        private var daemonFinished = false
+        private var initialSyncStartedBeforeDaemonFinished = false
+        private var startPollingCalled = false
+
+        func recordInitialSyncStart() {
+            initialSyncStartedBeforeDaemonFinished = !daemonFinished
+        }
+
+        func markDaemonFinished() {
+            daemonFinished = true
+        }
+
+        func markStartPollingCalled() {
+            startPollingCalled = true
+        }
+
+        func snapshot() -> (daemonFinished: Bool, initialSyncStartedBeforeDaemonFinished: Bool, startPollingCalled: Bool) {
+            (
+                daemonFinished: daemonFinished,
+                initialSyncStartedBeforeDaemonFinished: initialSyncStartedBeforeDaemonFinished,
+                startPollingCalled: startPollingCalled
+            )
+        }
+    }
+
+    private actor ManagedDaemonBringUpProbe {
+        private var detachedLauncherInvoked = false
+        private var xpcBringUpStarted = false
+        private var supervisorBringUpStarted = false
+
+        func markDetachedLauncherInvoked() {
+            detachedLauncherInvoked = true
+        }
+
+        func markXPCBringUpStarted() {
+            xpcBringUpStarted = true
+        }
+
+        func markSupervisorBringUpStarted() {
+            supervisorBringUpStarted = true
+        }
+
+        func snapshot() -> (detachedLauncherInvoked: Bool, xpcBringUpStarted: Bool, supervisorBringUpStarted: Bool) {
+            (
+                detachedLauncherInvoked: detachedLauncherInvoked,
+                xpcBringUpStarted: xpcBringUpStarted,
+                supervisorBringUpStarted: supervisorBringUpStarted
+            )
+        }
     }
 
     private actor StubMetadataClient: ProductLocalMetadataClient, LocalHealthClient {
         private var bootstrapV3Steps: [BootstrapV3Step]
         private var bootstrapSteps: [BootstrapStep]
         private var changesV3Steps: [ChangesV3Step]
+        private var waitV3Steps: [WaitV3Step]
         private var changesSteps: [ChangesStep]
         private var healthSteps: [HealthStep]
         private var lastBootstrapV3: AgtmuxSyncV3Bootstrap?
@@ -45,15 +103,18 @@ final class AppViewModelA0Tests: XCTestCase {
         private(set) var healthFetchCount = 0
         private(set) var bootstrapV3CallCount = 0
         private(set) var changesV3CallCount = 0
+        private(set) var waitV3CallCount = 0
 
         init(bootstrapV3Steps: [BootstrapV3Step] = [],
              bootstrapSteps: [BootstrapStep],
              changesV3Steps: [ChangesV3Step] = [],
+             waitV3Steps: [WaitV3Step] = [],
              changesSteps: [ChangesStep] = [],
              healthSteps: [HealthStep] = []) {
             self.bootstrapV3Steps = bootstrapV3Steps
             self.bootstrapSteps = bootstrapSteps
             self.changesV3Steps = changesV3Steps
+            self.waitV3Steps = waitV3Steps
             self.changesSteps = changesSteps
             self.healthSteps = healthSteps
         }
@@ -137,6 +198,25 @@ final class AppViewModelA0Tests: XCTestCase {
             return empty
         }
 
+        func waitForUIChangesV1(timeoutMs: UInt64) async throws -> AgtmuxSyncV3ChangesResponse {
+            waitV3CallCount += 1
+            guard !waitV3Steps.isEmpty else {
+                throw LocalMetadataClientError.unsupportedMethod("ui.wait_for_changes.v1")
+            }
+
+            let step = waitV3Steps.removeFirst()
+            if step.delayMs > 0 {
+                try? await Task.sleep(for: .milliseconds(step.delayMs))
+            }
+            switch step.result {
+            case let .success(response):
+                apply(response)
+                return response
+            case let .failure(error):
+                throw error
+            }
+        }
+
         func fetchUIHealthV1() async throws -> AgtmuxUIHealthV1 {
             healthFetchCount += 1
             guard !healthSteps.isEmpty else {
@@ -167,8 +247,8 @@ final class AppViewModelA0Tests: XCTestCase {
             healthFetchCount
         }
 
-        func metadataCallCounts() -> (bootstrapV3: Int, changesV3: Int) {
-            (bootstrapV3CallCount, changesV3CallCount)
+        func metadataCallCounts() -> (bootstrapV3: Int, changesV3: Int, waitV3: Int) {
+            (bootstrapV3CallCount, changesV3CallCount, waitV3CallCount)
         }
 
         private func apply(_ response: AgtmuxSyncV3ChangesResponse) {
@@ -249,6 +329,7 @@ final class AppViewModelA0Tests: XCTestCase {
     private actor StubInventoryClient: LocalPaneInventoryClient {
         private var steps: [Result<[AgtmuxPane], Error>]
         private let repeatsLastStep: Bool
+        private(set) var callCount = 0
 
         init(panes: [AgtmuxPane]) {
             self.steps = [.success(panes)]
@@ -261,6 +342,7 @@ final class AppViewModelA0Tests: XCTestCase {
         }
 
         func fetchPanes() async throws -> [AgtmuxPane] {
+            callCount += 1
             guard !steps.isEmpty else { throw StubError.exhausted }
             let step = steps.count == 1 && repeatsLastStep ? steps[0] : steps.removeFirst()
             switch step {
@@ -269,6 +351,10 @@ final class AppViewModelA0Tests: XCTestCase {
             case let .failure(error):
                 throw error
             }
+        }
+
+        func calls() -> Int {
+            callCount
         }
     }
 
@@ -1075,6 +1161,86 @@ final class AppViewModelA0Tests: XCTestCase {
         XCTAssertTrue(overlayApplied, "metadata overlay should apply asynchronously without next poll")
         XCTAssertEqual(model.panes.first?.provider, .codex)
         XCTAssertNil(model.localDaemonIssue)
+    }
+
+    @MainActor
+    func testStartPollingKeepsLocalMetadataAdvancingWithoutRequeryingLocalInventory() async {
+        let birthTs = Date(timeIntervalSince1970: 1_778_822_400)
+        let inventoryPane = makeInventoryPane(
+            paneId: "%101",
+            sessionName: "dev",
+            windowId: "@11",
+            activityState: .idle,
+            currentCmd: "zsh"
+        )
+        let bootstrapPane = makeManagedMetadataPane(
+            paneId: "%101",
+            sessionName: "dev",
+            windowId: "@11",
+            provider: .codex,
+            activityState: .idle,
+            conversationTitle: "Initial",
+            metadataSessionKey: "dev",
+            paneInstanceID: AgtmuxSyncV2PaneInstanceID(
+                paneId: "%101",
+                generation: 1,
+                birthTs: birthTs
+            )
+        )
+        let runningChange = makePaneState(
+            paneId: "%101",
+            sessionKey: "dev",
+            generation: 1,
+            birthTs: birthTs,
+            activityState: .running,
+            provider: .claude,
+            updatedAt: Date(timeIntervalSince1970: 1_778_822_430)
+        )
+        let client = StubMetadataClient(
+            bootstrapSteps: [
+                BootstrapStep(delayMs: 20, result: .success(makeBootstrap(panes: [bootstrapPane], cursorSeq: 1))),
+            ],
+            changesSteps: [
+                ChangesStep(delayMs: 20, result: .success(makeChangesResponse(paneState: runningChange, seq: 2))),
+            ]
+        )
+        let inventoryClient = StubInventoryClient(
+            steps: [.success([inventoryPane])],
+            repeatsLastStep: true
+        )
+        let model = AppViewModel(
+            localClient: client,
+            localInventoryClient: inventoryClient,
+            hostsConfig: .empty,
+            binaryURLResolver: { nil },
+            pollingInterval: 0.05,
+            localInventoryPollingInterval: 60.0
+        )
+
+        await model.fetchAll()
+        let bootstrapApplied = await waitUntil {
+            model.panes.first?.provider == .codex && model.panes.first?.activityState == .idle
+        }
+        XCTAssertTrue(bootstrapApplied)
+        let initialInventoryCalls = await inventoryClient.calls()
+        XCTAssertEqual(initialInventoryCalls, 1)
+
+        model.startPolling()
+        defer { model.stopPolling() }
+
+        let changeApplied = await waitUntil(timeout: 2.5) {
+            model.panes.first?.provider == .claude && model.panes.first?.activityState == .running
+        }
+        XCTAssertTrue(
+            changeApplied,
+            "local metadata steady-state should advance via changes.v3 even when the local inventory lane is held back"
+        )
+        let finalInventoryCalls = await inventoryClient.calls()
+        XCTAssertEqual(
+            finalInventoryCalls,
+            1,
+            "holding back the local inventory lane should not block the metadata steady-state owner"
+        )
     }
 
     @MainActor
@@ -4108,6 +4274,198 @@ final class AppViewModelA0Tests: XCTestCase {
         XCTAssertEqual(resetCount, 1)
         XCTAssertEqual(counts.bootstrapV3, 1)
         XCTAssertEqual(counts.changesV3, 1)
+    }
+
+    @MainActor
+    func testRunStartupSequenceDoesNotAwaitSupervisorKickoffBeforeInitialSync() async {
+        let probe = StartupSequenceProbe()
+
+        await runStartupSequence(
+            enableBroadPolling: true,
+            initialSync: {
+                await probe.recordInitialSyncStart()
+            },
+            kickOffManagedDaemonBringUp: {
+                kickOffManagedDaemonBringUp(
+                    useXPCDaemonService: false,
+                    startXPCManagedDaemonIfNeeded: {
+                        XCTFail("startup supervisor proof must not use the XPC branch")
+                    },
+                    startManagedDaemonSupervisorIfNeededAsync: {
+                        Task.detached {
+                            try? await Task.sleep(for: .milliseconds(200))
+                            await probe.markDaemonFinished()
+                        }
+                    }
+                )
+            },
+            startPolling: {
+                Task {
+                    await probe.markStartPollingCalled()
+                }
+            }
+        )
+
+        let snapshotAfterReturn = await probe.snapshot()
+        XCTAssertTrue(
+            snapshotAfterReturn.initialSyncStartedBeforeDaemonFinished,
+            "startup must start the bounded initial sync before managed-daemon bring-up finishes"
+        )
+        XCTAssertFalse(
+            snapshotAfterReturn.daemonFinished,
+            "startup must not await managed-daemon bring-up before returning from the bounded initial sync sequence"
+        )
+
+        let pollingObserved = await waitUntilAsync {
+            await probe.snapshot().startPollingCalled
+        }
+        XCTAssertTrue(pollingObserved)
+
+        let daemonFinished = await waitUntilAsync {
+            await probe.snapshot().daemonFinished
+        }
+        XCTAssertTrue(daemonFinished)
+    }
+
+    @MainActor
+    func testKickOffManagedDaemonBringUpUsesDetachedXPCLauncher() async {
+        let probe = ManagedDaemonBringUpProbe()
+
+        kickOffManagedDaemonBringUp(
+            useXPCDaemonService: true,
+            startXPCManagedDaemonIfNeeded: {
+                await probe.markXPCBringUpStarted()
+            },
+            startManagedDaemonSupervisorIfNeededAsync: {
+                Task {
+                    await probe.markSupervisorBringUpStarted()
+                }
+            },
+            launchDetachedAsyncWork: { operation in
+                Task {
+                    await probe.markDetachedLauncherInvoked()
+                }
+                Task.detached {
+                    await operation()
+                }
+            }
+        )
+
+        let xpcObserved = await waitUntilAsync {
+            let snapshot = await probe.snapshot()
+            return snapshot.detachedLauncherInvoked && snapshot.xpcBringUpStarted
+        }
+        XCTAssertTrue(xpcObserved)
+
+        let snapshot = await probe.snapshot()
+        XCTAssertFalse(snapshot.supervisorBringUpStarted)
+    }
+
+    @MainActor
+    func testStartPollingKeepsLocalInventoryConvergingWithoutGlobalFetchAll() async {
+        let inventoryPane = makeInventoryPane(
+            paneId: "%12",
+            sessionName: "workbench",
+            windowId: "@5",
+            activityState: .unknown,
+            currentCmd: "zsh"
+        )
+        let refreshedInventoryPane = makeInventoryPane(
+            paneId: "%13",
+            sessionName: "workbench-2",
+            windowId: "@6",
+            activityState: .unknown,
+            currentCmd: "zsh"
+        )
+        let client = StubMetadataClient(bootstrapSteps: [])
+        let inventoryClient = StubInventoryClient(
+            steps: [
+                .success([inventoryPane]),
+                .success([inventoryPane, refreshedInventoryPane]),
+            ],
+            repeatsLastStep: true
+        )
+        let model = AppViewModel(
+            localClient: client,
+            localInventoryClient: inventoryClient,
+            hostsConfig: .empty,
+            binaryURLResolver: { nil },
+            pollingInterval: 60.0,
+            localInventoryPollingInterval: 0.05
+        )
+
+        await model.performInitialSync()
+        let initialInventoryApplied = await waitUntil {
+            Set(model.panes.map(\.paneId)) == Set([inventoryPane.paneId])
+        }
+        XCTAssertTrue(initialInventoryApplied)
+
+        model.startPolling()
+        defer { model.stopPolling() }
+
+        let converged = await waitUntil(timeout: 2.5) {
+            Set(model.panes.map(\.paneId)) == Set([inventoryPane.paneId, refreshedInventoryPane.paneId])
+        }
+
+        XCTAssertTrue(
+            converged,
+            "automatic local inventory convergence must continue under polling without falling back to global local fetchAll"
+        )
+
+        let inventoryCalls = await inventoryClient.calls()
+        XCTAssertGreaterThanOrEqual(
+            inventoryCalls,
+            2,
+            "the dedicated local inventory lane must perform follow-up local tmux refreshes after startup"
+        )
+    }
+
+    @MainActor
+    func testFetchAllRemainsAvailableForExplicitInventoryRefreshWhilePollingRuns() async {
+        let inventoryPane = makeInventoryPane()
+        let refreshedInventoryPane = makeInventoryPane(
+            paneId: "%102",
+            sessionName: "dev-2",
+            windowId: "@12"
+        )
+        let metadataPane = makeManagedMetadataPane()
+        let inventoryClient = StubInventoryClient(steps: [
+            .success([inventoryPane]),
+            .success([inventoryPane, refreshedInventoryPane]),
+        ])
+        let client = StubMetadataClient(
+            bootstrapSteps: [
+                BootstrapStep(delayMs: 20, result: .success(makeBootstrap(panes: [metadataPane])))
+            ]
+        )
+        let model = AppViewModel(
+            localClient: client,
+            localInventoryClient: inventoryClient,
+            hostsConfig: .empty,
+            pollingInterval: 60.0
+        )
+
+        await model.performInitialSync()
+        let initialApplied = await waitUntil {
+            model.panes.count == 1 && model.panes.first?.paneId == inventoryPane.paneId
+        }
+        XCTAssertTrue(initialApplied)
+
+        model.startPolling()
+        await model.fetchAll()
+
+        let explicitRefreshApplied = await waitUntil {
+            Set(model.panes.map(\.paneId)) == Set([inventoryPane.paneId, refreshedInventoryPane.paneId])
+        }
+        model.stopPolling()
+
+        XCTAssertTrue(
+            explicitRefreshApplied,
+            "explicit fetchAll() must still refresh local tmux inventory while steady-state polling is owned by the projection coordinator"
+        )
+
+        let inventoryCalls = await inventoryClient.calls()
+        XCTAssertEqual(inventoryCalls, 2)
     }
 
     @MainActor

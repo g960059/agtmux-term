@@ -79,7 +79,8 @@ struct RemotePaneInventorySource {
 
 /// Central state holder for the agtmux-term UI.
 ///
-/// Polls the local agtmux daemon and any configured remote hosts every 1 second.
+/// Performs explicit local inventory refreshes and runs a 1-second remote broad poll.
+/// Local steady-state metadata/health are owned by `LocalProjectionCoordinator`.
 /// Remote hosts are discovered via SSH + `tmux list-panes` — no agtmux required on remote.
 ///
 /// T-PERF-P12 (Phase C): @Published storage has been replaced with computed forwarders
@@ -437,12 +438,12 @@ final class AppViewModel: ObservableObject {
     }
     private var lastSuccessfulRemotePanesBySource: [String: [AgtmuxPane]] = [:]
     private var lastSuccessfulLocalInventory: [AgtmuxPane] = []
+    private var hasFetchedLocalInventory = false
     private var cachedLocalMetadataByPaneKey: [String: AgtmuxPane] = [:]
     private var cachedLocalPresentationByPaneKey: [String: PanePresentationState] = [:]
     private var hasAttemptedAutoLaunch = false
     private var panesBySessionGeneration = 0
-    private var localMetadataRefreshTask: Task<Void, Never>?
-    private var localHealthRefreshTask: Task<Void, Never>?
+    private var localInventoryPollingTask: Task<Void, Never>?
     private var localMetadataSyncPrimed = false
     private var localMetadataTransportVersion: LocalMetadataTransportVersion?
     private var localMetadataUseLongPoll: Bool? = nil  // nil=unknown, optimistically try on first call
@@ -458,11 +459,14 @@ final class AppViewModel: ObservableObject {
     private let localHealthFailureBackoff: TimeInterval = 3.0
     private let localHealthUnsupportedBackoff: TimeInterval = 60.0
     private let binaryURLResolver: () -> URL?
-
-    private enum LocalHealthRefreshDisposition {
-        case unsupportedMethod
-        case transientFailure
-    }
+    private let pollingInterval: TimeInterval
+    private let localInventoryPollingInterval: TimeInterval
+    private lazy var localProjectionCoordinator = LocalProjectionCoordinator(
+        localClient: localClient,
+        localHealthClient: localHealthClient,
+        localInventoryClient: localInventoryClient,
+        transportBridge: localMetadataTransportBridge
+    )
 
     private func logLocalFetch(_ message: String) {
         guard let data = "AgtmuxTerm local-fetch: \(message)\n".data(using: .utf8) else { return }
@@ -755,11 +759,15 @@ final class AppViewModel: ObservableObject {
          localInventoryClient: any LocalPaneInventoryClient = LocalTmuxInventoryClient(),
          hostsConfig: HostsConfig? = nil,
          remotePaneSources: [RemotePaneInventorySource]? = nil,
-         binaryURLResolver: @escaping () -> URL? = AgtmuxBinaryResolver.resolveBinaryURL) {
+         binaryURLResolver: @escaping () -> URL? = AgtmuxBinaryResolver.resolveBinaryURL,
+         pollingInterval: TimeInterval = 1.0,
+         localInventoryPollingInterval: TimeInterval? = nil) {
         self.localClient = localClient
         self.localHealthClient = localClient as? any LocalHealthClient
         self.localInventoryClient = localInventoryClient
         self.binaryURLResolver = binaryURLResolver
+        self.pollingInterval = pollingInterval
+        self.localInventoryPollingInterval = localInventoryPollingInterval ?? pollingInterval
         self.autoLaunchSessionName = UserDefaults.standard.string(forKey: "autoLaunchSessionName") ?? "main"
         let config = hostsConfig ?? HostsConfig.load()
         self.hostsConfig = config
@@ -775,6 +783,11 @@ final class AppViewModel: ObservableObject {
             }
         }
         runtimeStore.onRefreshInventory = { [weak self] in await self?.fetchAll() }
+    }
+
+    deinit {
+        localInventoryPollingTask?.cancel()
+        pollingTask?.cancel()
     }
 
     // MARK: - Host Management
@@ -812,24 +825,37 @@ final class AppViewModel: ObservableObject {
 
     private var pollingTask: Task<Void, Never>?
 
-    /// Start the 1-second polling loop.
+    /// Start the remote broad poll and the local steady-state projection owner.
     ///
     /// Guarded against double-start: calling startPolling() while already running is a no-op.
     func startPolling() {
+        localProjectionCoordinator.startSteadyState(
+            runtime: makeLocalProjectionRuntime(),
+            classifyLocalDaemonIssue: { [weak self] error in
+                self?.classifyLocalDaemonIssue(from: error)
+            },
+            classifyHealthFailure: { [weak self] error in
+                self?.classifyLocalHealthRefreshFailure(from: error) ?? .transientFailure
+            }
+        )
+        startLocalInventoryPollingIfNeeded()
+
         guard pollingTask == nil else { return }
-        pollingTask = Task {
+        pollingTask = Task { [weak self] in
             while !Task.isCancelled {
-                await fetchAll()
+                guard let self else { return }
+                await self.fetchRemotePanes()
 
                 do {
-                    try await Task.sleep(for: .seconds(1))
+                    let nanoseconds = UInt64((self.pollingInterval * 1_000_000_000).rounded(.up))
+                    try await Task.sleep(nanoseconds: nanoseconds)
                 } catch {
                     break
                 }
             }
         }
-        Task {
-            await performStartupHookCheck()
+        Task { [weak self] in
+            await self?.performStartupHookCheck()
         }
     }
 
@@ -837,13 +863,13 @@ final class AppViewModel: ObservableObject {
     func stopPolling() {
         pollingTask?.cancel()
         pollingTask = nil
-        localMetadataRefreshTask?.cancel()
-        localMetadataRefreshTask = nil
-        localHealthRefreshTask?.cancel()
-        localHealthRefreshTask = nil
+        localInventoryPollingTask?.cancel()
+        localInventoryPollingTask = nil
+        localProjectionCoordinator.stop()
         localMetadataSyncPrimed = false
         localMetadataTransportVersion = nil
         localMetadataUseLongPoll = nil
+        nextLocalMetadataRefreshAt = .distantPast
         nextLocalHealthRefreshAt = .distantPast
         Task {
             await localClient.resetUIChangesV3()
@@ -852,10 +878,9 @@ final class AppViewModel: ObservableObject {
 
     func enableUITestMetadataMode() {
         uiTestMetadataModeEnabled = true
-        localMetadataRefreshTask?.cancel()
-        localMetadataRefreshTask = nil
-        localHealthRefreshTask?.cancel()
-        localHealthRefreshTask = nil
+        localInventoryPollingTask?.cancel()
+        localInventoryPollingTask = nil
+        localProjectionCoordinator.stop()
         localMetadataSyncPrimed = false
         localMetadataTransportVersion = nil
         localMetadataUseLongPoll = nil
@@ -1027,10 +1052,32 @@ final class AppViewModel: ObservableObject {
         )
     }
 
-    private func makeLocalMetadataRefreshCoordinator() -> LocalMetadataRefreshCoordinator {
-        LocalMetadataRefreshCoordinator(
-            client: localClient,
-            transportBridge: localMetadataTransportBridge
+    private func makeLocalProjectionState() -> LocalProjectionState {
+        LocalProjectionState(
+            uiTestMetadataModeEnabled: uiTestMetadataModeEnabled,
+            localInventoryKnown: hasFetchedLocalInventory,
+            localInventoryAvailable: !offlineHosts.contains("local"),
+            nextMetadataRefreshAt: nextLocalMetadataRefreshAt,
+            nextHealthRefreshAt: nextLocalHealthRefreshAt,
+            metadataRefreshContext: makeLocalMetadataRefreshContext(),
+            overlayStore: makeLocalMetadataOverlayStore(),
+            healthSuccessInterval: localHealthSuccessInterval,
+            healthFailureBackoff: localHealthFailureBackoff,
+            healthUnsupportedBackoff: localHealthUnsupportedBackoff
+        )
+    }
+
+    private func makeLocalProjectionRuntime() -> LocalProjectionSteadyStateRuntime {
+        LocalProjectionSteadyStateRuntime(
+            captureState: { [weak self] in
+                self?.makeLocalProjectionState()
+            },
+            applyMetadataExecution: { [weak self] execution in
+                await self?.applyLocalMetadataRefreshExecution(execution)
+            },
+            applyHealthExecution: { [weak self] execution in
+                self?.applyLocalHealthRefreshExecution(execution)
+            }
         )
     }
 
@@ -1119,98 +1166,105 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    private func scheduleLocalHealthRefreshIfNeeded() {
-        guard let localHealthClient else { return }
-        guard localHealthRefreshTask == nil else { return }
-        let now = Date()
-        guard now >= nextLocalHealthRefreshAt else { return }
+    private func applyLocalHealthRefreshExecution(_ execution: LocalHealthRefreshExecution) {
+        switch execution.cacheAction {
+        case .preserve:
+            break
+        case .set(let health):
+            if localDaemonHealth != health {
+                syncLocalDaemonHealth(health)
+            }
+        }
+        nextLocalHealthRefreshAt = execution.nextRefreshAt
+    }
 
-        localHealthRefreshTask = Task { [weak self] in
+    private func startLocalInventoryPollingIfNeeded() {
+        guard localInventoryPollingTask == nil else { return }
+
+        localInventoryPollingTask = Task { [weak self] in
             guard let self else { return }
-            defer { self.localHealthRefreshTask = nil }
 
-            do {
-                let health = try await localHealthClient.fetchUIHealthV1()
-                try Task.checkCancellation()
-                if self.localDaemonHealth != health { self.syncLocalDaemonHealth(health) }
-                self.nextLocalHealthRefreshAt = Date().addingTimeInterval(self.localHealthSuccessInterval)
-            } catch is CancellationError {
-                return
-            } catch {
-                if Task.isCancelled {
-                    return
+            var shouldSleepBeforeRefresh = self.hasFetchedLocalInventory
+            while !Task.isCancelled {
+                if shouldSleepBeforeRefresh {
+                    do {
+                        let nanoseconds = UInt64((self.localInventoryPollingInterval * 1_000_000_000).rounded(.up))
+                        try await Task.sleep(nanoseconds: nanoseconds)
+                    } catch {
+                        break
+                    }
                 }
-                switch self.classifyLocalHealthRefreshFailure(from: error) {
-                case .unsupportedMethod:
-                    self.syncLocalDaemonHealth(nil)
-                    self.nextLocalHealthRefreshAt = Date().addingTimeInterval(self.localHealthUnsupportedBackoff)
-                case .transientFailure:
-                    self.nextLocalHealthRefreshAt = Date().addingTimeInterval(self.localHealthFailureBackoff)
-                }
+
+                await self.refreshLocalInventorySteadyState()
+                shouldSleepBeforeRefresh = true
             }
         }
     }
 
-    private func scheduleLocalMetadataRefreshIfNeeded() {
-        guard localMetadataRefreshTask == nil else { return }
-        let now = Date()
-        guard now >= nextLocalMetadataRefreshAt else { return }
-
-        localMetadataRefreshTask = Task { [weak self] in
-            guard let self else { return }
-            defer { self.localMetadataRefreshTask = nil }
-
-            do {
-                let syncID = AgtmuxSignpost.metadataSync.makeSignpostID()
-                let syncState = AgtmuxSignpost.metadataSync.beginInterval("runStep", id: syncID)
-                let execution = try await self.makeLocalMetadataRefreshCoordinator().runStep(
-                    context: self.makeLocalMetadataRefreshContext(),
-                    overlayStore: self.makeLocalMetadataOverlayStore()
-                )
-                AgtmuxSignpost.metadataSync.endInterval("runStep", syncState)
-                try Task.checkCancellation()
-                await self.applyLocalMetadataRefreshExecution(execution)
-            } catch is CancellationError {
-                return
-            } catch {
-                if Task.isCancelled {
-                    return
-                }
-                let execution = self.makeLocalMetadataRefreshCoordinator().failureExecution(
-                    context: self.makeLocalMetadataRefreshContext(),
-                    error: error,
-                    classifyLocalDaemonIssue: self.classifyLocalDaemonIssue(from:)
-                )
-                await self.applyLocalMetadataRefreshExecution(execution)
-            }
+    private func refreshLocalInventorySteadyState() async {
+        do {
+            let inventory = try await localProjectionCoordinator.fetchInventory(
+                state: makeLocalProjectionState()
+            )
+            await applyLocalInventorySuccess(inventory)
+        } catch {
+            await applyLocalInventoryFailure()
         }
+    }
+
+    private func applyLocalInventorySuccess(_ inventory: [AgtmuxPane]) async {
+        lastSuccessfulLocalInventory = inventory
+        hasFetchedLocalInventory = true
+
+        var newOffline = offlineHosts
+        newOffline.remove("local")
+        await publishFromSnapshotCache(offlineHosts: newOffline)
+
+        if pollingTask != nil {
+            localProjectionCoordinator.startSteadyState(
+                runtime: makeLocalProjectionRuntime(),
+                classifyLocalDaemonIssue: { [weak self] error in
+                    self?.classifyLocalDaemonIssue(from: error)
+                },
+                classifyHealthFailure: { [weak self] error in
+                    self?.classifyLocalHealthRefreshFailure(from: error) ?? .transientFailure
+                }
+            )
+        }
+        if !hasCompletedInitialFetch { syncHasCompletedInitialFetch(true) }
+        maybeAutoLaunchSession()
+    }
+
+    private func applyLocalInventoryFailure() async {
+        let wasOffline = offlineHosts.contains("local")
+        if !wasOffline {
+            localProjectionCoordinator.stopMetadataSteadyState()
+            localMetadataSyncPrimed = false
+            localMetadataTransportVersion = nil
+            localMetadataUseLongPoll = nil
+            nextLocalMetadataRefreshAt = .distantPast
+            syncLocalDaemonIssue(nil)
+            await localClient.resetUIChangesV3()
+        }
+
+        var newOffline = offlineHosts
+        newOffline.insert("local")
+        await publishFromSnapshotCache(offlineHosts: newOffline)
     }
 
     private func fetchLocalPanes() async throws -> [AgtmuxPane] {
-        let env = ProcessInfo.processInfo.environment
-
-        // Fixture mode for deterministic UI tests. Keep the current AGTMUX_JSON-only behavior.
-        if env["AGTMUX_JSON"] != nil {
-            let snapshot = try await localClient.fetchSnapshot()
-            lastSuccessfulLocalInventory = snapshot.panes
-            return snapshot.panes
-        }
-
-        // Live UI tests exercise tmux inventory lifecycle/selection behavior.
-        // Running `agtmux json` here can block app responsiveness under XCUITest
-        // (metadata collection may require host capabilities not available to tests).
-        if env["AGTMUX_UITEST"] == "1",
-           env["AGTMUX_UITEST_INVENTORY_ONLY"] == "1",
-           !uiTestMetadataModeEnabled {
-            let inventory = try await localInventoryClient.fetchPanes()
-            lastSuccessfulLocalInventory = inventory
-            return inventory
-        }
-
-        scheduleLocalHealthRefreshIfNeeded()
-        let inventory = try await localInventoryClient.fetchPanes()
+        let inventory = try await localProjectionCoordinator.refreshOnce(
+            state: makeLocalProjectionState(),
+            runtime: makeLocalProjectionRuntime(),
+            classifyLocalDaemonIssue: { [weak self] error in
+                self?.classifyLocalDaemonIssue(from: error)
+            },
+            classifyHealthFailure: { [weak self] error in
+                self?.classifyLocalHealthRefreshFailure(from: error) ?? .transientFailure
+            }
+        )
         lastSuccessfulLocalInventory = inventory
-        scheduleLocalMetadataRefreshIfNeeded()
+        hasFetchedLocalInventory = true
         return inventory
     }
 
@@ -1269,6 +1323,45 @@ final class AppViewModel: ObservableObject {
         }
     }
 
+    private func fetchRemotePanes() async {
+        var successfulRemoteBySource: [String: [AgtmuxPane]] = [:]
+        var newOffline = offlineHosts.filter { $0 == "local" }
+
+        await withTaskGroup(of: (source: String, panes: [AgtmuxPane]?, offline: Bool).self) { group in
+            for source in self.remotePaneSources {
+                group.addTask {
+                    do {
+                        let panes = try await source.fetchPanes()
+                        return (source.source, panes, false)
+                    } catch {
+                        return (source.source, nil, true)
+                    }
+                }
+            }
+
+            for await result in group {
+                if result.offline {
+                    newOffline.insert(result.source)
+                } else if let panes = result.panes {
+                    successfulRemoteBySource[result.source] = panes
+                }
+            }
+        }
+
+        for (source, panes) in successfulRemoteBySource {
+            lastSuccessfulRemotePanesBySource[source] = panes
+        }
+
+        await publishFromSnapshotCache(offlineHosts: newOffline)
+        if !hasCompletedInitialFetch { syncHasCompletedInitialFetch(true) }
+        maybeAutoLaunchSession()
+    }
+
+    /// Perform the bounded startup refresh before the steady-state pollers begin.
+    func performInitialSync() async {
+        await fetchAll()
+    }
+
     /// Fetch from all sources concurrently, merge results, update state.
     /// Internal access so TmuxManager can trigger an immediate refresh.
     func fetchAll() async {
@@ -1317,15 +1410,27 @@ final class AppViewModel: ObservableObject {
             lastSuccessfulRemotePanesBySource[source] = panes
         }
         if newOffline.contains("local") {
-            localMetadataRefreshTask?.cancel()
-            localMetadataRefreshTask = nil
+            localProjectionCoordinator.stopMetadataSteadyState()
             localMetadataSyncPrimed = false
             localMetadataTransportVersion = nil
             localMetadataUseLongPoll = nil
+            nextLocalMetadataRefreshAt = .distantPast
             syncLocalDaemonIssue(nil)
             await localClient.resetUIChangesV3()
         }
         await publishFromSnapshotCache(offlineHosts: newOffline)
+        if pollingTask != nil {
+            startLocalInventoryPollingIfNeeded()
+            localProjectionCoordinator.startSteadyState(
+                runtime: makeLocalProjectionRuntime(),
+                classifyLocalDaemonIssue: { [weak self] error in
+                    self?.classifyLocalDaemonIssue(from: error)
+                },
+                classifyHealthFailure: { [weak self] error in
+                    self?.classifyLocalHealthRefreshFailure(from: error) ?? .transientFailure
+                }
+            )
+        }
         if !hasCompletedInitialFetch { syncHasCompletedInitialFetch(true) }
         maybeAutoLaunchSession()
     }

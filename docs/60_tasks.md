@@ -5,8 +5,181 @@ Historical task detail lives in `docs/archive/tasks/2026-02-28_to_2026-03-06.md`
 
 ## Current Phase
 
-Remote navigation + Phase 5–7 performance.
-Design: `docs/46_design-remote-navigation.md` (Phase 5–7), `docs/45_design-terminal-performance.md` (Phase 1–4).
+Local-first fast path kickoff.
+Design: `docs/47_design-local-first-fast-path.md` (active), `docs/45_design-terminal-performance.md` (completed local groundwork), `docs/46_design-remote-navigation.md` (deferred remote follow-on after Gate-L).
+
+## Active / Next — Local-First Kickoff
+
+### T-LF-00 — Perf baseline / signpost fixed (`PR-00`)
+- **Status**: DONE
+- **Priority**: P0
+- **Design**: `docs/47_design-local-first-fast-path.md` §Kickoff Slice: PR-00
+- **Files**: `AgtmuxSignpost.swift`, `TmuxControlMode.swift`, `SurfacePool.swift`, `GhosttyApp.swift`, `scripts/perf/*`, `docs/perf/*`
+- **Owner**: direct implementation
+- **Description**:
+  - Lock a reproducible local parity baseline before removing `fetchAll()` from the steady-state local hot path.
+  - This slice is instrumentation and measurement only; it does not claim local polling is fixed.
+- **Acceptance Criteria**:
+  - [x] `AgtmuxSignpost` includes navigation/control-mode coverage missing from the current baseline
+  - [x] remote SSH/control-mode connect/send attempts are observable in signpost output without changing behavior
+  - [x] `SurfacePool` exposes feature-flagged count logging hooks suitable for later dirty-only draw work
+  - [x] `docs/perf/local_parity_baseline.md` defines repeatable local scenarios and capture steps
+  - [x] `scripts/perf/local_scroll_bench.sh` exists and is runnable on the local developer machine
+  - [x] fresh `swift build` passes after the final patch
+
+### T-LF-01 — LocalProjectionCoordinator (`PR-01`)
+- **Status**: DONE
+- **Priority**: P0
+- **Depends**: T-LF-00
+- **Design**: `docs/47_design-local-first-fast-path.md` §Follow-On Local Slices / PR-01
+- **Files**: `LocalProjectionCoordinator.swift` (new), `AppViewModel.swift`, `LocalMetadataRefreshCoordinator.swift` (+ store apply surfaces as needed)
+- **Owner**: direct implementation
+- **Acceptance Criteria**:
+  - [x] local steady-state projection is modeled as `bootstrap -> wait_for_changes -> apply -> repeat`
+  - [x] local health cadence is coordinated from the same local projection owner
+  - [x] `AppViewModel` no longer open-codes local metadata/inventory orchestration decisions that belong to the projection loop
+  - [x] daemon `sync-v3` truth and fail-closed behavior remain unchanged
+  - [x] fresh `swift build` + relevant tests pass
+
+### T-LF-02 — Pull local steady state off app-wide polling (`PR-02`)
+- **Status**: DONE
+- **Priority**: P0
+- **Depends**: T-LF-01
+- **Design**: `docs/47_design-local-first-fast-path.md` §Follow-On Local Slices / PR-02
+- **Files**: `main.swift`, `AppViewModel.swift`
+- **Owner**: direct implementation
+- **Acceptance Criteria**:
+  - [x] local startup still performs one bounded initial sync
+  - [x] focused local steady-state updates no longer rely on the global 1-second `fetchAll()` loop
+  - [x] remote fetch behavior may temporarily remain on the broader path without regressing local behavior
+  - [x] fresh `swift build` + relevant tests pass
+
+### T-LF-05 — Focused navigation actor extraction (`PR-05`)
+- **Status**: DONE
+- **Priority**: P1
+- **Depends**: T-LF-02
+- **Design**: `docs/47_design-local-first-fast-path.md` §Follow-On Local Slices / PR-05 through PR-08
+- **Files**: `WorkbenchAreaV2.swift`, new navigation actor/service file(s), control-mode helpers
+- **Owner**: direct implementation
+- **Acceptance Criteria**:
+  - [x] focused navigation intent/application no longer depends on the tile view task body as the long-term owner
+  - [x] control-mode filtering and retry rules stay exact-client scoped
+  - [x] fresh `swift build` + relevant tests pass
+
+### T-LF-06 — Local fallback / command-broker hardening (`PR-06`)
+- **Status**: DONE
+- **Priority**: P1
+- **Depends**: T-LF-05
+- **Design**: `docs/47_design-local-first-fast-path.md` §Follow-On Local Slices / PR-05 through PR-08
+- **Files**: `WorkbenchFocusedNavigationActor.swift`, `WorkbenchAreaV2.swift`, navigation fallback/broker helper surfaces as needed
+- **Owner**: direct implementation
+- **Acceptance Criteria**:
+  - [x] focused local command-send / fallback policy is owned outside the tile-view task body
+  - [x] degraded control-mode and polling fallback remain explicit and exact-client scoped; no silent broad fallback is introduced
+  - [x] remote host-config drift cannot leave a stale frozen attach command after focused navigation/control-mode source changes
+  - [x] fresh `swift build` + relevant tests pass
+
+### T-LF-07 — Dirty-only draw (`PR-07`)
+- **Status**: DONE
+- **Priority**: P1
+- **Depends**: T-LF-06
+- **Design**: `docs/47_design-local-first-fast-path.md` §Follow-On Local Slices / PR-05 through PR-08
+- **Files**: `SurfacePool.swift`, `GhosttyApp.swift`, `GhosttyTerminalView.swift`, `GhosttySurfaceHostView.swift`, `WorkbenchGhosttyIsland.swift`, `GhosttyCLIOSCBridgeTests.swift`
+- **Owner**: direct implementation
+- **Acceptance Criteria**:
+  - [x] active surfaces redraw only when marked dirty or explicitly scheduled
+  - [x] local perf hooks remain usable for parity measurement after dirty-only draw lands
+  - [x] fresh `swift build` + relevant tests pass
+
+### T-LF-08 — Render scheduler cleanup / multi-display audit (`PR-08`)
+- **Status**: DONE
+- **Priority**: P1
+- **Depends**: T-LF-07
+- **Design**: `docs/47_design-local-first-fast-path.md` §Follow-On Local Slices / PR-05 through PR-08
+- **Files**: `GhosttyApp.swift`, `SurfacePool.swift`, `GhosttyTerminalView.swift`, `GhosttySurfaceHostView.swift`, `WorkbenchGhosttyIsland.swift`, `GhosttyCLIOSCBridgeTests.swift`
+- **Owner**: direct implementation
+- **Acceptance Criteria**:
+  - [x] render scheduling no longer fans out redundant work across display/update paths
+  - [x] focus and multi-display transitions preserve correct active-surface ownership without stale draws
+  - [x] fresh `swift build` + relevant tests pass
+
+### Gate-L — Local parity gate
+- **Status**: IN_PROGRESS
+- **Priority**: P0
+- **Depends**: T-LF-00, T-LF-01, T-LF-02, T-LF-05, T-LF-06, T-LF-07, T-LF-08
+- **Design**: `docs/47_design-local-first-fast-path.md` §Gate-L
+- **Owner**: Orchestrator
+- **Description**:
+  - Phase A tightens the repo-local measurement lane so Gate-L evidence is reproducible from this checkout instead of relying on one-off manual profiler sessions.
+  - The current slice targets:
+    - carrying the pane-switch root cause through term-side fix + regression coverage
+    - preserving the now-hardened idle/signpost measurement lane while re-establishing pane-switch proof
+    - proving the vendored native Ghostty bundle can serve as the same-host baseline source
+    - proving same-host native Ghostty input reachability and preparing final parity capture on top of that lane
+  - Current Phase A evidence:
+    - repo-local scripts now exist for signpost summary, idle sampling, pane-switch proxy measurement, and native Ghostty baseline probing
+    - idle CPU now uses interval-based `top` delta samples instead of decaying `ps %cpu`
+    - signpost and pane-switch summaries now use nearest-rank percentile selection so small-N `p95` cannot under-report the tail
+    - idle/signpost scripts run on this host and fail loudly on missing signpost matches
+    - the pane-switch red was term-side:
+      - local control-mode events were session-scoped, while Gate-L needs exact rendered-client truth
+      - `WorkbenchFocusedNavigationActor` now re-reads `liveTarget(renderedClientTTY:...)` on control-mode startup and every non-output event instead of trusting `%window-pane-changed` / `%session-window-changed` payloads as canonical pane truth
+      - post-send readback now retries transient `renderedClientUnavailable` misses before giving up
+    - fresh `swift build` + focused/broad SwiftPM verification is green after that fix
+    - fresh repo-local pane-switch proxy proof is green on March 13, 2026:
+      - `scripts/perf/gate_l_pane_switch_bench.sh --iterations 4 --timeout 20` => PASS
+      - this script is a Phase A proxy, not the final 4-pane/sidebar-click Gate-L proof:
+        - it opens a 2-pane session and drives `workbenchStoreV2.openTerminal(...)` through `__agtmux_open_terminal_for_pane__`
+      - latest proxy sample: `p95_ms = 2339.612`, `max_ms = 2339.612`
+      - signpost capture shows `NavigationSync` + `TmuxRunner` activity with `TmuxRunner p95_ms = 0.144`
+      - no `FetchAll` category appears in the captured pane-switch window
+  - Current host note:
+    - there is still no `/Applications` Ghostty install on this machine as of March 13, 2026 (`which Ghostty` and Spotlight app lookup both return nothing)
+    - however, the repo-local vendored bundle exists at `vendor/ghostty/zig-out/Ghostty.app` and a dedicated probe now proves launch/activation:
+      - `scripts/perf/gate_l_native_ghostty_probe.sh` => PASS for bundle resolution, launch, and activation
+      - current probe result: `bundle_id = com.mitchellh.ghostty.debug`, `version = 1.2.3`
+    - the repo-local AX helper is now app-backed instead of a plain binary:
+      - `scripts/perf/gate_l_ax_key_sender.sh --print-app-path` => `scripts/perf/.apps/GateLAXKeySender.app`
+      - `scripts/perf/gate_l_ax_key_sender.sh --prompt --dry-run` => PASS (`trusted = true`)
+    - same-host native input reachability is now green on March 13, 2026:
+      - `scripts/perf/gate_l_native_ghostty_probe.sh` => PASS for bundle resolution, launch, activation, and `System Events` key injection
+      - `scripts/perf/gate_l_native_ghostty_input_smoke.sh --timeout 15` => PASS
+      - smoke capture matches the wrapped receive marker pattern `__GATE_L_RECV__:\s*a`, proving the helper path reaches tmux through vendored native Ghostty
+    - same-host keypress / scroll / pane-switch parity is still open, but the remaining work is final measurement capture rather than permission unblock
+- **Acceptance Criteria**:
+  - [ ] scroll p95 is within `1.25x` of native Ghostty + local tmux
+  - [ ] keypress-to-glyph p95 is within `1.15x`
+  - [ ] pane switch p95 is within `1.20x`
+  - [ ] idle CPU remains within `+3pt` of baseline
+  - [ ] `FetchAll` and `TmuxRunner` are no longer dominant on the focused local steady-state path
+
+### T-152 — Reopen live Codex full-lane drift after post-implementation rerun
+- **Status**: DONE
+- **Priority**: P0
+- **Depends**: T-116, T-119
+- **Owner**: Orchestrator (direct investigation / implementation)
+- **Description**:
+  - The March 13, 2026 post-implementation live rerun initially reopened the Codex canaries, but the root cause was live-harness drift rather than a term-side consumer regression.
+  - Interactive Codex trust-prompt detection was too weak for tmux-captured output:
+    - the distinctive `Do you trust the contents of this directory` heading could wrap across lines
+    - the helper only searched a shallow capture window
+    - the pane stayed `managed/inactive` when the harness missed the trust prompt
+  - Follow-up reruns also showed that the Codex-only canaries were over-constrained by sibling Claude startup assumptions, even though those tests only prove the Codex pane.
+  - The suite now returns success again:
+    - `AppViewModelLiveManagedAgentTests` => PASS (`11` tests, `1` skipped)
+    - the remaining skip is `testLiveClaudeActivityTruthReachesExactAppRowWithoutBleed`, which now performs a real `claude -p` probe and skips on the current local `401` expired-token environment instead of failing deep in the suite
+- **Acceptance Criteria**:
+  - [x] root cause is identified with concrete evidence from term logs / daemon payloads / live harness behavior
+  - [x] `testLiveCodexCompletedIdleWithoutPendingRequestDoesNotSurfaceAttentionFilter` passes on fresh isolated rerun
+  - [x] `testLiveCodexInteractiveRunningSentinelStillSurfacesExactRunningTruth` passes on fresh isolated rerun
+  - [x] full `AGTMUX_LIVE_TEST_BIN=... swift test -q --filter AppViewModelLiveManagedAgentTests` rerun is green again (`11` tests, `1` skipped for explicit local Claude auth expiry)
+
+## Deferred Until Gate-L — Remote Follow-On
+
+- `PR-09` `SSHConnectionBroker`
+- `PR-10` remote control-mode authority
+- `PR-11` remote inventory bootstrap-only + host QoS
+- `PR-12` tmux subscription path
 
 ## Active / Next — Phase 5
 

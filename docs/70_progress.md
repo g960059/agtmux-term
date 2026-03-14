@@ -5,6 +5,67 @@ Historical progress detail lives in `docs/archive/progress/2026-02-28_to_2026-03
 
 ## Current Summary
 
+- `Gate-L` phase A is now in progress:
+  - repo-local measurement scripts now exist for signpost summary, idle CPU sampling, a pane-switch proxy bench, and a native Ghostty availability probe
+  - the last script-level false-green risks are now closed:
+    - idle CPU sampling now uses interval-based `top` delta samples
+    - signpost and pane-switch summaries now use nearest-rank `p95`
+    - empty signpost windows fail loudly instead of returning a silent success
+  - the pane-switch rendered/selected drift root cause is now fixed in term code:
+    - control-mode event payloads are no longer treated as canonical pane truth
+    - exact-client reconciliation now re-reads `list-clients` state from the rendered `clientTTY`
+    - post-send exact-client readback now retries transient `renderedClientUnavailable` misses
+    - focused and broad SwiftPM regression suites are green after the fix
+  - a fresh repo-local pane-switch proxy rerun is now green on March 13, 2026:
+    - `scripts/perf/gate_l_pane_switch_bench.sh --iterations 4 --timeout 20` => PASS
+    - this harness is a 2-pane internal-bridge proxy, not the final 4-pane/sidebar-click Gate-L proof
+    - latest proxy sample: `p95_ms = 2339.612`, `max_ms = 2339.612`
+    - captured signposts show `NavigationSync` activity with `TmuxRunner p95_ms = 0.144` and no `FetchAll` in the window
+  - vendored native Ghostty availability and native input reachability are now explicit:
+    - `scripts/perf/gate_l_native_ghostty_probe.sh` resolves `vendor/ghostty/zig-out/Ghostty.app`, launches it, activates it, and now passes `System Events` key injection
+  - a dedicated AX helper is now app-backed and trusted:
+    - `scripts/perf/gate_l_ax_key_sender.sh` now builds `scripts/perf/.apps/GateLAXKeySender.app`
+    - `scripts/perf/gate_l_ax_key_sender.sh --prompt --dry-run` returns `trusted = true`
+    - `scripts/perf/gate_l_native_ghostty_input_smoke.sh --timeout 15` now proves helper-delivered input reaches tmux via vendored native Ghostty
+  - idle/signpost evidence is now executable and fresh on March 13, 2026
+  - the remaining Gate-L question is final parity-number capture rather than repo-local product red or native input reachability
+
+- `T-152` is now closed:
+  - the reopened Codex live reds were harness-side, not a reopened term-side regression
+  - interactive Codex trust-prompt handling now searches deeper tmux scrollback and matches wrapped `Do you trust ... directory` headings with `\s+`
+  - Codex-only live canaries no longer require sibling Claude startup to remain managed when that sibling is not the test subject
+  - `testLiveClaudeActivityTruthReachesExactAppRowWithoutBleed` now probes real `claude -p` execution up front and skips cleanly on the current local `401` expired-token environment
+  - fresh `AppViewModelLiveManagedAgentTests` rerun passed (`11` tests, `1` skipped)
+  - fresh Codex re-review is `GO` x2
+- `T-LF-08` is now closed:
+  - `GhosttyApp` now suppresses schedule requests while a host tick is already executing, so `GHOSTTY_ACTION_RENDER` dirty marks no longer fan out a redundant follow-up tick from inside `ghostty_app_tick()`
+  - `GhosttyTerminalView` now requires a real window before applying backing/display metrics, so detach/reparent paths no longer write placeholder scale/display values or schedule a stale redraw
+  - focused regressions now cover both in-tick render suppression and no-window detach behavior
+  - fresh post-fix Codex re-review is `GO` x2
+- `T-LF-07` is now closed:
+  - `GhosttyApp.tick()` now draws from `SurfacePool`’s active-dirty queue instead of a separate weak `activeSurfaces` table
+  - `register` / `markDirty` / `activate` now request a host tick when they create drawable dirty work, so background/reactivate and initial draw no longer rely on an implicit libghostty wakeup
+  - wrapper teardown now uses `expectedViewID` guards, so stale async release work cannot GC a replacement view for the same `leafID`
+  - fresh post-fix Codex review is `GO` x2
+- `T-LF-06` is now closed:
+  - actor-owned control-mode lifecycle now covers the remaining remote blur/disappear stop scheduling seam
+  - remote control-mode source drift is part of the focused navigation task identity, so host config changes restart the owner without waiting for a focus toggle
+  - frozen terminal attach plans are now identity-aware, so remote `sshTarget` drift cannot leave Ghostty attached to the stale remote command while navigation switches to the new source
+  - fresh post-fix Codex review is `GO`
+- `T-LF-05` is now closed:
+  - `WorkbenchFocusedNavigationActor` owns focused navigation polling/control-mode loops outside the tile-view task body
+  - control-mode sends now retry only the transient `control mode not connected` race while re-reading the latest rendered client tty on every attempt
+  - handoff identity now includes desired/observed exact-row state and pane-instance drift, and fresh post-fix Codex CLI review is `GO`
+- local-first fast-path docs are now aligned to the March 13, 2026 handover
+- `T-LF-01` and `T-LF-02` are now closed:
+  - `LocalProjectionCoordinator` owns local metadata/health steady state
+  - local inventory converges automatically without routing local steady state through the global `fetchAll()` loop
+  - startup keeps one bounded initial sync while managed-daemon bring-up is kicked off without `MainActor` blocking
+  - fresh `swift build`, deterministic `swift test`, `xcodegen generate`, `xcodebuild`, and Codex review are green
+- `T-LF-00` is closed:
+  - repo-local perf artifacts now exist under `docs/perf/` and `scripts/perf/`
+  - signpost coverage now includes `NavigationSync` and `RemoteSSH`
+  - `SurfacePool` now has a feature-flagged count-logging seam for future dirty-only draw work
 - V2 mainline docs are aligned and design-locked for MVP
 - V2 Workbench sidebar/mainline integration is closed on code, focused verification, and dual Codex review
 - local daemon runtime hardening and A2 health observability are complete
@@ -16,9 +77,319 @@ Historical progress detail lives in `docs/archive/progress/2026-02-28_to_2026-03
 - daemon `T-SV2-P2` is now matched downstream: sync-v2 endpoint/session/XPC compat code is removed from the term layer; only legacy sync-v2 model types remain where still needed
 - the product-facing daemon incompatibility identity is now `LocalDaemonIssue.incompatibleMetadataProtocol`; current product text no longer implies a sync-v2-specific issue
 - the old metadata-enabled plain-zsh Codex XCUITest lane is now explicitly environment-blocked/deferred; the semantic replacement is the green live AppViewModel managed-agent proof with explicit Codex freshness coverage
-- the remaining strict live Codex `running` proof is green again on exec parity; interactive launch is kept only as a narrow sentinel
 
-## Recent Entries
+## 2026-03-13 — Gate-L proxy contract clarified; native Ghostty probe proves availability
+
+### What landed
+- **Phase A — control-mode reread hardening**:
+  - `WorkbenchFocusedNavigationActor` now retries post-send exact-client readback when rendered truth is temporarily unavailable
+  - new focused coverage locks the transient `renderedClientUnavailable` miss case instead of assuming the first reread always succeeds
+- **Phase B — proxy contract clarified**:
+  - the repo-local pane-switch harness is now documented as a Phase A proxy, not as the final 4-pane/sidebar-click Gate-L contract
+  - the proxy remains useful for product red/green and hot-path signpost proof, but no longer overclaims final parity semantics
+- **Phase C — native baseline blocker reduced**:
+  - `scripts/perf/gate_l_native_ghostty_probe.sh` now gives one reproducible truth source for native Ghostty availability
+  - the vendored app launches and activates successfully; unattended key injection is the remaining blocker
+
+### Verification
+- `HOME=$PWD/.codex-tmp/home CLANG_MODULE_CACHE_PATH=$PWD/.build/clang-module-cache SWIFTPM_MODULECACHE_OVERRIDE=$PWD/.build/swiftpm-module-cache swift build --disable-sandbox` — PASS
+- `HOME=$PWD/.codex-tmp/home CLANG_MODULE_CACHE_PATH=$PWD/.build/clang-module-cache SWIFTPM_MODULECACHE_OVERRIDE=$PWD/.build/swiftpm-module-cache swift test --disable-sandbox --filter WorkbenchFocusedNavigationActorTests` — PASS (`15` tests, `0` failures)
+- `HOME=$PWD/.codex-tmp/home CLANG_MODULE_CACHE_PATH=$PWD/.build/clang-module-cache SWIFTPM_MODULECACHE_OVERRIDE=$PWD/.build/swiftpm-module-cache swift test --disable-sandbox --skip AppViewModelLiveManagedAgentTests` — PASS (`339` tests, `0` failures)
+- `scripts/perf/gate_l_pane_switch_bench.sh --iterations 4 --timeout 20` — PASS
+  - `latencies_ms = [2326.994, 2339.612, 2274.681, 2257.631]`
+  - `p95_ms = 2339.612`
+- `zsh -n scripts/perf/gate_l_native_ghostty_probe.sh` — PASS
+- `scripts/perf/gate_l_native_ghostty_probe.sh` — PASS
+  - `app_path = vendor/ghostty/zig-out/Ghostty.app`
+  - `launch.ok = true`
+  - `activation.ok = true`
+  - `key_injection.ok = false`, `exit_code = 1`, `stderr` includes permission error `1002`
+
+### Review
+- `docs/85_reviews/review-pack-Gate-L-phase-a.md` — Codex condition-close re-review `GO`
+
+## 2026-03-13 — Gate-L pane-switch bench is green; blocker reduced to native baseline
+
+### What landed
+- **Phase A — fresh rerun**:
+  - the repo-local pane-switch bench now converges after the exact-client control-mode reconcile fix
+  - `scripts/perf/gate_l_pane_switch_bench.sh --iterations 4 --timeout 20` returned a valid latency sample instead of timing out on rendered `%1` / selected `%0` drift
+- **Phase B — measured focused-path evidence**:
+  - pane-switch latency on this host measured `p50_ms = 400.432`, `p95_ms = 459.681`, `max_ms = 459.681`
+  - the signpost window for that run shows `NavigationSync` plus small `TmuxRunner` work (`total_ms = 2.964`, `p95_ms = 0.322`)
+  - `FetchAll` does not appear in the captured pane-switch signpost window
+- **Phase C — new active blocker**:
+  - Gate-L is no longer blocked on the repo-local pane-switch product red
+  - same-host native Ghostty baseline is still missing, so scroll / keypress / idle parity cannot be claimed yet
+
+### Verification
+- `HOME=$PWD/.codex-tmp/home CLANG_MODULE_CACHE_PATH=$PWD/.build/clang-module-cache SWIFTPM_MODULECACHE_OVERRIDE=$PWD/.build/swiftpm-module-cache swift build --disable-sandbox` — PASS
+- `HOME=$PWD/.codex-tmp/home CLANG_MODULE_CACHE_PATH=$PWD/.build/clang-module-cache SWIFTPM_MODULECACHE_OVERRIDE=$PWD/.build/swiftpm-module-cache swift test --disable-sandbox --filter WorkbenchFocusedNavigationActorTests` — PASS (`14` tests, `0` failures)
+- `HOME=$PWD/.codex-tmp/home CLANG_MODULE_CACHE_PATH=$PWD/.build/clang-module-cache SWIFTPM_MODULECACHE_OVERRIDE=$PWD/.build/swiftpm-module-cache swift test --disable-sandbox --skip AppViewModelLiveManagedAgentTests` — PASS (`338` tests, `0` failures)
+- `scripts/perf/gate_l_pane_switch_bench.sh --iterations 4 --timeout 20` — PASS
+  - `latencies_ms = [433.227, 459.681, 400.432, 392.245]`
+  - `p95_ms = 459.681`
+
+## 2026-03-13 — Gate-L pane-switch drift: exact-client control-mode reconcile
+
+### What landed
+- **Phase A — root cause**:
+  - the `rendered=%1 / selected=%0` drift was a term-side control-mode issue, not a measurement-harness false green
+  - local control-mode `%window-pane-changed` / `%session-window-changed` payloads are session-scoped and can disagree with the rendered Ghostty client that Gate-L actually cares about
+- **Phase B — fix**:
+  - `WorkbenchFocusedNavigationActor` now treats control-mode as a wake signal and re-reads exact rendered-client truth through `liveTarget(renderedClientTTY:...)`
+  - that exact-client reconcile now runs on control-mode startup and every non-output control-mode event
+  - when the rendered client is already at the desired pane, startup now seeds observed truth without sending a redundant navigation command
+- **Phase C — regression closeout**:
+  - added focused actor coverage for:
+    - exact-client control-mode reconcile ignoring stale session-scoped pane payloads
+    - startup seeding when rendered truth already reached the desired pane
+    - task-identity cancellation under the new exact-client reconcile path
+
+### Verification
+- `HOME=$PWD/.codex-tmp/home CLANG_MODULE_CACHE_PATH=$PWD/.build/clang-module-cache SWIFTPM_MODULECACHE_OVERRIDE=$PWD/.build/swiftpm-module-cache swift test --disable-sandbox --filter WorkbenchFocusedNavigationActorTests` — PASS (`14` tests)
+- `HOME=$PWD/.codex-tmp/home CLANG_MODULE_CACHE_PATH=$PWD/.build/clang-module-cache SWIFTPM_MODULECACHE_OVERRIDE=$PWD/.build/swiftpm-module-cache swift test --disable-sandbox --skip AppViewModelLiveManagedAgentTests` — PASS (`338` tests, `0` failures)
+- `scripts/perf/gate_l_pane_switch_bench.sh --iterations 4 --timeout 20` — PASS (`p95_ms = 459.681`)
+
+## 2026-03-13 — Gate-L phase A review hardening: interval CPU + nearest-rank percentiles
+
+### What landed
+- **Phase A — false-green fixes**:
+  - `scripts/perf/gate_l_idle_sample.sh` no longer averages decaying `ps %cpu`
+  - idle CPU now comes from macOS `top` delta samples, skipping the known-invalid first sample
+  - `scripts/perf/gate_l_signpost_summary.sh` and `scripts/perf/gate_l_pane_switch_bench.sh` now use nearest-rank percentile selection so small-N `p95` reports the tail instead of the floor-biased bucket
+- **Phase B — focused rerun evidence**:
+  - `zsh -n` passes for all Gate-L perf scripts after the patch
+  - a fresh idle sample on the current local app process (`pid 49078`) now reports interval-based CPU directly from `top`:
+    - avg CPU `0.12%`
+    - max CPU `0.2%`
+    - avg memory footprint `35 MiB`
+  - a fresh valid-pid signpost summary on the same process returned non-empty intervals, while the wrong-pid path still fails loudly
+- **Phase C — product red unchanged**:
+  - the local pane-switch bench still fails with the same rendered `%1` / selected `%0` drift
+  - this keeps Gate-L open on a concrete product-side red, not on a measurement-script credibility gap
+
+### Verification
+- `zsh -n scripts/perf/gate_l_idle_sample.sh scripts/perf/gate_l_signpost_summary.sh scripts/perf/gate_l_pane_switch_bench.sh scripts/perf/gate_l_common.sh` — PASS
+- `scripts/perf/gate_l_idle_sample.sh --pid 49078 --duration 5 --interval 1` — PASS
+  - avg CPU `0.12%`, max CPU `0.2%`, avg memory `35 MiB`
+- `scripts/perf/gate_l_signpost_summary.sh --start 2026-03-13 04:43:29-0700 --end 2026-03-13 04:44:29-0700 --pid 49078` — PASS
+- `scripts/perf/gate_l_signpost_summary.sh --start 2026-03-13 04:43:29-0700 --end 2026-03-13 04:44:29-0700 --pid 999999` — FAIL LOUDLY (`No signpost events matched ... processID=999999`)
+- `scripts/perf/gate_l_pane_switch_bench.sh --iterations 4 --timeout 20` — FAIL
+  - timeout waiting for active target `%1`
+  - last observed state: rendered `%1`, selected `%0`
+
+### Review
+- `docs/85_reviews/review-pack-Gate-L-phase-a.md` — Codex re-review `GO` x2
+
+## 2026-03-13 — Gate-L phase A: repo-local measurement lane landed, pane-switch bench still red
+
+### What landed
+- **Phase A — repo-local perf harnesses**:
+  - added `scripts/perf/gate_l_signpost_summary.sh` to summarize interval signposts from unified logs
+  - added `scripts/perf/gate_l_idle_sample.sh` to sample `%CPU` / RSS for one app pid over a bounded window
+  - added `scripts/perf/gate_l_pane_switch_bench.sh` plus shared `scripts/perf/gate_l_common.sh`
+  - `UITestTmuxBridge` now exposes `__agtmux_open_terminal_for_pane__`, which drives the same `workbenchStoreV2.openTerminal(for:hostsConfig:)` path as a sidebar pane-row click without depending on XCUITest automation mode
+- **Phase B — fresh host evidence**:
+  - native Ghostty lookup on this host returned no install, so final parity proof remains blocked on missing baseline
+  - fresh idle sample on the current app process (`pid 40814`) averaged `2.82%` CPU over `5s` with `4.1%` max and `153.775 MiB` average RSS
+  - fresh `1m` signpost summary on the same process showed:
+    - `MetadataSync` total `1245.34 ms`
+    - `TmuxRunner` total `9.902 ms`
+    - `Publish` total `0.699 ms`
+    - `FetchAll` absent in the sampled window
+- **Phase C — current blocker surfaced, not hidden**:
+  - the new pane-switch bench fails loudly instead of claiming a number it cannot justify
+  - current failure shape:
+    - after `split-window`, the rendered client settles on `%1`
+    - a same-session retarget command moves the selected target back to `%0`
+    - the rendered client remains on `%1` until timeout
+  - this keeps Gate-L open with a concrete red rather than a missing measurement lane
+
+### Verification
+- `swift build` — PASS
+- `swift test --skip AppViewModelLiveManagedAgentTests` — PASS (`335` tests, `0` failures)
+- `scripts/perf/gate_l_idle_sample.sh --pid 40814 --duration 5 --interval 1` — PASS
+- `scripts/perf/gate_l_signpost_summary.sh --start 2026-03-13 04:37:44-0700 --end 2026-03-13 04:38:44-0700 --pid 40814` — PASS
+- `scripts/perf/gate_l_signpost_summary.sh --start 2026-03-13 04:37:44-0700 --end 2026-03-13 04:38:44-0700 --pid 999999` — FAIL LOUDLY (`No signpost events matched ... processID=999999`)
+- `scripts/perf/gate_l_pane_switch_bench.sh --iterations 4 --timeout 20` — FAIL
+  - timeout waiting for rendered convergence to `%0`
+  - last observed state: rendered `%1`, selected `%0`
+## 2026-03-13 — T-152: live Codex full-lane drift was harness-side, not product truth
+
+### What landed
+- **Phase A — interactive trust-prompt hardening**:
+  - `AppViewModelLiveManagedAgentTests` now shares one tmux trust-prompt helper for Claude and interactive Codex
+  - the helper searches deeper scrollback and matches wrapped `Do you trust the contents of this\s+directory` headings, so tmux line-wrap no longer leaves the Codex pane stuck `managed/inactive`
+  - added narrow prompt-matcher tests that reject generic `Press enter to continue` text and accept the known wrapped trust-prompt variants
+- **Phase B — codex-only live canary de-flaking**:
+  - the interactive-running sentinel and completed-idle Codex canaries now wait only on the Codex pane they actually prove
+  - the Codex exec running lane now tolerates the live path where a completion upsert is immediately followed by newer daemon truth before the app-side assertion catches up
+- **Phase C — explicit Claude auth blocker surfacing**:
+  - the dedicated Claude activity live proof now probes real `claude -p` execution before starting the harness
+  - when the local Claude token is expired, the test skips explicitly instead of failing later as a misleading product regression
+
+### Verification
+- `swift build` — PASS
+- `swift test -q --filter AppViewModelLiveManagedAgentTests/testTrustPromptMatcher` — PASS (`2` tests)
+- `AGTMUX_LIVE_TEST_BIN=/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/debug/agtmux swift test -q --filter AppViewModelLiveManagedAgentTests/testLiveCodexInteractiveRunningSentinelStillSurfacesExactRunningTruth` — PASS
+- `AGTMUX_LIVE_TEST_BIN=/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/debug/agtmux swift test -q --filter AppViewModelLiveManagedAgentTests/testLiveCodexCompletedIdleWithoutPendingRequestDoesNotSurfaceAttentionFilter` — PASS
+- `AGTMUX_LIVE_TEST_BIN=/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/debug/agtmux swift test -q --filter AppViewModelLiveManagedAgentTests/testLiveCodexActivityTruthReachesExactAppRowWithoutBleed` — PASS
+- `AGTMUX_LIVE_TEST_BIN=/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/debug/agtmux swift test -q --filter AppViewModelLiveManagedAgentTests/testLiveClaudeActivityTruthReachesExactAppRowWithoutBleed` — PASS (`1` skipped; explicit local Claude `401` auth expiry)
+- `AGTMUX_LIVE_TEST_BIN=/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/debug/agtmux swift test -q --filter AppViewModelLiveManagedAgentTests` — PASS (`11` tests, `1` skipped, `0` failures)
+
+### Review
+- `docs/85_reviews/review-pack-T-152.md` — Codex re-review `GO` x2
+
+## 2026-03-13 — T-LF-08: render scheduler cleanup / multi-display audit
+
+### What landed
+- **Phase A — in-tick scheduler hardening**:
+  - `GhosttyApp` keeps the main run-loop common-mode scheduler, but dirty marks raised while `ghostty_app_tick()` is already executing no longer queue a redundant follow-up tick
+  - this preserves dirty ownership in `SurfacePool` without reintroducing scheduler churn from the render callback path itself
+- **Phase B — real-window metric authority**:
+  - `GhosttyTerminalView` now skips surface-metric sync when detached and requires a real `window` before computing backing/display metrics
+  - multi-display content-scale / display-ID updates still apply on actual drift, but detach/reparent no longer writes placeholder `displayID = 0` / fallback-scale state into a live surface
+- **Phase C — regression closeout**:
+  - added focused coverage for render actions emitted during an in-flight tick and for no-window detach
+  - hot-path attach logging remains removed from the AppKit host wrappers
+
+### Verification
+- `swift build` — PASS
+- `scripts/perf/local_scroll_bench.sh` — PASS
+- `swift test --filter GhosttyCLIOSCBridgeTests` — PASS (`29` tests)
+- `swift test --filter GhosttyTerminalViewIMETests` — PASS (`2` tests)
+- `swift test --skip AppViewModelLiveManagedAgentTests` — PASS (`335` tests, `0` failures)
+- `xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -configuration Debug build CODE_SIGNING_ALLOWED=NO` — PASS
+- user-requested live lane:
+  - `AGTMUX_LIVE_TEST_BIN=/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/debug/agtmux swift test -q --filter AppViewModelLiveManagedAgentTests` — FAIL (`9` tests, `3` failures)
+  - focused rerun `.../testLiveCodexCompletedIdleWithoutPendingRequestDoesNotSurfaceAttentionFilter` — FAIL
+  - focused rerun `.../testLiveCodexInteractiveRunningSentinelStillSurfacesExactRunningTruth` — FAIL
+  - focused rerun `.../testLiveSyncV3BootstrapAndChangesUpdateExactCodexRowWithoutFallingBackToV2` — PASS
+
+### Review
+- `docs/85_reviews/review-pack-T-LF-08.md` — prior `NO_GO` x2 fixed; fresh Codex re-review `GO` x2
+
+## 2026-03-13 — T-LF-07: dirty-only draw
+
+### What landed
+- **Phase A — dirty queue ownership**:
+  - `GhosttyApp` now consumes `GHOSTTY_ACTION_RENDER` as a host dirty signal and draws from `SurfacePool.consumeDirtyActiveSurfaceViews()`
+  - the draw source no longer depends on a separate app-owned weak `activeSurfaces` table, so reattached views stay schedulable through the same pool truth used for lifecycle and handle routing
+- **Phase B — explicit host scheduling + teardown hardening**:
+  - `SurfacePool.register`, `markDirty(surfaceHandle:)`, and `activate` now request a host tick whenever they create drawable dirty work
+  - backgrounded dirty surfaces retain their dirty bit and request the draw only when they reactivate
+  - `GhosttySurfaceHostView` and `WorkbenchGhosttyIsland` now release with `expectedViewID`, so stale async teardown cannot move a replacement surface into pending GC
+- **Phase C — regression closeout**:
+  - added focused scheduler/path tests for initial dirty draw, targeted render draw, background/reactivate retention, re-register handle replacement, and stale release races
+  - removed obsolete teardown-to-app bookkeeping from `GhosttyTerminalView`; surface freeing no longer mutates app-side draw membership
+
+### Verification
+- `swift build` — PASS
+- `scripts/perf/local_scroll_bench.sh` — PASS
+- `swift test --filter GhosttyCLIOSCBridgeTests` — PASS (`25` tests)
+- `swift test --filter GhosttyTerminalViewIMETests` — PASS (`2` tests)
+- `swift test --skip AppViewModelLiveManagedAgentTests` — PASS (`331` tests, `0` failures)
+- `xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -configuration Debug build CODE_SIGNING_ALLOWED=NO` — PASS
+
+### Review
+- `docs/85_reviews/review-pack-T-LF-07.md` — Codex subagent review `GO` x2
+
+## 2026-03-13 — T-LF-06: local fallback / command-broker hardening
+
+### What landed
+- **Phase A — actor-owned remote lifecycle**:
+  - `WorkbenchFocusedNavigationActor` now owns the remaining remote blur/disappear stop scheduling seam instead of `WorkbenchAreaV2`
+  - re-focus cancellation and previous-remote-source stop scheduling now reconcile through the same actor-owned lifecycle path
+- **Phase B — remote source drift hardening**:
+  - added `WorkbenchFocusedNavigationControlModeKey` so focused navigation snapshots carry the resolved control-mode source separately from `SessionRef`
+  - focused navigation task identity now includes that resolved control-mode source identity, so remote host config changes reissue the owner snapshot without waiting for focus churn
+- **Phase C — attach-plan drift repair + closeout coverage**:
+  - repaired `WorkbenchAreaV2` frozen attach-plan caching so the cached plan is reused only when its attach identity still matches the current remote source
+  - remote attach identity now includes configured transport + `sshTarget`, so host-config drift invalidates the stale remote attach command immediately
+  - added focused regression tests for remote stop scheduling on blur/stop, previous-remote-source scheduling on source change, remote control-mode-source task identity drift, and remote `sshTarget` attach-plan drift
+
+### Verification
+- `swift build` — PASS
+- `swift test --filter WorkbenchFocusedNavigationActorTests` — PASS (`11` tests)
+- `swift test --filter WorkbenchV2NavigationSyncResolverTests` — PASS (`3` tests)
+- `swift test --skip AppViewModelLiveManagedAgentTests` — PASS (`326` tests, `0` failures)
+- `xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -configuration Debug build CODE_SIGNING_ALLOWED=NO` — PASS
+
+### Review
+- `docs/85_reviews/review-pack-T-LF-06.md` — Codex re-review `GO`
+
+## 2026-03-13 — T-LF-05: focused navigation actor extraction
+
+### What landed
+- **Phase A — navigation owner extraction**:
+  - added `WorkbenchFocusedNavigationActor` as the long-lived owner of focused navigation polling/control-mode loops
+  - `WorkbenchAreaV2` now hands snapshot state plus an error sink into that owner instead of owning the long-running loop body directly
+- **Phase B — post-review hardening**:
+  - control-mode sends now re-read the latest rendered client tty on every attempt and retry only the transient `control mode not connected` race
+  - navigation task identity now includes desired/observed exact-row state and pane-instance drift so stale runs are replaced even when pane/window IDs stay constant
+- **Phase C — execution / review closeout**:
+  - added focused regression coverage for task-identity-change cancellation and stale error clearing when navigation sync stops
+  - delegated implementation attempts were unstable, so this slice used direct implementation fallback
+  - initial Codex review rounds returned `NO_GO` for the control-mode race and snapshot/task-identity drift; both were fixed before the final re-review
+
+### Verification
+- `swift build` — PASS
+- `swift test --filter WorkbenchFocusedNavigationActorTests` — PASS (`8` tests)
+- `swift test --filter WorkbenchV2NavigationSyncResolverTests` — PASS (`3` tests)
+- `swift test --skip AppViewModelLiveManagedAgentTests` — PASS (`321` tests, `0` failures)
+- `xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -configuration Debug build CODE_SIGNING_ALLOWED=NO` — PASS
+
+### Review
+- `docs/85_reviews/review-pack-T-LF-05.md` — Codex CLI `GO`
+
+## 2026-03-12 — T-LF-01 + T-LF-02: local projection owner + local off global polling
+
+### What landed
+- **Phase A — coordinator-owned local steady state**:
+  - added `LocalProjectionCoordinator` as the owner of local metadata/health steady state
+  - local metadata now runs `bootstrap -> waitForUIChangesV1/fetchUIChangesV3 -> apply -> repeat`
+  - local health cadence is coordinated from the same local projection owner
+- **Phase B — startup/poll rewiring**:
+  - `AppViewModel.startPolling()` now splits local metadata/health, automatic local inventory convergence, and remote broad polling into separate lanes
+  - `AppViewModel.performInitialSync()` keeps the bounded startup/manual refresh entry point explicit
+  - startup now kicks managed-daemon bring-up off without blocking the bounded initial sync:
+    - supervisor path uses `startIfNeededAsync()`
+    - XPC path uses `Task.detached(...)`
+- **Phase C — target + review closeout**:
+  - regenerated the Xcode project and verified the shipped app target builds with the new coordinator source in scope
+  - review pack `docs/85_reviews/review-pack-T-LF-01-T-LF-02.md` is now `GO`
+
+### Verification
+- `swift build` — PASS
+- `swift test --filter LocalProjectionCoordinatorTests` — PASS (`9` tests)
+- focused `AppViewModelA0Tests` — PASS (`7` tests)
+- `swift test --skip AppViewModelLiveManagedAgentTests` — PASS (`313` tests, `0` failures)
+- `xcodegen generate` — PASS
+- `xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -configuration Debug build CODE_SIGNING_ALLOWED=NO` — PASS
+
+## 2026-03-12 — T-LF-00: local-first kickoff baseline + signpost coverage
+
+### What landed
+- **Phase A — docs realignment**:
+  - added `docs/47_design-local-first-fast-path.md`
+  - switched current tracking to the local-first plan in `docs/60_tasks.md`, `docs/65_current.md`, and `docs/90_index.md`
+  - preserved the existing product truth boundary: daemon `sync-v3` remains metadata truth; local-first is execution order, not a truth flip
+- **Phase B — baseline instrumentation**:
+  - `AgtmuxSignpost` now includes `NavigationSync` and `RemoteSSH`
+  - `TmuxControlMode` now emits signpost coverage for control-mode sends, remote SSH-backed connect attempts, and parsed control-mode events except `.output`
+  - `SurfacePool` now exposes feature-flagged count logging via `AGTMUX_SURFACEPOOL_DEBUG_COUNTS=1`
+  - `GhosttyApp.tick()` reports the current draw-pass count through that `SurfacePool` seam
+- **Phase C — perf artifacts**:
+  - added `docs/perf/local_parity_baseline.md`
+  - added `docs/perf/instruments-template.md`
+  - added `scripts/perf/local_scroll_bench.sh`
+  - fixed the script to resolve the first live pane target dynamically instead of assuming tmux window/pane base index `0`
+
+### Verification
+- `swift build` — PASS
+- `swift test --skip AppViewModelLiveManagedAgentTests` — PASS (`299` tests, `0` failures)
+- `scripts/perf/local_scroll_bench.sh` — PASS
 
 ## 2026-03-12 — T-PERF-P12: AppViewModel property migration to 3-store split
 
