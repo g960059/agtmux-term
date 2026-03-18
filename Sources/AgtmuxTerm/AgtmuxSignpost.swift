@@ -3,6 +3,7 @@ import os
 enum AgtmuxSignpost {
     static let ghosttyTick  = OSSignposter(subsystem: "local.agtmux.term", category: "GhosttyTick")
     static let surfaceDraw  = OSSignposter(subsystem: "local.agtmux.term", category: "SurfaceDraw")
+    static let scrollLatency = OSSignposter(subsystem: "local.agtmux.term", category: "ScrollLatency")
     static let fetchAll     = OSSignposter(subsystem: "local.agtmux.term", category: "FetchAll")
     static let localInventory = OSSignposter(subsystem: "local.agtmux.term", category: "LocalInventory")
     static let remoteInventory = OSSignposter(subsystem: "local.agtmux.term", category: "RemoteInventory")

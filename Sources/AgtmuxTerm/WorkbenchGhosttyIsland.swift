@@ -4,12 +4,84 @@ import AgtmuxTermCore
 
 // MARK: - GhosttyIslandRepresentable
 
+@MainActor
+final class GhosttyIslandUpdateTelemetry {
+    struct Snapshot: Codable, Equatable {
+        let updateCount: Int
+        let commandChangeCount: Int
+        let surfaceContextChangeCount: Int
+        let focusChangeCount: Int
+        let focusRestoreChangeCount: Int
+        let applyCommandCount: Int
+        let retryCount: Int
+    }
+
+    private struct State {
+        var updateCount = 0
+        var commandChangeCount = 0
+        var surfaceContextChangeCount = 0
+        var focusChangeCount = 0
+        var focusRestoreChangeCount = 0
+        var applyCommandCount = 0
+        var retryCount = 0
+    }
+
+    static let shared = GhosttyIslandUpdateTelemetry()
+
+    private var statesByTileID: [UUID: State] = [:]
+
+    func recordUpdate(
+        tileID: UUID,
+        commandChanged: Bool,
+        surfaceContextChanged: Bool,
+        focusStateChanged: Bool,
+        focusRestoreChanged: Bool
+    ) {
+        var state = statesByTileID[tileID] ?? State()
+        state.updateCount += 1
+        if commandChanged { state.commandChangeCount += 1 }
+        if surfaceContextChanged { state.surfaceContextChangeCount += 1 }
+        if focusStateChanged { state.focusChangeCount += 1 }
+        if focusRestoreChanged { state.focusRestoreChangeCount += 1 }
+        statesByTileID[tileID] = state
+    }
+
+    func recordApplyCommand(tileID: UUID) {
+        var state = statesByTileID[tileID] ?? State()
+        state.applyCommandCount += 1
+        statesByTileID[tileID] = state
+    }
+
+    func recordRetry(tileID: UUID) {
+        var state = statesByTileID[tileID] ?? State()
+        state.retryCount += 1
+        statesByTileID[tileID] = state
+    }
+
+    func reset(tileID: UUID) {
+        statesByTileID[tileID] = State()
+    }
+
+    func snapshot(tileID: UUID) -> Snapshot {
+        let state = statesByTileID[tileID] ?? State()
+        return Snapshot(
+            updateCount: state.updateCount,
+            commandChangeCount: state.commandChangeCount,
+            surfaceContextChangeCount: state.surfaceContextChangeCount,
+            focusChangeCount: state.focusChangeCount,
+            focusRestoreChangeCount: state.focusRestoreChangeCount,
+            applyCommandCount: state.applyCommandCount,
+            retryCount: state.retryCount
+        )
+    }
+}
+
 /// AppKit island that hosts a GhosttyTerminalView inside an NSViewController.
 ///
 /// SwiftUI recomposition does NOT propagate into the view controller's view hierarchy,
 /// which prevents sidebar inventory updates from triggering Metal draw calls.
 /// All communication happens through value-type parameters only — no @EnvironmentObject.
-struct GhosttyIslandRepresentable: NSViewControllerRepresentable {
+struct GhosttyIslandRepresentable: NSViewControllerRepresentable, Equatable {
     let surfaceID: UUID
     let poolKey: String
     let attachCommand: String?
@@ -135,14 +207,17 @@ final class GhosttyIslandViewController: NSViewController {
         }
 
         // Update surface context registration if it changed
-        if let surfaceContext,
+        let surfaceContextChanged = registeredSurfaceContext != surfaceContext
+        if surfaceContextChanged,
+           let surfaceContext,
            let terminalView {
             terminalView.configureAccessibility(
                 identifier: AccessibilityID.workspaceTerminalHostPrefix + surfaceContext.tileID.uuidString,
                 label: "Terminal \(surfaceContext.sessionRef.sessionName)"
             )
         }
-        if let surfaceContext,
+        if surfaceContextChanged,
+           let surfaceContext,
            let registeredSurfaceHandle,
            registeredSurfaceContext != surfaceContext {
             GhosttyTerminalSurfaceRegistry.shared.register(
@@ -156,6 +231,13 @@ final class GhosttyIslandViewController: NSViewController {
         // Apply focus changes
         let focusStateChanged = lastAppliedFocus != isFocused
         let focusRestoreChanged = lastFocusRestoreNonce != focusRestoreNonce
+        GhosttyIslandUpdateTelemetry.shared.recordUpdate(
+            tileID: surfaceID,
+            commandChanged: commandChanged,
+            surfaceContextChanged: surfaceContextChanged,
+            focusStateChanged: focusStateChanged,
+            focusRestoreChanged: focusRestoreChanged
+        )
         guard focusStateChanged || (isFocused && focusRestoreChanged) else { return }
         lastAppliedFocus = isFocused
         lastFocusRestoreNonce = focusRestoreNonce
@@ -242,6 +324,7 @@ final class GhosttyIslandViewController: NSViewController {
         }
 
         currentCommand = command
+        GhosttyIslandUpdateTelemetry.shared.recordApplyCommand(tileID: surfaceID)
         pendingAttachCommand = nil
         pendingSurfaceContext = nil
         cancelPendingRetry()
@@ -253,6 +336,7 @@ final class GhosttyIslandViewController: NSViewController {
 
         cancelPendingRetry()
         pendingAttachRetryCommand = command
+        GhosttyIslandUpdateTelemetry.shared.recordRetry(tileID: surfaceID)
 
         let retry = DispatchWorkItem { [weak self] in
             guard let self else { return }

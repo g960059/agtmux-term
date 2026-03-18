@@ -468,7 +468,8 @@ private struct WorkbenchTerminalTileViewV2: View {
                         isFocused: isFocused,
                         focusRestoreNonce: focusRestoreNonce
                     )
-                    .id("ghostty-island:\(tile.id.uuidString):\(plan.command)")
+                    .equatable()
+                    .id("ghostty-island:\(tile.id.uuidString)")
                 }
 
             case .failure:

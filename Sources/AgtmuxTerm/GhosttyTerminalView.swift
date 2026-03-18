@@ -1,5 +1,6 @@
 import AppKit
 import GhosttyKit
+import os
 
 /// An NSView that hosts a Ghostty terminal surface rendered via Metal.
 ///
@@ -18,6 +19,28 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         let displayID: UInt32
     }
 
+    struct ScrollTelemetryMetricSummary: Codable, Equatable {
+        let count: Int
+        let p50Ms: Double?
+        let p95Ms: Double?
+        let maxMs: Double?
+    }
+
+    struct ScrollTelemetrySnapshot: Codable, Equatable {
+        let scrollToRenderRequest: ScrollTelemetryMetricSummary
+        let scrollToFirstDraw: ScrollTelemetryMetricSummary
+        let scrollToLayerPresent: ScrollTelemetryMetricSummary
+        let renderRequestToDraw: ScrollTelemetryMetricSummary
+        let drawGap: ScrollTelemetryMetricSummary
+        let layerPresentGap: ScrollTelemetryMetricSummary
+        let drawCount: Int
+        let layerPresentCount: Int
+        let pendingScrollToRenderCount: Int
+        let pendingScrollToDrawCount: Int
+        let pendingScrollToLayerPresentCount: Int
+        let pendingRenderToDrawCount: Int
+    }
+
     // MARK: - State
 
     private(set) var surface: ghostty_surface_t?
@@ -26,6 +49,8 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     private var lastAppliedSurfaceMetrics: SurfaceMetrics?
     private var desiredSurfaceFocus = false
     private var appliedSurfaceFocus = false
+    private weak var observedRenderLayer: CALayer?
+    private var renderLayerContentsObservation: NSKeyValueObservation?
     private(set) var debugKeyDownCount = 0
     private(set) var debugLastKeyCode: UInt16?
     private(set) var debugLastCharacters: String?
@@ -33,6 +58,25 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     private(set) var debugLastModifierFlagsRawValue: UInt?
     private(set) var debugLastSendKeyResult: Bool?
     private(set) var debugRecentInputEvents: [String] = []
+    private var scrollPresentationDrawPending = false
+    private var pendingScrollToRenderStates: [OSSignpostIntervalState] = []
+    private var pendingScrollToDrawStates: [OSSignpostIntervalState] = []
+    private var pendingScrollToLayerPresentStates: [OSSignpostIntervalState] = []
+    private var pendingRenderToDrawStates: [OSSignpostIntervalState] = []
+    private var pendingScrollToRenderUptimes: [TimeInterval] = []
+    private var pendingScrollToDrawUptimes: [TimeInterval] = []
+    private var pendingScrollToLayerPresentUptimes: [TimeInterval] = []
+    private var pendingRenderToDrawUptimes: [TimeInterval] = []
+    private var scrollToRenderSamplesMs: [Double] = []
+    private var scrollToDrawSamplesMs: [Double] = []
+    private var scrollToLayerPresentSamplesMs: [Double] = []
+    private var renderToDrawSamplesMs: [Double] = []
+    private var drawGapSamplesMs: [Double] = []
+    private var layerPresentGapSamplesMs: [Double] = []
+    private var drawCount = 0
+    private var layerPresentCount = 0
+    private var lastHostDrawUptime: TimeInterval?
+    private var lastLayerPresentUptime: TimeInterval?
 
     // MARK: - IME state
 
@@ -57,6 +101,7 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
 
     deinit {
         removeWindowObservers()
+        renderLayerContentsObservation?.invalidate()
         // clearSurface() may have already freed the surface (SurfacePool GC path).
         // If surface is still non-nil, free it here.
         if let surface {
@@ -75,6 +120,9 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         }
         lastAppliedSurfaceMetrics = nil
         appliedSurfaceFocus = false
+        scrollPresentationDrawPending = false
+        syncRenderLayerContentsObservation()
+        resetScrollTelemetryForTesting()
     }
 
     /// Replace the current surface with a new one.
@@ -88,6 +136,8 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         lastAppliedSurfaceMetrics = nil
         syncSurfaceMetrics(shouldMarkDirty: false, force: true)
         applySurfaceFocusIfNeeded(force: true)
+        syncRenderLayerContentsObservation()
+        resetScrollTelemetryForTesting()
         needsDisplay = true
     }
 
@@ -105,12 +155,14 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
 
     override func layout() {
         super.layout()
+        syncRenderLayerContentsObservation()
         syncSurfaceMetrics(shouldMarkDirty: true)
     }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         updateWindowObservers()
+        syncRenderLayerContentsObservation()
         guard window != nil else { return }
         desiredSurfaceFocus = window?.firstResponder === self
         applySurfaceFocusIfNeeded(force: true)
@@ -669,6 +721,7 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
 
     override func scrollWheel(with event: NSEvent) {
         guard let surface else { return }
+        noteScrollInputTelemetry()
         // Pass deltas raw — Ghostty expects the same sign convention as
         // NSEvent.scrollingDeltaY (positive = up). Negating was inverting scroll.
         var x = event.scrollingDeltaX
@@ -679,6 +732,163 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
             y *= 2
         }
         ghostty_surface_mouse_scroll(surface, x, y, GhosttyInput.toScrollMods(event))
+        scheduleScrollPresentationDrawIfNeeded()
+    }
+
+    @MainActor
+    func noteRenderRequestTelemetry() {
+        guard pendingScrollToRenderStates.isEmpty == false
+            || pendingScrollToDrawStates.isEmpty == false
+        else {
+            return
+        }
+        let now = ProcessInfo.processInfo.systemUptime
+
+        for state in pendingScrollToRenderStates {
+            AgtmuxSignpost.scrollLatency.endInterval("scrollToRenderRequest", state)
+        }
+        pendingScrollToRenderStates.removeAll(keepingCapacity: true)
+        for uptime in pendingScrollToRenderUptimes {
+            scrollToRenderSamplesMs.append((now - uptime) * 1000.0)
+        }
+        pendingScrollToRenderUptimes.removeAll(keepingCapacity: true)
+
+        let renderToDrawID = AgtmuxSignpost.scrollLatency.makeSignpostID()
+        let renderToDrawState = AgtmuxSignpost.scrollLatency.beginInterval(
+            "renderRequestToDraw",
+            id: renderToDrawID
+        )
+        pendingRenderToDrawStates.append(renderToDrawState)
+        pendingRenderToDrawUptimes.append(now)
+    }
+
+    @MainActor
+    func noteHostDrawTelemetry() {
+        let now = ProcessInfo.processInfo.systemUptime
+        for state in pendingScrollToDrawStates {
+            AgtmuxSignpost.scrollLatency.endInterval("scrollToFirstDraw", state)
+        }
+        pendingScrollToDrawStates.removeAll(keepingCapacity: true)
+        for uptime in pendingScrollToDrawUptimes {
+            scrollToDrawSamplesMs.append((now - uptime) * 1000.0)
+        }
+        pendingScrollToDrawUptimes.removeAll(keepingCapacity: true)
+
+        for state in pendingRenderToDrawStates {
+            AgtmuxSignpost.scrollLatency.endInterval("renderRequestToDraw", state)
+        }
+        pendingRenderToDrawStates.removeAll(keepingCapacity: true)
+        for uptime in pendingRenderToDrawUptimes {
+            renderToDrawSamplesMs.append((now - uptime) * 1000.0)
+        }
+        pendingRenderToDrawUptimes.removeAll(keepingCapacity: true)
+
+        if let lastHostDrawUptime {
+            drawGapSamplesMs.append((now - lastHostDrawUptime) * 1000.0)
+        }
+        lastHostDrawUptime = now
+        drawCount += 1
+    }
+
+    @MainActor
+    func noteLayerPresentationTelemetryForTesting() {
+        noteLayerPresentationTelemetry()
+    }
+
+    @MainActor
+    func resetScrollTelemetryForTesting() {
+        pendingScrollToRenderStates.removeAll(keepingCapacity: false)
+        pendingScrollToDrawStates.removeAll(keepingCapacity: false)
+        pendingScrollToLayerPresentStates.removeAll(keepingCapacity: false)
+        pendingRenderToDrawStates.removeAll(keepingCapacity: false)
+        pendingScrollToRenderUptimes.removeAll(keepingCapacity: false)
+        pendingScrollToDrawUptimes.removeAll(keepingCapacity: false)
+        pendingScrollToLayerPresentUptimes.removeAll(keepingCapacity: false)
+        pendingRenderToDrawUptimes.removeAll(keepingCapacity: false)
+        scrollToRenderSamplesMs.removeAll(keepingCapacity: false)
+        scrollToDrawSamplesMs.removeAll(keepingCapacity: false)
+        scrollToLayerPresentSamplesMs.removeAll(keepingCapacity: false)
+        renderToDrawSamplesMs.removeAll(keepingCapacity: false)
+        drawGapSamplesMs.removeAll(keepingCapacity: false)
+        layerPresentGapSamplesMs.removeAll(keepingCapacity: false)
+        drawCount = 0
+        layerPresentCount = 0
+        lastHostDrawUptime = nil
+        lastLayerPresentUptime = nil
+    }
+
+    @MainActor
+    func noteScrollInputTelemetryForTesting() {
+        noteScrollInputTelemetry()
+    }
+
+    @MainActor
+    func scrollTelemetrySnapshotForTesting() -> ScrollTelemetrySnapshot {
+        ScrollTelemetrySnapshot(
+            scrollToRenderRequest: summary(for: scrollToRenderSamplesMs),
+            scrollToFirstDraw: summary(for: scrollToDrawSamplesMs),
+            scrollToLayerPresent: summary(for: scrollToLayerPresentSamplesMs),
+            renderRequestToDraw: summary(for: renderToDrawSamplesMs),
+            drawGap: summary(for: drawGapSamplesMs),
+            layerPresentGap: summary(for: layerPresentGapSamplesMs),
+            drawCount: drawCount,
+            layerPresentCount: layerPresentCount,
+            pendingScrollToRenderCount: pendingScrollToRenderUptimes.count,
+            pendingScrollToDrawCount: pendingScrollToDrawUptimes.count,
+            pendingScrollToLayerPresentCount: pendingScrollToLayerPresentUptimes.count,
+            pendingRenderToDrawCount: pendingRenderToDrawUptimes.count
+        )
+    }
+
+    private func syncRenderLayerContentsObservation() {
+        let currentLayer = surface == nil ? nil : layer
+        guard observedRenderLayer !== currentLayer else { return }
+
+        renderLayerContentsObservation?.invalidate()
+        renderLayerContentsObservation = nil
+        observedRenderLayer = currentLayer
+
+        guard let currentLayer else { return }
+        renderLayerContentsObservation = currentLayer.observe(\.contents, options: [.new]) { [weak self] _, change in
+            guard change.newValue != nil else { return }
+            if Thread.isMainThread {
+                MainActor.assumeIsolated {
+                    self?.noteLayerPresentationTelemetry()
+                }
+            } else {
+                DispatchQueue.main.async { [weak self] in
+                    self?.noteLayerPresentationTelemetry()
+                }
+            }
+        }
+    }
+
+    /// Coalesce scroll-triggered synchronous draws to one per main-run-loop turn.
+    ///
+    /// Pure viewport scrolling updates the IOSurface layer without surfacing through
+    /// `GHOSTTY_ACTION_RENDER`, so the normal dirty-draw scheduler never sees it.
+    /// Requesting one synchronous draw per turn tightens frame pacing without doing
+    /// a full main-thread draw for every high-frequency trackpad event.
+    @MainActor
+    func scheduleScrollPresentationDrawIfNeeded() {
+        guard scrollPresentationDrawPending == false else { return }
+        scrollPresentationDrawPending = true
+
+        let mainRunLoop = CFRunLoopGetMain()
+        CFRunLoopPerformBlock(mainRunLoop, CFRunLoopMode.commonModes.rawValue) { [weak self] in
+            guard let self else { return }
+            MainActor.assumeIsolated {
+                self.scrollPresentationDrawPending = false
+                self.performScrollPresentationDraw()
+            }
+        }
+        CFRunLoopWakeUp(mainRunLoop)
+    }
+
+    @MainActor
+    func performScrollPresentationDraw() {
+        guard let surface else { return }
+        ghostty_surface_draw(surface)
     }
 
     private func updateWindowObservers() {
@@ -799,6 +1009,74 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         if shouldMarkDirty {
             SurfacePool.shared.markDirty(view: self)
         }
+    }
+
+    @MainActor
+    private func noteScrollInputTelemetry() {
+        let now = ProcessInfo.processInfo.systemUptime
+        let renderID = AgtmuxSignpost.scrollLatency.makeSignpostID()
+        let renderState = AgtmuxSignpost.scrollLatency.beginInterval(
+            "scrollToRenderRequest",
+            id: renderID
+        )
+        pendingScrollToRenderStates.append(renderState)
+        pendingScrollToRenderUptimes.append(now)
+
+        let drawID = AgtmuxSignpost.scrollLatency.makeSignpostID()
+        let drawState = AgtmuxSignpost.scrollLatency.beginInterval(
+            "scrollToFirstDraw",
+            id: drawID
+        )
+        pendingScrollToDrawStates.append(drawState)
+        pendingScrollToDrawUptimes.append(now)
+
+        let layerPresentID = AgtmuxSignpost.scrollLatency.makeSignpostID()
+        let layerPresentState = AgtmuxSignpost.scrollLatency.beginInterval(
+            "scrollToLayerPresent",
+            id: layerPresentID
+        )
+        pendingScrollToLayerPresentStates.append(layerPresentState)
+        pendingScrollToLayerPresentUptimes.append(now)
+    }
+
+    @MainActor
+    private func noteLayerPresentationTelemetry() {
+        let now = ProcessInfo.processInfo.systemUptime
+        for state in pendingScrollToLayerPresentStates {
+            AgtmuxSignpost.scrollLatency.endInterval("scrollToLayerPresent", state)
+        }
+        pendingScrollToLayerPresentStates.removeAll(keepingCapacity: true)
+        for uptime in pendingScrollToLayerPresentUptimes {
+            scrollToLayerPresentSamplesMs.append((now - uptime) * 1000.0)
+        }
+        pendingScrollToLayerPresentUptimes.removeAll(keepingCapacity: true)
+
+        if let lastLayerPresentUptime {
+            layerPresentGapSamplesMs.append((now - lastLayerPresentUptime) * 1000.0)
+        }
+        lastLayerPresentUptime = now
+        layerPresentCount += 1
+    }
+
+    private func summary(for samples: [Double]) -> ScrollTelemetryMetricSummary {
+        guard samples.isEmpty == false else {
+            return ScrollTelemetryMetricSummary(count: 0, p50Ms: nil, p95Ms: nil, maxMs: nil)
+        }
+
+        let sorted = samples.sorted()
+        return ScrollTelemetryMetricSummary(
+            count: sorted.count,
+            p50Ms: percentile(50, sortedSamples: sorted),
+            p95Ms: percentile(95, sortedSamples: sorted),
+            maxMs: sorted.last
+        )
+    }
+
+    private func percentile(_ percentile: Double, sortedSamples: [Double]) -> Double {
+        guard sortedSamples.isEmpty == false else { return .zero }
+        let index = Int(ceil((percentile / 100.0) * Double(sortedSamples.count)) - 1.0)
+        let boundedIndex = max(0, min(sortedSamples.count - 1, index))
+        return sortedSamples[boundedIndex]
     }
 }
 

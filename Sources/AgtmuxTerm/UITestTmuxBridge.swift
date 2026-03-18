@@ -97,6 +97,12 @@ final class UITestTmuxBridge {
         let terminalRecentInputEvents: [String]
     }
 
+    private struct ScrollBenchTelemetrySnapshot: Codable {
+        let scroll: GhosttyTerminalView.ScrollTelemetrySnapshot
+        let island: GhosttyIslandUpdateTelemetry.Snapshot
+        let publish: AppViewModel.PublishTelemetrySnapshot
+    }
+
     private let viewModel: AppViewModel
     private let enableMetadataMode: @MainActor () async -> Void
     private let env: [String: String]
@@ -111,6 +117,8 @@ final class UITestTmuxBridge {
     private let openTerminalForPaneCommand = "__agtmux_open_terminal_for_pane__"
     private let focusTerminalHostCommand = "__agtmux_focus_terminal_host__"
     private let sendTmuxNextPaneKeysCommand = "__agtmux_send_tmux_next_pane_keys__"
+    private let resetScrollTelemetryCommand = "__agtmux_reset_scroll_telemetry__"
+    private let dumpScrollTelemetryCommand = "__agtmux_dump_scroll_telemetry__"
     private let bridgeReadyCommand = "__agtmux_tmux_bridge_ready__"
 
     init(
@@ -367,6 +375,13 @@ final class UITestTmuxBridge {
             case sendTmuxNextPaneKeysCommand:
                 try sendTmuxNextPaneKeys(request.args)
                 stdout = "ok"
+            case resetScrollTelemetryCommand:
+                try resetScrollTelemetry(request.args)
+                stdout = "ok"
+            case dumpScrollTelemetryCommand:
+                let snapshot = try dumpScrollTelemetry(request.args)
+                let data = try JSONEncoder().encode(snapshot)
+                stdout = String(decoding: data, as: UTF8.self)
             case bridgeReadyCommand:
                 stdout = "ready"
             case sidebarStateCommand:
@@ -771,8 +786,44 @@ final class UITestTmuxBridge {
         uiTestBridgeDebugLog("sendTmuxNextPaneKeys return tileID=\(tileID)")
     }
 
+    private func resetScrollTelemetry(_ args: [String]) throws {
+        let terminalView = try terminalView(for: args, command: resetScrollTelemetryCommand)
+        let tileID = try tileID(from: args, command: resetScrollTelemetryCommand)
+        terminalView.resetScrollTelemetryForTesting()
+        GhosttyApp.resetSurfaceDrawTelemetryForTesting()
+        GhosttyIslandUpdateTelemetry.shared.reset(tileID: tileID)
+        viewModel.resetPublishTelemetryForTesting()
+    }
+
+    private func dumpScrollTelemetry(_ args: [String]) throws -> ScrollBenchTelemetrySnapshot {
+        let terminalView = try terminalView(for: args, command: dumpScrollTelemetryCommand)
+        let tileID = try tileID(from: args, command: dumpScrollTelemetryCommand)
+        return ScrollBenchTelemetrySnapshot(
+            scroll: terminalView.scrollTelemetrySnapshotForTesting(),
+            island: GhosttyIslandUpdateTelemetry.shared.snapshot(tileID: tileID),
+            publish: viewModel.publishTelemetrySnapshotForTesting()
+        )
+    }
+
     private func terminalView(for args: [String], command: String) throws -> GhosttyTerminalView {
         uiTestBridgeDebugLog("terminalView lookup command=\(command) args=\(args)")
+        let tileID = try tileID(from: args, command: command)
+        guard let terminalView = SurfacePool.shared.view(leafID: tileID) else {
+            throw NSError(
+                domain: "UITestTmuxBridge",
+                code: 14,
+                userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "No terminal view registered for tileID \(tileID.uuidString)"
+                ]
+            )
+        }
+
+        uiTestBridgeDebugLog("terminalView resolved command=\(command) tileID=\(tileID.uuidString)")
+        return terminalView
+    }
+
+    private func tileID(from args: [String], command: String) throws -> UUID {
         guard args.count >= 2 else {
             throw NSError(
                 domain: "UITestTmuxBridge",
@@ -794,20 +845,7 @@ final class UITestTmuxBridge {
                 ]
             )
         }
-
-        guard let terminalView = SurfacePool.shared.view(leafID: tileID) else {
-            throw NSError(
-                domain: "UITestTmuxBridge",
-                code: 14,
-                userInfo: [
-                    NSLocalizedDescriptionKey:
-                        "No terminal view registered for tileID \(tileID.uuidString)"
-                ]
-            )
-        }
-
-        uiTestBridgeDebugLog("terminalView resolved command=\(command) tileID=\(tileID.uuidString)")
-        return terminalView
+        return tileID
     }
 
     private func writeBootstrapResult(_ result: BootstrapResult) {

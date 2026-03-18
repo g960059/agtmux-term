@@ -3,7 +3,7 @@ import Foundation
 // MARK: - RemoteHost
 
 /// A remote machine that hosts tmux sessions accessible via SSH or mosh.
-struct RemoteHost: Codable, Identifiable {
+struct RemoteHost: Codable, Identifiable, Equatable {
     let id: String           // unique key, e.g. "vm1"
     let displayName: String?
     let hostname: String
@@ -32,7 +32,7 @@ struct RemoteHost: Codable, Identifiable {
 /// ```
 ///
 /// File missing or malformed → returns empty config (logged, not thrown).
-struct HostsConfig: Codable {
+struct HostsConfig: Codable, Equatable {
     let hosts: [RemoteHost]
 
     static let empty = HostsConfig(hosts: [])

@@ -62,7 +62,11 @@ struct GateLAXKeySenderResult: Encodable {
     let dryRun: Bool
     let action: String
     let keyCode: Int
+    let scrollUnit: String?
     let scrollLines: Int?
+    let scrollPixels: Int?
+    let scrollRepeat: Int?
+    let scrollIntervalMs: Int?
     let modifiers: [String]
     let targetIdentifier: String?
     let clickPoint: ClickPoint?
@@ -75,6 +79,11 @@ struct ClickPoint: Encodable {
 }
 
 struct GateLAXKeySenderOptions {
+    enum ScrollUnit: String {
+        case line
+        case pixel
+    }
+
     enum Action {
         case key
         case clickFrontWindow
@@ -100,8 +109,19 @@ struct GateLAXKeySenderOptions {
     var bundleIdentifier: String?
     var sequenceName: String?
     var scrollLines = 0
+    var scrollPixels: Int?
+    var scrollRepeat = 1
+    var scrollIntervalMs = 0
     var pointX: Double?
     var pointY: Double?
+
+    var resolvedScrollUnit: ScrollUnit {
+        scrollPixels == nil ? .line : .pixel
+    }
+
+    var resolvedScrollAmount: Int {
+        scrollPixels ?? scrollLines
+    }
 }
 
 func parseOptions(arguments: [String]) throws -> GateLAXKeySenderOptions {
@@ -196,6 +216,33 @@ func parseOptions(arguments: [String]) throws -> GateLAXKeySenderOptions {
                 throw GateLAXKeySenderError.invalidArgument(argument)
             }
             options.scrollLines = scrollLines
+            index += 2
+        case "--scroll-pixels":
+            let nextIndex = index + 1
+            guard nextIndex < arguments.count, let scrollPixels = Int(arguments[nextIndex]) else {
+                throw GateLAXKeySenderError.invalidArgument(argument)
+            }
+            options.scrollPixels = scrollPixels
+            index += 2
+        case "--scroll-repeat":
+            let nextIndex = index + 1
+            guard nextIndex < arguments.count,
+                  let scrollRepeat = Int(arguments[nextIndex]),
+                  scrollRepeat > 0
+            else {
+                throw GateLAXKeySenderError.invalidArgument(argument)
+            }
+            options.scrollRepeat = scrollRepeat
+            index += 2
+        case "--scroll-interval-ms":
+            let nextIndex = index + 1
+            guard nextIndex < arguments.count,
+                  let scrollIntervalMs = Int(arguments[nextIndex]),
+                  scrollIntervalMs >= 0
+            else {
+                throw GateLAXKeySenderError.invalidArgument(argument)
+            }
+            options.scrollIntervalMs = scrollIntervalMs
             index += 2
         case "--point-x":
             let nextIndex = index + 1
@@ -521,20 +568,42 @@ func postSequence(
 func postScroll(
     source: CGEventSource,
     point: CGPoint,
-    lines: Int
+    amount: Int,
+    unit: GateLAXKeySenderOptions.ScrollUnit,
+    repeatCount: Int,
+    intervalMs: Int
 ) throws {
-    guard let event = CGEvent(
-        scrollWheelEvent2Source: source,
-        units: .line,
-        wheelCount: 1,
-        wheel1: Int32(lines),
-        wheel2: 0,
-        wheel3: 0
-    ) else {
-        throw GateLAXKeySenderError.eventCreationFailed
+    let cgUnit: CGScrollEventUnit = unit == .pixel ? .pixel : .line
+    let intervalMicros = useconds_t(max(0, intervalMs) * 1_000)
+
+    for iteration in 0..<max(1, repeatCount) {
+        guard let event = CGEvent(
+            scrollWheelEvent2Source: source,
+            units: cgUnit,
+            wheelCount: 1,
+            wheel1: Int32(amount),
+            wheel2: 0,
+            wheel3: 0
+        ) else {
+            throw GateLAXKeySenderError.eventCreationFailed
+        }
+
+        if unit == .pixel {
+            event.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)
+            event.setIntegerValueField(.scrollWheelEventPointDeltaAxis1, value: Int64(amount))
+            event.setIntegerValueField(
+                .scrollWheelEventFixedPtDeltaAxis1,
+                value: Int64(amount * 65_536)
+            )
+        }
+
+        event.location = point
+        event.post(tap: .cghidEventTap)
+
+        if intervalMicros > 0, iteration < repeatCount - 1 {
+            usleep(intervalMicros)
+        }
     }
-    event.location = point
-    event.post(tap: .cghidEventTap)
 }
 
 func requiredExplicitPoint(for options: GateLAXKeySenderOptions) throws -> CGPoint {
@@ -782,7 +851,11 @@ do {
                 dryRun: options.dryRun,
                 action: actionName(for: options),
                 keyCode: options.keyCode,
+                scrollUnit: options.resolvedScrollAmount == 0 ? nil : options.resolvedScrollUnit.rawValue,
                 scrollLines: options.scrollLines == 0 ? nil : options.scrollLines,
+                scrollPixels: options.scrollPixels,
+                scrollRepeat: options.resolvedScrollAmount == 0 ? nil : options.scrollRepeat,
+                scrollIntervalMs: options.resolvedScrollAmount == 0 ? nil : options.scrollIntervalMs,
                 modifiers: options.modifiers,
                 targetIdentifier: options.targetIdentifier,
                 clickPoint: nil,
@@ -804,7 +877,11 @@ do {
                 dryRun: true,
                 action: actionName(for: options),
                 keyCode: options.keyCode,
+                scrollUnit: options.resolvedScrollAmount == 0 ? nil : options.resolvedScrollUnit.rawValue,
                 scrollLines: options.scrollLines == 0 ? nil : options.scrollLines,
+                scrollPixels: options.scrollPixels,
+                scrollRepeat: options.resolvedScrollAmount == 0 ? nil : options.scrollRepeat,
+                scrollIntervalMs: options.resolvedScrollAmount == 0 ? nil : options.scrollIntervalMs,
                 modifiers: options.modifiers,
                 targetIdentifier: options.targetIdentifier,
                 clickPoint: nil,
@@ -903,7 +980,14 @@ do {
         let point = try requiredExplicitPoint(for: options)
         try postClick(source: source, point: point)
         usleep(120_000)
-        try postScroll(source: source, point: point, lines: options.scrollLines)
+        try postScroll(
+            source: source,
+            point: point,
+            amount: options.resolvedScrollAmount,
+            unit: options.resolvedScrollUnit,
+            repeatCount: options.scrollRepeat,
+            intervalMs: options.scrollIntervalMs
+        )
         clickPoint = ClickPoint(x: point.x, y: point.y)
     case .focusScrollFrontWindow:
         let point = try frontWindowClickPoint(
@@ -915,7 +999,14 @@ do {
         )
         try postClick(source: source, point: point)
         usleep(120_000)
-        try postScroll(source: source, point: point, lines: options.scrollLines)
+        try postScroll(
+            source: source,
+            point: point,
+            amount: options.resolvedScrollAmount,
+            unit: options.resolvedScrollUnit,
+            repeatCount: options.scrollRepeat,
+            intervalMs: options.scrollIntervalMs
+        )
         clickPoint = ClickPoint(x: point.x, y: point.y)
     case .focusScrollIdentifier:
         guard let targetIdentifier = options.targetIdentifier, !targetIdentifier.isEmpty else {
@@ -930,7 +1021,14 @@ do {
         )
         try postClick(source: source, point: point)
         usleep(120_000)
-        try postScroll(source: source, point: point, lines: options.scrollLines)
+        try postScroll(
+            source: source,
+            point: point,
+            amount: options.resolvedScrollAmount,
+            unit: options.resolvedScrollUnit,
+            repeatCount: options.scrollRepeat,
+            intervalMs: options.scrollIntervalMs
+        )
         clickPoint = ClickPoint(x: point.x, y: point.y)
     }
 
@@ -945,7 +1043,11 @@ do {
             dryRun: false,
             action: actionName(for: options),
             keyCode: options.keyCode,
+            scrollUnit: options.resolvedScrollAmount == 0 ? nil : options.resolvedScrollUnit.rawValue,
             scrollLines: options.scrollLines == 0 ? nil : options.scrollLines,
+            scrollPixels: options.scrollPixels,
+            scrollRepeat: options.resolvedScrollAmount == 0 ? nil : options.scrollRepeat,
+            scrollIntervalMs: options.resolvedScrollAmount == 0 ? nil : options.scrollIntervalMs,
             modifiers: options.modifiers,
             targetIdentifier: options.targetIdentifier,
             clickPoint: clickPoint,
@@ -965,7 +1067,11 @@ do {
                 dryRun: false,
                 action: parsedOptions.map(actionName(for:)) ?? "key",
                 keyCode: parsedOptions?.keyCode ?? 125,
+                scrollUnit: parsedOptions?.resolvedScrollAmount == 0 ? nil : parsedOptions?.resolvedScrollUnit.rawValue,
                 scrollLines: (parsedOptions?.scrollLines == 0 ? nil : parsedOptions?.scrollLines),
+                scrollPixels: parsedOptions?.scrollPixels,
+                scrollRepeat: parsedOptions?.resolvedScrollAmount == 0 ? nil : parsedOptions?.scrollRepeat,
+                scrollIntervalMs: parsedOptions?.resolvedScrollAmount == 0 ? nil : parsedOptions?.scrollIntervalMs,
                 modifiers: parsedOptions?.modifiers ?? [],
                 targetIdentifier: parsedOptions?.targetIdentifier,
                 clickPoint: nil,
@@ -985,7 +1091,11 @@ do {
                 dryRun: false,
                 action: parsedOptions.map(actionName(for:)) ?? "key",
                 keyCode: parsedOptions?.keyCode ?? 125,
+                scrollUnit: parsedOptions?.resolvedScrollAmount == 0 ? nil : parsedOptions?.resolvedScrollUnit.rawValue,
                 scrollLines: (parsedOptions?.scrollLines == 0 ? nil : parsedOptions?.scrollLines),
+                scrollPixels: parsedOptions?.scrollPixels,
+                scrollRepeat: parsedOptions?.resolvedScrollAmount == 0 ? nil : parsedOptions?.scrollRepeat,
+                scrollIntervalMs: parsedOptions?.resolvedScrollAmount == 0 ? nil : parsedOptions?.scrollIntervalMs,
                 modifiers: parsedOptions?.modifiers ?? [],
                 targetIdentifier: parsedOptions?.targetIdentifier,
                 clickPoint: nil,

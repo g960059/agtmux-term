@@ -1,6 +1,7 @@
 import AppKit
 import GhosttyKit
 import CoreFoundation
+import os
 
 /// Singleton that owns the ghostty_app_t lifecycle.
 ///
@@ -86,6 +87,12 @@ final class GhosttyApp {
 
     @MainActor
     private static var bridgeMainActorObserver: BridgeMainActorObserver = {}
+    @MainActor
+    private static var directDrawScheduleObserver: @MainActor () -> Void = {}
+    @MainActor
+    private static var directDrawPassPending = false
+    @MainActor
+    private static var pendingSurfaceDrawGapState: OSSignpostIntervalState?
 
     private(set) var app: ghostty_app_t?
 
@@ -219,16 +226,25 @@ final class GhosttyApp {
               let rawSurface = target.target.surface else { return true }
         let surfaceHandle = GhosttySurfaceHandle(surface: rawSurface)
 
+        @MainActor
+        func applyRenderCallback() {
+            let isDrawable = SurfacePool.shared.markDirtyForDirectDraw(surfaceHandle: surfaceHandle)
+            SurfacePool.shared.view(forSurfaceHandle: surfaceHandle)?.noteRenderRequestTelemetry()
+            if isDrawable {
+                scheduleDirectDrawPassIfNeeded()
+            }
+        }
+
         if Thread.isMainThread {
             MainActor.assumeIsolated {
-                SurfacePool.shared.markDirty(surfaceHandle: surfaceHandle)
+                applyRenderCallback()
             }
             return true
         }
 
         DispatchQueue.main.async {
             MainActor.assumeIsolated {
-                SurfacePool.shared.markDirty(surfaceHandle: surfaceHandle)
+                applyRenderCallback()
             }
         }
         return true
@@ -295,6 +311,28 @@ final class GhosttyApp {
     }
 
     @MainActor
+    static func withTestDirectDrawScheduleObserver<T>(
+        _ observer: @escaping @MainActor () -> Void,
+        _ body: () throws -> T
+    ) rethrows -> T {
+        let originalObserver = directDrawScheduleObserver
+        directDrawScheduleObserver = observer
+        defer { directDrawScheduleObserver = originalObserver }
+        return try body()
+    }
+
+    @MainActor
+    static func withTestDirectDrawScheduleObserver<T>(
+        _ observer: @escaping @MainActor () -> Void,
+        _ body: () async throws -> T
+    ) async rethrows -> T {
+        let originalObserver = directDrawScheduleObserver
+        directDrawScheduleObserver = observer
+        defer { directDrawScheduleObserver = originalObserver }
+        return try await body()
+    }
+
+    @MainActor
     static func withTestTickExecutionState<T>(
         _ isExecuting: Bool,
         _ body: () throws -> T
@@ -303,6 +341,12 @@ final class GhosttyApp {
         tickExecutionOverrideForTesting = isExecuting
         defer { tickExecutionOverrideForTesting = originalOverride }
         return try body()
+    }
+
+    @MainActor
+    static func resetSurfaceDrawTelemetryForTesting() {
+        pendingSurfaceDrawGapState = nil
+        directDrawPassPending = false
     }
 
     deinit {
@@ -329,6 +373,23 @@ final class GhosttyApp {
     @MainActor
     static func runDirtyDrawPassForTesting() {
         runDirtyDrawPass()
+    }
+
+    @MainActor
+    private static func scheduleDirectDrawPassIfNeeded() {
+        guard shouldScheduleTickOnMain() else { return }
+        guard directDrawPassPending == false else { return }
+        directDrawPassPending = true
+        directDrawScheduleObserver()
+
+        let mainRunLoop = CFRunLoopGetMain()
+        CFRunLoopPerformBlock(mainRunLoop, CFRunLoopMode.commonModes.rawValue) {
+            MainActor.assumeIsolated {
+                directDrawPassPending = false
+                runDirtyDrawPass()
+            }
+        }
+        CFRunLoopWakeUp(mainRunLoop)
     }
 
     // MARK: - Surface Management
@@ -413,6 +474,8 @@ final class GhosttyApp {
 
         var drawnSurfaceCount = 0
         for view in dirtyViews {
+            view.noteHostDrawTelemetry()
+            recordSurfaceDrawGap()
             let drawID = AgtmuxSignpost.surfaceDraw.makeSignpostID()
             let drawState = AgtmuxSignpost.surfaceDraw.beginInterval("draw", id: drawID)
             view.triggerDraw()
@@ -428,6 +491,19 @@ final class GhosttyApp {
             return override == false
         }
         return (initializedShared?.tickExecutionDepth ?? 0) == 0
+    }
+
+    @MainActor
+    private static func recordSurfaceDrawGap() {
+        if let pendingSurfaceDrawGapState {
+            AgtmuxSignpost.surfaceDraw.endInterval("drawGap", pendingSurfaceDrawGapState)
+        }
+
+        let gapID = AgtmuxSignpost.surfaceDraw.makeSignpostID()
+        pendingSurfaceDrawGapState = AgtmuxSignpost.surfaceDraw.beginInterval(
+            "drawGap",
+            id: gapID
+        )
     }
 
     private static func makeOwnedCustomOSCDispatch(

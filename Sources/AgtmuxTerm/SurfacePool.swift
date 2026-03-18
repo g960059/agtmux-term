@@ -202,7 +202,24 @@ final class SurfacePool {
               let managed = pool[leafID],
               managed.state != .pendingGC,
               managed.state != .defunct else { return }
-        markDirty(viewID: ObjectIdentifier(managed.view), view: managed.view)
+        _ = markDirty(
+            viewID: ObjectIdentifier(managed.view),
+            view: managed.view,
+            scheduleTick: true
+        )
+    }
+
+    @discardableResult
+    func markDirtyForDirectDraw(surfaceHandle: GhosttySurfaceHandle) -> Bool {
+        guard let leafID = leafIDsBySurfaceHandle[surfaceHandle],
+              let managed = pool[leafID],
+              managed.state != .pendingGC,
+              managed.state != .defunct else { return false }
+        return markDirty(
+            viewID: ObjectIdentifier(managed.view),
+            view: managed.view,
+            scheduleTick: false
+        )
     }
 
     func markDirty(view: GhosttyTerminalView) {
@@ -210,14 +227,25 @@ final class SurfacePool {
               let managed = pool[leafID],
               managed.state != .pendingGC,
               managed.state != .defunct else { return }
-        markDirty(viewID: ObjectIdentifier(managed.view), view: managed.view)
+        _ = markDirty(
+            viewID: ObjectIdentifier(managed.view),
+            view: managed.view,
+            scheduleTick: true
+        )
     }
 
-    private func markDirty(viewID: ObjectIdentifier, view: GhosttyTerminalView) {
+    @discardableResult
+    private func markDirty(
+        viewID: ObjectIdentifier,
+        view: GhosttyTerminalView,
+        scheduleTick: Bool
+    ) -> Bool {
         let inserted = dirtySurfaceViewIDs.insert(viewID).inserted
-        if inserted {
+        let isDrawable = activeSurfaceViewIDs.contains(viewID)
+        if inserted, scheduleTick, isDrawable {
             scheduleTickIfDrawable(view: view)
         }
+        return isDrawable
     }
 
     /// Returns and clears the dirty subset that is currently drawable.
@@ -231,9 +259,12 @@ final class SurfacePool {
     func consumeDirtyActiveSurfaceViews() -> [GhosttyTerminalView] {
         let drawableViewIDs = consumeDirtyActiveSurfaceViewIDs()
         guard drawableViewIDs.isEmpty == false else { return [] }
-        return pool.values.compactMap { managed in
-            let viewID = ObjectIdentifier(managed.view)
-            guard drawableViewIDs.contains(viewID) else { return nil }
+        return drawableViewIDs.compactMap { viewID in
+            guard let leafID = leafIDsByViewID[viewID],
+                  let managed = pool[leafID]
+            else {
+                return nil
+            }
             return managed.view
         }
     }
@@ -244,6 +275,11 @@ final class SurfacePool {
 
     func view(leafID: UUID) -> GhosttyTerminalView? {
         pool[leafID]?.view
+    }
+
+    func view(forSurfaceHandle surfaceHandle: GhosttySurfaceHandle) -> GhosttyTerminalView? {
+        guard let leafID = leafIDsBySurfaceHandle[surfaceHandle] else { return nil }
+        return pool[leafID]?.view
     }
 
     func resetForTesting() {

@@ -34,6 +34,7 @@ scripts/perf/gate_l_ax_key_sender.sh --dry-run
 - `scripts/perf/gate_l_idle_parity.sh`
 - `scripts/perf/gate_l_scroll_bench.sh`
 - `scripts/perf/gate_l_native_ghostty_scroll_bench.sh`
+- `scripts/perf/gate_l_trackpad_history_scroll_bench.sh`
 - `scripts/perf/gate_l_keypress_bench.sh`
 - `scripts/perf/gate_l_native_ghostty_keypress_bench.sh`
 - `scripts/perf/gate_l_pane_switch_bench.sh`
@@ -47,6 +48,15 @@ scripts/perf/gate_l_ax_key_sender.sh --dry-run
 - For short-keypress and scroll probes, prefer the repo-local harnesses over ad hoc manual sampling so the tmux-visible markers stay comparable.
 - Native Ghostty baselines should preferably run with no pre-existing Ghostty processes. Use `--allow-existing` only when you intentionally accept ambiguous pid attribution.
 - The current scroll proof uses a `less -N` proxy observed through `tmux capture-pane`; do not treat it as a true image-diff measurement of terminal-local scrollback.
+- `gate_l_trackpad_history_scroll_bench.sh` runs in full-app mode with a
+  transcript-style `less -R -N` fixture and pixel-burst scroll input. Treat
+  `tmux_visible_line_change_ms` as a legacy proxy only. Prefer
+  `scroll_to_layer_present_ms` and `layer_present_gap_*` for the actual
+  presentation path. `scroll_to_render_request_ms`, `scroll_to_first_draw_ms`,
+  and `draw_gap_*` remain diagnostic for the `GHOSTTY_ACTION_RENDER` host path
+  and may legitimately stay empty when the scroll path bypasses that callback.
+- Set `AGTMUX_PERF_KEEP_TMP=1` if you need the bench temp directory for failed
+  captures or ad hoc inspection.
 
 ## Signpost Categories
 

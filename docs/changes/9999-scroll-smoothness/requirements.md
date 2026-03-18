@@ -1,0 +1,37 @@
+# Requirements
+
+## Problem
+
+Embedded Ghostty still feels visibly rougher than native Ghostty when the user
+scrolls long Claude/Codex histories. Existing Gate-L parity only measures
+`input -> tmux visible-line change`, so it can miss frame pacing regressions and
+host-side scheduling stalls.
+
+## Goals
+
+- add a full-app continuous-scroll bench that uses transcript-like fixture data
+- expose enough telemetry to tell whether scroll events hit host render/draw
+  scheduling or bypass it entirely
+- reduce host-side render callback latency for surfaces that do flow through
+  `GHOSTTY_ACTION_RENDER`
+- document the current evidence, including the tests and perf runs from
+  2026-03-18
+
+## Non-Goals
+
+- redesigning the entire SwiftUI workbench or polling architecture in this wave
+- adding user-facing settings for scroll behavior
+- forcing a `ghostty_surface_draw()` regression to synchronous drawing
+
+## Acceptance
+
+- [x] `scripts/perf/gate_l_trackpad_history_scroll_bench.sh` runs in full-app
+      mode and emits burst latency plus host telemetry JSON
+- [x] render-callback surfaces use a coalesced direct dirty-draw pass instead of
+      always waiting for the next scheduled tick
+- [x] integration tests cover direct-draw coalescing, background dirty retention,
+      and scroll telemetry accumulation/reset
+- [x] runbook and dated research capture the commands and results from the
+      2026-03-18 investigation
+- [ ] embedded trackpad/history smoothness reaches native-like behavior in the
+      real UI, not just proxy parity

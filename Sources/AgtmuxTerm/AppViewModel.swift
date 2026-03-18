@@ -4,7 +4,7 @@ import AgtmuxTermCore
 // MARK: - SessionGroup
 
 /// A group of windows sharing the same tmux session, within a single source.
-struct SessionGroup: Identifiable {
+struct SessionGroup: Identifiable, Equatable {
     var id: String { "\(source):\(sessionName)" }
     let source: String
     let sessionName: String
@@ -93,6 +93,15 @@ struct RemotePaneInventorySource {
 ///   - healthStore (HealthAndHooksStore): hookSetupStatus, localDaemonHealth, localDaemonIssue
 @MainActor
 final class AppViewModel: ObservableObject {
+    struct PublishTelemetrySnapshot: Codable, Equatable {
+        let invocationCount: Int
+        let storeMutationCount: Int
+        let noOpCount: Int
+        let panesChangedCount: Int
+        let livePaneSessionKeysChangeCount: Int
+        let offlineHostsChangeCount: Int
+    }
+
     // MARK: - Sub-stores (T-PERF-P12: stores are the source of truth for migrated properties)
     let sidebarStore = SidebarInventoryStore()
     let runtimeStore = TerminalRuntimeStore()
@@ -483,6 +492,12 @@ final class AppViewModel: ObservableObject {
     private var panesBySessionGeneration = 0
     private var publishGeneration: UInt64 = 0
     private var publishSideInputGeneration: UInt64 = 0
+    private var publishInvocationCount = 0
+    private var publishStoreMutationCount = 0
+    private var publishNoOpCount = 0
+    private var publishPanesChangedCount = 0
+    private var publishLivePaneSessionKeysChangeCount = 0
+    private var publishOfflineHostsChangeCount = 0
     private var localMetadataSyncPrimed = false
     private var localMetadataTransportVersion: LocalMetadataTransportVersion?
     private var localMetadataUseLongPoll: Bool? = nil  // nil=unknown, optimistically try on first call
@@ -652,57 +667,97 @@ final class AppViewModel: ObservableObject {
         attentionCount: Int,
         paneIdentityIndex: [String: AgtmuxSyncV2PaneInstanceID]
     ) {
-        sidebarStore.panes = newPanes
-        sidebarStore.attentionCount = attentionCount
-        runtimeStore.paneIdentityIndex = paneIdentityIndex
+        if sidebarStore.panes != newPanes {
+            sidebarStore.panes = newPanes
+        }
+        if sidebarStore.attentionCount != attentionCount {
+            sidebarStore.attentionCount = attentionCount
+        }
+        if runtimeStore.paneIdentityIndex != paneIdentityIndex {
+            runtimeStore.paneIdentityIndex = paneIdentityIndex
+        }
     }
 
     private func syncPanesBySession(_ v: [(source: String, sessions: [SessionGroup])]) {
-        sidebarStore.panesBySession = v
+        if panesBySessionEquals(sidebarStore.panesBySession, v) == false {
+            sidebarStore.panesBySession = v
+        }
     }
 
     private func syncSessionOrderBySource(_ v: [String: [String]]) {
-        sidebarStore.sessionOrderBySource = v
+        if sidebarStore.sessionOrderBySource != v {
+            sidebarStore.sessionOrderBySource = v
+        }
     }
 
     private func syncPinnedPaneKeys(_ v: Set<String>) {
-        sidebarStore.pinnedPaneKeys = v
+        if sidebarStore.pinnedPaneKeys != v {
+            sidebarStore.pinnedPaneKeys = v
+        }
     }
 
     private func syncPaneDisplayTitleOverrides(_ v: [String: String]) {
-        sidebarStore.paneDisplayTitleOverrides = v
+        if sidebarStore.paneDisplayTitleOverrides != v {
+            sidebarStore.paneDisplayTitleOverrides = v
+        }
     }
 
     private func syncStatusFilter(_ v: StatusFilter) {
-        sidebarStore.statusFilter = v
+        if sidebarStore.statusFilter != v {
+            sidebarStore.statusFilter = v
+        }
     }
 
     private func syncOfflineHosts(_ v: Set<String>) {
-        runtimeStore.offlineHosts = v
+        if runtimeStore.offlineHosts != v {
+            runtimeStore.offlineHosts = v
+        }
     }
 
     private func syncLivePaneSessionKeys(_ v: Set<String>) {
-        runtimeStore.livePaneSessionKeys = v
+        if runtimeStore.livePaneSessionKeys != v {
+            runtimeStore.livePaneSessionKeys = v
+        }
     }
 
     private func syncHasCompletedInitialFetch(_ v: Bool) {
-        runtimeStore.hasCompletedInitialFetch = v
+        if runtimeStore.hasCompletedInitialFetch != v {
+            runtimeStore.hasCompletedInitialFetch = v
+        }
     }
 
     private func syncLocalDaemonIssue(_ v: LocalDaemonIssue?) {
-        healthStore.localDaemonIssue = v
+        if healthStore.localDaemonIssue != v {
+            healthStore.localDaemonIssue = v
+        }
     }
 
     private func syncLocalDaemonHealth(_ v: AgtmuxUIHealthV1?) {
-        healthStore.localDaemonHealth = v
+        if healthStore.localDaemonHealth != v {
+            healthStore.localDaemonHealth = v
+        }
     }
 
     private func syncHookSetupStatus(_ v: HookSetupStatus) {
-        healthStore.hookSetupStatus = v
+        if healthStore.hookSetupStatus != v {
+            healthStore.hookSetupStatus = v
+        }
     }
 
     private func syncHostsConfig(_ v: HostsConfig) {
-        runtimeStore.hostsConfig = v
+        if runtimeStore.hostsConfig != v {
+            runtimeStore.hostsConfig = v
+        }
+    }
+
+    private func panesBySessionEquals(
+        _ lhs: [(source: String, sessions: [SessionGroup])],
+        _ rhs: [(source: String, sessions: [SessionGroup])]
+    ) -> Bool {
+        guard lhs.count == rhs.count else { return false }
+        return zip(lhs, rhs).allSatisfy { left, right in
+            left.source == right.source && left.sessions == right.sessions
+        }
     }
 
     private func localHealthErrorDescription(from error: any Error) -> String {
@@ -1475,6 +1530,7 @@ final class AppViewModel: ObservableObject {
         offlineHosts newOffline: Set<String>?
     ) {
         guard publishGeneration == snapshot.generation else { return }
+        var didMutateStore = false
 
         let panesChanged = snapshot.panes != panes
         let sideInputsAreCurrent = snapshot.sideInputGeneration == publishSideInputGeneration
@@ -1498,28 +1554,43 @@ final class AppViewModel: ObservableObject {
         }
 
         if panesChanged {
+            publishPanesChangedCount += 1
             if nextSessionOrderBySource != sessionOrderBySource {
                 syncSessionOrderBySource(nextSessionOrderBySource)
+                didMutateStore = true
             }
             syncPanes(
                 snapshot.panes,
                 attentionCount: snapshot.attentionCount,
                 paneIdentityIndex: snapshot.paneIdentityIndex
             )
+            didMutateStore = true
             triggerPanesBySessionRecompute()
         }
         if snapshot.livePaneSessionKeys != livePaneSessionKeys {
+            publishLivePaneSessionKeysChangeCount += 1
             syncLivePaneSessionKeys(snapshot.livePaneSessionKeys)
+            didMutateStore = true
         }
         if nextPinnedPaneKeys != pinnedPaneKeys {
             syncPinnedPaneKeys(nextPinnedPaneKeys)
+            didMutateStore = true
         }
         if nextPaneDisplayTitleOverrides != paneDisplayTitleOverrides {
             syncPaneDisplayTitleOverrides(nextPaneDisplayTitleOverrides)
+            didMutateStore = true
         }
         retainSelection(in: snapshot.panes)
         if let newOffline, newOffline != offlineHosts {
+            publishOfflineHostsChangeCount += 1
             syncOfflineHosts(newOffline)
+            didMutateStore = true
+        }
+
+        if didMutateStore {
+            publishStoreMutationCount += 1
+        } else {
+            publishNoOpCount += 1
         }
     }
 
@@ -1555,6 +1626,7 @@ final class AppViewModel: ObservableObject {
         let pubID = AgtmuxSignpost.publish.makeSignpostID()
         let pubState = AgtmuxSignpost.publish.beginInterval("publish", id: pubID)
         defer { AgtmuxSignpost.publish.endInterval("publish", pubState) }
+        publishInvocationCount += 1
         trimSnapshotCacheToKnownSources()
 
         publishGeneration &+= 1
@@ -1711,5 +1783,25 @@ final class AppViewModel: ObservableObject {
                 source: "local"
             )
         }
+    }
+
+    func resetPublishTelemetryForTesting() {
+        publishInvocationCount = 0
+        publishStoreMutationCount = 0
+        publishNoOpCount = 0
+        publishPanesChangedCount = 0
+        publishLivePaneSessionKeysChangeCount = 0
+        publishOfflineHostsChangeCount = 0
+    }
+
+    func publishTelemetrySnapshotForTesting() -> PublishTelemetrySnapshot {
+        PublishTelemetrySnapshot(
+            invocationCount: publishInvocationCount,
+            storeMutationCount: publishStoreMutationCount,
+            noOpCount: publishNoOpCount,
+            panesChangedCount: publishPanesChangedCount,
+            livePaneSessionKeysChangeCount: publishLivePaneSessionKeysChangeCount,
+            offlineHostsChangeCount: publishOfflineHostsChangeCount
+        )
     }
 }
