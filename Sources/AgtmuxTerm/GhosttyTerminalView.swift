@@ -36,8 +36,10 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         let scrollToLayerPresent: ScrollTelemetryMetricSummary
         let renderRequestToDraw: ScrollTelemetryMetricSummary
         let drawGap: ScrollTelemetryMetricSummary
+        let scrollPresentationDrawGap: ScrollTelemetryMetricSummary
         let layerPresentGap: ScrollTelemetryMetricSummary
         let drawCount: Int
+        let scrollPresentationDrawCount: Int
         let layerPresentCount: Int
         let pendingScrollToRenderCount: Int
         let pendingScrollToDrawCount: Int
@@ -82,10 +84,13 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     private var scrollToLayerPresentSamplesMs: [Double] = []
     private var renderToDrawSamplesMs: [Double] = []
     private var drawGapSamplesMs: [Double] = []
+    private var scrollPresentationDrawGapSamplesMs: [Double] = []
     private var layerPresentGapSamplesMs: [Double] = []
     private var drawCount = 0
+    private var scrollPresentationDrawCount = 0
     private var layerPresentCount = 0
     private var lastHostDrawUptime: TimeInterval?
+    private var lastScrollPresentationDrawTelemetryUptime: TimeInterval?
     private var lastLayerPresentUptime: TimeInterval?
 
     // MARK: - IME state
@@ -780,14 +785,7 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     @MainActor
     func noteHostDrawTelemetry() {
         let now = ProcessInfo.processInfo.systemUptime
-        for state in pendingScrollToDrawStates {
-            AgtmuxSignpost.scrollLatency.endInterval("scrollToFirstDraw", state)
-        }
-        pendingScrollToDrawStates.removeAll(keepingCapacity: true)
-        for uptime in pendingScrollToDrawUptimes {
-            scrollToDrawSamplesMs.append((now - uptime) * 1000.0)
-        }
-        pendingScrollToDrawUptimes.removeAll(keepingCapacity: true)
+        completePendingScrollToDrawTelemetry(at: now)
 
         for state in pendingRenderToDrawStates {
             AgtmuxSignpost.scrollLatency.endInterval("renderRequestToDraw", state)
@@ -803,6 +801,35 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         }
         lastHostDrawUptime = now
         drawCount += 1
+    }
+
+    @MainActor
+    func noteScrollPresentationDrawTelemetryForTesting(now: TimeInterval) {
+        noteScrollPresentationDrawTelemetry(now: now)
+    }
+
+    @MainActor
+    private func noteScrollPresentationDrawTelemetry(now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+        completePendingScrollToDrawTelemetry(at: now)
+        if let lastScrollPresentationDrawTelemetryUptime {
+            scrollPresentationDrawGapSamplesMs.append(
+                (now - lastScrollPresentationDrawTelemetryUptime) * 1000.0
+            )
+        }
+        lastScrollPresentationDrawTelemetryUptime = now
+        scrollPresentationDrawCount += 1
+    }
+
+    @MainActor
+    private func completePendingScrollToDrawTelemetry(at now: TimeInterval) {
+        for state in pendingScrollToDrawStates {
+            AgtmuxSignpost.scrollLatency.endInterval("scrollToFirstDraw", state)
+        }
+        pendingScrollToDrawStates.removeAll(keepingCapacity: true)
+        for uptime in pendingScrollToDrawUptimes {
+            scrollToDrawSamplesMs.append((now - uptime) * 1000.0)
+        }
+        pendingScrollToDrawUptimes.removeAll(keepingCapacity: true)
     }
 
     @MainActor
@@ -830,10 +857,13 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         scrollToLayerPresentSamplesMs.removeAll(keepingCapacity: false)
         renderToDrawSamplesMs.removeAll(keepingCapacity: false)
         drawGapSamplesMs.removeAll(keepingCapacity: false)
+        scrollPresentationDrawGapSamplesMs.removeAll(keepingCapacity: false)
         layerPresentGapSamplesMs.removeAll(keepingCapacity: false)
         drawCount = 0
+        scrollPresentationDrawCount = 0
         layerPresentCount = 0
         lastHostDrawUptime = nil
+        lastScrollPresentationDrawTelemetryUptime = nil
         lastLayerPresentUptime = nil
     }
 
@@ -860,8 +890,10 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
             scrollToLayerPresent: summary(for: scrollToLayerPresentSamplesMs),
             renderRequestToDraw: summary(for: renderToDrawSamplesMs),
             drawGap: summary(for: drawGapSamplesMs),
+            scrollPresentationDrawGap: summary(for: scrollPresentationDrawGapSamplesMs),
             layerPresentGap: summary(for: layerPresentGapSamplesMs),
             drawCount: drawCount,
+            scrollPresentationDrawCount: scrollPresentationDrawCount,
             layerPresentCount: layerPresentCount,
             pendingScrollToRenderCount: pendingScrollToRenderUptimes.count,
             pendingScrollToDrawCount: pendingScrollToDrawUptimes.count,
@@ -934,6 +966,7 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     @MainActor
     func performScrollPresentationDraw() {
         guard let surface else { return }
+        noteScrollPresentationDrawTelemetry()
         ghostty_surface_draw(surface)
     }
 

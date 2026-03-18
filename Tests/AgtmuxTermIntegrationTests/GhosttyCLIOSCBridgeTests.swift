@@ -1320,7 +1320,9 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
         XCTAssertEqual(snapshot.scrollToLayerPresent.count, 2)
         XCTAssertEqual(snapshot.renderRequestToDraw.count, 2)
         XCTAssertEqual(snapshot.drawGap.count, 1)
+        XCTAssertEqual(snapshot.scrollPresentationDrawGap.count, 0)
         XCTAssertEqual(snapshot.drawCount, 2)
+        XCTAssertEqual(snapshot.scrollPresentationDrawCount, 0)
         XCTAssertEqual(snapshot.layerPresentGap.count, 1)
         XCTAssertEqual(snapshot.layerPresentCount, 2)
         XCTAssertEqual(snapshot.pendingScrollToRenderCount, 0)
@@ -1341,9 +1343,28 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
         XCTAssertEqual(resetSnapshot.scrollToLayerPresent.count, 0)
         XCTAssertEqual(resetSnapshot.renderRequestToDraw.count, 0)
         XCTAssertEqual(resetSnapshot.drawGap.count, 0)
+        XCTAssertEqual(resetSnapshot.scrollPresentationDrawGap.count, 0)
         XCTAssertEqual(resetSnapshot.drawCount, 0)
+        XCTAssertEqual(resetSnapshot.scrollPresentationDrawCount, 0)
         XCTAssertEqual(resetSnapshot.layerPresentGap.count, 0)
         XCTAssertEqual(resetSnapshot.layerPresentCount, 0)
+    }
+
+    @MainActor
+    func testScrollPresentationDrawTelemetryTracksFirstDrawAndGap() {
+        let view = GhosttyTerminalViewDrawSpy()
+
+        view.noteScrollInputTelemetryForTesting(now: 10.0)
+        view.noteScrollPresentationDrawTelemetryForTesting(now: 10.004)
+        view.noteScrollInputTelemetryForTesting(now: 10.010)
+        view.noteScrollPresentationDrawTelemetryForTesting(now: 10.012)
+
+        let snapshot = view.scrollTelemetrySnapshotForTesting()
+        XCTAssertEqual(snapshot.scrollToFirstDraw.count, 2)
+        XCTAssertEqual(snapshot.scrollPresentationDrawGap.count, 1)
+        XCTAssertEqual(snapshot.scrollPresentationDrawCount, 2)
+        XCTAssertEqual(snapshot.pendingScrollToDrawCount, 0)
+        XCTAssertNotNil(snapshot.scrollPresentationDrawGap.maxMs)
     }
 
     @MainActor

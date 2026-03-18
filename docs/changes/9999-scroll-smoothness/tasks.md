@@ -22,6 +22,9 @@
 - `AGTMUX_PERF_APP_BIN="$PWD/.build-codex/arm64-apple-macosx/debug/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4` after adding coalesced synchronous scroll draw
 - `AGTMUX_PERF_APP_BIN="$PWD/.build-codex/arm64-apple-macosx/debug/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4` after adding the active-scroll draw pump
 - `AGTMUX_PERF_APP_BIN="/Applications/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4` for the best-known installed app
+- `AGTMUX_PERF_APP_BIN="$PWD/build/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4` after surfacing scroll-presentation draw telemetry
+- `AGTMUX_PERF_APP_BIN="/Applications/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4` after reinstalling the telemetry-instrumented release app
+- `AGTMUX_PERF_APP_BIN="/Applications/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 8` to stress longer burst trains
 - `cd ../agtmux && cargo build -p agtmux --release >/dev/null && cd ../agtmux-term && xcodegen generate --spec project.yml >/dev/null && xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -configuration Release -derivedDataPath "$PWD/build" CONFIGURATION_BUILD_DIR="$PWD/build/Release" ONLY_ACTIVE_ARCH=NO CODE_SIGN_IDENTITY='-' CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES ENABLE_HARDENED_RUNTIME=NO AGTMUX_BIN="$PWD/../agtmux/target/release/agtmux" build`
 - `AGTMUX_PERF_APP_BIN="$PWD/build/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4` after adding the delayed-present recovery probe
 - `AGTMUX_PERF_APP_BIN="/Applications/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4` twice after reinstalling the release app
@@ -67,8 +70,26 @@
   - installed app reruns after reinstall:
     `p50 2.992 / p95 23.941 / max 44.818` and
     `p50 3.562 / p95 24.004 / max 35.325`
+- The accepted telemetry-only follow-up now exposes
+  `scroll_presentation_draw_gap_*` and `scroll_presentation_draw_count` in the
+  full-app bench while leaving pacing behavior unchanged.
+- On the accepted telemetry build, the current best-known short-burst numbers
+  are:
+  - release bundle:
+    `scroll_to_first_draw_ms p50 0.258 / p95 11.328 / max 14.881`
+    `scroll_to_layer_present_ms p50 6.619 / p95 13.405 / max 16.454`
+  - installed app:
+    `scroll_to_first_draw_ms p50 0.205 / p95 11.481 / max 16.815`
+    `scroll_to_layer_present_ms p50 1.936 / p95 12.991 / max 19.428`
+- A longer 8-burst installed stress run still shows tail spikes:
+  `scroll_to_first_draw_ms p50 0.243 / p95 24.762 / max 54.035`
+  `scroll_to_layer_present_ms p50 2.107 / p95 26.922 / max 55.768`
 - Two additional experiments were rejected after measurement:
   - a `commonModes` run-loop timer for the draw pump regressed release cadence
   - a relaxed immediate-draw throttle regressed installed-app `p95/max`
   - moving the delayed-present recovery probe earlier to `1/240s` regressed the
     debug burst path to `p50 3.319 / p95 17.692 / max 35.651`
+  - shortening the draw-pump tail to `0.12s` regressed the release-bundle
+    8-burst sample to `scroll_to_layer_present_ms p50 2.277 / p95 30.084 / max 77.817`
+  - slowing the draw-pump interval to `1/100s` regressed the release-bundle
+    8-burst sample to `scroll_to_layer_present_ms p50 2.124 / p95 40.836 / max 123.922`

@@ -413,3 +413,89 @@ Open questions for the next wave:
    gap metric instead of whole-window p95 values that include pause time
 3. whether the old Gate-L proxy should be retired or downgraded for history
    scroll acceptance, since it does not track the actual presentation seam
+
+### Seventh-wave telemetry surfacing and longer-run stress check
+
+The next accepted change did not alter pacing logic. Instead, it surfaced the
+real scroll-presentation draw seam in `GhosttyTerminalView.ScrollTelemetrySnapshot`
+and emitted the same values from the full-app trackpad bench:
+
+- `scroll_presentation_draw_gap_p50_ms`
+- `scroll_presentation_draw_gap_p95_ms`
+- `scroll_presentation_draw_gap_max_ms`
+- `scroll_presentation_draw_count`
+
+That let us separate three seams during real history scroll:
+
+1. input to the first coalesced scroll-presentation draw
+2. cadence between scroll-presentation draws
+3. draw to visible `layer.contents` presentation
+
+Validation:
+
+```bash
+swift test --build-path .build-codex --filter GhosttyCLIOSCBridgeTests
+cd ../agtmux && cargo build -p agtmux --release >/dev/null
+cd ../agtmux-term && xcodegen generate --spec project.yml >/dev/null
+xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm \
+  -configuration Release -derivedDataPath "$PWD/build" \
+  CONFIGURATION_BUILD_DIR="$PWD/build/Release" ONLY_ACTIVE_ARCH=NO \
+  CODE_SIGN_IDENTITY='-' CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES \
+  ENABLE_HARDENED_RUNTIME=NO AGTMUX_BIN="$PWD/../agtmux/target/release/agtmux" \
+  build
+AGTMUX_PERF_APP_BIN="$PWD/build/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" \
+  scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4
+AGTMUX_PERF_APP_BIN="/Applications/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" \
+  scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4
+AGTMUX_PERF_APP_BIN="/Applications/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" \
+  scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 8
+```
+
+Result highlights:
+
+- release bundle, 4 bursts:
+  - `scroll_to_first_draw_ms p50 0.258 / p95 11.328 / max 14.881`
+  - `scroll_to_layer_present_ms p50 6.619 / p95 13.405 / max 16.454`
+  - `scroll_presentation_draw_gap_p50 11.010 / p95 18.838`
+- installed app, 4 bursts:
+  - `scroll_to_first_draw_ms p50 0.205 / p95 11.481 / max 16.815`
+  - `scroll_to_layer_present_ms p50 1.936 / p95 12.991 / max 19.428`
+  - `scroll_presentation_draw_gap_p50 11.215 / p95 21.107`
+- installed app, 8 bursts:
+  - `scroll_to_first_draw_ms p50 0.243 / p95 24.762 / max 54.035`
+  - `scroll_to_layer_present_ms p50 2.107 / p95 26.922 / max 55.768`
+  - `scroll_presentation_draw_gap_p50 11.287 / p95 26.308`
+
+Interpretation:
+
+- the default short-burst path is now materially better than the earlier
+  `20-40ms` class of results and is close enough to native that the remaining
+  differences are in tail behavior, not median cadence
+- the longer 8-burst run shows the remaining problem more clearly: burst trains
+  can still accumulate `25-55ms` spikes even when the first few bursts look
+  smooth
+- store/island churn remained low during the stress run
+  (`publish_noop_count=4`, `publish_store_mutation_count=0`, `island_update_count=8`),
+  so the remaining tail is still inside the host-side scroll-presentation path
+
+### Rejected seventh-wave follow-ups
+
+Two pacing tweaks were tried immediately after the telemetry expansion and both
+regressed the longer burst train:
+
+- shortening `scrollPresentationDrawPumpTailSeconds` from `0.18` to `0.12`
+  - release bundle, 8 bursts:
+    `scroll_to_layer_present_ms p50 2.277 / p95 30.084 / max 77.817`
+  - this also failed
+    `GhosttyCLIOSCBridgeTests/testScrollPresentationDrawPumpContinuesBrieflyAfterRecentInput`
+- slowing `scrollPresentationDrawPumpIntervalSeconds` from `1/120s` to `1/100s`
+  - release bundle, 8 bursts:
+    `scroll_to_layer_present_ms p50 2.124 / p95 40.836 / max 123.922`
+
+Interpretation:
+
+- the pump is already close to the best stable cadence on this host
+- the remaining long-run spikes are not fixed by simply making the pump shorter
+  or slower
+- the next useful investigation should target why extended burst trains still
+  accumulate delayed first draws despite healthy median cadence
