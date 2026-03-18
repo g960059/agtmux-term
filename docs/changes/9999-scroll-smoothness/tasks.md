@@ -22,6 +22,9 @@
 - `AGTMUX_PERF_APP_BIN="$PWD/.build-codex/arm64-apple-macosx/debug/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4` after adding coalesced synchronous scroll draw
 - `AGTMUX_PERF_APP_BIN="$PWD/.build-codex/arm64-apple-macosx/debug/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4` after adding the active-scroll draw pump
 - `AGTMUX_PERF_APP_BIN="/Applications/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4` for the best-known installed app
+- `cd ../agtmux && cargo build -p agtmux --release >/dev/null && cd ../agtmux-term && xcodegen generate --spec project.yml >/dev/null && xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -configuration Release -derivedDataPath "$PWD/build" CONFIGURATION_BUILD_DIR="$PWD/build/Release" ONLY_ACTIVE_ARCH=NO CODE_SIGN_IDENTITY='-' CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES ENABLE_HARDENED_RUNTIME=NO AGTMUX_BIN="$PWD/../agtmux/target/release/agtmux" build`
+- `AGTMUX_PERF_APP_BIN="$PWD/build/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4` after adding the delayed-present recovery probe
+- `AGTMUX_PERF_APP_BIN="/Applications/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4` twice after reinstalling the release app
 - `AGTMUX_PERF_APP_BIN="$PWD/.build-codex/arm64-apple-macosx/debug/AgtmuxTerm" scripts/perf/gate_l_scroll_bench.sh --iterations 5`
 - `scripts/perf/gate_l_native_ghostty_scroll_bench.sh --iterations 5`
 
@@ -56,6 +59,16 @@
 - A present-aware immediate-draw throttle then improved the installed app to
   `scroll_to_layer_present_ms p50 2.624 / p95 22.626 / max 35.337`, reducing
   the worst spike while keeping median latency low.
+- A delayed-present recovery probe at `1/180s` tightened the active-burst path:
+  - debug sample:
+    `scroll_to_layer_present_ms p50 7.020 / p95 22.023 / max 22.955`
+  - release bundle sample:
+    `scroll_to_layer_present_ms p50 4.734 / p95 21.600 / max 27.223`
+  - installed app reruns after reinstall:
+    `p50 2.992 / p95 23.941 / max 44.818` and
+    `p50 3.562 / p95 24.004 / max 35.325`
 - Two additional experiments were rejected after measurement:
   - a `commonModes` run-loop timer for the draw pump regressed release cadence
   - a relaxed immediate-draw throttle regressed installed-app `p95/max`
+  - moving the delayed-present recovery probe earlier to `1/240s` regressed the
+    debug burst path to `p50 3.319 / p95 17.692 / max 35.651`

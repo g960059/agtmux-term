@@ -18,14 +18,17 @@ Current state:
   directly, and the current best-known path is a coalesced synchronous scroll
   draw plus a short active-scroll draw pump on the main queue
 - the current best-known installed-app result on this host is
-  `scroll_to_layer_present_ms p50 2.624 / p95 22.626 / max 35.337`
+  `scroll_to_layer_present_ms p50 3.562 / p95 24.004 / max 35.325`
 - the latest accepted improvement is a present-aware immediate-draw throttle:
   it only suppresses another immediate draw once the previous scroll draw has
   actually produced a layer presentation
+- the latest follow-up improvement adds a delayed-present recovery probe:
+  after a scroll draw, a single extra recovery draw is scheduled only if the
+  IOSurface layer still has not advanced after `1/180s`
 - two follow-up experiments were explicitly rejected on 2026-03-18 because they
   regressed release behavior: moving the draw pump to a `commonModes`
-  run-loop timer, and relaxing the immediate-draw throttle below the pump
-  cadence
+  run-loop timer, relaxing the immediate-draw throttle below the pump cadence,
+  and moving the delayed-present recovery probe earlier to `1/240s`
 - repo-local validation is green for `validate-macos-ci.sh` and
   `swift test --build-path .build-codex --skip AppViewModelLiveManagedAgentTests`
 - the only broad SwiftPM failure on this host is the live Claude probe in

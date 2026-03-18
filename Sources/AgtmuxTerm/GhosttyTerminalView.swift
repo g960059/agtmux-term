@@ -13,6 +13,7 @@ import os
 class GhosttyTerminalView: NSView, NSTextInputClient {
     private static let scrollPresentationDrawPumpIntervalSeconds = 1.0 / 120.0
     private static let scrollPresentationDrawPumpTailSeconds = 0.18
+    private static let scrollPresentationDrawRecoveryProbeDelaySeconds = 1.0 / 180.0
 
     struct SurfaceMetrics: Equatable {
         let pixelWidth: UInt32
@@ -64,6 +65,8 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     private var scrollPresentationDrawPending = false
     private var scrollPresentationDrawPumpScheduled = false
     private var scrollPresentationDrawPumpGeneration: UInt64 = 0
+    private var scrollPresentationRecoveryProbeScheduled = false
+    private var scrollPresentationRecoveryProbeGeneration: UInt64 = 0
     private var lastScrollInputUptime: TimeInterval?
     private var lastScrollPresentationDrawUptime: TimeInterval?
     private var pendingScrollToRenderStates: [OSSignpostIntervalState] = []
@@ -918,8 +921,10 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
             guard let self else { return }
             MainActor.assumeIsolated {
                 self.scrollPresentationDrawPending = false
-                self.lastScrollPresentationDrawUptime = ProcessInfo.processInfo.systemUptime
+                let drawUptime = ProcessInfo.processInfo.systemUptime
+                self.lastScrollPresentationDrawUptime = drawUptime
                 self.performScrollPresentationDraw()
+                self.scheduleScrollPresentationRecoveryProbeIfNeeded(forDrawAt: drawUptime)
                 self.scheduleNextScrollPresentationDrawPumpIfNeeded()
             }
         }
@@ -955,6 +960,28 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     }
 
     @MainActor
+    private func scheduleScrollPresentationRecoveryProbeIfNeeded(forDrawAt drawUptime: TimeInterval) {
+        guard scrollPresentationRecoveryProbeScheduled == false else { return }
+        guard shouldContinueScrollPresentationDrawPump(now: drawUptime) else { return }
+
+        scrollPresentationRecoveryProbeScheduled = true
+        let generation = scrollPresentationRecoveryProbeGeneration
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + Self.scrollPresentationDrawRecoveryProbeDelaySeconds
+        ) { [weak self] in
+            guard let self else { return }
+            MainActor.assumeIsolated {
+                guard generation == self.scrollPresentationRecoveryProbeGeneration else { return }
+                self.scrollPresentationRecoveryProbeScheduled = false
+                _ = self.runScrollPresentationRecoveryProbePass(
+                    drawUptime: drawUptime,
+                    now: ProcessInfo.processInfo.systemUptime
+                )
+            }
+        }
+    }
+
+    @MainActor
     private func runScrollPresentationDrawPumpPass(
         now: TimeInterval,
         reschedule: Bool = true
@@ -966,9 +993,34 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
 
         lastScrollPresentationDrawUptime = now
         performScrollPresentationDraw()
+        scheduleScrollPresentationRecoveryProbeIfNeeded(forDrawAt: now)
         if reschedule {
             scheduleNextScrollPresentationDrawPumpIfNeeded()
         }
+        return true
+    }
+
+    @MainActor
+    func runScrollPresentationRecoveryProbePassForTesting(
+        drawUptime: TimeInterval,
+        now: TimeInterval
+    ) -> Bool {
+        runScrollPresentationRecoveryProbePass(drawUptime: drawUptime, now: now)
+    }
+
+    @MainActor
+    private func runScrollPresentationRecoveryProbePass(
+        drawUptime: TimeInterval,
+        now: TimeInterval
+    ) -> Bool {
+        guard shouldContinueScrollPresentationDrawPump(now: now) else { return false }
+        guard drawUptime == lastScrollPresentationDrawUptime else { return false }
+        guard shouldRecoverDelayedScrollPresentation(afterDrawAt: drawUptime) else { return false }
+
+        lastScrollPresentationDrawUptime = now
+        performScrollPresentationDraw()
+        scheduleScrollPresentationRecoveryProbeIfNeeded(forDrawAt: now)
+        scheduleNextScrollPresentationDrawPumpIfNeeded()
         return true
     }
 
@@ -991,12 +1043,20 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     }
 
     @MainActor
+    private func shouldRecoverDelayedScrollPresentation(afterDrawAt drawUptime: TimeInterval) -> Bool {
+        guard let lastLayerPresentUptime else { return true }
+        return lastLayerPresentUptime < drawUptime
+    }
+
+    @MainActor
     private func invalidateScrollPresentationDrawPump() {
         scrollPresentationDrawPending = false
         scrollPresentationDrawPumpScheduled = false
+        scrollPresentationRecoveryProbeScheduled = false
         lastScrollInputUptime = nil
         lastScrollPresentationDrawUptime = nil
         scrollPresentationDrawPumpGeneration &+= 1
+        scrollPresentationRecoveryProbeGeneration &+= 1
     }
 
     private func updateWindowObservers() {

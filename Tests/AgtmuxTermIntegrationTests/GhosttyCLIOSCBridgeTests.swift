@@ -1401,6 +1401,39 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
     }
 
     @MainActor
+    func testScrollPresentationRecoveryProbeRedrawsWhenLayerPresentLags() {
+        let view = GhosttyTerminalViewDrawSpy()
+
+        view.noteScrollInputTelemetryForTesting(now: 10.0)
+        view.noteScrollPresentationDrawForTesting(now: 10.0)
+
+        XCTAssertTrue(
+            view.runScrollPresentationRecoveryProbePassForTesting(
+                drawUptime: 10.0,
+                now: 10.006
+            )
+        )
+        XCTAssertEqual(view.scrollPresentationDrawCallCount, 1)
+    }
+
+    @MainActor
+    func testScrollPresentationRecoveryProbeDoesNotRedrawAfterLayerPresentAdvances() {
+        let view = GhosttyTerminalViewDrawSpy()
+
+        view.noteScrollInputTelemetryForTesting(now: 10.0)
+        view.noteScrollPresentationDrawForTesting(now: 10.0)
+        view.noteLayerPresentationForTesting(now: 10.003)
+
+        XCTAssertFalse(
+            view.runScrollPresentationRecoveryProbePassForTesting(
+                drawUptime: 10.0,
+                now: 10.006
+            )
+        )
+        XCTAssertEqual(view.scrollPresentationDrawCallCount, 0)
+    }
+
+    @MainActor
     func testDetachingViewDoesNotApplyFallbackSurfaceMetricsOrScheduleDraw() {
         SurfacePool.shared.resetForTesting()
         defer { SurfacePool.shared.resetForTesting() }

@@ -56,6 +56,12 @@ draw, the best debug run tightened the active burst further:
   - debug: `p50 7.406 / p95 25.287 / max 26.414`
   - release bundle: `p50 7.239 / p95 23.345 / max 26.693`
   - installed app: `p50 2.624 / p95 22.626 / max 35.337`
+- delayed-present recovery probe at `1/180s` on top of that throttle:
+  - debug: `p50 7.020 / p95 22.023 / max 22.955`
+  - release bundle: `p50 4.734 / p95 21.600 / max 27.223`
+  - installed app reruns after reinstall:
+    `p50 2.992 / p95 23.941 / max 44.818` and
+    `p50 3.562 / p95 24.004 / max 35.325`
 
 Two follow-up ideas were tested and rejected the same day:
 
@@ -63,6 +69,8 @@ Two follow-up ideas were tested and rejected the same day:
   runs but regressed or destabilized installed release behavior
 - relaxing the immediate-draw throttle below the pump cadence improved some
   debug medians but regressed installed release `p95/max`
+- moving the delayed-present recovery probe earlier to `1/240s` regressed the
+  debug burst path to `p50 3.319 / p95 17.692 / max 35.651`
 
 ## Commands And Results
 
@@ -318,6 +326,57 @@ Interpretation:
   recovery draw
 - the next target is still to pull installed-app `max` below one 30fps frame
   (`33.3ms`), but the prior `40ms+` class of spikes is materially reduced
+
+### Sixth-wave delayed-present recovery probe
+
+The immediate-draw throttle still left a gap when a scroll draw had been issued
+but the IOSurface layer had not presented yet. This wave added one more
+recovery step on that exact seam: after a scroll draw, schedule a one-shot
+probe at `1/180s`, and only if the layer still has not advanced, issue a
+single extra recovery draw and continue the existing pump.
+
+Validation:
+
+```bash
+swift test --build-path .build-codex --filter GhosttyCLIOSCBridgeTests
+swift build -c debug --build-path .build-codex
+AGTMUX_PERF_APP_BIN="$PWD/.build-codex/arm64-apple-macosx/debug/AgtmuxTerm" \
+  scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4
+cd ../agtmux && cargo build -p agtmux --release >/dev/null
+cd ../agtmux-term && xcodegen generate --spec project.yml >/dev/null
+xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm \
+  -configuration Release -derivedDataPath "$PWD/build" \
+  CONFIGURATION_BUILD_DIR="$PWD/build/Release" ONLY_ACTIVE_ARCH=NO \
+  CODE_SIGN_IDENTITY='-' CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES \
+  ENABLE_HARDENED_RUNTIME=NO AGTMUX_BIN="$PWD/../agtmux/target/release/agtmux" \
+  build
+AGTMUX_PERF_APP_BIN="$PWD/build/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" \
+  scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4
+AGTMUX_PERF_APP_BIN="/Applications/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" \
+  scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4
+AGTMUX_PERF_APP_BIN="/Applications/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" \
+  scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4
+```
+
+Result highlights:
+
+- debug:
+  `scroll_to_layer_present_ms p50 7.020 / p95 22.023 / max 22.955`
+- release bundle:
+  `scroll_to_layer_present_ms p50 4.734 / p95 21.600 / max 27.223`
+- installed app reruns after reinstall:
+  - `p50 2.992 / p95 23.941 / max 44.818`
+  - `p50 3.562 / p95 24.004 / max 35.325`
+
+Interpretation:
+
+- the recovery probe is directionally right: the active-burst seam improved in
+  debug and stayed within the same envelope in the release bundle
+- installed-app behavior remains the noisiest environment; the first rerun
+  still showed a `44.818ms` outlier, but a second rerun came back down to the
+  same `~35ms` worst-case band as the prior best build
+- a more aggressive probe at `1/240s` was rejected immediately because it
+  brought the debug max back up into the `35ms` range instead of reducing it
 
 ## Code-Reading Cross-Checks
 
