@@ -15,8 +15,14 @@ Current state:
 - store publish and island remount churn were reduced but were not the primary
   limiter in the captured history-scroll case
 - the full-app trackpad bench now measures IOSurface layer presentation
-  directly, and a coalesced synchronous scroll draw improved that presentation
-  cadence materially
+  directly, and the current best-known path is a coalesced synchronous scroll
+  draw plus a short active-scroll draw pump on the main queue
+- the current best-known installed-app result on this host is
+  `scroll_to_layer_present_ms p50 2.485 / p95 15.514 / max 44.934`
+- two follow-up experiments were explicitly rejected on 2026-03-18 because they
+  regressed release behavior: moving the draw pump to a `commonModes`
+  run-loop timer, and relaxing the immediate-draw throttle below the pump
+  cadence
 - repo-local validation is green for `validate-macos-ci.sh` and
   `swift test --build-path .build-codex --skip AppViewModelLiveManagedAgentTests`
 - the only broad SwiftPM failure on this host is the live Claude probe in

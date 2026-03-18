@@ -11,6 +11,9 @@ import os
 /// - Routes keyboard, mouse, and scroll input to libghostty.
 /// - Implements NSTextInputClient for IME (Japanese, Chinese, etc.).
 class GhosttyTerminalView: NSView, NSTextInputClient {
+    private static let scrollPresentationDrawPumpIntervalSeconds = 1.0 / 120.0
+    private static let scrollPresentationDrawPumpTailSeconds = 0.18
+
     struct SurfaceMetrics: Equatable {
         let pixelWidth: UInt32
         let pixelHeight: UInt32
@@ -59,6 +62,10 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     private(set) var debugLastSendKeyResult: Bool?
     private(set) var debugRecentInputEvents: [String] = []
     private var scrollPresentationDrawPending = false
+    private var scrollPresentationDrawPumpScheduled = false
+    private var scrollPresentationDrawPumpGeneration: UInt64 = 0
+    private var lastScrollInputUptime: TimeInterval?
+    private var lastScrollPresentationDrawUptime: TimeInterval?
     private var pendingScrollToRenderStates: [OSSignpostIntervalState] = []
     private var pendingScrollToDrawStates: [OSSignpostIntervalState] = []
     private var pendingScrollToLayerPresentStates: [OSSignpostIntervalState] = []
@@ -120,7 +127,7 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         }
         lastAppliedSurfaceMetrics = nil
         appliedSurfaceFocus = false
-        scrollPresentationDrawPending = false
+        invalidateScrollPresentationDrawPump()
         syncRenderLayerContentsObservation()
         resetScrollTelemetryForTesting()
     }
@@ -136,6 +143,7 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         lastAppliedSurfaceMetrics = nil
         syncSurfaceMetrics(shouldMarkDirty: false, force: true)
         applySurfaceFocusIfNeeded(force: true)
+        invalidateScrollPresentationDrawPump()
         syncRenderLayerContentsObservation()
         resetScrollTelemetryForTesting()
         needsDisplay = true
@@ -647,6 +655,10 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         ghostty_surface_set_display_id(surface, displayID)
     }
 
+    func hasSurfaceForScrollPresentationDraw() -> Bool {
+        surface != nil
+    }
+
     // MARK: - Mouse
 
     override func mouseDown(with event: NSEvent) {
@@ -818,8 +830,18 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     }
 
     @MainActor
-    func noteScrollInputTelemetryForTesting() {
-        noteScrollInputTelemetry()
+    func noteScrollInputTelemetryForTesting(now: TimeInterval? = nil) {
+        noteScrollInputTelemetry(now: now ?? ProcessInfo.processInfo.systemUptime)
+    }
+
+    @MainActor
+    func noteScrollPresentationDrawForTesting(now: TimeInterval) {
+        lastScrollPresentationDrawUptime = now
+    }
+
+    @MainActor
+    func shouldThrottleImmediateScrollPresentationDrawForTesting(now: TimeInterval) -> Bool {
+        shouldThrottleImmediateScrollPresentationDraw(now: now)
     }
 
     @MainActor
@@ -838,6 +860,11 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
             pendingScrollToLayerPresentCount: pendingScrollToLayerPresentUptimes.count,
             pendingRenderToDrawCount: pendingRenderToDrawUptimes.count
         )
+    }
+
+    @MainActor
+    func runScrollPresentationDrawPumpPassForTesting(now: TimeInterval) -> Bool {
+        runScrollPresentationDrawPumpPass(now: now, reschedule: false)
     }
 
     private func syncRenderLayerContentsObservation() {
@@ -868,9 +895,16 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     /// Pure viewport scrolling updates the IOSurface layer without surfacing through
     /// `GHOSTTY_ACTION_RENDER`, so the normal dirty-draw scheduler never sees it.
     /// Requesting one synchronous draw per turn tightens frame pacing without doing
-    /// a full main-thread draw for every high-frequency trackpad event.
+    /// a full main-thread draw for every high-frequency trackpad event. A
+    /// short-lived draw pump keeps that cadence alive for the rest of the burst.
     @MainActor
     func scheduleScrollPresentationDrawIfNeeded() {
+        guard hasSurfaceForScrollPresentationDraw() else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        if shouldThrottleImmediateScrollPresentationDraw(now: now) {
+            scheduleNextScrollPresentationDrawPumpIfNeeded()
+            return
+        }
         guard scrollPresentationDrawPending == false else { return }
         scrollPresentationDrawPending = true
 
@@ -879,7 +913,9 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
             guard let self else { return }
             MainActor.assumeIsolated {
                 self.scrollPresentationDrawPending = false
+                self.lastScrollPresentationDrawUptime = ProcessInfo.processInfo.systemUptime
                 self.performScrollPresentationDraw()
+                self.scheduleNextScrollPresentationDrawPumpIfNeeded()
             }
         }
         CFRunLoopWakeUp(mainRunLoop)
@@ -889,6 +925,69 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     func performScrollPresentationDraw() {
         guard let surface else { return }
         ghostty_surface_draw(surface)
+    }
+
+    @MainActor
+    private func scheduleNextScrollPresentationDrawPumpIfNeeded() {
+        guard scrollPresentationDrawPumpScheduled == false else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        guard shouldContinueScrollPresentationDrawPump(now: now) else { return }
+
+        scrollPresentationDrawPumpScheduled = true
+        let generation = scrollPresentationDrawPumpGeneration
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + Self.scrollPresentationDrawPumpIntervalSeconds
+        ) { [weak self] in
+            guard let self else { return }
+            MainActor.assumeIsolated {
+                guard generation == self.scrollPresentationDrawPumpGeneration else { return }
+                self.scrollPresentationDrawPumpScheduled = false
+                _ = self.runScrollPresentationDrawPumpPass(
+                    now: ProcessInfo.processInfo.systemUptime
+                )
+            }
+        }
+    }
+
+    @MainActor
+    private func runScrollPresentationDrawPumpPass(
+        now: TimeInterval,
+        reschedule: Bool = true
+    ) -> Bool {
+        guard shouldContinueScrollPresentationDrawPump(now: now) else {
+            scrollPresentationDrawPumpScheduled = false
+            return false
+        }
+
+        lastScrollPresentationDrawUptime = now
+        performScrollPresentationDraw()
+        if reschedule {
+            scheduleNextScrollPresentationDrawPumpIfNeeded()
+        }
+        return true
+    }
+
+    @MainActor
+    private func shouldContinueScrollPresentationDrawPump(now: TimeInterval) -> Bool {
+        guard hasSurfaceForScrollPresentationDraw(),
+              let lastScrollInputUptime else { return false }
+        return now - lastScrollInputUptime <= Self.scrollPresentationDrawPumpTailSeconds
+    }
+
+    @MainActor
+    private func shouldThrottleImmediateScrollPresentationDraw(now: TimeInterval) -> Bool {
+        guard shouldContinueScrollPresentationDrawPump(now: now),
+              let lastScrollPresentationDrawUptime else { return false }
+        return now - lastScrollPresentationDrawUptime < Self.scrollPresentationDrawPumpIntervalSeconds
+    }
+
+    @MainActor
+    private func invalidateScrollPresentationDrawPump() {
+        scrollPresentationDrawPending = false
+        scrollPresentationDrawPumpScheduled = false
+        lastScrollInputUptime = nil
+        lastScrollPresentationDrawUptime = nil
+        scrollPresentationDrawPumpGeneration &+= 1
     }
 
     private func updateWindowObservers() {
@@ -1012,8 +1111,8 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     }
 
     @MainActor
-    private func noteScrollInputTelemetry() {
-        let now = ProcessInfo.processInfo.systemUptime
+    private func noteScrollInputTelemetry(now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+        lastScrollInputUptime = now
         let renderID = AgtmuxSignpost.scrollLatency.makeSignpostID()
         let renderState = AgtmuxSignpost.scrollLatency.beginInterval(
             "scrollToRenderRequest",

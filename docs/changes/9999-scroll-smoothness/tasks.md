@@ -20,6 +20,8 @@
 - `AGTMUX_PERF_APP_BIN="$PWD/.build-codex/arm64-apple-macosx/debug/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4`
 - `AGTMUX_PERF_APP_BIN="$PWD/.build-codex/arm64-apple-macosx/debug/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4` after adding layer-present telemetry
 - `AGTMUX_PERF_APP_BIN="$PWD/.build-codex/arm64-apple-macosx/debug/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4` after adding coalesced synchronous scroll draw
+- `AGTMUX_PERF_APP_BIN="$PWD/.build-codex/arm64-apple-macosx/debug/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4` after adding the active-scroll draw pump
+- `AGTMUX_PERF_APP_BIN="/Applications/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4` for the best-known installed app
 - `AGTMUX_PERF_APP_BIN="$PWD/.build-codex/arm64-apple-macosx/debug/AgtmuxTerm" scripts/perf/gate_l_scroll_bench.sh --iterations 5`
 - `scripts/perf/gate_l_native_ghostty_scroll_bench.sh --iterations 5`
 
@@ -47,3 +49,10 @@
   but never surfaces freshness metadata after the Codex pane settles.
 - The latest rerun bundle is:
   - `/Users/virtualmachine/Library/Developer/Xcode/DerivedData/AgtmuxTerm-fceaqdlhjyreqtdcfsbnupqgkkjc/Logs/Test/Test-AgtmuxTerm-2026.03.18_07-06-04--0700.xcresult`
+- An active-scroll draw pump improved the full-app debug bench to
+  `scroll_to_layer_present_ms p50 6.057 / p95 20.330 / max 21.731`.
+- The best-known installed-app result after restoring the non-regressed build is
+  `scroll_to_layer_present_ms p50 2.485 / p95 15.514 / max 44.934`.
+- Two additional experiments were rejected after measurement:
+  - a `commonModes` run-loop timer for the draw pump regressed release cadence
+  - a relaxed immediate-draw throttle regressed installed-app `p95/max`

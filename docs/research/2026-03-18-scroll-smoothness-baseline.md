@@ -45,6 +45,21 @@ tmux-visible proxy metric remained noisy:
   `scroll_to_layer_present_ms p50 3.297 / p95 40.540 / max 46.660`
   and `layer_present_gap_p50 11.899ms`
 
+After adding a short-lived active-scroll draw pump on top of that coalesced
+draw, the best debug run tightened the active burst further:
+
+- debug full-app trackpad/history after active-scroll draw pump:
+  `scroll_to_layer_present_ms p50 6.057 / p95 20.330 / max 21.731`
+- best-known installed-app result after restoring the non-regressed build:
+  `scroll_to_layer_present_ms p50 2.485 / p95 15.514 / max 44.934`
+
+Two follow-up ideas were tested and rejected the same day:
+
+- moving the draw pump to a `CFRunLoop` `commonModes` timer improved some debug
+  runs but regressed or destabilized installed release behavior
+- relaxing the immediate-draw throttle below the pump cadence improved some
+  debug medians but regressed installed release `p95/max`
+
 ## Commands And Results
 
 ### AX helper trust
@@ -214,6 +229,51 @@ Interpretation:
   coalesced synchronous scroll draw materially improved that seam
 - the remaining work, if user perception is still not good enough, should focus
   on improving cadence during active bursts rather than on sidebar/store churn
+
+### Fourth-wave active-scroll draw pump and rejected release regressions
+
+This wave kept the coalesced synchronous scroll draw and added a short-lived
+draw pump so active trackpad bursts do not fall back to a sparse cadence after
+the first immediate draw.
+
+Validation:
+
+```bash
+swift test --build-path .build-codex --filter GhosttyCLIOSCBridgeTests
+AGTMUX_PERF_APP_BIN="$PWD/.build-codex/arm64-apple-macosx/debug/AgtmuxTerm" \
+  scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4
+```
+
+Result highlights for the accepted draw-pump version:
+
+- debug:
+  `scroll_to_layer_present_ms p50 6.057 / p95 20.330 / max 21.731`
+- installed app after restoring the non-regressed build:
+  `scroll_to_layer_present_ms p50 2.485 / p95 15.514 / max 44.934`
+
+Rejected follow-ups on the same seam:
+
+- `CFRunLoop` `commonModes` timer for the draw pump:
+  - debug sample: `p50 7.771 / p95 23.657 / max 35.703`
+  - installed release samples varied between
+    `p50 9.676 / p95 42.333 / max 43.044` and
+    `p50 9.713 / p95 16.147 / max 45.207`
+  - verdict: rejected because release variance and worst-case latency were
+    worse than the best-known build
+- relaxed immediate-draw throttle below the pump cadence:
+  - debug sample: `p50 3.609 / p95 20.515 / max 37.053`
+  - installed release sample:
+    `p50 3.989 / p95 38.372 / max 47.906`
+  - verdict: rejected because installed release `p95/max` regressed
+
+Interpretation:
+
+- the active-scroll draw pump is worth keeping because it tightened the debug
+  active burst materially without harming the good installed-app baseline
+- release validation is mandatory for this work; debug-only wins were not
+  predictive enough
+- the remaining issue is now mostly worst-case spike control on installed
+  release, not median latency
 
 ## Code-Reading Cross-Checks
 
