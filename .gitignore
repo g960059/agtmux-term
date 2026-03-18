@@ -71,3 +71,27 @@ vendor/
 
 # Swift PM home cache (set via SWIFTPM_CACHE_DIR in CI)
 .swiftpm-home/
+
+# Local Codex / ad hoc build outputs
+.build-codex/
+.codex-cache/
+.codex-home/
+.codex-tmp/
+
+# Local packaged app / framework artifacts
+/AgtmuxTerm.app/
+/AgtmuxDaemonService.xpc/
+/AgtmuxTermCore.framework/
+/AgtmuxTerm.swiftmodule/
+/AgtmuxDaemonService.swiftmodule/
+/include/
+/libghostty.a
+
+# Local release artifacts
+*.dmg
+*.dmg.sha256
+
+# Perf helper build artifacts
+scripts/perf/.apps/
+scripts/perf/.bin/
+scripts/perf/.DS_Store
