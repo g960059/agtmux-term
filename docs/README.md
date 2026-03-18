@@ -1,13 +1,15 @@
 # Documentation
 
-The default branch keeps only durable documentation:
+This repository keeps durable documentation and active change packs under
+`docs/`:
 
 - `docs/product/` — stable product intent
 - `docs/decisions/` — ADRs
 - `docs/runbooks/` — operating procedures
 - `docs/research/` — dated, non-authoritative research
+- `docs/changes/` — active multi-step change packs only
 
-Active multi-step work belongs in `changes/<issue-id>-slug/` and is removed
+Active multi-step work belongs in `docs/changes/<issue-id>-slug/` and is removed
 from the default branch after merge.
 
 Do not reintroduce numbered task/progress/review doc sets on the default branch.
@@ -22,4 +24,4 @@ Do not reintroduce numbered task/progress/review doc sets on the default branch.
 6. `docs/decisions/`
 7. `docs/runbooks/change-lifecycle.md`
 8. active Issue / PR
-9. active change pack, if one exists
+9. active change pack under `docs/changes/`, if one exists

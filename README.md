@@ -133,8 +133,8 @@ Durable docs live in:
 - `docs/runbooks/` for operating procedures
 - `docs/research/` for dated, non-authoritative research notes
 
-Active multi-step work lives in `changes/<issue-id>-slug/` and is removed from
-the default branch after merge. Read order for contributors and agents is:
+Active multi-step work lives in `docs/changes/<issue-id>-slug/` and is removed
+from the default branch after merge. Read order for contributors and agents is:
 
 1. `README.md`
 2. `docs/README.md`
@@ -142,11 +142,11 @@ the default branch after merge. Read order for contributors and agents is:
 4. `docs/decisions/`
 5. `docs/runbooks/`
 6. the active GitHub Issue / PR
-7. the active change pack, if the work uses one
+7. the active change pack under `docs/changes/`, if the work uses one
 
 Normal GitHub flow is:
 
-`Discussion -> Issue -> changes/<issue-id>-slug/ -> branch -> PR -> merge -> retire change pack`
+`Discussion -> Issue -> docs/changes/<issue-id>-slug/ -> branch -> PR -> merge -> retire change pack`
 
 ## Release / CI
 

@@ -6,7 +6,7 @@
 ## Links
 
 - Closes #
-- Change pack: `changes/<issue-id>-slug/` or `N/A`
+- Change pack: `docs/changes/<issue-id>-slug/` or `N/A`
 - ADR / research: `N/A`
 
 ## Verification

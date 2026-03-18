@@ -17,12 +17,12 @@ required_files=(
   "docs/product/goals-non-goals.md"
   "docs/runbooks/change-lifecycle.md"
   "docs/runbooks/release.md"
-  "changes/README.md"
-  "changes/_template/README.md"
-  "changes/_template/requirements.md"
-  "changes/_template/design.md"
-  "changes/_template/plan.md"
-  "changes/_template/tasks.md"
+  "docs/changes/README.md"
+  "docs/changes/_template/README.md"
+  "docs/changes/_template/requirements.md"
+  "docs/changes/_template/design.md"
+  "docs/changes/_template/plan.md"
+  "docs/changes/_template/tasks.md"
 )
 
 for path in "${required_files[@]}"; do
@@ -50,7 +50,7 @@ for file in docs/research/*.md; do
   }
 done
 
-for dir in changes/*/; do
+for dir in docs/changes/*/; do
   base="$(basename "$dir")"
   [[ "$base" == "_template" ]] && continue
   [[ "$base" =~ ^(0000|[0-9]{4})-[a-z0-9][a-z0-9-]*$ ]] || {

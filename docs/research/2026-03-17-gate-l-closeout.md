@@ -34,4 +34,9 @@ The same-host evidence on `2026-03-17` is:
 
 ## Relationship To Earlier Notes
 
-This note supersedes the open-state snapshot in `docs/research/2026-03-14-local-parity-baseline.md`.
+This note supersedes the open-state snapshot in
+`docs/research/2026-03-14-local-parity-baseline.md`.
+
+The app-side Gate-L closeout is complete in this repo. The only remaining
+follow-up from the broader rerun is the daemon/provider handoff recorded in
+`docs/research/2026-03-18-full-e2e-rerun-after-gate-l.md`.

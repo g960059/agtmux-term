@@ -1,8 +1,8 @@
 # AGENTS
 
-Read: `README.md` → `docs/product/` → `docs/decisions/` → `docs/runbooks/` → active Issue/PR → active `changes/<issue-id>-slug>/`.
+Read: `README.md` → `docs/product/` → `docs/decisions/` → `docs/runbooks/` → active Issue/PR → active `docs/changes/<issue-id>-slug>/`.
 
-Source of truth: code, tests, schemas, CI, ADRs. `changes/` and dated research are working notes.
+Source of truth: code, tests, schemas, CI, ADRs. `docs/changes/` and dated research are working notes.
 
 For non-trivial work, plan first; if the plan breaks, stop and re-plan.
 
@@ -14,4 +14,4 @@ For non-trivial changes, choose the simpler cleaner design; avoid over-engineeri
 
 Require senior/staff-level quality and concrete proof before done: run relevant tests, inspect logs/output, and verify behavior.
 
-Keep diffs small, update tests with behavior changes, promote durable knowledge before merge, and remove `changes/<issue-id>-slug>/` after merge.
+Keep diffs small, update tests with behavior changes, promote durable knowledge before merge, and remove `docs/changes/<issue-id>-slug>/` after merge.

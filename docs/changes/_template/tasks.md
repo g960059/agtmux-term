@@ -3,4 +3,4 @@
 - [ ] implementation
 - [ ] tests
 - [ ] durable-knowledge promotion
-- [ ] remove change pack before merge
+- [ ] remove `docs/changes/<issue-id>-slug/` before merge

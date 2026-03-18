@@ -22,11 +22,11 @@ Adopt a GitHub-native split:
 - keep long-lived decisions in `docs/decisions/` ADRs
 - keep repeatable procedure in `docs/runbooks/`
 - keep dated, non-authoritative findings in `docs/research/`
-- use `changes/<issue-id>-slug/` only for active multi-step work
+- use `docs/changes/<issue-id>-slug/` only for active multi-step work
 - remove finished change packs from the default branch after merge
 - rely on Issues, PRs, and git history for historical execution trace
 
-`changes/0000-...` is allowed only as a migration placeholder for in-progress
+`docs/changes/0000-...` is allowed only as a migration placeholder for in-progress
 work that predates issue-based naming.
 
 ## Consequences

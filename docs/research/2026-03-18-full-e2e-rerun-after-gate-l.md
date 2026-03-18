@@ -1,6 +1,6 @@
 # 2026-03-18 — Full E2E Rerun After Gate-L
 
-**Status:** Open snapshot
+**Status:** Open daemon handoff snapshot
 **Authority:** Research only. Product truth lives in code, tests, CI, ADRs, and the active change pack until merge.
 
 ## Summary
@@ -204,6 +204,6 @@ Codex-candidate decisions in `poll_loop`.
 ## Relationship To Earlier Notes
 
 This note does not change the Gate-L result recorded in
-`docs/research/2026-03-17-gate-l-closeout.md`. It records the broader
-post-Gate-L verification pass that still blocks final retirement of the active
-change pack.
+`docs/research/2026-03-17-gate-l-closeout.md`. It preserves the broader
+post-Gate-L verification results and the daemon-side handoff after the
+repo-local change pack was retired.
