@@ -14,41 +14,10 @@ jobs:
           lfs: true
 
       - name: Checkout agtmux fixtures (sparse)
-        run: |
-          git clone --filter=blob:none --sparse \
-            https://github.com/g960059/agtmux.git \
-            ../agtmux
-          cd ../agtmux
-          git sparse-checkout set fixtures
-          git checkout cb198cca7226666fbb26df34d4e17582a208c3e6 -- fixtures
+        run: scripts/dev/prepare-agtmux-fixtures.sh
 
       - name: Install XcodeGen
         run: brew install xcodegen
 
-      - name: Generate Xcode project
-        run: xcodegen generate --spec project.yml
-
-      - name: Build (debug)
-        run: |
-          xcodebuild build \
-            -project AgtmuxTerm.xcodeproj \
-            -scheme AgtmuxTerm \
-            -configuration Debug \
-            -destination "platform=macOS" \
-            CODE_SIGN_IDENTITY="-" \
-            CODE_SIGNING_REQUIRED=NO \
-            AGTMUX_BIN=/usr/bin/true \
-            | xcpretty || true
-
-      - name: Run unit tests
-        run: |
-          xcodebuild test \
-            -project AgtmuxTerm.xcodeproj \
-            -scheme AgtmuxTerm \
-            -configuration Debug \
-            -destination "platform=macOS" \
-            -only-testing:AgtmuxTermCoreTests \
-            CODE_SIGN_IDENTITY="-" \
-            CODE_SIGNING_REQUIRED=NO \
-            AGTMUX_BIN=/usr/bin/true \
-            | xcpretty
+      - name: Run macOS CI parity checks
+        run: scripts/dev/validate-macos-ci.sh

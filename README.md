@@ -62,12 +62,15 @@ cd ../..
 brew install xcodegen
 xcodegen generate --spec project.yml
 
-# 4. Build agtmux daemon (optional — app falls back to PATH)
+# 4. Install repo-managed git hooks
+./scripts/install-git-hooks.sh
+
+# 5. Build agtmux daemon (optional — app falls back to PATH)
 cd ../agtmux && cargo build --release
 export AGTMUX_BIN=$PWD/target/release/agtmux
 cd ../agtmux-term
 
-# 5. Open in Xcode or build via command line
+# 6. Open in Xcode or build via command line
 open AgtmuxTerm.xcodeproj
 # or: xcodebuild build -scheme AgtmuxTerm -destination "platform=macOS" AGTMUX_BIN=$AGTMUX_BIN
 ```
