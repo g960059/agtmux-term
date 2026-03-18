@@ -1381,9 +1381,23 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
 
         view.noteScrollInputTelemetryForTesting(now: 10.0)
         view.noteScrollPresentationDrawForTesting(now: 10.0)
+        view.noteLayerPresentationForTesting(now: 10.001)
 
         XCTAssertTrue(view.shouldThrottleImmediateScrollPresentationDrawForTesting(now: 10.005))
         XCTAssertFalse(view.shouldThrottleImmediateScrollPresentationDrawForTesting(now: 10.02))
+    }
+
+    @MainActor
+    func testScrollPresentationDrawDoesNotThrottleBeforeLayerPresentArrives() {
+        let view = GhosttyTerminalViewDrawSpy()
+
+        view.noteScrollInputTelemetryForTesting(now: 10.0)
+        view.noteScrollPresentationDrawForTesting(now: 10.0)
+
+        XCTAssertFalse(view.shouldThrottleImmediateScrollPresentationDrawForTesting(now: 10.005))
+
+        view.noteLayerPresentationForTesting(now: 10.006)
+        XCTAssertTrue(view.shouldThrottleImmediateScrollPresentationDrawForTesting(now: 10.007))
     }
 
     @MainActor

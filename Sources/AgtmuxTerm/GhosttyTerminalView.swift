@@ -808,6 +808,11 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     }
 
     @MainActor
+    func noteLayerPresentationForTesting(now: TimeInterval) {
+        lastLayerPresentUptime = now
+    }
+
+    @MainActor
     func resetScrollTelemetryForTesting() {
         pendingScrollToRenderStates.removeAll(keepingCapacity: false)
         pendingScrollToDrawStates.removeAll(keepingCapacity: false)
@@ -978,7 +983,11 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     private func shouldThrottleImmediateScrollPresentationDraw(now: TimeInterval) -> Bool {
         guard shouldContinueScrollPresentationDrawPump(now: now),
               let lastScrollPresentationDrawUptime else { return false }
-        return now - lastScrollPresentationDrawUptime < Self.scrollPresentationDrawPumpIntervalSeconds
+        guard now - lastScrollPresentationDrawUptime < Self.scrollPresentationDrawPumpIntervalSeconds,
+              let lastLayerPresentUptime else { return false }
+        // Only suppress another immediate draw after the last scroll draw has
+        // actually produced a visible layer update.
+        return lastLayerPresentUptime >= lastScrollPresentationDrawUptime
     }
 
     @MainActor

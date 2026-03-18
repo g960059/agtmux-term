@@ -52,6 +52,10 @@ draw, the best debug run tightened the active burst further:
   `scroll_to_layer_present_ms p50 6.057 / p95 20.330 / max 21.731`
 - best-known installed-app result after restoring the non-regressed build:
   `scroll_to_layer_present_ms p50 2.485 / p95 15.514 / max 44.934`
+- present-aware immediate-draw throttle on top of the draw pump:
+  - debug: `p50 7.406 / p95 25.287 / max 26.414`
+  - release bundle: `p50 7.239 / p95 23.345 / max 26.693`
+  - installed app: `p50 2.624 / p95 22.626 / max 35.337`
 
 Two follow-up ideas were tested and rejected the same day:
 
@@ -274,6 +278,46 @@ Interpretation:
   predictive enough
 - the remaining issue is now mostly worst-case spike control on installed
   release, not median latency
+
+### Fifth-wave present-aware immediate-draw throttle
+
+The previous throttle suppressed another immediate draw as soon as the host had
+issued a draw call, even if the IOSurface layer had not visibly presented yet.
+That created a path where a stalled present could still force the next precise
+scroll input to wait behind the regular draw pump. The accepted change keeps the
+same pump cadence, but only throttles another immediate draw after
+`layer.contents` has advanced past the most recent scroll draw.
+
+Validation:
+
+```bash
+swift test --build-path .build-codex --filter GhosttyCLIOSCBridgeTests
+AGTMUX_PERF_APP_BIN="$PWD/.build-codex/arm64-apple-macosx/debug/AgtmuxTerm" \
+  scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4
+AGTMUX_PERF_APP_BIN="$PWD/build/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" \
+  scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4
+AGTMUX_PERF_APP_BIN="/Applications/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" \
+  scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4
+```
+
+Result highlights:
+
+- debug:
+  `scroll_to_layer_present_ms p50 7.406 / p95 25.287 / max 26.414`
+- release bundle:
+  `scroll_to_layer_present_ms p50 7.239 / p95 23.345 / max 26.693`
+- installed app:
+  `scroll_to_layer_present_ms p50 2.624 / p95 22.626 / max 35.337`
+
+Interpretation:
+
+- this is the first change in this investigation that improved installed-app
+  worst-case latency without needing to relax the draw pump globally
+- the improvement is targeted: healthy scroll bursts still run near the old
+  median, while delayed layer presents no longer suppress the next immediate
+  recovery draw
+- the next target is still to pull installed-app `max` below one 30fps frame
+  (`33.3ms`), but the prior `40ms+` class of spikes is materially reduced
 
 ## Code-Reading Cross-Checks
 

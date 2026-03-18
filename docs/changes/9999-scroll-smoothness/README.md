@@ -18,7 +18,10 @@ Current state:
   directly, and the current best-known path is a coalesced synchronous scroll
   draw plus a short active-scroll draw pump on the main queue
 - the current best-known installed-app result on this host is
-  `scroll_to_layer_present_ms p50 2.485 / p95 15.514 / max 44.934`
+  `scroll_to_layer_present_ms p50 2.624 / p95 22.626 / max 35.337`
+- the latest accepted improvement is a present-aware immediate-draw throttle:
+  it only suppresses another immediate draw once the previous scroll draw has
+  actually produced a layer presentation
 - two follow-up experiments were explicitly rejected on 2026-03-18 because they
   regressed release behavior: moving the draw pump to a `commonModes`
   run-loop timer, and relaxing the immediate-draw throttle below the pump

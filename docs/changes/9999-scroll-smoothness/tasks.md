@@ -53,6 +53,9 @@
   `scroll_to_layer_present_ms p50 6.057 / p95 20.330 / max 21.731`.
 - The best-known installed-app result after restoring the non-regressed build is
   `scroll_to_layer_present_ms p50 2.485 / p95 15.514 / max 44.934`.
+- A present-aware immediate-draw throttle then improved the installed app to
+  `scroll_to_layer_present_ms p50 2.624 / p95 22.626 / max 35.337`, reducing
+  the worst spike while keeping median latency low.
 - Two additional experiments were rejected after measurement:
   - a `commonModes` run-loop timer for the draw pump regressed release cadence
   - a relaxed immediate-draw throttle regressed installed-app `p95/max`
