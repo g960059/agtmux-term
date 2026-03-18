@@ -49,6 +49,15 @@ final class LocalTmuxTargetTests: XCTestCase {
         )
     }
 
+    func testConfigArgumentsHonorUITestConfigPath() {
+        let env: [String: String] = [
+            "AGTMUX_UITEST_TMUX_CONFIG_PATH": "/dev/null"
+        ]
+
+        XCTAssertEqual(LocalTmuxTarget.configArguments(from: env), ["-f", "/dev/null"])
+        XCTAssertEqual(LocalTmuxTarget.shellEscapedConfigArguments(from: env), "-f /dev/null")
+    }
+
     func testDaemonCLIArgumentsUseExplicitSocketPathWithoutQueryingTmux() {
         let env: [String: String] = [
             "AGTMUX_TMUX_SOCKET_PATH": "/tmp/explicit.sock"

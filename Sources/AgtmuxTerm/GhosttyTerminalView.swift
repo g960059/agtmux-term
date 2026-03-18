@@ -21,20 +21,39 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     // MARK: - State
 
     private(set) var surface: ghostty_surface_t?
-    private var drawCount = 0
     private var observedWindow: NSWindow?
     private var windowObserverTokens: [NSObjectProtocol] = []
     private var lastAppliedSurfaceMetrics: SurfaceMetrics?
+    private var desiredSurfaceFocus = false
+    private var appliedSurfaceFocus = false
+    private(set) var debugKeyDownCount = 0
+    private(set) var debugLastKeyCode: UInt16?
+    private(set) var debugLastCharacters: String?
+    private(set) var debugLastCharactersIgnoringModifiers: String?
+    private(set) var debugLastModifierFlagsRawValue: UInt?
+    private(set) var debugLastSendKeyResult: Bool?
+    private(set) var debugRecentInputEvents: [String] = []
 
     // MARK: - IME state
 
     private var markedText = NSMutableAttributedString()
-    /// Text accumulated during a keyDown → interpretKeyEvents call.
-    private var keyTextAccumulator = ""
+    /// Text fragments accumulated during a keyDown -> interpretKeyEvents call.
+    /// These must be replayed as key events, not paste/text insertion.
+    private var keyTextAccumulator: [String] = []
     /// True while we are inside keyDown (i.e. interpretKeyEvents is running).
     private var inKeyDown = false
 
     // MARK: - Lifecycle
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        configureAccessibilityDefaults()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        configureAccessibilityDefaults()
+    }
 
     deinit {
         removeWindowObservers()
@@ -55,6 +74,7 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
             surface = nil
         }
         lastAppliedSurfaceMetrics = nil
+        appliedSurfaceFocus = false
     }
 
     /// Replace the current surface with a new one.
@@ -67,7 +87,18 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         surface = newSurface
         lastAppliedSurfaceMetrics = nil
         syncSurfaceMetrics(shouldMarkDirty: false, force: true)
+        applySurfaceFocusIfNeeded(force: true)
         needsDisplay = true
+    }
+
+    func configureAccessibility(
+        identifier: String,
+        label: String
+    ) {
+        setAccessibilityElement(true)
+        setAccessibilityRole(.group)
+        setAccessibilityIdentifier(identifier)
+        setAccessibilityLabel(label)
     }
 
     // MARK: - Layout
@@ -81,12 +112,32 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         super.viewDidMoveToWindow()
         updateWindowObservers()
         guard window != nil else { return }
+        desiredSurfaceFocus = window?.firstResponder === self
+        applySurfaceFocusIfNeeded(force: true)
         syncSurfaceMetrics(shouldMarkDirty: true, force: true)
     }
 
     override func viewDidChangeBackingProperties() {
         super.viewDidChangeBackingProperties()
         syncSurfaceMetrics(shouldMarkDirty: true)
+    }
+
+    override func becomeFirstResponder() -> Bool {
+        let result = super.becomeFirstResponder()
+        if result {
+            desiredSurfaceFocus = true
+            applySurfaceFocusIfNeeded(force: false)
+        }
+        return result
+    }
+
+    override func resignFirstResponder() -> Bool {
+        let result = super.resignFirstResponder()
+        if result {
+            desiredSurfaceFocus = false
+            applySurfaceFocusIfNeeded(force: false)
+        }
+        return result
     }
 
     // MARK: - Tracking areas (required for mouseMoved / scroll to work)
@@ -104,13 +155,23 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { return true }
 
+    private func configureAccessibilityDefaults() {
+        setAccessibilityElement(true)
+        setAccessibilityRole(.group)
+    }
+
     // MARK: - Draw
 
-    /// Called by GhosttyApp.tick() on every wakeup to trigger Metal rendering.
+    /// Called by GhosttyApp's dirty scheduler to request the next render.
+    ///
+    /// `ghostty_surface_draw()` forces an immediate draw attempt on the host thread.
+    /// For steady-state scrolling that is more aggressive than necessary and competes
+    /// with input processing on the main thread. `ghostty_surface_refresh()` hands the
+    /// work back to libghostty's render queue so the IOSurface layer can present on its
+    /// own pacing instead of doing the full draw synchronously here.
     func triggerDraw() {
         guard let surface else { return }
-        drawCount += 1
-        ghostty_surface_draw(surface)
+        ghostty_surface_refresh(surface)
     }
 
     // MARK: - NSTextInputClient (IME)
@@ -144,7 +205,7 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         }
         if inKeyDown {
             // Accumulate during interpretKeyEvents; send after keyDown returns.
-            keyTextAccumulator += str
+            keyTextAccumulator.append(str)
         } else {
             // IME commit outside a keyDown (e.g. selecting from candidate list).
             sendText(str)
@@ -191,13 +252,16 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         sendTextToSurface(text)
     }
 
-    func sendKeyToSurface(
+    private func sendKeyActionToSurface(
+        _ action: ghostty_input_action_e,
         event: NSEvent,
+        translationMods: NSEvent.ModifierFlags? = nil,
         text: String? = nil,
         composing: Bool = false
     ) -> Bool {
         guard let surface else { return false }
-        var key = GhosttyInput.toGhosttyKey(event)
+        var key = GhosttyInput.toGhosttyKey(event, translationMods: translationMods)
+        key.action = action
         key.composing = composing
 
         if let text, text.isEmpty == false,
@@ -211,6 +275,21 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         }
 
         return ghostty_surface_key(surface, key)
+    }
+
+    func sendKeyToSurface(
+        event: NSEvent,
+        translationMods: NSEvent.ModifierFlags? = nil,
+        text: String? = nil,
+        composing: Bool = false
+    ) -> Bool {
+        sendKeyActionToSurface(
+            GHOSTTY_ACTION_PRESS,
+            event: event,
+            translationMods: translationMods,
+            text: text,
+            composing: composing
+        )
     }
 
     func sendTextToSurface(_ text: String) {
@@ -233,40 +312,255 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         }
     }
 
+    private func translationEvent(for event: NSEvent) -> NSEvent {
+        guard let surface else { return event }
+
+        let translationModsGhostty = GhosttyInput.eventModifierFlags(
+            mods: ghostty_surface_key_translation_mods(
+                surface,
+                GhosttyInput.toMods(event.modifierFlags)
+            )
+        )
+
+        var translationMods = event.modifierFlags
+        for flag in [NSEvent.ModifierFlags.shift, .control, .option, .command] {
+            if translationModsGhostty.contains(flag) {
+                translationMods.insert(flag)
+            } else {
+                translationMods.remove(flag)
+            }
+        }
+
+        guard translationMods != event.modifierFlags else { return event }
+        return NSEvent.keyEvent(
+            with: event.type,
+            location: event.locationInWindow,
+            modifierFlags: translationMods,
+            timestamp: event.timestamp,
+            windowNumber: event.windowNumber,
+            context: nil,
+            characters: event.characters(byApplyingModifiers: translationMods) ?? "",
+            charactersIgnoringModifiers: event.charactersIgnoringModifiers ?? "",
+            isARepeat: event.isARepeat,
+            keyCode: event.keyCode
+        ) ?? event
+    }
+
+    func sendTmuxNextPaneKeysForTesting(windowNumber: Int) -> Bool {
+        // Match the real responder path closely enough for tmux prefix handling.
+        // Ctrl-A travels through the modified key path; the next-pane key is a
+        // normal text-producing keyDown.
+        let controlDown = NSEvent.keyEvent(
+            with: .flagsChanged,
+            location: .zero,
+            modifierFlags: [.control],
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: windowNumber,
+            context: nil,
+            characters: "",
+            charactersIgnoringModifiers: "",
+            isARepeat: false,
+            keyCode: 0x3B
+        )!
+        let ctrlA = NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [.control],
+            timestamp: ProcessInfo.processInfo.systemUptime + 0.001,
+            windowNumber: windowNumber,
+            context: nil,
+            characters: "\u{1}",
+            charactersIgnoringModifiers: "a",
+            isARepeat: false,
+            keyCode: 0x00
+        )!
+        let controlUp = NSEvent.keyEvent(
+            with: .flagsChanged,
+            location: .zero,
+            modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime + 0.002,
+            windowNumber: windowNumber,
+            context: nil,
+            characters: "",
+            charactersIgnoringModifiers: "",
+            isARepeat: false,
+            keyCode: 0x3B
+        )!
+        let nextPane = NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime + 0.003,
+            windowNumber: windowNumber,
+            context: nil,
+            characters: "o",
+            charactersIgnoringModifiers: "o",
+            isARepeat: false,
+            keyCode: 0x1F
+        )!
+
+        flagsChanged(with: controlDown)
+        keyDown(with: ctrlA)
+        let sentCtrlA = debugLastSendKeyResult ?? false
+        flagsChanged(with: controlUp)
+        keyDown(with: nextPane)
+        let sentNextPane = debugLastSendKeyResult ?? false
+        return sentCtrlA && sentNextPane
+    }
+
     // MARK: - Keyboard
 
     override func keyDown(with event: NSEvent) {
+        debugKeyDownCount += 1
+        debugLastKeyCode = event.keyCode
+        debugLastCharacters = event.characters
+        debugLastCharactersIgnoringModifiers = event.charactersIgnoringModifiers
+        debugLastModifierFlagsRawValue = event.modifierFlags.intersection(.deviceIndependentFlagsMask).rawValue
+
+        let translationEvent = translationEvent(for: event)
+
         let markedTextBefore = markedText.length > 0
         inKeyDown = true
-        keyTextAccumulator = ""
+        keyTextAccumulator = []
         defer {
             inKeyDown = false
-            keyTextAccumulator = ""
+            keyTextAccumulator = []
         }
 
         // AppKit text input must run before terminal key encoding so IME commit
         // cannot be pre-consumed as a raw Return/Enter key.
-        interpretKeyEvents([event])
+        interpretKeyEvents([translationEvent])
         syncPreeditToSurface(clearIfNeeded: markedTextBefore)
 
         if !keyTextAccumulator.isEmpty {
-            sendText(keyTextAccumulator)
+            var sentAny = false
+            var sentAll = true
+            for text in keyTextAccumulator {
+                let sent = sendKeyToSurface(
+                    event: event,
+                    translationMods: translationEvent.modifierFlags,
+                    text: text,
+                    composing: false
+                )
+                sentAny = true
+                sentAll = sentAll && sent
+            }
+            debugLastSendKeyResult = sentAny ? sentAll : nil
+            recordDebugInputEvent(
+                kind: "keyDown",
+                event: event,
+                sendResult: debugLastSendKeyResult
+            )
             return
         }
 
-        _ = sendKeyToSurface(
+        debugLastSendKeyResult = sendKeyToSurface(
             event: event,
-            text: event.characters,
+            translationMods: translationEvent.modifierFlags,
+            text: translationEvent.agtmuxGhosttyCharacters,
             composing: markedText.length > 0 || markedTextBefore
+        )
+        recordDebugInputEvent(
+            kind: "keyDown",
+            event: event,
+            sendResult: debugLastSendKeyResult
+        )
+    }
+
+    override func keyUp(with event: NSEvent) {
+        _ = sendKeyActionToSurface(GHOSTTY_ACTION_RELEASE, event: event)
+        recordDebugInputEvent(kind: "keyUp", event: event)
+    }
+
+    override func flagsChanged(with event: NSEvent) {
+        let mod: UInt32
+        switch event.keyCode {
+        case 0x39:
+            mod = GHOSTTY_MODS_CAPS.rawValue
+        case 0x38, 0x3C:
+            mod = GHOSTTY_MODS_SHIFT.rawValue
+        case 0x3B, 0x3E:
+            mod = GHOSTTY_MODS_CTRL.rawValue
+        case 0x3A, 0x3D:
+            mod = GHOSTTY_MODS_ALT.rawValue
+        case 0x37, 0x36:
+            mod = GHOSTTY_MODS_SUPER.rawValue
+        default:
+            return
+        }
+
+        if hasMarkedText() { return }
+
+        let mods = GhosttyInput.toMods(event.modifierFlags)
+        var action = GHOSTTY_ACTION_RELEASE
+        if mods.rawValue & mod != 0 {
+            let sidePressed: Bool
+            switch event.keyCode {
+            case 0x3C:
+                sidePressed = event.modifierFlags.rawValue & UInt(NX_DEVICERSHIFTKEYMASK) != 0
+            case 0x3E:
+                sidePressed = event.modifierFlags.rawValue & UInt(NX_DEVICERCTLKEYMASK) != 0
+            case 0x3D:
+                sidePressed = event.modifierFlags.rawValue & UInt(NX_DEVICERALTKEYMASK) != 0
+            case 0x36:
+                sidePressed = event.modifierFlags.rawValue & UInt(NX_DEVICERCMDKEYMASK) != 0
+            default:
+                sidePressed = true
+            }
+
+            if sidePressed {
+                action = GHOSTTY_ACTION_PRESS
+            }
+        }
+
+        _ = sendKeyActionToSurface(action, event: event)
+        recordDebugInputEvent(
+            kind: action == GHOSTTY_ACTION_PRESS ? "flagsDown" : "flagsUp",
+            event: event
         )
     }
 
     override var acceptsFirstResponder: Bool { true }
 
+    var accessibilityFocused: Bool {
+        get { window?.firstResponder === self }
+        set {
+            guard newValue else { return }
+            window?.makeFirstResponder(self)
+        }
+    }
+
+    override func accessibilityPerformPress() -> Bool {
+        window?.makeFirstResponder(self)
+        return true
+    }
+
     override func doCommand(by selector: Selector) {
         // `interpretKeyEvents` routes many non-text inputs here. We encode the final
         // terminal key after IME/text processing in `keyDown`, so this must not beep
         // or short-circuit composition/commit flows.
+    }
+
+    private func recordDebugInputEvent(
+        kind: String,
+        event: NSEvent,
+        sendResult: Bool? = nil
+    ) {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask).rawValue
+        let chars: String
+        let charsIgnoringModifiers: String
+        if event.type == .keyDown || event.type == .keyUp {
+            chars = event.characters ?? ""
+            charsIgnoringModifiers = event.charactersIgnoringModifiers ?? ""
+        } else {
+            chars = ""
+            charsIgnoringModifiers = ""
+        }
+        let summary = "\(kind) keyCode=\(event.keyCode) chars=\(chars.debugDescription) charsIgnoring=\(charsIgnoringModifiers.debugDescription) flags=\(flags)\(sendResult.map { " sent=\($0)" } ?? "")"
+        debugRecentInputEvents.append(summary)
+        if debugRecentInputEvents.count > 12 {
+            debugRecentInputEvents.removeFirst(debugRecentInputEvents.count - 12)
+        }
     }
 
     @MainActor
@@ -304,6 +598,10 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     // MARK: - Mouse
 
     override func mouseDown(with event: NSEvent) {
+        // Terminal key handling depends on the Ghostty view being first responder.
+        // AppKit does not reliably assign that to a custom NSView on click, so
+        // claim it explicitly before forwarding the mouse event to libghostty.
+        window?.makeFirstResponder(self)
         guard let surface else { return }
         ghostty_surface_mouse_button(surface,
                                      GHOSTTY_MOUSE_PRESS,
@@ -427,6 +725,13 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
             shouldMarkDirty: shouldMarkDirty,
             force: force
         )
+    }
+
+    private func applySurfaceFocusIfNeeded(force: Bool) {
+        guard let surface else { return }
+        guard force || appliedSurfaceFocus != desiredSurfaceFocus else { return }
+        appliedSurfaceFocus = desiredSurfaceFocus
+        ghostty_surface_set_focus(surface, desiredSurfaceFocus)
     }
 
     private func currentSurfaceMetrics() -> SurfaceMetrics? {

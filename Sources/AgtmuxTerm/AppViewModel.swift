@@ -250,6 +250,33 @@ final class AppViewModel: ObservableObject {
         }
     }
 
+    struct PublishSnapshotAssemblyInput: Sendable {
+        let generation: UInt64
+        let sideInputGeneration: UInt64
+        let localInventory: [AgtmuxPane]
+        let localMetadataByPaneKey: [String: AgtmuxPane]
+        let localPresentationByPaneKey: [String: PanePresentationState]
+        let remotePanesBySource: [String: [AgtmuxPane]]
+        let pinnedPaneKeys: Set<String>
+        let paneDisplayTitleOverrides: [String: String]
+        let sessionOrderBySource: [String: [String]]
+    }
+
+    struct PublishSnapshotAssembly: Sendable {
+        let generation: UInt64
+        let sideInputGeneration: UInt64
+        let panes: [AgtmuxPane]
+        let reconciledSessionOrderBySource: [String: [String]]
+        let livePaneKeys: Set<String>
+        let livePaneSessionKeys: Set<String>
+        let prunedPinnedPaneKeys: Set<String>
+        let prunedPaneDisplayTitleOverrides: [String: String]
+        let attentionCount: Int
+        let paneIdentityIndex: [String: AgtmuxSyncV2PaneInstanceID]
+    }
+
+    typealias PublishSnapshotAssembler = @Sendable (PublishSnapshotAssemblyInput) async -> PublishSnapshotAssembly
+
     /// Schedule an off-main recomputation of `panesBySession` from the current
     /// `filteredPanes` and `sessionOrderBySource`.
     private func triggerPanesBySessionRecompute() {
@@ -319,6 +346,8 @@ final class AppViewModel: ObservableObject {
         } else {
             updated.remove(key)
         }
+        guard updated != pinnedPaneKeys else { return }
+        publishSideInputGeneration &+= 1
         syncPinnedPaneKeys(updated)
     }
 
@@ -357,11 +386,13 @@ final class AppViewModel: ObservableObject {
         } else {
             updated[key] = trimmed
         }
+        guard updated != paneDisplayTitleOverrides else { return }
+        publishSideInputGeneration &+= 1
         syncPaneDisplayTitleOverrides(updated)
     }
 
     private func paneIdentityKey(for pane: AgtmuxPane) -> String {
-        "\(pane.source):\(pane.sessionName):\(pane.windowId):\(pane.paneId)"
+        Self.paneIdentityKey(for: pane)
     }
 
     func hasSamePaneIdentity(_ lhs: AgtmuxPane, _ rhs: AgtmuxPane) -> Bool {
@@ -369,8 +400,10 @@ final class AppViewModel: ObservableObject {
     }
 
     func panePresentation(for pane: AgtmuxPane) -> PanePresentationState? {
-        guard pane.source == "local" else { return nil }
-        return cachedLocalPresentationByPaneKey[LocalMetadataOverlayStore.paneMetadataKey(for: pane)]
+        Self.panePresentation(
+            for: pane,
+            presentationByPaneKey: cachedLocalPresentationByPaneKey
+        )
     }
 
     func paneDisplayState(for pane: AgtmuxPane) -> PaneDisplayState {
@@ -386,7 +419,10 @@ final class AppViewModel: ObservableObject {
     }
 
     func paneNeedsAttention(_ pane: AgtmuxPane) -> Bool {
-        paneDisplayState(for: pane).needsAttention
+        Self.paneNeedsAttention(
+            pane,
+            presentationByPaneKey: cachedLocalPresentationByPaneKey
+        )
     }
 
     func paneProviderForSidebar(_ pane: AgtmuxPane) -> Provider? {
@@ -422,6 +458,7 @@ final class AppViewModel: ObservableObject {
 
         let moving = ordered.remove(at: from)
         ordered.insert(moving, at: to)
+        publishSideInputGeneration &+= 1
         syncSessionOrderBySource(sessionOrderBySource.merging([source: ordered]) { _, new in new })
         triggerPanesBySessionRecompute()
     }
@@ -431,6 +468,7 @@ final class AppViewModel: ObservableObject {
     private let localClient: any ProductLocalMetadataClient
     private let localHealthClient: (any LocalHealthClient)?
     private let localInventoryClient: any LocalPaneInventoryClient
+    private let localInventoryAuthority: any LocalPaneInventoryAuthorityProtocol
     private var remotePaneSources: [RemotePaneInventorySource] = []
     var hostsConfig: HostsConfig {
         get { runtimeStore.hostsConfig }
@@ -443,7 +481,8 @@ final class AppViewModel: ObservableObject {
     private var cachedLocalPresentationByPaneKey: [String: PanePresentationState] = [:]
     private var hasAttemptedAutoLaunch = false
     private var panesBySessionGeneration = 0
-    private var localInventoryPollingTask: Task<Void, Never>?
+    private var publishGeneration: UInt64 = 0
+    private var publishSideInputGeneration: UInt64 = 0
     private var localMetadataSyncPrimed = false
     private var localMetadataTransportVersion: LocalMetadataTransportVersion?
     private var localMetadataUseLongPoll: Bool? = nil  // nil=unknown, optimistically try on first call
@@ -459,6 +498,7 @@ final class AppViewModel: ObservableObject {
     private let localHealthFailureBackoff: TimeInterval = 3.0
     private let localHealthUnsupportedBackoff: TimeInterval = 60.0
     private let binaryURLResolver: () -> URL?
+    private let publishSnapshotAssembler: PublishSnapshotAssembler
     private let pollingInterval: TimeInterval
     private let localInventoryPollingInterval: TimeInterval
     private lazy var localProjectionCoordinator = LocalProjectionCoordinator(
@@ -607,17 +647,14 @@ final class AppViewModel: ObservableObject {
 
     // MARK: - Store sync helpers (T-PERF-P12)
 
-    private func syncPanes(_ newPanes: [AgtmuxPane]) {
+    private func syncPanes(
+        _ newPanes: [AgtmuxPane],
+        attentionCount: Int,
+        paneIdentityIndex: [String: AgtmuxSyncV2PaneInstanceID]
+    ) {
         sidebarStore.panes = newPanes
-        sidebarStore.attentionCount = newPanes.filter { paneNeedsAttention($0) }.count
-        var index: [String: AgtmuxSyncV2PaneInstanceID] = [:]
-        for pane in newPanes {
-            if let instanceID = pane.paneInstanceID {
-                let key = "\(pane.source):\(pane.sessionName):\(pane.windowId):\(pane.paneId)"
-                index[key] = instanceID
-            }
-        }
-        runtimeStore.paneIdentityIndex = index
+        sidebarStore.attentionCount = attentionCount
+        runtimeStore.paneIdentityIndex = paneIdentityIndex
     }
 
     private func syncPanesBySession(_ v: [(source: String, sessions: [SessionGroup])]) {
@@ -757,17 +794,30 @@ final class AppViewModel: ObservableObject {
 
     init(localClient: any ProductLocalMetadataClient = AgtmuxDaemonClient(),
          localInventoryClient: any LocalPaneInventoryClient = LocalTmuxInventoryClient(),
+         localInventoryAuthority: (any LocalPaneInventoryAuthorityProtocol)? = nil,
          hostsConfig: HostsConfig? = nil,
          remotePaneSources: [RemotePaneInventorySource]? = nil,
          binaryURLResolver: @escaping () -> URL? = AgtmuxBinaryResolver.resolveBinaryURL,
+         publishSnapshotAssembler: PublishSnapshotAssembler? = nil,
          pollingInterval: TimeInterval = 1.0,
          localInventoryPollingInterval: TimeInterval? = nil) {
+        let resolvedLocalInventoryPollingInterval = localInventoryPollingInterval ?? pollingInterval
         self.localClient = localClient
         self.localHealthClient = localClient as? any LocalHealthClient
         self.localInventoryClient = localInventoryClient
         self.binaryURLResolver = binaryURLResolver
+        self.publishSnapshotAssembler = publishSnapshotAssembler ?? { input in
+            await AppViewModel.defaultPublishSnapshotAssembler(input)
+        }
         self.pollingInterval = pollingInterval
-        self.localInventoryPollingInterval = localInventoryPollingInterval ?? pollingInterval
+        self.localInventoryPollingInterval = resolvedLocalInventoryPollingInterval
+        self.localInventoryAuthority = localInventoryAuthority
+            ?? LocalPaneInventoryAuthority(
+                dependencies: .live(
+                    localInventoryClient: localInventoryClient,
+                    fallbackPollInterval: resolvedLocalInventoryPollingInterval
+                )
+            )
         self.autoLaunchSessionName = UserDefaults.standard.string(forKey: "autoLaunchSessionName") ?? "main"
         let config = hostsConfig ?? HostsConfig.load()
         self.hostsConfig = config
@@ -786,7 +836,6 @@ final class AppViewModel: ObservableObject {
     }
 
     deinit {
-        localInventoryPollingTask?.cancel()
         pollingTask?.cancel()
     }
 
@@ -797,13 +846,7 @@ final class AppViewModel: ObservableObject {
         hosts.removeAll { $0.id == host.id }
         hosts.append(host)
         syncHostsConfig(HostsConfig(hosts: hosts))
-        remotePaneSources = hostsConfig.hosts.map { h in
-            let client = RemoteTmuxClient(host: h)
-            return RemotePaneInventorySource(
-                source: h.hostname,
-                fetchPanes: { try await client.fetchPanes() }
-            )
-        }
+        refreshRemotePaneSources()
         HostsConfig.save(hostsConfig)
     }
 
@@ -811,24 +854,24 @@ final class AppViewModel: ObservableObject {
         var hosts = hostsConfig.hosts
         hosts.removeAll { $0.id == id }
         syncHostsConfig(HostsConfig(hosts: hosts))
-        remotePaneSources = hostsConfig.hosts.map { h in
-            let client = RemoteTmuxClient(host: h)
-            return RemotePaneInventorySource(
-                source: h.hostname,
-                fetchPanes: { try await client.fetchPanes() }
-            )
-        }
+        refreshRemotePaneSources()
         HostsConfig.save(hostsConfig)
     }
 
     // MARK: - Polling
 
     private var pollingTask: Task<Void, Never>?
+    private var isPolling = false
+
+    var isRemotePollingActiveForTesting: Bool {
+        pollingTask != nil
+    }
 
     /// Start the remote broad poll and the local steady-state projection owner.
     ///
     /// Guarded against double-start: calling startPolling() while already running is a no-op.
     func startPolling() {
+        isPolling = true
         localProjectionCoordinator.startSteadyState(
             runtime: makeLocalProjectionRuntime(),
             classifyLocalDaemonIssue: { [weak self] error in
@@ -838,9 +881,71 @@ final class AppViewModel: ObservableObject {
                 self?.classifyLocalHealthRefreshFailure(from: error) ?? .transientFailure
             }
         )
-        startLocalInventoryPollingIfNeeded()
+        startLocalInventoryAuthorityIfNeeded()
+        startRemotePollingIfNeeded()
+        Task { [weak self] in
+            await self?.performStartupHookCheck()
+        }
+    }
 
+    /// Cancel the polling loop and reset so startPolling() can be called again.
+    func stopPolling() {
+        isPolling = false
+        stopRemotePolling()
+        localInventoryAuthority.stop()
+        localProjectionCoordinator.stop()
+        localMetadataSyncPrimed = false
+        localMetadataTransportVersion = nil
+        localMetadataUseLongPoll = nil
+        nextLocalMetadataRefreshAt = .distantPast
+        nextLocalHealthRefreshAt = .distantPast
+        Task {
+            await localClient.resetUIChangesV3()
+        }
+    }
+
+    private func makeRemotePaneSources(from hosts: [RemoteHost]) -> [RemotePaneInventorySource] {
+        hosts.map { host in
+            let client = RemoteTmuxClient(host: host)
+            return RemotePaneInventorySource(
+                source: host.hostname,
+                fetchPanes: { try await client.fetchPanes() }
+            )
+        }
+    }
+
+    private func refreshRemotePaneSources() {
+        remotePaneSources = makeRemotePaneSources(from: hostsConfig.hosts)
+        trimSnapshotCacheToKnownSources()
+        let prunedOfflineHosts = offlineHosts.intersection(knownSources())
+        if prunedOfflineHosts != offlineHosts {
+            syncOfflineHosts(prunedOfflineHosts)
+        }
+        reconcileRemotePollingState()
+        Task { [weak self] in
+            await self?.publishFromSnapshotCache(offlineHosts: prunedOfflineHosts)
+        }
+    }
+
+    private func reconcileRemotePollingState() {
+        guard isPolling else {
+            stopRemotePolling()
+            return
+        }
+
+        guard remotePaneSources.isEmpty == false else {
+            stopRemotePolling()
+            return
+        }
+
+        startRemotePollingIfNeeded()
+    }
+
+    private func startRemotePollingIfNeeded() {
+        guard isPolling else { return }
+        guard remotePaneSources.isEmpty == false else { return }
         guard pollingTask == nil else { return }
+
         pollingTask = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
@@ -854,32 +959,16 @@ final class AppViewModel: ObservableObject {
                 }
             }
         }
-        Task { [weak self] in
-            await self?.performStartupHookCheck()
-        }
     }
 
-    /// Cancel the polling loop and reset so startPolling() can be called again.
-    func stopPolling() {
+    private func stopRemotePolling() {
         pollingTask?.cancel()
         pollingTask = nil
-        localInventoryPollingTask?.cancel()
-        localInventoryPollingTask = nil
-        localProjectionCoordinator.stop()
-        localMetadataSyncPrimed = false
-        localMetadataTransportVersion = nil
-        localMetadataUseLongPoll = nil
-        nextLocalMetadataRefreshAt = .distantPast
-        nextLocalHealthRefreshAt = .distantPast
-        Task {
-            await localClient.resetUIChangesV3()
-        }
     }
 
     func enableUITestMetadataMode() {
         uiTestMetadataModeEnabled = true
-        localInventoryPollingTask?.cancel()
-        localInventoryPollingTask = nil
+        localInventoryAuthority.stop()
         localProjectionCoordinator.stop()
         localMetadataSyncPrimed = false
         localMetadataTransportVersion = nil
@@ -958,7 +1047,7 @@ final class AppViewModel: ObservableObject {
     // MARK: - Private
 
     /// Source ordering: "local" first, then alphabetically.
-    private func sortedSources(_ keys: some Collection<String>) -> [String] {
+    private nonisolated static func sortedSources(_ keys: [String]) -> [String] {
         keys.sorted { a, b in
             if a == "local" { return true }
             if b == "local" { return false }
@@ -966,24 +1055,46 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    private func orderedSessionNames(source: String, currentNames: Set<String>) -> [String] {
+    private func sortedSources(_ keys: some Collection<String>) -> [String] {
+        Self.sortedSources(Array(keys))
+    }
+
+    private nonisolated static func orderedSessionNames(
+        source: String,
+        currentNames: Set<String>,
+        sessionOrderBySource: [String: [String]]
+    ) -> [String] {
         let existing = sessionOrderBySource[source] ?? []
         let kept = existing.filter { currentNames.contains($0) }
         let unknown = currentNames.subtracting(kept).sorted()
         return kept + unknown
     }
 
-    private func reconcileSessionOrder(with panes: [AgtmuxPane]) {
+    private func orderedSessionNames(source: String, currentNames: Set<String>) -> [String] {
+        Self.orderedSessionNames(
+            source: source,
+            currentNames: currentNames,
+            sessionOrderBySource: sessionOrderBySource
+        )
+    }
+
+    private nonisolated static func reconciledSessionOrder(
+        currentSessionOrderBySource: [String: [String]],
+        panes: [AgtmuxPane]
+    ) -> [String: [String]] {
         let bySource = Dictionary(grouping: panes, by: \.source)
         var updated: [String: [String]] = [:]
 
-        for source in sortedSources(bySource.keys) {
+        for source in sortedSources(Array(bySource.keys)) {
             let names = Set((bySource[source] ?? []).map(\.sessionName))
-            updated[source] = orderedSessionNames(source: source, currentNames: names)
+            updated[source] = orderedSessionNames(
+                source: source,
+                currentNames: names,
+                sessionOrderBySource: currentSessionOrderBySource
+            )
         }
-        if updated != sessionOrderBySource {
-            syncSessionOrderBySource(updated)
-        }
+
+        return updated
     }
 
     /// Normalize panes so UI identity and grouping stay stable while preserving
@@ -992,22 +1103,22 @@ final class AppViewModel: ObservableObject {
     /// Deduplication is limited to exact duplicate rows that point at the same
     /// source/session/window/pane. Session-group aliases and linked-looking
     /// session names are preserved as-is so the normal path reflects tmux truth.
-    private func normalizePanes(_ allPanes: [AgtmuxPane]) -> [AgtmuxPane] {
+    private nonisolated static func normalizePanes(_ allPanes: [AgtmuxPane]) -> [AgtmuxPane] {
         let bySource = Dictionary(grouping: allPanes, by: \.source)
         var normalized: [AgtmuxPane] = []
 
-        for source in sortedSources(bySource.keys) {
+        for source in sortedSources(Array(bySource.keys)) {
             normalized.append(contentsOf: dedupePanes(bySource[source] ?? []))
         }
 
         return normalized
     }
 
-    private func dedupePanes(_ panes: [AgtmuxPane]) -> [AgtmuxPane] {
+    private nonisolated static func dedupePanes(_ panes: [AgtmuxPane]) -> [AgtmuxPane] {
         var deduped: [String: AgtmuxPane] = [:]
 
         for pane in panes {
-            let key = "\(pane.source):\(pane.sessionName):\(pane.windowId):\(pane.paneId)"
+            let key = paneIdentityKey(for: pane)
             if let existing = deduped[key] {
                 deduped[key] = preferredPane(existing, pane)
             } else {
@@ -1017,7 +1128,7 @@ final class AppViewModel: ObservableObject {
         return Array(deduped.values)
     }
 
-    private func preferredPane(_ lhs: AgtmuxPane, _ rhs: AgtmuxPane) -> AgtmuxPane {
+    private nonisolated static func preferredPane(_ lhs: AgtmuxPane, _ rhs: AgtmuxPane) -> AgtmuxPane {
         func score(_ pane: AgtmuxPane) -> (Int, Int, Int, Date) {
             (
                 pane.isManaged ? 1 : 0,
@@ -1072,6 +1183,9 @@ final class AppViewModel: ObservableObject {
             captureState: { [weak self] in
                 self?.makeLocalProjectionState()
             },
+            applyInventory: { [weak self] inventory in
+                self?.cacheLocalInventory(inventory)
+            },
             applyMetadataExecution: { [weak self] execution in
                 await self?.applyLocalMetadataRefreshExecution(execution)
             },
@@ -1086,11 +1200,11 @@ final class AppViewModel: ObservableObject {
     /// Inventory (tmux list-panes) is authoritative for pane existence.
     /// Daemon metadata enriches rows (managed status/activity/provider/etc.)
     /// but does not create new rows if the pane is absent from inventory.
-    private func mergeLocalInventory(
+    private nonisolated static func mergeLocalInventory(
         inventory: [AgtmuxPane],
         metadataByPaneKey: [String: AgtmuxPane]
     ) -> [AgtmuxPane] {
-        return inventory.map { inventoryPane in
+        inventory.map { inventoryPane in
             let key = LocalMetadataOverlayStore.paneMetadataKey(for: inventoryPane)
             guard let metadataPane = metadataByPaneKey[key] else { return inventoryPane }
             // session_key is opaque daemon identity and must not be compared to the visible
@@ -1136,6 +1250,8 @@ final class AppViewModel: ObservableObject {
         case .replace(let cache):
             cachedLocalMetadataByPaneKey = cache.metadataByPaneKey
             cachedLocalPresentationByPaneKey = cache.presentationByPaneKey
+        case .preserve:
+            break
         case .clear:
             cachedLocalMetadataByPaneKey = [:]
             cachedLocalPresentationByPaneKey = [:]
@@ -1178,43 +1294,26 @@ final class AppViewModel: ObservableObject {
         nextLocalHealthRefreshAt = execution.nextRefreshAt
     }
 
-    private func startLocalInventoryPollingIfNeeded() {
-        guard localInventoryPollingTask == nil else { return }
-
-        localInventoryPollingTask = Task { [weak self] in
-            guard let self else { return }
-
-            var shouldSleepBeforeRefresh = self.hasFetchedLocalInventory
-            while !Task.isCancelled {
-                if shouldSleepBeforeRefresh {
-                    do {
-                        let nanoseconds = UInt64((self.localInventoryPollingInterval * 1_000_000_000).rounded(.up))
-                        try await Task.sleep(nanoseconds: nanoseconds)
-                    } catch {
-                        break
-                    }
-                }
-
-                await self.refreshLocalInventorySteadyState()
-                shouldSleepBeforeRefresh = true
+    private func startLocalInventoryAuthorityIfNeeded() {
+        localInventoryAuthority.start(
+            seedInventory: lastSuccessfulLocalInventory,
+            applyInventory: { [weak self] inventory in
+                await self?.applyLocalInventorySuccess(inventory)
+            },
+            handleFailure: { [weak self] in
+                await self?.applyLocalInventoryFailure()
             }
-        }
+        )
     }
 
-    private func refreshLocalInventorySteadyState() async {
-        do {
-            let inventory = try await localProjectionCoordinator.fetchInventory(
-                state: makeLocalProjectionState()
-            )
-            await applyLocalInventorySuccess(inventory)
-        } catch {
-            await applyLocalInventoryFailure()
-        }
+    private func cacheLocalInventory(_ inventory: [AgtmuxPane]) {
+        lastSuccessfulLocalInventory = inventory
+        hasFetchedLocalInventory = true
+        localInventoryAuthority.updateSeedInventory(inventory)
     }
 
     private func applyLocalInventorySuccess(_ inventory: [AgtmuxPane]) async {
-        lastSuccessfulLocalInventory = inventory
-        hasFetchedLocalInventory = true
+        cacheLocalInventory(inventory)
 
         var newOffline = offlineHosts
         newOffline.remove("local")
@@ -1263,8 +1362,7 @@ final class AppViewModel: ObservableObject {
                 self?.classifyLocalHealthRefreshFailure(from: error) ?? .transientFailure
             }
         )
-        lastSuccessfulLocalInventory = inventory
-        hasFetchedLocalInventory = true
+        cacheLocalInventory(inventory)
         return inventory
     }
 
@@ -1277,10 +1375,93 @@ final class AppViewModel: ObservableObject {
         lastSuccessfulRemotePanesBySource = lastSuccessfulRemotePanesBySource.filter { known.contains($0.key) }
     }
 
-    private func visibleLocalPanes() -> [AgtmuxPane] {
-        mergeLocalInventory(
-            inventory: lastSuccessfulLocalInventory,
-            metadataByPaneKey: cachedLocalMetadataByPaneKey
+    private nonisolated static func paneIdentityKey(for pane: AgtmuxPane) -> String {
+        "\(pane.source):\(pane.sessionName):\(pane.windowId):\(pane.paneId)"
+    }
+
+    private nonisolated static func panePresentation(
+        for pane: AgtmuxPane,
+        presentationByPaneKey: [String: PanePresentationState]
+    ) -> PanePresentationState? {
+        guard pane.source == "local" else { return nil }
+        return presentationByPaneKey[LocalMetadataOverlayStore.paneMetadataKey(for: pane)]
+    }
+
+    private nonisolated static func paneNeedsAttention(
+        _ pane: AgtmuxPane,
+        presentationByPaneKey: [String: PanePresentationState]
+    ) -> Bool {
+        let presentation = panePresentation(
+            for: pane,
+            presentationByPaneKey: presentationByPaneKey
+        )
+        return PaneDisplayState(pane: pane, presentation: presentation).needsAttention
+    }
+
+    private nonisolated static func buildPaneIdentityIndex(
+        from panes: [AgtmuxPane]
+    ) -> [String: AgtmuxSyncV2PaneInstanceID] {
+        var index: [String: AgtmuxSyncV2PaneInstanceID] = [:]
+        for pane in panes {
+            guard let instanceID = pane.paneInstanceID else { continue }
+            index[paneIdentityKey(for: pane)] = instanceID
+        }
+        return index
+    }
+
+    nonisolated static func defaultPublishSnapshotAssembler(
+        _ input: PublishSnapshotAssemblyInput
+    ) async -> PublishSnapshotAssembly {
+        await Task.detached(priority: .userInitiated) {
+            assemblePublishSnapshot(input)
+        }.value
+    }
+
+    nonisolated static func assemblePublishSnapshot(
+        _ input: PublishSnapshotAssemblyInput
+    ) -> PublishSnapshotAssembly {
+        var panesBySource = input.remotePanesBySource
+        if !input.localInventory.isEmpty || panesBySource["local"] != nil {
+            panesBySource["local"] = mergeLocalInventory(
+                inventory: input.localInventory,
+                metadataByPaneKey: input.localMetadataByPaneKey
+            )
+        }
+
+        let merged = sortedSources(Array(panesBySource.keys))
+            .flatMap { panesBySource[$0] ?? [] }
+        let normalized = normalizePanes(merged)
+        let livePaneKeys = Set(normalized.map(paneIdentityKey(for:)))
+        let livePaneSessionKeys = Set(normalized.map { "\($0.source):\($0.sessionName)" })
+        let prunedPinnedPaneKeys = input.pinnedPaneKeys.intersection(livePaneKeys)
+        let prunedPaneDisplayTitleOverrides = input.paneDisplayTitleOverrides.filter {
+            livePaneKeys.contains($0.key)
+        }
+        let attentionCount = normalized.reduce(into: 0) { count, pane in
+            if paneNeedsAttention(
+                pane,
+                presentationByPaneKey: input.localPresentationByPaneKey
+            ) {
+                count += 1
+            }
+        }
+        let paneIdentityIndex = buildPaneIdentityIndex(from: normalized)
+        let reconciledSessionOrderBySource = reconciledSessionOrder(
+            currentSessionOrderBySource: input.sessionOrderBySource,
+            panes: normalized
+        )
+
+        return PublishSnapshotAssembly(
+            generation: input.generation,
+            sideInputGeneration: input.sideInputGeneration,
+            panes: normalized,
+            reconciledSessionOrderBySource: reconciledSessionOrderBySource,
+            livePaneKeys: livePaneKeys,
+            livePaneSessionKeys: livePaneSessionKeys,
+            prunedPinnedPaneKeys: prunedPinnedPaneKeys,
+            prunedPaneDisplayTitleOverrides: prunedPaneDisplayTitleOverrides,
+            attentionCount: attentionCount,
+            paneIdentityIndex: paneIdentityIndex
         )
     }
 
@@ -1289,38 +1470,115 @@ final class AppViewModel: ObservableObject {
         selectedPane = normalized.first { hasSamePaneIdentity($0, currentSelectedPane) }
     }
 
+    private func commitPublishSnapshot(
+        _ snapshot: PublishSnapshotAssembly,
+        offlineHosts newOffline: Set<String>?
+    ) {
+        guard publishGeneration == snapshot.generation else { return }
+
+        let panesChanged = snapshot.panes != panes
+        let sideInputsAreCurrent = snapshot.sideInputGeneration == publishSideInputGeneration
+        let nextSessionOrderBySource: [String: [String]]
+        let nextPinnedPaneKeys: Set<String>
+        let nextPaneDisplayTitleOverrides: [String: String]
+
+        if sideInputsAreCurrent {
+            nextSessionOrderBySource = snapshot.reconciledSessionOrderBySource
+            nextPinnedPaneKeys = snapshot.prunedPinnedPaneKeys
+            nextPaneDisplayTitleOverrides = snapshot.prunedPaneDisplayTitleOverrides
+        } else {
+            nextSessionOrderBySource = Self.reconciledSessionOrder(
+                currentSessionOrderBySource: sessionOrderBySource,
+                panes: snapshot.panes
+            )
+            nextPinnedPaneKeys = pinnedPaneKeys.intersection(snapshot.livePaneKeys)
+            nextPaneDisplayTitleOverrides = paneDisplayTitleOverrides.filter {
+                snapshot.livePaneKeys.contains($0.key)
+            }
+        }
+
+        if panesChanged {
+            if nextSessionOrderBySource != sessionOrderBySource {
+                syncSessionOrderBySource(nextSessionOrderBySource)
+            }
+            syncPanes(
+                snapshot.panes,
+                attentionCount: snapshot.attentionCount,
+                paneIdentityIndex: snapshot.paneIdentityIndex
+            )
+            triggerPanesBySessionRecompute()
+        }
+        if snapshot.livePaneSessionKeys != livePaneSessionKeys {
+            syncLivePaneSessionKeys(snapshot.livePaneSessionKeys)
+        }
+        if nextPinnedPaneKeys != pinnedPaneKeys {
+            syncPinnedPaneKeys(nextPinnedPaneKeys)
+        }
+        if nextPaneDisplayTitleOverrides != paneDisplayTitleOverrides {
+            syncPaneDisplayTitleOverrides(nextPaneDisplayTitleOverrides)
+        }
+        retainSelection(in: snapshot.panes)
+        if let newOffline, newOffline != offlineHosts {
+            syncOfflineHosts(newOffline)
+        }
+    }
+
+    func makePublishSnapshotAssemblyInputForTesting(
+        localInventory: [AgtmuxPane]? = nil,
+        localMetadataByPaneKey: [String: AgtmuxPane]? = nil,
+        localPresentationByPaneKey: [String: PanePresentationState]? = nil,
+        remotePanesBySource: [String: [AgtmuxPane]]? = nil
+    ) -> PublishSnapshotAssemblyInput {
+        trimSnapshotCacheToKnownSources()
+        publishGeneration &+= 1
+        return PublishSnapshotAssemblyInput(
+            generation: publishGeneration,
+            sideInputGeneration: publishSideInputGeneration,
+            localInventory: localInventory ?? lastSuccessfulLocalInventory,
+            localMetadataByPaneKey: localMetadataByPaneKey ?? cachedLocalMetadataByPaneKey,
+            localPresentationByPaneKey: localPresentationByPaneKey ?? cachedLocalPresentationByPaneKey,
+            remotePanesBySource: remotePanesBySource ?? lastSuccessfulRemotePanesBySource,
+            pinnedPaneKeys: pinnedPaneKeys,
+            paneDisplayTitleOverrides: paneDisplayTitleOverrides,
+            sessionOrderBySource: sessionOrderBySource
+        )
+    }
+
+    func commitPublishSnapshotForTesting(
+        _ snapshot: PublishSnapshotAssembly,
+        offlineHosts: Set<String>? = nil
+    ) {
+        commitPublishSnapshot(snapshot, offlineHosts: offlineHosts)
+    }
+
     private func publishFromSnapshotCache(offlineHosts newOffline: Set<String>? = nil) async {
         let pubID = AgtmuxSignpost.publish.makeSignpostID()
         let pubState = AgtmuxSignpost.publish.beginInterval("publish", id: pubID)
         defer { AgtmuxSignpost.publish.endInterval("publish", pubState) }
         trimSnapshotCacheToKnownSources()
-        var panesBySource = lastSuccessfulRemotePanesBySource
-        if !lastSuccessfulLocalInventory.isEmpty || panesBySource["local"] != nil {
-            panesBySource["local"] = visibleLocalPanes()
-        }
-        let merged = sortedSources(panesBySource.keys)
-            .flatMap { panesBySource[$0] ?? [] }
-        let normalized = normalizePanes(merged)
-        if normalized != panes {
-            reconcileSessionOrder(with: normalized)
-            syncPanes(normalized)
-            triggerPanesBySessionRecompute()
-        }
-        let livePaneKeys = Set(normalized.map(paneIdentityKey(for:)))
-        let newLivePaneSessionKeys = Set(normalized.map { "\($0.source):\($0.sessionName)" })
-        if newLivePaneSessionKeys != livePaneSessionKeys { syncLivePaneSessionKeys(newLivePaneSessionKeys) }
-        let newPinnedPaneKeys = pinnedPaneKeys.intersection(livePaneKeys)
-        if newPinnedPaneKeys != pinnedPaneKeys {
-            syncPinnedPaneKeys(newPinnedPaneKeys)
-        }
-        let newPaneDisplayTitleOverrides = paneDisplayTitleOverrides.filter { livePaneKeys.contains($0.key) }
-        if newPaneDisplayTitleOverrides != paneDisplayTitleOverrides {
-            syncPaneDisplayTitleOverrides(newPaneDisplayTitleOverrides)
-        }
-        retainSelection(in: normalized)
-        if let newOffline, newOffline != offlineHosts {
-            syncOfflineHosts(newOffline)
-        }
+
+        publishGeneration &+= 1
+        let generation = publishGeneration
+        let input = PublishSnapshotAssemblyInput(
+            generation: generation,
+            sideInputGeneration: publishSideInputGeneration,
+            localInventory: lastSuccessfulLocalInventory,
+            localMetadataByPaneKey: cachedLocalMetadataByPaneKey,
+            localPresentationByPaneKey: cachedLocalPresentationByPaneKey,
+            remotePanesBySource: lastSuccessfulRemotePanesBySource,
+            pinnedPaneKeys: pinnedPaneKeys,
+            paneDisplayTitleOverrides: paneDisplayTitleOverrides,
+            sessionOrderBySource: sessionOrderBySource
+        )
+
+        let assembleID = AgtmuxSignpost.publishAssemble.makeSignpostID()
+        let assembleState = AgtmuxSignpost.publishAssemble.beginInterval(
+            "assembleSnapshot",
+            id: assembleID
+        )
+        defer { AgtmuxSignpost.publishAssemble.endInterval("assembleSnapshot", assembleState) }
+        let snapshot = await publishSnapshotAssembler(input)
+        commitPublishSnapshot(snapshot, offlineHosts: newOffline)
     }
 
     private func fetchRemotePanes() async {
@@ -1420,7 +1678,12 @@ final class AppViewModel: ObservableObject {
         }
         await publishFromSnapshotCache(offlineHosts: newOffline)
         if pollingTask != nil {
-            startLocalInventoryPollingIfNeeded()
+            if newOffline.contains("local") {
+                localInventoryAuthority.stop()
+            } else {
+                startLocalInventoryAuthorityIfNeeded()
+                localInventoryAuthority.updateSeedInventory(lastSuccessfulLocalInventory)
+            }
             localProjectionCoordinator.startSteadyState(
                 runtime: makeLocalProjectionRuntime(),
                 classifyLocalDaemonIssue: { [weak self] error in

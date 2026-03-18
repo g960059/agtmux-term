@@ -11,6 +11,15 @@ import Foundation
 /// Inherited `TMUX` is intentionally ignored to avoid pinning local commands to a
 /// stale or sandbox-inaccessible socket from the launch environment.
 public enum LocalTmuxTarget {
+    public static func configArguments(from env: [String: String] = ProcessInfo.processInfo.environment) -> [String] {
+        guard let path = env["AGTMUX_UITEST_TMUX_CONFIG_PATH"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+            !path.isEmpty else {
+            return []
+        }
+        return ["-f", path]
+    }
+
     public static func socketArguments(from env: [String: String] = ProcessInfo.processInfo.environment) -> [String] {
         if let explicitName = env["AGTMUX_TMUX_SOCKET_NAME"]?.trimmingCharacters(in: .whitespacesAndNewlines),
            !explicitName.isEmpty {
@@ -43,6 +52,10 @@ public enum LocalTmuxTarget {
 
     public static func shellEscapedSocketArguments(from env: [String: String] = ProcessInfo.processInfo.environment) -> String {
         socketArguments(from: env).map(shellEscaped).joined(separator: " ")
+    }
+
+    public static func shellEscapedConfigArguments(from env: [String: String] = ProcessInfo.processInfo.environment) -> String {
+        configArguments(from: env).map(shellEscaped).joined(separator: " ")
     }
 
     package static func resolvedTmuxBinaryPath(

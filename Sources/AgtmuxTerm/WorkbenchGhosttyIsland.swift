@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import AgtmuxTermCore
 
 // MARK: - GhosttyIslandRepresentable
 
@@ -74,16 +75,23 @@ final class GhosttyIslandViewController: NSViewController {
     // MARK: - NSViewController lifecycle
 
     override func loadView() {
-        let root = NSView()
-        root.wantsLayer = true
-        self.view = root
+        self.view = NSView()
     }
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        view.setAccessibilityElement(false)
         let tv = GhosttyTerminalView()
+        if let pendingSurfaceContext {
+            tv.configureAccessibility(
+                identifier: AccessibilityID.workspaceTerminalHostPrefix + pendingSurfaceContext.tileID.uuidString,
+                label: "Terminal \(pendingSurfaceContext.sessionRef.sessionName)"
+            )
+        }
         tv.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(tv)
+        view.setAccessibilityChildren([tv])
+        tv.setAccessibilityParent(view)
         NSLayoutConstraint.activate([
             tv.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             tv.trailingAnchor.constraint(equalTo: view.trailingAnchor),
@@ -127,6 +135,13 @@ final class GhosttyIslandViewController: NSViewController {
         }
 
         // Update surface context registration if it changed
+        if let surfaceContext,
+           let terminalView {
+            terminalView.configureAccessibility(
+                identifier: AccessibilityID.workspaceTerminalHostPrefix + surfaceContext.tileID.uuidString,
+                label: "Terminal \(surfaceContext.sessionRef.sessionName)"
+            )
+        }
         if let surfaceContext,
            let registeredSurfaceHandle,
            registeredSurfaceContext != surfaceContext {

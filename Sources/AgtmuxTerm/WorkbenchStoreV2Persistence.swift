@@ -126,11 +126,23 @@ private extension Workbench {
             persistedFocusedTileID = persistedRoot.tiles.first?.id
         }
 
+        let persistedActivePaneRef: ActivePaneRef?
+        if let activePaneRef,
+           let persistedFocusedTileID,
+           let focusedTile = persistedRoot.tiles.first(where: { $0.id == persistedFocusedTileID }),
+           case .terminal(let sessionRef) = focusedTile.kind,
+           activePaneRef.matches(sessionRef: sessionRef) {
+            persistedActivePaneRef = activePaneRef
+        } else {
+            persistedActivePaneRef = nil
+        }
+
         return Workbench(
             id: id,
             title: title,
             root: persistedRoot,
-            focusedTileID: persistedFocusedTileID
+            focusedTileID: persistedFocusedTileID,
+            activePaneRef: persistedActivePaneRef
         )
     }
 }

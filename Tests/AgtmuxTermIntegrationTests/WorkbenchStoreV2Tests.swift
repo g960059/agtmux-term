@@ -396,6 +396,56 @@ final class WorkbenchStoreV2Tests: XCTestCase {
     }
 
     @MainActor
+    func testAuthoritativeRenderedClientReverseSyncCancelsStaleInitialAttachDesired() {
+        let firstPane = AgtmuxPane(
+            source: "local",
+            paneId: "%0",
+            sessionName: "shared",
+            windowId: "@0"
+        )
+        let secondPane = AgtmuxPane(
+            source: "local",
+            paneId: "%1",
+            sessionName: "shared",
+            windowId: "@0"
+        )
+        let store = WorkbenchStoreV2()
+
+        let result = store.openTerminal(for: firstPane, hostsConfig: .empty)
+        _ = store.syncTerminalNavigation(
+            tileID: result.tileID,
+            preferredWindowID: firstPane.windowId,
+            preferredPaneID: firstPane.paneId
+        )
+
+        let didAcceptReverseSync = store.syncTerminalNavigation(
+            tileID: result.tileID,
+            preferredWindowID: secondPane.windowId,
+            preferredPaneID: secondPane.paneId,
+            authoritativeRenderedClientTruth: true
+        )
+        let selection = store.activePaneSelection(
+            panes: [firstPane, secondPane],
+            hostsConfig: .empty
+        )
+        guard let context = store.activePaneContext else {
+            return XCTFail("Expected active pane context after authoritative reverse sync")
+        }
+
+        XCTAssertTrue(
+            didAcceptReverseSync,
+            "authoritative rendered-client reverse sync must be recorded even while initial attach confirmation is still pending"
+        )
+        XCTAssertEqual(selection?.paneID, secondPane.paneId)
+        XCTAssertEqual(selection?.paneInventoryID, secondPane.id)
+        XCTAssertEqual(
+            context.activePaneRef.paneID,
+            secondPane.paneId,
+            "authoritative rendered-client reverse sync must cancel stale desired state that would steer the client back"
+        )
+    }
+
+    @MainActor
     func testObservedPaneChangeWhileDesiredPanePendingPromotesObservedTruth() {
         let firstPane = AgtmuxPane(
             source: "local",
@@ -687,6 +737,36 @@ final class WorkbenchStoreV2Tests: XCTestCase {
     }
 
     @MainActor
+    func testRefocusingSameTerminalTileBumpsFocusRestoreNonce() {
+        let pane = AgtmuxPane(
+            source: "local",
+            paneId: "%1",
+            sessionName: "shared",
+            windowId: "@1"
+        )
+        let store = WorkbenchStoreV2()
+
+        let result = store.openTerminal(for: pane, hostsConfig: .empty)
+        guard let initialContext = store.activePaneContext else {
+            return XCTFail("expected initial active pane context")
+        }
+
+        store.focusTile(id: result.tileID)
+
+        guard let refocusedContext = store.activePaneContext else {
+            return XCTFail("expected refocused active pane context")
+        }
+
+        XCTAssertEqual(refocusedContext.workbenchID, initialContext.workbenchID)
+        XCTAssertEqual(refocusedContext.activePaneRef, initialContext.activePaneRef)
+        XCTAssertGreaterThan(
+            refocusedContext.focusRequestNonce,
+            initialContext.focusRequestNonce,
+            "re-focusing the same terminal tile must publish a new focus-restore request"
+        )
+    }
+
+    @MainActor
     func testActivePaneSelectionPersistsWhenFocusedTileIsNotTerminal() {
         let pane = AgtmuxPane(
             source: "local",
@@ -765,6 +845,58 @@ final class WorkbenchStoreV2Tests: XCTestCase {
         XCTAssertNil(
             selection?.paneInventoryID,
             "paneInstanceID mismatch must not fall back to a reused pane location"
+        )
+    }
+
+    @MainActor
+    func testActivePaneSelectionFallsBackToVisibleLocationWhenCurrentPaneListLacksInstanceIdentity() {
+        let staleInstance = AgtmuxSyncV2PaneInstanceID(
+            paneId: "%9",
+            generation: 1,
+            birthTs: Date(timeIntervalSince1970: 1_778_822_200)
+        )
+        let pane = AgtmuxPane(
+            source: "local",
+            paneId: "%9",
+            sessionName: "shared",
+            windowId: "@3",
+            paneInstanceID: nil
+        )
+        let tile = WorkbenchTile(
+            kind: .terminal(
+                sessionRef: SessionRef(
+                    target: .local,
+                    sessionName: "shared"
+                )
+            )
+        )
+        let store = WorkbenchStoreV2(
+            workbenches: [
+                Workbench(
+                    title: "Main",
+                    root: .tile(tile),
+                    focusedTileID: tile.id,
+                    activePaneRef: ActivePaneRef(
+                        target: .local,
+                        sessionName: "shared",
+                        windowID: "@3",
+                        paneID: "%9",
+                        paneInstanceID: staleInstance
+                    )
+                )
+            ]
+        )
+
+        let selection = store.activePaneSelection(
+            panes: [pane],
+            hostsConfig: .empty
+        )
+
+        XCTAssertEqual(selection?.tileID, tile.id)
+        XCTAssertEqual(
+            selection?.paneInventoryID,
+            pane.id,
+            "when the visible pane list temporarily has no paneInstanceID, sidebar selection should fall back to the exact visible location"
         )
     }
 

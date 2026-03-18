@@ -78,4 +78,33 @@ final class WorkbenchV2NavigationSyncResolverTests: XCTestCase {
             "if the rendered client tty/generation rotates and live target is not yet observed, the app must retry exact-client navigation"
         )
     }
+
+    func testSkipsRetryWhenRenderedClientReverseSyncsAwayFromPreviouslyObservedDesiredPane() {
+        let desired = ActivePaneRef(
+            target: .local,
+            sessionName: "shared",
+            windowID: "@0",
+            paneID: "%0"
+        )
+        let observed = ActivePaneRef(
+            target: .local,
+            sessionName: "shared",
+            windowID: "@0",
+            paneID: "%0"
+        )
+        let liveTarget = WorkbenchV2TerminalLiveTarget(
+            sessionName: "shared",
+            windowID: "@0",
+            paneID: "%1"
+        )
+
+        XCTAssertFalse(
+            WorkbenchV2NavigationSyncResolver.shouldApplyNavigationIntent(
+                desiredPaneRef: desired,
+                observedPaneRef: observed,
+                liveTarget: liveTarget
+            ),
+            "once the rendered client has already reached the desired pane, a later authoritative reverse sync must not be forced back to the stale desired target"
+        )
+    }
 }

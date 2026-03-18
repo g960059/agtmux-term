@@ -82,9 +82,32 @@ final class LocalMetadataRefreshCoordinator {
     func failureExecution(
         context: LocalMetadataRefreshContext,
         error: any Error,
+        overlayStore: LocalMetadataOverlayStore,
         classifyLocalDaemonIssue: (any Error) -> LocalDaemonIssue?
     ) -> LocalMetadataRefreshExecution {
-        LocalMetadataRefreshExecution(
+        let daemonIssue = classifyLocalDaemonIssue(error)
+        if shouldPreserveOverlay(
+            after: error,
+            daemonIssue: daemonIssue,
+            overlayStore: overlayStore
+        ) {
+            return LocalMetadataRefreshExecution(
+                preApplyLogMessages: [],
+                replayResetVersions: [activeReplayResetVersion(for: context.transportVersion)],
+                plan: LocalMetadataRefreshBoundary.preservePlan(
+                    inventoryCount: context.inventoryCount,
+                    nextRefreshAt: now().addingTimeInterval(context.failureBackoff),
+                    syncPrimed: false,
+                    transportVersion: nil,
+                    daemonIssue: daemonIssue
+                ),
+                postApplyLogMessages: [
+                    "sync metadata transiently unavailable; preserving cached overlay: \(error)"
+                ]
+            )
+        }
+
+        return LocalMetadataRefreshExecution(
             preApplyLogMessages: [],
             replayResetVersions: [activeReplayResetVersion(for: context.transportVersion)],
             plan: LocalMetadataRefreshBoundary.clearPlan(
@@ -92,7 +115,7 @@ final class LocalMetadataRefreshCoordinator {
                 nextRefreshAt: now().addingTimeInterval(context.failureBackoff),
                 syncPrimed: false,
                 transportVersion: nil,
-                daemonIssue: classifyLocalDaemonIssue(error)
+                daemonIssue: daemonIssue
             ),
             postApplyLogMessages: [
                 "sync metadata unavailable; cleared cached overlay: \(error)"
@@ -184,5 +207,47 @@ final class LocalMetadataRefreshCoordinator {
     private func activeReplayResetVersion(for transportVersion: LocalMetadataTransportVersion?) -> LocalMetadataTransportVersion {
         _ = transportVersion
         return .v3
+    }
+
+    private func shouldPreserveOverlay(
+        after error: any Error,
+        daemonIssue: LocalDaemonIssue?,
+        overlayStore: LocalMetadataOverlayStore
+    ) -> Bool {
+        guard daemonIssue == nil else { return false }
+        guard !overlayStore.metadataByPaneKey.isEmpty || !overlayStore.presentationByPaneKey.isEmpty else {
+            return false
+        }
+        return isTransientTransportFailure(error)
+    }
+
+    private func isTransientTransportFailure(_ error: any Error) -> Bool {
+        if let daemonError = error as? DaemonError {
+            switch daemonError {
+            case .daemonUnavailable, .parseError:
+                return false
+            case let .processError(_, stderr):
+                let normalized = stderr.lowercased()
+                if normalized.contains("socket read failed") {
+                    return normalized.contains("resource temporarily unavailable")
+                        || normalized.contains("operation timed out")
+                        || normalized.contains("timed out")
+                }
+                return false
+            }
+        }
+
+        if let xpcError = error as? XPCClientError {
+            switch xpcError {
+            case .timeout:
+                return true
+            case .unavailable, .proxyUnavailable, .remote, .decode:
+                return false
+            }
+        }
+
+        let normalized = String(describing: error).lowercased()
+        return normalized.contains("resource temporarily unavailable")
+            || normalized.contains("operation timed out")
     }
 }

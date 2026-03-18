@@ -123,11 +123,36 @@ agtmux-term (Swift macOS App)
         └── tmux (PTY)                ← Terminal multiplexer
 ```
 
+## Documentation and Workflow
+
+Durable docs live in:
+
+- `docs/product/` for product intent
+- `docs/decisions/` for ADRs
+- `docs/runbooks/` for operating procedures
+- `docs/research/` for dated, non-authoritative research notes
+
+Active multi-step work lives in `changes/<issue-id>-slug/` and is removed from
+the default branch after merge. Read order for contributors and agents is:
+
+1. `README.md`
+2. `docs/README.md`
+3. `docs/product/`
+4. `docs/decisions/`
+5. `docs/runbooks/`
+6. the active GitHub Issue / PR
+7. the active change pack, if the work uses one
+
+Normal GitHub flow is:
+
+`Discussion -> Issue -> changes/<issue-id>-slug/ -> branch -> PR -> merge -> retire change pack`
+
 ## Release / CI
 
 | Workflow | Trigger | What it does |
 |----------|---------|-------------|
 | `ci.yml` | push / PR | Build + unit tests |
+| `docs-validate.yml` | push / PR / merge queue | Validate docs layout, ADR naming, research naming, and change-pack completeness |
 | `release.yml` | `v*` tag | Build universal binary → sign → notarize → DMG → GitHub Release → update Homebrew tap |
 
 To release a new version:

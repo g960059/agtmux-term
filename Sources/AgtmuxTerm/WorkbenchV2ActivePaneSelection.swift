@@ -58,10 +58,23 @@ enum WorkbenchV2ActivePaneSelectionResolver {
 
         if let paneInstanceID = activePaneRef.paneInstanceID {
             let exactMatches = sessionPanes.filter { $0.paneInstanceID == paneInstanceID }
-            guard exactMatches.count == 1 else {
+            if exactMatches.count == 1 {
+                return exactMatches[0].id
+            }
+            guard exactMatches.isEmpty else {
                 return nil
             }
-            return exactMatches[0].id
+
+            let locationMatches = sessionPanes.filter { pane in
+                pane.windowId == activePaneRef.windowID && pane.paneId == activePaneRef.paneID
+            }
+            guard locationMatches.count == 1 else {
+                return nil
+            }
+            guard locationMatches[0].paneInstanceID == nil else {
+                return nil
+            }
+            return locationMatches[0].id
         }
 
         let locationMatches = sessionPanes.filter { pane in

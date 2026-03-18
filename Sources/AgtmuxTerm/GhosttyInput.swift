@@ -144,16 +144,22 @@ enum GhosttyInput {
     // MARK: - Key Conversion
 
     /// Convert an NSEvent to a ghostty_input_key_s.
-    /// The `text` pointer in the returned struct is only valid within the caller's scope
-    /// when using `event.characters`; the string storage is managed by the caller.
-    /// Callers must use `withCString` or similar to keep the pointer alive.
-    static func toGhosttyKey(_ event: NSEvent) -> ghostty_input_key_s {
+    ///
+    /// This mirrors Ghostty's AppKit bridge closely enough to preserve control-key
+    /// encoding for terminal apps like tmux.
+    static func toGhosttyKey(
+        _ event: NSEvent,
+        translationMods: NSEvent.ModifierFlags? = nil
+    ) -> ghostty_input_key_s {
         var key = ghostty_input_key_s()
 
-        // action
-        if event.isARepeat {
-            key.action = GHOSTTY_ACTION_REPEAT
-        } else {
+        // `isARepeat` is only valid for keyDown/keyUp style keyboard events.
+        // Synthetic flagsChanged events used by tests and automation can throw
+        // if AppKit is asked repeat questions on them.
+        switch event.type {
+        case .keyDown:
+            key.action = event.isARepeat ? GHOSTTY_ACTION_REPEAT : GHOSTTY_ACTION_PRESS
+        default:
             key.action = GHOSTTY_ACTION_PRESS
         }
 
@@ -162,13 +168,20 @@ enum GhosttyInput {
 
         // mods
         key.mods = toMods(event.modifierFlags)
-        key.consumed_mods = ghostty_input_mods_e(GHOSTTY_MODS_NONE.rawValue)
+        key.consumed_mods = toMods(
+            (translationMods ?? event.modifierFlags)
+                .subtracting([.control, .command])
+        )
 
         // text — nil for now; the keyDown handler sends text via ghostty_surface_text separately
         key.text = nil
 
-        // unshifted codepoint
-        if let chars = event.charactersIgnoringModifiers, let scalar = chars.unicodeScalars.first {
+        // Some AppKit event types, notably synthetic flagsChanged, do not
+        // support character lookup. Keep those events at codepoint 0.
+        if event.type == .keyDown || event.type == .keyUp,
+           let chars = event.characters(byApplyingModifiers: []),
+           let scalar = chars.unicodeScalars.first
+        {
             key.unshifted_codepoint = scalar.value
         } else {
             key.unshifted_codepoint = 0
@@ -202,6 +215,15 @@ enum GhosttyInput {
         return ghostty_input_mods_e(mods)
     }
 
+    static func eventModifierFlags(mods: ghostty_input_mods_e) -> NSEvent.ModifierFlags {
+        var flags = NSEvent.ModifierFlags()
+        if mods.rawValue & GHOSTTY_MODS_SHIFT.rawValue != 0 { flags.insert(.shift) }
+        if mods.rawValue & GHOSTTY_MODS_CTRL.rawValue != 0 { flags.insert(.control) }
+        if mods.rawValue & GHOSTTY_MODS_ALT.rawValue != 0 { flags.insert(.option) }
+        if mods.rawValue & GHOSTTY_MODS_SUPER.rawValue != 0 { flags.insert(.command) }
+        return flags
+    }
+
     // MARK: - Scroll Mods Conversion
 
     /// Convert NSEvent scroll info to ghostty_input_scroll_mods_t.
@@ -226,5 +248,30 @@ enum GhosttyInput {
         }
 
         return precision | (momentumBits << 1)
+    }
+}
+
+extension NSEvent {
+    /// Returns the text Ghostty expects for this key event.
+    ///
+    /// Control-modified letter keys arrive from AppKit as control characters
+    /// (`^A`, `^B`, ...). Ghostty encodes those itself from the key + mods, so we
+    /// must recover the printable character instead of forwarding the raw control byte.
+    var agtmuxGhosttyCharacters: String? {
+        guard let characters else { return nil }
+
+        if characters.count == 1,
+           let scalar = characters.unicodeScalars.first
+        {
+            if scalar.value < 0x20 {
+                return self.characters(byApplyingModifiers: modifierFlags.subtracting(.control))
+            }
+
+            if scalar.value >= 0xF700 && scalar.value <= 0xF8FF {
+                return nil
+            }
+        }
+
+        return characters
     }
 }

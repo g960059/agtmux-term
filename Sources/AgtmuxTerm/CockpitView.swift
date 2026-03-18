@@ -1,12 +1,13 @@
-import AppKit
 import SwiftUI
 import AgtmuxTermCore
 
 private enum CockpitChrome {
-    static let workspaceTintTop = Color(red: 0.05, green: 0.09, blue: 0.14).opacity(0.18)
-    static let workspaceTintBottom = Color(red: 0.02, green: 0.03, blue: 0.06).opacity(0.12)
-    static let workspaceShade = Color.black.opacity(0.14)
-    static let floatingOcclusionOpacity: CGFloat = 0.82
+    static let windowBase = Color(red: 0.04, green: 0.06, blue: 0.08)
+    static let workspaceTintTop = Color(red: 0.08, green: 0.12, blue: 0.18)
+    static let workspaceTintBottom = Color(red: 0.03, green: 0.04, blue: 0.07)
+    static let workspaceShade = Color.black.opacity(0.18)
+    static let topBarFill = Color(red: 0.07, green: 0.09, blue: 0.12).opacity(0.96)
+    static let titlebarOcclusion = Color(red: 0.06, green: 0.08, blue: 0.11).opacity(0.98)
 }
 
 // MARK: - FullScreenTopBar
@@ -37,7 +38,7 @@ private struct FullScreenTopBar: View {
                 .frame(maxWidth: .infinity)
         }
         .frame(height: 36)
-        .background(.ultraThinMaterial.opacity(0.3))
+        .background(CockpitChrome.topBarFill)
     }
 
     @ViewBuilder
@@ -90,45 +91,38 @@ struct CockpitView: View {
 
     var body: some View {
         ZStack {
-            WindowBackdropView()
+            LinearGradient(
+                colors: [CockpitChrome.workspaceTintTop, CockpitChrome.workspaceTintBottom],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
                 .ignoresSafeArea()
 
-            ZStack {
-                ZStack {
-                    Rectangle().fill(.ultraThinMaterial).opacity(0.18)
-                    LinearGradient(
-                        colors: [CockpitChrome.workspaceTintTop, CockpitChrome.workspaceTintBottom],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
+            VStack(spacing: 0) {
+                if chromeState.isFullScreen {
+                    FullScreenTopBar()
                 }
 
-                VStack(spacing: 0) {
-                    if chromeState.isFullScreen {
-                        FullScreenTopBar()
+                HStack(spacing: 0) {
+                    if !chromeState.isSidebarCollapsed {
+                        SidebarView()
+                            .frame(width: sidebarExpandedWidth)
+                            .frame(maxHeight: .infinity, alignment: .topLeading)
+                            .transition(.move(edge: .leading).combined(with: .opacity))
                     }
 
-                    HStack(spacing: 0) {
-                        if !chromeState.isSidebarCollapsed {
-                            SidebarView()
-                                .frame(width: sidebarExpandedWidth)
-                                .frame(maxHeight: .infinity, alignment: .topLeading)
-                                .transition(.move(edge: .leading).combined(with: .opacity))
-                        }
-
-                        WorkbenchAreaV2()
-                            .frame(minWidth: 560, maxWidth: .infinity, maxHeight: .infinity)
-                            .background(CockpitChrome.workspaceShade)
-                    }
-                    .padding(.top, chromeState.isFullScreen ? 0 : max(0, chromeState.titlebarHeight))
-                    .animation(.easeInOut(duration: 0.16), value: chromeState.isSidebarCollapsed)
+                    WorkbenchAreaV2()
+                        .frame(minWidth: 560, maxWidth: .infinity, maxHeight: .infinity)
+                        .background(CockpitChrome.workspaceShade)
                 }
+                .padding(.top, chromeState.isFullScreen ? 0 : max(0, chromeState.titlebarHeight))
+                .animation(.easeInOut(duration: 0.16), value: chromeState.isSidebarCollapsed)
             }
+            .background(CockpitChrome.windowBase)
             .overlay(alignment: .top) {
                 if !chromeState.isFullScreen {
                     Rectangle()
-                        .fill(.ultraThinMaterial)
-                        .opacity(CockpitChrome.floatingOcclusionOpacity)
+                        .fill(CockpitChrome.titlebarOcclusion)
                         .frame(height: max(0, chromeState.titlebarHeight))
                         .allowsHitTesting(false)
                 }
@@ -136,22 +130,7 @@ struct CockpitView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .ignoresSafeArea(.container, edges: .all)
         }
+        .background(CockpitChrome.windowBase)
         .preferredColorScheme(.dark)
-    }
-}
-
-private struct WindowBackdropView: NSViewRepresentable {
-    func makeNSView(context: Context) -> NSVisualEffectView {
-        let view = NSVisualEffectView()
-        view.material = .hudWindow
-        view.blendingMode = .behindWindow
-        view.state = .active
-        return view
-    }
-
-    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
-        nsView.material = .hudWindow
-        nsView.blendingMode = .behindWindow
-        nsView.state = .active
     }
 }

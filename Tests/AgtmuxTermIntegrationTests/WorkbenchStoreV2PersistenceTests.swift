@@ -14,12 +14,24 @@ final class WorkbenchStoreV2PersistenceTests: XCTestCase {
         let persistedTerminalTile = WorkbenchTile(
             kind: .terminal(sessionRef: persistedTerminalRef)
         )
+        let persistedActivePaneRef = ActivePaneRef(
+            target: .remote(hostKey: "edge"),
+            sessionName: "backend",
+            windowID: "@3",
+            paneID: "%17",
+            paneInstanceID: AgtmuxSyncV2PaneInstanceID(
+                paneId: "%17",
+                generation: 4,
+                birthTs: nil
+            )
+        )
         let persistedWorkbenches = [
             Workbench.empty(title: "Inbox"),
             Workbench(
                 title: "Persisted",
                 root: .tile(persistedTerminalTile),
-                focusedTileID: persistedTerminalTile.id
+                focusedTileID: persistedTerminalTile.id,
+                activePaneRef: persistedActivePaneRef
             )
         ]
         let persistence = WorkbenchStoreV2PersistenceSpy()
@@ -42,6 +54,7 @@ final class WorkbenchStoreV2PersistenceTests: XCTestCase {
         XCTAssertEqual(restoredSessionRef.sessionName, persistedTerminalRef.sessionName)
         XCTAssertEqual(restoredSessionRef.lastSeenSessionID, persistedTerminalRef.lastSeenSessionID)
         XCTAssertEqual(restoredSessionRef.lastSeenRepoRoot, persistedTerminalRef.lastSeenRepoRoot)
+        XCTAssertEqual(store.activeWorkbench?.activePaneRef, persistedActivePaneRef)
     }
 
     func testFixtureEnvironmentOverridesPersistedSnapshot() throws {
@@ -230,6 +243,43 @@ final class WorkbenchStoreV2PersistenceTests: XCTestCase {
         XCTAssertEqual(snapshot.workbenches[0].focusedTileID, terminalResult.tileID)
         XCTAssertTrue(snapshot.workbenches[0].tiles.contains(where: { $0.id == browserTileID }))
         XCTAssertEqual(snapshot.workbenches[1].id, createdWorkbench.id)
+    }
+
+    func testSyncTerminalNavigationAutosavesExactActivePaneRefIntoPersistedSnapshot() throws {
+        let sessionRef = SessionRef(target: .local, sessionName: "main")
+        let terminalTile = WorkbenchTile(kind: .terminal(sessionRef: sessionRef))
+        let workbench = Workbench(
+            title: "Main",
+            root: .tile(terminalTile),
+            focusedTileID: terminalTile.id
+        )
+        let persistence = WorkbenchStoreV2PersistenceSpy()
+        let store = WorkbenchStoreV2(
+            workbenches: [workbench],
+            persistence: persistence.persistence
+        )
+        let exactPaneRef = ActivePaneRef(
+            target: .local,
+            sessionName: "main",
+            windowID: "@1",
+            paneID: "%10",
+            paneInstanceID: AgtmuxSyncV2PaneInstanceID(
+                paneId: "%10",
+                generation: 3,
+                birthTs: nil
+            )
+        )
+
+        let didChange = store.syncTerminalNavigation(
+            tileID: terminalTile.id,
+            preferredWindowID: exactPaneRef.windowID,
+            preferredPaneID: exactPaneRef.paneID,
+            paneInstanceID: exactPaneRef.paneInstanceID
+        )
+
+        XCTAssertTrue(didChange)
+        let snapshot = try XCTUnwrap(try persistence.persistence.load())
+        XCTAssertEqual(snapshot.workbenches[0].activePaneRef, exactPaneRef)
     }
 
     func testBridgeDispatchAutosavesPinnedCompanionIntoPersistedSnapshot() throws {

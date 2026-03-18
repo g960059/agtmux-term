@@ -214,6 +214,9 @@ final class AppViewModelLiveManagedAgentTests: XCTestCase {
                 normalizedDetail.contains("failed to authenticate")
                 || normalizedDetail.contains("authentication_error")
                 || normalizedDetail.contains("oauth token has expired")
+                || normalizedDetail.contains("not logged in")
+                || normalizedDetail.contains("please run /login")
+                || normalizedDetail.contains("login required")
             if isAuthFailure {
                 throw XCTSkip("claude prompt execution unavailable: \(detail)")
             }

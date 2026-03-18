@@ -358,6 +358,133 @@ final class AppViewModelA0Tests: XCTestCase {
         }
     }
 
+    @MainActor
+    private final class StubLocalInventoryAuthority: LocalPaneInventoryAuthorityProtocol {
+        private(set) var startCount = 0
+        private(set) var seedSnapshots: [[AgtmuxPane]] = []
+        private var applyInventory: (@MainActor ([AgtmuxPane]) async -> Void)?
+        private var handleFailure: (@MainActor () async -> Void)?
+
+        func start(
+            seedInventory: [AgtmuxPane],
+            applyInventory: @escaping @MainActor ([AgtmuxPane]) async -> Void,
+            handleFailure: @escaping @MainActor () async -> Void
+        ) {
+            startCount += 1
+            seedSnapshots.append(seedInventory)
+            self.applyInventory = applyInventory
+            self.handleFailure = handleFailure
+        }
+
+        func updateSeedInventory(_ inventory: [AgtmuxPane]) {
+            seedSnapshots.append(inventory)
+        }
+
+        func stop() {
+            applyInventory = nil
+            handleFailure = nil
+        }
+
+        func emitInventory(_ inventory: [AgtmuxPane]) async {
+            await applyInventory?(inventory)
+        }
+
+        func emitFailure() async {
+            await handleFailure?()
+        }
+    }
+
+    private actor InventoryAuthorityFetchProbe {
+        private var steps: [Result<[AgtmuxPane], Error>]
+        private(set) var callCount = 0
+
+        init(steps: [Result<[AgtmuxPane], Error>]) {
+            self.steps = steps
+        }
+
+        func fetch() async throws -> [AgtmuxPane] {
+            callCount += 1
+            guard !steps.isEmpty else { throw StubError.exhausted }
+            let step = steps.removeFirst()
+            switch step {
+            case .success(let inventory):
+                return inventory
+            case .failure(let error):
+                throw error
+            }
+        }
+
+        func calls() -> Int {
+            callCount
+        }
+    }
+
+    private actor RemoteFetchProbe {
+        private let panes: [AgtmuxPane]
+        private(set) var callCount = 0
+
+        init(panes: [AgtmuxPane]) {
+            self.panes = panes
+        }
+
+        func fetch() async -> [AgtmuxPane] {
+            callCount += 1
+            return panes
+        }
+
+        func calls() -> Int {
+            callCount
+        }
+    }
+
+    private actor InventoryAuthorityMonitorController {
+        private let continuation: AsyncStream<ControlModeEvent>.Continuation
+        let stream: AsyncStream<ControlModeEvent>
+        private var startCount = 0
+        private var stopCount = 0
+
+        init() {
+            let (stream, continuation) = AsyncStream<ControlModeEvent>.makeStream(
+                bufferingPolicy: .bufferingNewest(32)
+            )
+            self.stream = stream
+            self.continuation = continuation
+        }
+
+        nonisolated func handle() -> LocalPaneInventoryMonitorHandle {
+            LocalPaneInventoryMonitorHandle(
+                events: stream,
+                start: { [weak self] in
+                    await self?.recordStart()
+                },
+                stop: { [weak self] in
+                    await self?.recordStop()
+                }
+            )
+        }
+
+        func yield(_ event: ControlModeEvent) {
+            continuation.yield(event)
+        }
+
+        func counts() -> (start: Int, stop: Int) {
+            (startCount, stopCount)
+        }
+
+        func finish() {
+            continuation.finish()
+        }
+
+        private func recordStart() {
+            startCount += 1
+        }
+
+        private func recordStop() {
+            stopCount += 1
+            continuation.finish()
+        }
+    }
+
     private func waitUntil(timeout: TimeInterval = 2.0,
                            intervalMs: UInt64 = 25,
                            condition: @escaping @MainActor () -> Bool) async -> Bool {
@@ -1208,9 +1335,11 @@ final class AppViewModelA0Tests: XCTestCase {
             steps: [.success([inventoryPane])],
             repeatsLastStep: true
         )
+        let authority = StubLocalInventoryAuthority()
         let model = AppViewModel(
             localClient: client,
             localInventoryClient: inventoryClient,
+            localInventoryAuthority: authority,
             hostsConfig: .empty,
             binaryURLResolver: { nil },
             pollingInterval: 0.05,
@@ -1277,7 +1406,11 @@ final class AppViewModelA0Tests: XCTestCase {
         )
 
         await model.fetchAll()
+        let loaded = await waitUntil {
+            Set(model.panes.map(\.sessionName)) == Set([realSession, linkedSession])
+        }
 
+        XCTAssertTrue(loaded, "linked-looking session names should publish once the async snapshot pipeline settles")
         XCTAssertEqual(
             Set(model.panes.map(\.sessionName)),
             Set([realSession, linkedSession]),
@@ -1332,7 +1465,11 @@ final class AppViewModelA0Tests: XCTestCase {
         )
 
         await model.fetchAll()
+        let loaded = await waitUntil {
+            Set(model.panes.map(\.sessionName)) == Set([sessionA, sessionB])
+        }
 
+        XCTAssertTrue(loaded, "session-group alias rows should publish once the async snapshot pipeline settles")
         XCTAssertEqual(
             Set(model.panes.map(\.sessionName)),
             Set([sessionA, sessionB]),
@@ -1620,13 +1757,21 @@ final class AppViewModelA0Tests: XCTestCase {
         )
 
         await model.fetchAll()
+        let firstFetchLoaded = await waitUntil {
+            Set(model.panes.map(\.sessionName)) == Set([sessionA, sessionB])
+        }
+        XCTAssertTrue(firstFetchLoaded, "expected both session-group aliases to publish after first fetch")
         guard let selectedAlias = model.panes.first(where: { $0.sessionName == sessionA }) else {
             return XCTFail("expected session-group alias pane to be present after first fetch")
         }
         model.selectPane(selectedAlias)
 
         await model.fetchAll()
+        let selectionRetained = await waitUntil {
+            model.selectedPane?.sessionName == sessionA
+        }
 
+        XCTAssertTrue(selectionRetained, "selection should converge back to the exact alias after refresh")
         XCTAssertEqual(
             model.selectedPane?.sessionName,
             sessionA,
@@ -4277,6 +4422,73 @@ final class AppViewModelA0Tests: XCTestCase {
     }
 
     @MainActor
+    func testTransientWaitForChangesFailurePreservesManagedOverlayWhileRetryIsScheduled() async throws {
+        let bootstrap = try loadSyncV3Fixture(named: "codex-running")
+        let inventoryPane = makeInventoryPane(
+            paneId: "%12",
+            sessionName: "workbench",
+            windowId: "@5",
+            activityState: .unknown,
+            currentCmd: "zsh"
+        )
+        let client = StubMetadataClient(
+            bootstrapV3Steps: [
+                BootstrapV3Step(delayMs: 20, result: .success(bootstrap))
+            ],
+            bootstrapSteps: [],
+            waitV3Steps: [
+                WaitV3Step(
+                    delayMs: 20,
+                    result: .failure(
+                        DaemonError.processError(
+                            exitCode: -3,
+                            stderr: "socket read failed: Resource temporarily unavailable"
+                        )
+                    )
+                )
+            ]
+        )
+        let authority = StubLocalInventoryAuthority()
+        let model = AppViewModel(
+            localClient: client,
+            localInventoryClient: StubInventoryClient(panes: [inventoryPane]),
+            localInventoryAuthority: authority,
+            hostsConfig: .empty,
+            pollingInterval: 60.0
+        )
+
+        await model.performInitialSync()
+        let initialOverlayApplied = await waitUntil {
+            guard let pane = model.panes.first else { return false }
+            return pane.provider == .codex
+                && pane.activityState == .running
+                && model.panePrimaryState(for: pane) == .running
+        }
+        XCTAssertTrue(initialOverlayApplied)
+
+        model.startPolling()
+        defer { model.stopPolling() }
+
+        let transientFailureObserved = await waitUntilAsync(timeout: 2.5) {
+            let counts = await client.metadataCallCounts()
+            let resets = await client.resets()
+            return counts.waitV3 >= 1 && resets >= 1
+        }
+        XCTAssertTrue(
+            transientFailureObserved,
+            "steady-state metadata lane should hit the transient wait failure and reset replay ownership"
+        )
+
+        guard let visiblePane = model.panes.first else {
+            return XCTFail("expected managed pane to remain visible")
+        }
+        XCTAssertEqual(visiblePane.provider, .codex)
+        XCTAssertEqual(visiblePane.activityState, .running)
+        XCTAssertEqual(model.panePrimaryState(for: visiblePane), .running)
+        XCTAssertNil(model.localDaemonIssue)
+    }
+
+    @MainActor
     func testRunStartupSequenceDoesNotAwaitSupervisorKickoffBeforeInitialSync() async {
         let probe = StartupSequenceProbe()
 
@@ -4362,7 +4574,7 @@ final class AppViewModelA0Tests: XCTestCase {
     }
 
     @MainActor
-    func testStartPollingKeepsLocalInventoryConvergingWithoutGlobalFetchAll() async {
+    func testStartPollingUsesLocalInventoryAuthorityForSteadyStateConvergence() async {
         let inventoryPane = makeInventoryPane(
             paneId: "%12",
             sessionName: "workbench",
@@ -4378,20 +4590,15 @@ final class AppViewModelA0Tests: XCTestCase {
             currentCmd: "zsh"
         )
         let client = StubMetadataClient(bootstrapSteps: [])
-        let inventoryClient = StubInventoryClient(
-            steps: [
-                .success([inventoryPane]),
-                .success([inventoryPane, refreshedInventoryPane]),
-            ],
-            repeatsLastStep: true
-        )
+        let inventoryClient = StubInventoryClient(panes: [inventoryPane])
+        let authority = StubLocalInventoryAuthority()
         let model = AppViewModel(
             localClient: client,
             localInventoryClient: inventoryClient,
+            localInventoryAuthority: authority,
             hostsConfig: .empty,
             binaryURLResolver: { nil },
-            pollingInterval: 60.0,
-            localInventoryPollingInterval: 0.05
+            pollingInterval: 60.0
         )
 
         await model.performInitialSync()
@@ -4402,6 +4609,9 @@ final class AppViewModelA0Tests: XCTestCase {
 
         model.startPolling()
         defer { model.stopPolling() }
+        XCTAssertEqual(authority.startCount, 1)
+
+        await authority.emitInventory([inventoryPane, refreshedInventoryPane])
 
         let converged = await waitUntil(timeout: 2.5) {
             Set(model.panes.map(\.paneId)) == Set([inventoryPane.paneId, refreshedInventoryPane.paneId])
@@ -4409,15 +4619,11 @@ final class AppViewModelA0Tests: XCTestCase {
 
         XCTAssertTrue(
             converged,
-            "automatic local inventory convergence must continue under polling without falling back to global local fetchAll"
+            "steady-state local inventory convergence must flow through the authority without falling back to global local fetchAll"
         )
 
         let inventoryCalls = await inventoryClient.calls()
-        XCTAssertGreaterThanOrEqual(
-            inventoryCalls,
-            2,
-            "the dedicated local inventory lane must perform follow-up local tmux refreshes after startup"
-        )
+        XCTAssertEqual(inventoryCalls, 1, "healthy steady state must not keep polling local tmux after bootstrap")
     }
 
     @MainActor
@@ -4438,9 +4644,11 @@ final class AppViewModelA0Tests: XCTestCase {
                 BootstrapStep(delayMs: 20, result: .success(makeBootstrap(panes: [metadataPane])))
             ]
         )
+        let authority = StubLocalInventoryAuthority()
         let model = AppViewModel(
             localClient: client,
             localInventoryClient: inventoryClient,
+            localInventoryAuthority: authority,
             hostsConfig: .empty,
             pollingInterval: 60.0
         )
@@ -4466,6 +4674,348 @@ final class AppViewModelA0Tests: XCTestCase {
 
         let inventoryCalls = await inventoryClient.calls()
         XCTAssertEqual(inventoryCalls, 2)
+    }
+
+    @MainActor
+    func testStartPollingSkipsRemoteBroadPollWhenNoRemoteSources() async {
+        let model = AppViewModel(
+            localClient: StubMetadataClient(bootstrapSteps: []),
+            localInventoryClient: StubInventoryClient(panes: [makeInventoryPane()]),
+            hostsConfig: .empty,
+            binaryURLResolver: { nil },
+            pollingInterval: 0.05
+        )
+
+        await model.performInitialSync()
+        model.startPolling()
+        defer { model.stopPolling() }
+
+        try? await Task.sleep(for: .milliseconds(120))
+
+        XCTAssertFalse(model.isRemotePollingActiveForTesting)
+    }
+
+    @MainActor
+    func testStartPollingCreatesRemoteBroadPollWhenRemoteSourcesExist() async {
+        let remotePane = AgtmuxPane(
+            source: "remote-host",
+            paneId: "%500",
+            sessionName: "remote",
+            windowId: "@50",
+            windowName: "shell",
+            activityState: .unknown,
+            presence: .unmanaged,
+            evidenceMode: .none,
+            currentCmd: "zsh"
+        )
+        let remoteProbe = RemoteFetchProbe(panes: [remotePane])
+        let remoteSource = RemotePaneInventorySource(
+            source: "remote-host",
+            fetchPanes: {
+                await remoteProbe.fetch()
+            }
+        )
+        let model = AppViewModel(
+            localClient: StubMetadataClient(bootstrapSteps: []),
+            localInventoryClient: StubInventoryClient(panes: [makeInventoryPane()]),
+            hostsConfig: .empty,
+            remotePaneSources: [remoteSource],
+            binaryURLResolver: { nil },
+            pollingInterval: 0.05
+        )
+
+        await model.performInitialSync()
+        let initialRemoteCalls = await remoteProbe.calls()
+
+        model.startPolling()
+        defer { model.stopPolling() }
+
+        let didPollAgain = await waitUntilAsync(timeout: 1.0) {
+            await remoteProbe.calls() >= initialRemoteCalls + 1
+        }
+
+        XCTAssertTrue(model.isRemotePollingActiveForTesting)
+        XCTAssertTrue(didPollAgain)
+    }
+
+    @MainActor
+    func testLocalPaneInventoryAuthorityDoesNotPollHealthySeededSessionsWithoutEvents() async {
+        let inventoryPane = makeInventoryPane(
+            paneId: "%201",
+            sessionName: "steady",
+            windowId: "@21"
+        )
+        let fetchProbe = InventoryAuthorityFetchProbe(steps: [])
+        let monitor = InventoryAuthorityMonitorController()
+        let authority = LocalPaneInventoryAuthority(
+            dependencies: LocalPaneInventoryAuthorityDependencies(
+                fetchInventory: { try await fetchProbe.fetch() },
+                makeMonitor: { _ in monitor.handle() },
+                fallbackPollInterval: 0.05
+            )
+        )
+
+        authority.start(
+            seedInventory: [inventoryPane],
+            applyInventory: { _ in },
+            handleFailure: {}
+        )
+        defer { authority.stop() }
+
+        try? await Task.sleep(for: .milliseconds(120))
+
+        let fetchCalls = await fetchProbe.calls()
+        XCTAssertEqual(fetchCalls, 0, "healthy seeded sessions must not trigger periodic list-panes polling")
+        let counts = await monitor.counts()
+        XCTAssertEqual(counts.start, 1)
+    }
+
+    @MainActor
+    func testLocalPaneInventoryAuthorityRefreshesOnLayoutChangeEvent() async {
+        let initialPane = makeInventoryPane(
+            paneId: "%202",
+            sessionName: "steady",
+            windowId: "@22"
+        )
+        let updatedPane = makeInventoryPane(
+            paneId: "%203",
+            sessionName: "steady",
+            windowId: "@22"
+        )
+        let fetchProbe = InventoryAuthorityFetchProbe(steps: [
+            .success([initialPane, updatedPane]),
+        ])
+        let monitor = InventoryAuthorityMonitorController()
+        let authority = LocalPaneInventoryAuthority(
+            dependencies: LocalPaneInventoryAuthorityDependencies(
+                fetchInventory: { try await fetchProbe.fetch() },
+                makeMonitor: { _ in monitor.handle() },
+                fallbackPollInterval: 1.0
+            )
+        )
+        var appliedInventory: [AgtmuxPane] = []
+
+        authority.start(
+            seedInventory: [initialPane],
+            applyInventory: { inventory in
+                appliedInventory = inventory
+            },
+            handleFailure: {}
+        )
+        defer { authority.stop() }
+
+        await monitor.yield(
+            .layoutChange(
+                windowId: initialPane.windowId,
+                layout: "layout",
+                isCurrent: true
+            )
+        )
+
+        let refreshed = await waitUntil(timeout: 1.0) {
+            Set(appliedInventory.map(\.paneId)) == Set([initialPane.paneId, updatedPane.paneId])
+        }
+
+        XCTAssertTrue(refreshed)
+        let fetchCalls = await fetchProbe.calls()
+        XCTAssertEqual(fetchCalls, 1)
+    }
+
+    @MainActor
+    func testLocalPaneInventoryAuthorityFallsBackToPollingAfterRefreshFailure() async {
+        let initialPane = makeInventoryPane(
+            paneId: "%204",
+            sessionName: "steady",
+            windowId: "@23"
+        )
+        let recoveredPane = makeInventoryPane(
+            paneId: "%205",
+            sessionName: "steady",
+            windowId: "@23"
+        )
+        let fetchProbe = InventoryAuthorityFetchProbe(steps: [
+            .failure(StubError.timedOut),
+            .success([initialPane, recoveredPane]),
+        ])
+        let monitor = InventoryAuthorityMonitorController()
+        let authority = LocalPaneInventoryAuthority(
+            dependencies: LocalPaneInventoryAuthorityDependencies(
+                fetchInventory: { try await fetchProbe.fetch() },
+                makeMonitor: { _ in monitor.handle() },
+                fallbackPollInterval: 0.05
+            )
+        )
+        var appliedInventory: [AgtmuxPane] = []
+        var failureCount = 0
+
+        authority.start(
+            seedInventory: [initialPane],
+            applyInventory: { inventory in
+                appliedInventory = inventory
+            },
+            handleFailure: {
+                failureCount += 1
+            }
+        )
+        defer { authority.stop() }
+
+        await monitor.yield(
+            .layoutChange(
+                windowId: initialPane.windowId,
+                layout: "layout",
+                isCurrent: true
+            )
+        )
+
+        let recovered = await waitUntil(timeout: 1.0) {
+            failureCount >= 1
+                && Set(appliedInventory.map(\.paneId)) == Set([initialPane.paneId, recoveredPane.paneId])
+        }
+
+        XCTAssertTrue(recovered)
+        let fetchCalls = await fetchProbe.calls()
+        XCTAssertGreaterThanOrEqual(fetchCalls, 2)
+    }
+
+    @MainActor
+    func testPublishSnapshotGenerationGuardKeepsNewestSnapshotWhenOlderAssemblyFinishesLast() async {
+        let initialPane = makeInventoryPane(
+            paneId: "%301",
+            sessionName: "alpha",
+            windowId: "@31"
+        )
+        let newestPane = makeInventoryPane(
+            paneId: "%303",
+            sessionName: "gamma",
+            windowId: "@33"
+        )
+        let inventoryClient = StubInventoryClient(steps: [
+            .success([initialPane]),
+            .success([newestPane]),
+        ])
+        let model = AppViewModel(
+            localClient: StubMetadataClient(bootstrapSteps: []),
+            localInventoryClient: inventoryClient,
+            localInventoryAuthority: StubLocalInventoryAuthority(),
+            hostsConfig: .empty,
+            pollingInterval: 60.0
+        )
+
+        await model.performInitialSync()
+        let initialApplied = await waitUntil {
+            model.panes.first?.paneId == initialPane.paneId
+        }
+        XCTAssertTrue(initialApplied)
+
+        let olderInput = model.makePublishSnapshotAssemblyInputForTesting()
+        let olderSnapshot = AppViewModel.assemblePublishSnapshot(olderInput)
+
+        await model.fetchAll()
+
+        XCTAssertEqual(
+            model.panes.first?.paneId,
+            newestPane.paneId,
+            "the newer publish generation must commit before a stale snapshot is replayed"
+        )
+
+        model.commitPublishSnapshotForTesting(olderSnapshot)
+
+        XCTAssertEqual(model.panes.first?.paneId, newestPane.paneId)
+    }
+
+    @MainActor
+    func testPublishSnapshotRebasesTitleOverridesAfterSideInputMutation() async throws {
+        let inventoryPane = makeInventoryPane(
+            paneId: "%304",
+            sessionName: "delta",
+            windowId: "@34"
+        )
+        let inventoryClient = StubInventoryClient(steps: [
+            .success([inventoryPane]),
+            .success([inventoryPane]),
+        ])
+        let model = AppViewModel(
+            localClient: StubMetadataClient(bootstrapSteps: []),
+            localInventoryClient: inventoryClient,
+            localInventoryAuthority: StubLocalInventoryAuthority(),
+            hostsConfig: .empty,
+            pollingInterval: 60.0
+        )
+
+        await model.performInitialSync()
+        let initialApplied = await waitUntil {
+            model.panes.first?.paneId == inventoryPane.paneId
+        }
+        XCTAssertTrue(initialApplied)
+
+        let staleInput = model.makePublishSnapshotAssemblyInputForTesting()
+        let staleSnapshot = AppViewModel.assemblePublishSnapshot(staleInput)
+
+        let livePane = try XCTUnwrap(model.panes.first)
+        model.setPaneDisplayTitleOverride("Pinned Title", for: livePane)
+
+        model.commitPublishSnapshotForTesting(staleSnapshot)
+
+        XCTAssertEqual(model.paneDisplayTitle(for: livePane), "Pinned Title")
+        XCTAssertEqual(model.paneDisplayTitleOverrides.count, 1)
+    }
+
+    @MainActor
+    func testPublishSnapshotRetainsLatestSelectionAcrossBackgroundAssembly() async throws {
+        let firstPane = makeInventoryPane(
+            paneId: "%305",
+            sessionName: "epsilon",
+            windowId: "@35",
+            activityState: .unknown
+        )
+        let secondPane = makeInventoryPane(
+            paneId: "%306",
+            sessionName: "zeta",
+            windowId: "@36",
+            activityState: .unknown
+        )
+        let updatedFirstPane = makeInventoryPane(
+            paneId: firstPane.paneId,
+            sessionName: firstPane.sessionName,
+            windowId: firstPane.windowId,
+            activityState: .running
+        )
+        let updatedSecondPane = makeInventoryPane(
+            paneId: secondPane.paneId,
+            sessionName: secondPane.sessionName,
+            windowId: secondPane.windowId,
+            activityState: .running
+        )
+        let inventoryClient = StubInventoryClient(panes: [firstPane, secondPane])
+        let model = AppViewModel(
+            localClient: StubMetadataClient(bootstrapSteps: []),
+            localInventoryClient: inventoryClient,
+            localInventoryAuthority: StubLocalInventoryAuthority(),
+            hostsConfig: .empty,
+            pollingInterval: 60.0
+        )
+
+        await model.performInitialSync()
+        let initialApplied = await waitUntil {
+            model.panes.count == 2
+        }
+        XCTAssertTrue(initialApplied)
+
+        let initialSecondPane = try XCTUnwrap(model.panes.first { $0.paneId == secondPane.paneId })
+        model.selectPane(initialSecondPane)
+
+        let staleInput = model.makePublishSnapshotAssemblyInputForTesting(
+            localInventory: [updatedFirstPane, updatedSecondPane]
+        )
+        let refreshedSnapshot = AppViewModel.assemblePublishSnapshot(staleInput)
+
+        let initialFirstPane = try XCTUnwrap(model.panes.first { $0.paneId == firstPane.paneId })
+        model.selectPane(initialFirstPane)
+
+        model.commitPublishSnapshotForTesting(refreshedSnapshot)
+
+        XCTAssertEqual(model.selectedPane?.paneId, firstPane.paneId)
+        XCTAssertEqual(model.selectedPane?.activityState, .running)
     }
 
     @MainActor

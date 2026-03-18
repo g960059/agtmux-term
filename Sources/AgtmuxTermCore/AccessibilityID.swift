@@ -31,6 +31,7 @@ public enum AccessibilityID {
     public static let workspaceNewTab     = "workspace.newTabButton"
     public static let workspaceEmpty      = "workspace.emptyState"
     public static let workspaceTilePrefix = "workspace.tile."    // + source_session_paneID
+    public static let workspaceTerminalHostPrefix = "workspace.terminalHost." // + tile UUID
     public static let workspaceLoadingPrefix = "workspace.loading." // + source_session_paneID
     public static let workspaceTerminalRebindTarget = "workspace.terminalRebind.target"
     public static let workspaceTerminalRebindApply = "workspace.terminalRebind.apply"

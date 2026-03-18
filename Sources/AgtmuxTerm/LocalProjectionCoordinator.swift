@@ -48,6 +48,7 @@ struct LocalProjectionPlan {
 
 struct LocalProjectionSteadyStateRuntime {
     let captureState: @MainActor () async -> LocalProjectionState?
+    let applyInventory: @MainActor ([AgtmuxPane]) async -> Void
     let applyMetadataExecution: @MainActor (LocalMetadataRefreshExecution) async -> Void
     let applyHealthExecution: @MainActor (LocalHealthRefreshExecution) async -> Void
     let sleep: @Sendable (TimeInterval) async throws -> Void
@@ -55,12 +56,14 @@ struct LocalProjectionSteadyStateRuntime {
 
     init(
         captureState: @escaping @MainActor () async -> LocalProjectionState?,
+        applyInventory: @escaping @MainActor ([AgtmuxPane]) async -> Void = { _ in },
         applyMetadataExecution: @escaping @MainActor (LocalMetadataRefreshExecution) async -> Void,
         applyHealthExecution: @escaping @MainActor (LocalHealthRefreshExecution) async -> Void,
         sleep: @escaping @Sendable (TimeInterval) async throws -> Void = Self.defaultSleep,
         idlePollInterval: TimeInterval = 0.25
     ) {
         self.captureState = captureState
+        self.applyInventory = applyInventory
         self.applyMetadataExecution = applyMetadataExecution
         self.applyHealthExecution = applyHealthExecution
         self.sleep = sleep
@@ -140,6 +143,7 @@ final class LocalProjectionCoordinator {
         }
 
         let inventory = try await fetchInventory(state: state)
+        await runtime.applyInventory(inventory)
 
         if metadataSteadyStateTask == nil,
            let input = makeMetadataRefreshInputIfDue(
@@ -349,6 +353,7 @@ final class LocalProjectionCoordinator {
             return coordinator.failureExecution(
                 context: input.context,
                 error: error,
+                overlayStore: input.overlayStore,
                 classifyLocalDaemonIssue: classifyLocalDaemonIssue
             )
         }

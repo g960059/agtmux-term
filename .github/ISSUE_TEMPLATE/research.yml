@@ -1,0 +1,32 @@
+name: Research
+description: Request investigation before implementation.
+title: "[Research] "
+labels:
+  - research
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: Research question
+      description: What needs to be learned or compared?
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: What should and should not be investigated?
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Expected output
+      description: ADR input, recommendation, benchmark, feasibility note, etc.
+    validations:
+      required: true
+  - type: textarea
+    id: links
+    attributes:
+      label: Related links
+      description: Discussions, prior PRs, external references.

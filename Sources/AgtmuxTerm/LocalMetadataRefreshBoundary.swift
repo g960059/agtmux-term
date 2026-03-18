@@ -18,6 +18,7 @@ struct LocalBootstrapMetadataPayload: Equatable {
 
 enum LocalMetadataCacheAction: Equatable {
     case replace(LocalMetadataOverlayCache)
+    case preserve
     case clear
 }
 
@@ -111,6 +112,28 @@ enum LocalMetadataRefreshBoundary {
             ),
             cacheAction: .clear,
             shouldPublishSnapshotCache: inventoryCount > 0,
+            replayResetVersion: nil,
+            logMessage: nil,
+            disableLongPoll: false
+        )
+    }
+
+    static func preservePlan(
+        inventoryCount: Int,
+        nextRefreshAt: Date,
+        syncPrimed: Bool,
+        transportVersion: LocalMetadataTransportVersion?,
+        daemonIssue: LocalDaemonIssue?
+    ) -> LocalMetadataRefreshPlan {
+        LocalMetadataRefreshPlan(
+            state: LocalMetadataRefreshState(
+                syncPrimed: syncPrimed,
+                transportVersion: transportVersion,
+                daemonIssue: daemonIssue,
+                nextRefreshAt: nextRefreshAt
+            ),
+            cacheAction: .preserve,
+            shouldPublishSnapshotCache: false,
             replayResetVersion: nil,
             logMessage: nil,
             disableLongPoll: false

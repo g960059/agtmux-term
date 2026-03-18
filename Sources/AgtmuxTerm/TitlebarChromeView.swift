@@ -56,7 +56,7 @@ struct TitlebarChromeView: View {
     }
 
     private var controlsContentWidth: CGFloat {
-        let iconCount = 3
+        let iconCount = 4
         let button = TitlebarChromeMetrics.iconButtonSize
         let spacing = TitlebarChromeMetrics.iconSpacing
         return (CGFloat(iconCount) * button) + (CGFloat(max(0, iconCount - 1)) * spacing)
@@ -75,6 +75,17 @@ struct TitlebarChromeView: View {
                 accessibilityID: AccessibilityID.sidebarFilterToggle
             ) {
                 Image(systemName: "sidebar.leading")
+                    .font(.system(size: TitlebarChromeMetrics.iconGlyphSize, weight: .semibold))
+                    .frame(width: TitlebarChromeMetrics.iconGlyphSize, height: TitlebarChromeMetrics.iconGlyphSize)
+            }
+
+            TitlebarIconButton(
+                isActive: sidebarStore.statusFilter == .managed,
+                action: { toggleFilter(.managed) },
+                accessibilityLabel: "Agents Only",
+                accessibilityID: AccessibilityID.sidebarFilterManaged
+            ) {
+                Image(systemName: sidebarStore.statusFilter == .managed ? "sparkle" : "sparkle")
                     .font(.system(size: TitlebarChromeMetrics.iconGlyphSize, weight: .semibold))
                     .frame(width: TitlebarChromeMetrics.iconGlyphSize, height: TitlebarChromeMetrics.iconGlyphSize)
             }

@@ -49,6 +49,17 @@ let useXPCDaemonService = !isUITest && !xpcDisabled && xpcServiceBundled
 if !isUITest && !xpcDisabled && !xpcServiceBundled {
     fputs("AgtmuxTerm: bundled XPC service not found; falling back to in-process daemon supervisor.\n", stderr)
 }
+do {
+    let orphanedPIDs = try TmuxControlModeProcessRegistry.reapOrphanedLocalControlModeProcessesIfNeeded()
+    if !orphanedPIDs.isEmpty {
+        fputs(
+            "AgtmuxTerm: reaped \(orphanedPIDs.count) orphaned local tmux control-mode clients before startup.\n",
+            stderr
+        )
+    }
+} catch {
+    fputs("AgtmuxTerm: failed to inspect orphaned local tmux control-mode clients: \(error)\n", stderr)
+}
 signal(SIGTERM, agtmuxTermSIGTERMHandler)
 
 // 0. Initialise Ghostty global state (allocator, logging, etc.) in normal runs.
@@ -80,6 +91,26 @@ if requiresGhosttyRuntime {
 let xpcClient: AgtmuxDaemonXPCClient? = useXPCDaemonService ? AgtmuxDaemonXPCClient() : nil
 let daemonSupervisor: AgtmuxDaemonSupervisor? = useXPCDaemonService ? nil : AgtmuxDaemonSupervisor()
 let enableBroadPolling = !isUITest || enableUITestPolling
+
+let interruptCleanupQueue = DispatchQueue(label: "local.agtmux.term.sigint-cleanup")
+signal(SIGINT, SIG_IGN)
+let interruptCleanupSource: DispatchSourceSignal = {
+    let source = DispatchSource.makeSignalSource(signal: SIGINT, queue: interruptCleanupQueue)
+    source.setEventHandler {
+        daemonSupervisor?.stopIfOwned()
+
+        let sema = DispatchSemaphore(value: 0)
+        Task.detached {
+            await TmuxControlModeProcessRegistry.shared.terminateTrackedProcesses()
+            sema.signal()
+        }
+        _ = sema.wait(timeout: .now() + 1.0)
+        _exit(0)
+    }
+    source.resume()
+    return source
+}()
+_ = interruptCleanupSource
 
 final class XPCManagedDaemonBringUpLauncher: @unchecked Sendable {
     private let xpcClient: AgtmuxDaemonXPCClient
@@ -187,6 +218,24 @@ let chromeState: CockpitChromeState = MainActor.assumeIsolated {
     CockpitChromeState()
 }
 
+let terminationCleanupObserver = NotificationCenter.default.addObserver(
+    forName: NSApplication.willTerminateNotification,
+    object: nil,
+    queue: nil
+) { _ in
+    MainActor.assumeIsolated {
+        viewModel.stopPolling()
+    }
+
+    let sema = DispatchSemaphore(value: 0)
+    Task.detached {
+        await TmuxControlModeProcessRegistry.shared.terminateTrackedProcesses()
+        sema.signal()
+    }
+    _ = sema.wait(timeout: .now() + 1.0)
+}
+_ = terminationCleanupObserver
+
 // 5. Build the SwiftUI view hierarchy wrapped in NSHostingView.
 let cockpit = CockpitView()
     .environmentObject(viewModel)
@@ -210,8 +259,15 @@ window.title = ""
 window.titleVisibility = .hidden
 window.titlebarAppearsTransparent = true
 window.isMovableByWindowBackground = false
-window.isOpaque = false
-window.backgroundColor = .clear
+// Keep the host window opaque so the embedded Ghostty IOSurface is not forced
+// through full-window blur/transparency composition during scroll.
+window.isOpaque = true
+window.backgroundColor = NSColor(
+    calibratedRed: 0.04,
+    green: 0.06,
+    blue: 0.08,
+    alpha: 1.0
+)
 window.isRestorable = false
 window.contentView = hostingView
 window.makeKeyAndOrderFront(nil)

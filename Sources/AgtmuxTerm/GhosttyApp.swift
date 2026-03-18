@@ -21,6 +21,54 @@ final class GhosttyApp {
     typealias BridgeFailureReporter = @MainActor (Error) -> Void
     typealias BridgeMainActorObserver = @MainActor () -> Void
 
+    private enum BridgeDispatchTarget: Sendable {
+        case app
+        case surface(GhosttySurfaceHandle)
+        case unsupported(ghostty_target_tag_e)
+
+        init(target: ghostty_target_s) {
+            switch target.tag {
+            case GHOSTTY_TARGET_APP:
+                self = .app
+            case GHOSTTY_TARGET_SURFACE:
+                if let rawSurface = target.target.surface {
+                    self = .surface(GhosttySurfaceHandle(surface: rawSurface))
+                } else {
+                    self = .unsupported(target.tag)
+                }
+            default:
+                self = .unsupported(target.tag)
+            }
+        }
+
+        func ghosttyTarget() -> ghostty_target_s {
+            switch self {
+            case .app:
+                return ghostty_target_s(
+                    tag: GHOSTTY_TARGET_APP,
+                    target: ghostty_target_u(surface: nil)
+                )
+            case .surface(let surfaceHandle):
+                return ghostty_target_s(
+                    tag: GHOSTTY_TARGET_SURFACE,
+                    target: ghostty_target_u(
+                        surface: UnsafeMutableRawPointer(bitPattern: surfaceHandle.rawValue)
+                    )
+                )
+            case .unsupported(let tag):
+                return ghostty_target_s(
+                    tag: tag,
+                    target: ghostty_target_u(surface: nil)
+                )
+            }
+        }
+    }
+
+    private struct OwnedCustomOSCDispatch: Sendable {
+        let target: BridgeDispatchTarget
+        let payload: Data
+    }
+
     @MainActor
     private static var bridgeActionDispatcher: BridgeActionDispatcher = { target, action in
         try GhosttyCLIOSCBridge.dispatchIfBridgeAction(
@@ -91,21 +139,10 @@ final class GhosttyApp {
         app = ghostty_app_new(&runtimeConfig, config)
     }
 
+    @MainActor
     static func scheduleTickIfInitialized() {
         guard shouldScheduleTickOnMain() else { return }
-
-        if Thread.isMainThread {
-            MainActor.assumeIsolated {
-                tickScheduleObserver()
-            }
-        } else {
-            DispatchQueue.main.sync {
-                MainActor.assumeIsolated {
-                    tickScheduleObserver()
-                }
-            }
-        }
-
+        tickScheduleObserver()
         initializedShared?.enqueueTick()
     }
 
@@ -153,44 +190,44 @@ final class GhosttyApp {
         target: ghostty_target_s,
         action: ghostty_action_s
     ) -> Bool {
-        let runOnMain = {
-            MainActor.assumeIsolated {
-                bridgeMainActorObserver()
+        let bridgeID = AgtmuxSignpost.ghosttyBridge.makeSignpostID()
+        let bridgeState = AgtmuxSignpost.ghosttyBridge.beginInterval("customOSC", id: bridgeID)
+        defer { AgtmuxSignpost.ghosttyBridge.endInterval("customOSC", bridgeState) }
 
-                do {
-                    let result = try bridgeActionDispatcher(target, action)
-                    return result != nil
-                } catch {
-                    bridgeFailureReporter(error)
-                    return true
-                }
-            }
+        guard let dispatch = makeOwnedCustomOSCDispatch(target: target, action: action) else {
+            return false
         }
 
         if Thread.isMainThread {
-            return runOnMain()
+            return MainActor.assumeIsolated {
+                dispatchOwnedCustomOSC(dispatch)
+            }
         }
 
-        return DispatchQueue.main.sync(execute: runOnMain)
+        DispatchQueue.main.async {
+            _ = dispatchOwnedCustomOSC(dispatch)
+        }
+        return true
     }
 
     private static func handleRender(target: ghostty_target_s) -> Bool {
-        let runOnMain = {
-            MainActor.assumeIsolated {
-                guard target.tag == GHOSTTY_TARGET_SURFACE,
-                      let rawSurface = target.target.surface else { return true }
-                SurfacePool.shared.markDirty(
-                    surfaceHandle: GhosttySurfaceHandle(surface: rawSurface)
-                )
-                return true
-            }
-        }
+        guard target.tag == GHOSTTY_TARGET_SURFACE,
+              let rawSurface = target.target.surface else { return true }
+        let surfaceHandle = GhosttySurfaceHandle(surface: rawSurface)
 
         if Thread.isMainThread {
-            return runOnMain()
+            MainActor.assumeIsolated {
+                SurfacePool.shared.markDirty(surfaceHandle: surfaceHandle)
+            }
+            return true
         }
 
-        return DispatchQueue.main.sync(execute: runOnMain)
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated {
+                SurfacePool.shared.markDirty(surfaceHandle: surfaceHandle)
+            }
+        }
+        return true
     }
 
     /// Integration-test seam for the real action callback path.
@@ -240,6 +277,17 @@ final class GhosttyApp {
         tickScheduleObserver = observer
         defer { tickScheduleObserver = originalObserver }
         return try body()
+    }
+
+    @MainActor
+    static func withTestTickScheduleObserver<T>(
+        _ observer: @escaping @MainActor () -> Void,
+        _ body: () async throws -> T
+    ) async rethrows -> T {
+        let originalObserver = tickScheduleObserver
+        tickScheduleObserver = observer
+        defer { tickScheduleObserver = originalObserver }
+        return try await body()
     }
 
     @MainActor
@@ -370,20 +418,61 @@ final class GhosttyApp {
         SurfacePool.shared.recordDrawPassCount(drawnSurfaceCount)
     }
 
+    @MainActor
     private static func shouldScheduleTickOnMain() -> Bool {
-        let runOnMain = {
-            MainActor.assumeIsolated {
-                if let override = tickExecutionOverrideForTesting {
-                    return override == false
-                }
-                return (initializedShared?.tickExecutionDepth ?? 0) == 0
+        if let override = tickExecutionOverrideForTesting {
+            return override == false
+        }
+        return (initializedShared?.tickExecutionDepth ?? 0) == 0
+    }
+
+    private static func makeOwnedCustomOSCDispatch(
+        target: ghostty_target_s,
+        action: ghostty_action_s
+    ) -> OwnedCustomOSCDispatch? {
+        guard action.tag == GHOSTTY_ACTION_CUSTOM_OSC else { return nil }
+        let customOSC = action.action.custom_osc
+        guard customOSC.osc == GhosttyCLIOSCBridge.command else { return nil }
+
+        let payload: Data
+        if customOSC.len == 0 {
+            payload = Data()
+        } else if let pointer = customOSC.payload {
+            payload = Data(bytes: pointer, count: Int(customOSC.len))
+        } else {
+            payload = Data()
+        }
+
+        return OwnedCustomOSCDispatch(
+            target: BridgeDispatchTarget(target: target),
+            payload: payload
+        )
+    }
+
+    @MainActor
+    @discardableResult
+    private static func dispatchOwnedCustomOSC(_ dispatch: OwnedCustomOSCDispatch) -> Bool {
+        bridgeMainActorObserver()
+        let target = dispatch.target.ghosttyTarget()
+        let consumed = dispatch.payload.withUnsafeBytes { rawBuffer in
+            let pointer = rawBuffer.bindMemory(to: UInt8.self).baseAddress
+            let customOSC = ghostty_action_custom_osc_s(
+                osc: GhosttyCLIOSCBridge.command,
+                payload: pointer,
+                len: UInt(dispatch.payload.count)
+            )
+            let action = ghostty_action_s(
+                tag: GHOSTTY_ACTION_CUSTOM_OSC,
+                action: ghostty_action_u(custom_osc: customOSC)
+            )
+
+            do {
+                return try bridgeActionDispatcher(target, action) != nil
+            } catch {
+                bridgeFailureReporter(error)
+                return true
             }
         }
-
-        if Thread.isMainThread {
-            return runOnMain()
-        }
-
-        return DispatchQueue.main.sync(execute: runOnMain)
+        return consumed
     }
 }

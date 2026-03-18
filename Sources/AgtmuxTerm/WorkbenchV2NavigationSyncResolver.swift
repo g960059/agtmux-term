@@ -7,9 +7,17 @@ enum WorkbenchV2NavigationSyncResolver {
         observedPaneRef: ActivePaneRef?,
         liveTarget: WorkbenchV2TerminalLiveTarget?
     ) -> Bool {
-        _ = observedPaneRef
         guard let desiredPaneRef else { return false }
         guard let liveTarget else { return true }
+        if let observedPaneRef,
+           observedPaneRef.sessionName == desiredPaneRef.sessionName,
+           observedPaneRef.windowID == desiredPaneRef.windowID,
+           observedPaneRef.paneID == desiredPaneRef.paneID,
+           (desiredPaneRef.sessionName != liveTarget.sessionName
+                || desiredPaneRef.windowID != liveTarget.windowID
+                || desiredPaneRef.paneID != liveTarget.paneID) {
+            return false
+        }
         return desiredPaneRef.sessionName != liveTarget.sessionName
             || desiredPaneRef.windowID != liveTarget.windowID
             || desiredPaneRef.paneID != liveTarget.paneID

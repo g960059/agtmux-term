@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Discussions
+    url: https://github.com/g960059/agtmux-term/discussions
+    about: Use Discussions for open-ended ideas and design conversation before opening executable work.

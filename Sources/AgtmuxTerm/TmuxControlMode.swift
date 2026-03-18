@@ -1,6 +1,11 @@
 import Foundation
 import AgtmuxTermCore
 
+private func tmuxControlModeDebugLog(_ message: @autoclosure () -> String) {
+    guard ProcessInfo.processInfo.environment["AGTMUX_NAV_DEBUG"] == "1" else { return }
+    FileHandle.standardError.write(Data(("[tmux-control] " + message() + "\n").utf8))
+}
+
 // MARK: - ControlModeEvent
 
 /// Events produced by tmux control mode (`tmux -C attach-session`).
@@ -26,6 +31,165 @@ enum ControlModeEvent: Sendable {
     case commandResponse(cmdId: Int, lines: [String])
 }
 
+struct TmuxControlModeParser {
+    private static let newline: UInt8 = 0x0A
+
+    private let emitsPaneOutput: Bool
+    private var bufferedBytes = Data()
+    private var inBlock = false
+    private var blockCmdId = 0
+    private var blockLines: [String] = []
+
+    init(emitsPaneOutput: Bool) {
+        self.emitsPaneOutput = emitsPaneOutput
+    }
+
+    mutating func append(_ data: Data) -> [ControlModeEvent] {
+        guard data.isEmpty == false else { return [] }
+        bufferedBytes.append(data)
+        return drainCompleteLines()
+    }
+
+    mutating func finish() -> [ControlModeEvent] {
+        guard bufferedBytes.isEmpty == false else { return [] }
+        let trailing = bufferedBytes
+        bufferedBytes.removeAll(keepingCapacity: false)
+        return consumeLineData(trailing)
+    }
+
+    private mutating func drainCompleteLines() -> [ControlModeEvent] {
+        var events: [ControlModeEvent] = []
+
+        while let newlineIndex = bufferedBytes.firstIndex(of: Self.newline) {
+            let lineData = Data(bufferedBytes[..<newlineIndex])
+            bufferedBytes.removeSubrange(...newlineIndex)
+            events.append(contentsOf: consumeLineData(lineData))
+        }
+
+        return events
+    }
+
+    private mutating func consumeLineData(_ lineData: Data) -> [ControlModeEvent] {
+        guard let decoded = String(data: lineData, encoding: .utf8) else { return [] }
+        let line = decoded.trimmingCharacters(in: .controlCharacters)
+        guard line.isEmpty == false else { return [] }
+        return parseLine(line)
+    }
+
+    private mutating func parseLine(_ line: String) -> [ControlModeEvent] {
+        let parts = line.split(separator: " ", omittingEmptySubsequences: false)
+        guard let tag = parts.first else { return [] }
+
+        switch tag {
+        case "%begin":
+            inBlock = true
+            blockCmdId = parts.count >= 3 ? (Int(parts[2]) ?? 0) : 0
+            blockLines = []
+            return []
+
+        case "%end":
+            guard inBlock else {
+                blockLines = []
+                return []
+            }
+
+            let cmdId = parts.count >= 3 ? (Int(parts[2]) ?? blockCmdId) : blockCmdId
+            let event = ControlModeEvent.commandResponse(cmdId: cmdId, lines: blockLines)
+            inBlock = false
+            blockLines = []
+            return [event]
+
+        case "%error":
+            inBlock = false
+            blockLines = []
+            return []
+
+        case "%layout-change":
+            guard parts.count >= 3 else { return [] }
+            let event = ControlModeEvent.layoutChange(
+                windowId: String(parts[1]),
+                layout: String(parts[2]),
+                isCurrent: parts.last == "*"
+            )
+            if inBlock {
+                blockLines.append(line)
+                return []
+            }
+            return [event]
+
+        case "%window-pane-changed":
+            guard parts.count >= 3 else { return [] }
+            let event = ControlModeEvent.windowPaneChanged(
+                windowId: String(parts[1]),
+                paneId: String(parts[2])
+            )
+            if inBlock {
+                blockLines.append(line)
+                return []
+            }
+            return [event]
+
+        case "%window-add":
+            guard parts.count >= 2 else { return [] }
+            let event = ControlModeEvent.windowAdd(windowId: String(parts[1]))
+            if inBlock {
+                blockLines.append(line)
+                return []
+            }
+            return [event]
+
+        case "%unlinked-window-close":
+            guard parts.count >= 2 else { return [] }
+            let event = ControlModeEvent.windowClose(windowId: String(parts[1]))
+            if inBlock {
+                blockLines.append(line)
+                return []
+            }
+            return [event]
+
+        case "%session-changed":
+            guard parts.count >= 3 else { return [] }
+            let event = ControlModeEvent.sessionChanged(
+                sessionId: String(parts[1]),
+                sessionName: String(parts[2])
+            )
+            if inBlock {
+                blockLines.append(line)
+                return []
+            }
+            return [event]
+
+        case "%session-window-changed":
+            guard parts.count >= 3 else { return [] }
+            let event = ControlModeEvent.sessionWindowChanged(
+                sessionId: String(parts[1]),
+                windowId: String(parts[2])
+            )
+            if inBlock {
+                blockLines.append(line)
+                return []
+            }
+            return [event]
+
+        case "%output":
+            if inBlock {
+                blockLines.append(line)
+                return []
+            }
+            guard emitsPaneOutput, parts.count >= 3 else { return [] }
+            let paneId = String(parts[1])
+            let text = parts[2...].joined(separator: " ")
+            return [.output(paneId: paneId, text: text)]
+
+        default:
+            if inBlock {
+                blockLines.append(line)
+            }
+            return []
+        }
+    }
+}
+
 // MARK: - TmuxControlMode
 
 /// Maintains a persistent `tmux -C attach-session` subprocess for a named session.
@@ -49,6 +213,7 @@ actor TmuxControlMode {
 
     let sessionName: String
     let source: String
+    let emitsPaneOutput: Bool
     private(set) var connectionState: ConnectionState = .stopped
 
     // MARK: - AsyncStream plumbing
@@ -70,31 +235,36 @@ actor TmuxControlMode {
 
     // MARK: - Init
 
-    init(sessionName: String, source: String = "local") {
+    init(
+        sessionName: String,
+        source: String = "local",
+        emitsPaneOutput: Bool = false
+    ) {
         let (stream, continuation) = AsyncStream<ControlModeEvent>.makeStream(
             bufferingPolicy: .bufferingNewest(1024)
         )
         self.events = stream
         self.eventContinuation = continuation
         self.sessionName = sessionName
-        self.source      = source
+        self.source = source
+        self.emitsPaneOutput = emitsPaneOutput
     }
 
     // MARK: - Lifecycle
 
     /// Start the control mode connection.
-    func start() {
+    func start() async {
         guard connectionState == .stopped else { return }
         stopped = false
         retryCount = 0
-        connect()
+        await connect()
     }
 
     /// Stop the connection and finish the AsyncStream continuation.
-    func stop() {
+    func stop() async {
         stopped = true
         connectionState = .stopped
-        terminateProcess()
+        await terminateProcess()
         readerTask?.cancel()
         readerTask = nil
         eventContinuation.finish()
@@ -118,19 +288,23 @@ actor TmuxControlMode {
 
     private func yield(_ event: ControlModeEvent) {
         recordEventSignpost(for: event)
+        tmuxControlModeDebugLog("event session=\(sessionName) source=\(source) event=\(String(describing: event))")
         eventContinuation.yield(event)
     }
 
-    private func connect() {
+    private func connect() async {
         guard !stopped else { return }
+        tmuxControlModeDebugLog("connect start session=\(sessionName) source=\(source)")
 
         let process = Process()
 
         if source == "local" {
             process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
             let env = ProcessInfo.processInfo.environment
-            let socketArgs = LocalTmuxTarget.socketArguments(from: env)
-            process.arguments = ["tmux"] + socketArgs + ["-C", "attach-session", "-t", sessionName]
+            process.arguments = Self.localProcessArguments(
+                sessionName: sessionName,
+                env: env
+            )
             var finalEnv = env
             finalEnv["TMUX"] = nil
             finalEnv["TMUX_PANE"] = nil
@@ -167,6 +341,10 @@ actor TmuxControlMode {
         self.stdinHandle = stdinPipe.fileHandleForWriting
         connectionState  = .connected
         retryCount       = 0
+        tmuxControlModeDebugLog("connect ok session=\(sessionName) source=\(source) pid=\(process.processIdentifier)")
+        if process.processIdentifier > 0 {
+            await TmuxControlModeProcessRegistry.shared.register(process.processIdentifier)
+        }
 
         // Start async reader
         let stdoutFH = stdoutPipe.fileHandleForReading
@@ -176,106 +354,49 @@ actor TmuxControlMode {
     }
 
     private func readLoop(fileHandle: FileHandle) async {
-        var inBlock = false
-        var blockCmdId = 0
-        var blockLines: [String] = []
-        var lineBuffer = ""
+        await Self.streamEvents(
+            fileHandle: fileHandle,
+            emitsPaneOutput: emitsPaneOutput
+        ) { [weak self] event in
+            await self?.yield(event)
+        }
+    }
 
-        do {
-            for try await byte in fileHandle.bytes {
-                guard !Task.isCancelled else { break }
-                let char = Character(UnicodeScalar(byte))
-                if char == "\n" {
-                    let line = lineBuffer.trimmingCharacters(in: .controlCharacters)
-                    lineBuffer = ""
-                    guard !line.isEmpty else { continue }
-                    await parseLine(line, inBlock: &inBlock,
-                                    blockCmdId: &blockCmdId, blockLines: &blockLines)
-                } else {
-                    lineBuffer.append(char)
+    private nonisolated static func streamEvents(
+        fileHandle: FileHandle,
+        emitsPaneOutput: Bool,
+        emit: @escaping @Sendable (ControlModeEvent) async -> Void
+    ) async {
+        var parser = TmuxControlModeParser(emitsPaneOutput: emitsPaneOutput)
+
+        while !Task.isCancelled {
+            let chunk: Data
+            do {
+                guard let data = try fileHandle.read(upToCount: 4096), data.isEmpty == false else {
+                    break
                 }
+                chunk = data
+            } catch {
+                break
             }
-        } catch {
-            // EOF or read error — process terminated, handleTermination will reconnect
+
+            for event in parser.append(chunk) {
+                guard !Task.isCancelled else { return }
+                await emit(event)
+            }
+        }
+
+        guard !Task.isCancelled else { return }
+        for event in parser.finish() {
+            await emit(event)
         }
     }
 
-    private func parseLine(_ line: String,
-                           inBlock: inout Bool,
-                           blockCmdId: inout Int,
-                           blockLines: inout [String]) async {
-        let parts = line.split(separator: " ", omittingEmptySubsequences: false)
-                        .map(String.init)
-        guard let tag = parts.first else { return }
-
-        switch tag {
-        case "%begin":
-            inBlock    = true
-            blockCmdId = parts.count >= 3 ? (Int(parts[2]) ?? 0) : 0
-            blockLines = []
-
-        case "%end":
-            if inBlock {
-                let cmdId = parts.count >= 3 ? (Int(parts[2]) ?? blockCmdId) : blockCmdId
-                yield(.commandResponse(cmdId: cmdId, lines: blockLines))
-            }
-            inBlock    = false
-            blockLines = []
-
-        case "%error":
-            inBlock    = false
-            blockLines = []
-
-        case "%layout-change":
-            // %layout-change @WNDID LAYOUT VISIBLE_LAYOUT [*]
-            guard parts.count >= 3 else { return }
-            let windowId = parts[1]
-            let layout   = parts[2]
-            let isCurrent = parts.last == "*"
-            if inBlock { blockLines.append(line) }
-            else { yield(.layoutChange(windowId: windowId, layout: layout, isCurrent: isCurrent)) }
-
-        case "%window-pane-changed":
-            guard parts.count >= 3 else { return }
-            let event = ControlModeEvent.windowPaneChanged(windowId: parts[1], paneId: parts[2])
-            if inBlock { blockLines.append(line) } else { yield(event) }
-
-        case "%window-add":
-            guard parts.count >= 2 else { return }
-            let event = ControlModeEvent.windowAdd(windowId: parts[1])
-            if inBlock { blockLines.append(line) } else { yield(event) }
-
-        case "%unlinked-window-close":
-            guard parts.count >= 2 else { return }
-            let event = ControlModeEvent.windowClose(windowId: parts[1])
-            if inBlock { blockLines.append(line) } else { yield(event) }
-
-        case "%session-changed":
-            guard parts.count >= 3 else { return }
-            let event = ControlModeEvent.sessionChanged(sessionId: parts[1], sessionName: parts[2])
-            if inBlock { blockLines.append(line) } else { yield(event) }
-
-        case "%session-window-changed":
-            guard parts.count >= 3 else { return }
-            let event = ControlModeEvent.sessionWindowChanged(sessionId: parts[1], windowId: parts[2])
-            if inBlock { blockLines.append(line) } else { yield(event) }
-
-        case "%output":
-            guard parts.count >= 3 else { return }
-            // Text may contain spaces — rejoin from index 2
-            let text  = parts[2...].joined(separator: " ")
-            let event = ControlModeEvent.output(paneId: parts[1], text: text)
-            if inBlock { blockLines.append(line) } else { yield(event) }
-
-        default:
-            if inBlock { blockLines.append(line) }
-        }
-    }
-
-    private func handleTermination(status: Int32) {
+    private func handleTermination(status: Int32) async {
+        tmuxControlModeDebugLog("terminated session=\(sessionName) source=\(source) status=\(status)")
         readerTask?.cancel()
         readerTask = nil
-        terminateProcess()
+        await terminateProcess()
 
         guard !stopped else { return }
         scheduleReconnect()
@@ -334,9 +455,22 @@ actor TmuxControlMode {
         AgtmuxSignpost.navigationSync.endInterval(name, signpostState)
     }
 
-    private func terminateProcess() {
+    private func terminateProcess() async {
+        let pid = process?.processIdentifier ?? 0
         if process?.isRunning == true { process?.terminate() }
         process     = nil
         stdinHandle = nil
+        if pid > 0 {
+            await TmuxControlModeProcessRegistry.shared.unregister(pid)
+        }
+    }
+
+    nonisolated static func localProcessArguments(
+        sessionName: String,
+        env: [String: String]
+    ) -> [String] {
+        let configArgs = LocalTmuxTarget.configArguments(from: env)
+        let socketArgs = LocalTmuxTarget.socketArguments(from: env)
+        return ["tmux"] + configArgs + socketArgs + ["-C", "attach-session", "-t", sessionName]
     }
 }

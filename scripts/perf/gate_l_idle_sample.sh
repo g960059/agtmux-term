@@ -107,7 +107,7 @@ jq -n \
   def round3:
     ((. * 1000.0) | round) / 1000.0;
   def mem_to_mib:
-    capture("^(?<value>[0-9]+(?:\\.[0-9]+)?)(?<unit>[BKMGTPE])$") as $m
+    capture("^(?<value>[0-9]+(?:\\.[0-9]+)?)(?<unit>[BKMGTPE])\\+?$") as $m
     | ($m.value | tonumber) as $value
     | if $m.unit == "B" then
         $value / (1024.0 * 1024.0)

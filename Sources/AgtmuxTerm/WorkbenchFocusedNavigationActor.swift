@@ -1,6 +1,11 @@
 import Foundation
 import AgtmuxTermCore
 
+private func workbenchNavigationDebugLog(_ message: @autoclosure () -> String) {
+    guard ProcessInfo.processInfo.environment["AGTMUX_NAV_DEBUG"] == "1" else { return }
+    FileHandle.standardError.write(Data(("[nav] " + message() + "\n").utf8))
+}
+
 struct WorkbenchFocusedNavigationSnapshot {
     let taskIdentity: String
     let shouldRun: Bool
@@ -188,6 +193,8 @@ struct WorkbenchFocusedNavigationActorDependencies {
 
 @MainActor
 final class WorkbenchFocusedNavigationActor {
+    private static let controlModeTruthProbeInterval: Duration = .milliseconds(100)
+
     private let dependencies: WorkbenchFocusedNavigationActorDependencies
     private var store: WorkbenchStoreV2?
     private var runtimeStore: TerminalRuntimeStore?
@@ -218,6 +225,9 @@ final class WorkbenchFocusedNavigationActor {
         self.runtimeStore = runtimeStore
         self.errorSink = onErrorChange
         self.snapshot = snapshot
+        workbenchNavigationDebugLog(
+            "update task=\(snapshot.taskIdentity) shouldRun=\(snapshot.shouldRun) desired=\(snapshot.desiredPaneRef?.paneID ?? "nil") observed=\(snapshot.observedPaneRef?.paneID ?? "nil") control=\(snapshot.controlModeKey?.identity ?? "nil")"
+        )
         reconcileControlModeLifecycle(
             previous: previousControlModeKey,
             current: snapshot.controlModeKey,
@@ -278,9 +288,13 @@ final class WorkbenchFocusedNavigationActor {
 
     private func run(runID: UInt64, taskIdentity: String) async {
         guard let snapshot = currentSnapshot(runID: runID, taskIdentity: taskIdentity) else { return }
+        workbenchNavigationDebugLog(
+            "run start task=\(taskIdentity) desired=\(snapshot.desiredPaneRef?.paneID ?? "nil") observed=\(snapshot.observedPaneRef?.paneID ?? "nil")"
+        )
 
         do {
             if let controlMode = await dependencies.resolveControlMode(snapshot.controlModeKey) {
+                workbenchNavigationDebugLog("run control-mode task=\(taskIdentity)")
                 try await runControlModeLoop(
                     controlMode: controlMode,
                     runID: runID,
@@ -289,6 +303,7 @@ final class WorkbenchFocusedNavigationActor {
                 return
             }
 
+            workbenchNavigationDebugLog("run polling task=\(taskIdentity)")
             try await runPollingLoop(
                 runID: runID,
                 taskIdentity: taskIdentity
@@ -344,28 +359,32 @@ final class WorkbenchFocusedNavigationActor {
                 continue
             }
 
+            requireStore().syncTerminalNavigation(
+                tileID: currentSnapshot.tileID,
+                preferredWindowID: liveTarget.windowID,
+                preferredPaneID: liveTarget.paneID,
+                paneInstanceID: livePaneInstanceID(for: liveTarget, snapshot: currentSnapshot),
+                authoritativeRenderedClientTruth: true
+            )
+
+            let refreshedSnapshot = snapshotAfterStoreSync(from: currentSnapshot)
+
             if WorkbenchV2NavigationSyncResolver.shouldApplyNavigationIntent(
-                desiredPaneRef: currentSnapshot.desiredPaneRef,
-                observedPaneRef: liveObservedPaneRef(from: liveTarget, snapshot: currentSnapshot),
+                desiredPaneRef: refreshedSnapshot.desiredPaneRef,
+                observedPaneRef: refreshedSnapshot.observedPaneRef,
                 liveTarget: liveTarget
             ),
-               let desiredPaneRef = currentSnapshot.desiredPaneRef {
+               let desiredPaneRef = refreshedSnapshot.desiredPaneRef {
                 try await dependencies.applyNavigationIntent(
                     desiredPaneRef,
                     renderedClientTTY,
-                    currentSnapshot.hostsConfig
+                    refreshedSnapshot.hostsConfig
                 )
                 try await dependencies.sleep(.milliseconds(100))
                 continue
             }
 
             clearError(runID: runID, taskIdentity: taskIdentity)
-            requireStore().syncTerminalNavigation(
-                tileID: currentSnapshot.tileID,
-                preferredWindowID: liveTarget.windowID,
-                preferredPaneID: liveTarget.paneID,
-                paneInstanceID: livePaneInstanceID(for: liveTarget, snapshot: currentSnapshot)
-            )
             try await dependencies.sleep(.milliseconds(1500))
         }
     }
@@ -375,11 +394,22 @@ final class WorkbenchFocusedNavigationActor {
         runID: UInt64,
         taskIdentity: String
     ) async throws {
+        workbenchNavigationDebugLog("control-mode loop start task=\(taskIdentity)")
+        let truthProbeTask = Task { @MainActor [weak self] in
+            await self?.runControlModeTruthProbeLoop(
+                controlMode: controlMode,
+                runID: runID,
+                taskIdentity: taskIdentity
+            )
+        }
+        defer { truthProbeTask.cancel() }
+
         if let snapshot = currentSnapshot(runID: runID, taskIdentity: taskIdentity),
            let desiredPaneRef = snapshot.desiredPaneRef,
            desiredPaneRef.paneID != snapshot.observedPaneRef?.paneID {
             try await reconcileRenderedClientAfterControlModeEvent(
                 controlMode: controlMode,
+                event: nil,
                 runID: runID,
                 taskIdentity: taskIdentity
             )
@@ -388,23 +418,62 @@ final class WorkbenchFocusedNavigationActor {
         for await event in controlMode.events {
             guard !Task.isCancelled else { return }
             if case .output = event { continue }
+            workbenchNavigationDebugLog("control-mode event task=\(taskIdentity) event=\(String(describing: event))")
             await Task.yield()
             guard !Task.isCancelled else { return }
             try await reconcileRenderedClientAfterControlModeEvent(
                 controlMode: controlMode,
+                event: event,
                 runID: runID,
                 taskIdentity: taskIdentity
             )
         }
     }
 
+    private func runControlModeTruthProbeLoop(
+        controlMode: WorkbenchFocusedNavigationControlModeHandle,
+        runID: UInt64,
+        taskIdentity: String
+    ) async {
+        while !Task.isCancelled {
+            do {
+                try await dependencies.sleep(Self.controlModeTruthProbeInterval)
+            } catch is CancellationError {
+                return
+            } catch {
+                continue
+            }
+
+            guard let snapshot = currentSnapshot(runID: runID, taskIdentity: taskIdentity) else {
+                workbenchNavigationDebugLog("truth probe stop task=\(taskIdentity) snapshot stale")
+                return
+            }
+            guard dependencies.renderedState(snapshot.tileID)?.clientTTY != nil else {
+                workbenchNavigationDebugLog("truth probe task=\(taskIdentity) rendered tty unavailable")
+                continue
+            }
+
+            do {
+                workbenchNavigationDebugLog("truth probe send task=\(taskIdentity)")
+                try await controlMode.send("list-clients -F '#{client_tty}|#{session_name}|#{window_id}|#{pane_id}'")
+            } catch let error as TmuxCommandError where isTransientControlModeSendRace(error) {
+                workbenchNavigationDebugLog("truth probe transient send race task=\(taskIdentity) error=\(error)")
+                continue
+            } catch {
+                workbenchNavigationDebugLog("truth probe send failed task=\(taskIdentity) error=\(error)")
+            }
+        }
+    }
+
     private func reconcileRenderedClientAfterControlModeEvent(
         controlMode: WorkbenchFocusedNavigationControlModeHandle,
+        event: ControlModeEvent?,
         runID: UInt64,
         taskIdentity: String
     ) async throws {
         guard let snapshot = currentSnapshot(runID: runID, taskIdentity: taskIdentity) else { return }
         guard let renderedClientTTY = dependencies.renderedState(snapshot.tileID)?.clientTTY else {
+            workbenchNavigationDebugLog("reconcile task=\(taskIdentity) rendered tty missing; desired=\(snapshot.desiredPaneRef?.paneID ?? "nil") observed=\(snapshot.observedPaneRef?.paneID ?? "nil")")
             try await sendDesiredPaneIfStillPending(
                 snapshot: snapshot,
                 controlMode: controlMode,
@@ -415,30 +484,37 @@ final class WorkbenchFocusedNavigationActor {
         }
 
         let liveTarget: WorkbenchV2TerminalLiveTarget
-        do {
-            liveTarget = try await dependencies.liveTarget(
-                renderedClientTTY,
-                snapshot.sessionRef.target,
-                snapshot.hostsConfig
-            )
-        } catch let error as WorkbenchV2TerminalNavigationError {
-            switch error {
-            case .renderedClientUnavailable:
-                try await sendDesiredPaneIfStillPending(
-                    snapshot: snapshot,
-                    controlMode: controlMode,
-                    runID: runID,
-                    taskIdentity: taskIdentity
+        if let liveTargetFromEvent = liveTargetFromEvent(from: event, renderedClientTTY: renderedClientTTY) {
+            liveTarget = liveTargetFromEvent
+        } else {
+            do {
+                liveTarget = try await dependencies.liveTarget(
+                    renderedClientTTY,
+                    snapshot.sessionRef.target,
+                    snapshot.hostsConfig
                 )
-                return
-            case .missingRemoteHostKey, .activePaneUnavailable:
-                throw error
+            } catch let error as WorkbenchV2TerminalNavigationError {
+                switch error {
+                case .renderedClientUnavailable:
+                    try await sendDesiredPaneIfStillPending(
+                        snapshot: snapshot,
+                        controlMode: controlMode,
+                        runID: runID,
+                        taskIdentity: taskIdentity
+                    )
+                    return
+                case .missingRemoteHostKey, .activePaneUnavailable:
+                    throw error
+                }
             }
         }
 
         guard let currentSnapshot = currentSnapshot(runID: runID, taskIdentity: taskIdentity) else {
             return
         }
+        workbenchNavigationDebugLog(
+            "reconcile task=\(taskIdentity) live session=\(liveTarget.sessionName) pane=\(liveTarget.paneID) desired=\(currentSnapshot.desiredPaneRef?.paneID ?? "nil") observed=\(currentSnapshot.observedPaneRef?.paneID ?? "nil")"
+        )
 
         if liveTarget.sessionName != currentSnapshot.sessionRef.sessionName {
             clearError(runID: runID, taskIdentity: taskIdentity)
@@ -452,15 +528,25 @@ final class WorkbenchFocusedNavigationActor {
             return
         }
 
+        requireStore().syncTerminalNavigation(
+            tileID: currentSnapshot.tileID,
+            preferredWindowID: liveTarget.windowID,
+            preferredPaneID: liveTarget.paneID,
+            paneInstanceID: livePaneInstanceID(for: liveTarget, snapshot: currentSnapshot),
+            authoritativeRenderedClientTruth: true
+        )
+
+        let refreshedSnapshot = snapshotAfterStoreSync(from: currentSnapshot)
+
         if WorkbenchV2NavigationSyncResolver.shouldApplyNavigationIntent(
-            desiredPaneRef: currentSnapshot.desiredPaneRef,
-            observedPaneRef: liveObservedPaneRef(from: liveTarget, snapshot: currentSnapshot),
+            desiredPaneRef: refreshedSnapshot.desiredPaneRef,
+            observedPaneRef: refreshedSnapshot.observedPaneRef,
             liveTarget: liveTarget
         ),
-           let desiredPaneRef = currentSnapshot.desiredPaneRef {
+           let desiredPaneRef = refreshedSnapshot.desiredPaneRef {
             try await sendNavigationCommand(
                 paneID: desiredPaneRef.paneID,
-                tileID: currentSnapshot.tileID,
+                tileID: refreshedSnapshot.tileID,
                 controlMode: controlMode,
                 runID: runID,
                 taskIdentity: taskIdentity
@@ -483,12 +569,7 @@ final class WorkbenchFocusedNavigationActor {
         }
 
         clearError(runID: runID, taskIdentity: taskIdentity)
-        requireStore().syncTerminalNavigation(
-            tileID: currentSnapshot.tileID,
-            preferredWindowID: liveTarget.windowID,
-            preferredPaneID: liveTarget.paneID,
-            paneInstanceID: livePaneInstanceID(for: liveTarget, snapshot: currentSnapshot)
-        )
+        workbenchNavigationDebugLog("sync navigation task=\(taskIdentity) pane=\(liveTarget.paneID)")
     }
 
     private func syncObservedPaneFromRenderedClientTruthWithRetry(
@@ -559,7 +640,20 @@ final class WorkbenchFocusedNavigationActor {
             tileID: currentSnapshot.tileID,
             preferredWindowID: liveTarget.windowID,
             preferredPaneID: liveTarget.paneID,
-            paneInstanceID: livePaneInstanceID(for: liveTarget, snapshot: currentSnapshot)
+            paneInstanceID: livePaneInstanceID(for: liveTarget, snapshot: currentSnapshot),
+            authoritativeRenderedClientTruth: true
+        )
+    }
+
+    private func liveTargetFromEvent(
+        from event: ControlModeEvent?,
+        renderedClientTTY: String
+    ) -> WorkbenchV2TerminalLiveTarget? {
+        guard case .commandResponse(_, let lines) = event else { return nil }
+        let output = lines.joined(separator: "\n")
+        return try? WorkbenchV2TerminalNavigationResolver.parseLiveTarget(
+            output: output,
+            expectedClientTTY: renderedClientTTY
         )
     }
 
@@ -582,6 +676,29 @@ final class WorkbenchFocusedNavigationActor {
             controlMode: controlMode,
             runID: runID,
             taskIdentity: taskIdentity
+        )
+    }
+
+    private func snapshotAfterStoreSync(
+        from snapshot: WorkbenchFocusedNavigationSnapshot
+    ) -> WorkbenchFocusedNavigationSnapshot {
+        guard let store else { return snapshot }
+        guard let runtimeContext = store.activePaneRuntimeContext,
+              runtimeContext.workbenchID == snapshot.workbenchID,
+              runtimeContext.tileID == snapshot.tileID else {
+            return snapshot
+        }
+
+        return WorkbenchFocusedNavigationSnapshot(
+            taskIdentity: snapshot.taskIdentity,
+            shouldRun: snapshot.shouldRun,
+            workbenchID: snapshot.workbenchID,
+            tileID: snapshot.tileID,
+            sessionRef: snapshot.sessionRef,
+            controlModeKey: snapshot.controlModeKey,
+            hostsConfig: snapshot.hostsConfig,
+            desiredPaneRef: runtimeContext.desiredPaneRef,
+            observedPaneRef: runtimeContext.observedPaneRef
         )
     }
 

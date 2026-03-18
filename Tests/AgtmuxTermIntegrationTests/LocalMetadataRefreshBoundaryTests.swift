@@ -115,6 +115,27 @@ final class LocalMetadataRefreshBoundaryTests: XCTestCase {
         XCTAssertNil(plan.logMessage)
     }
 
+    func testPreservePlanKeepsOverlayWithoutPublishing() {
+        let nextAt = now.addingTimeInterval(3.0)
+
+        let plan = LocalMetadataRefreshBoundary.preservePlan(
+            inventoryCount: 1,
+            nextRefreshAt: nextAt,
+            syncPrimed: false,
+            transportVersion: nil,
+            daemonIssue: nil
+        )
+
+        XCTAssertEqual(plan.state.syncPrimed, false)
+        XCTAssertNil(plan.state.transportVersion)
+        XCTAssertNil(plan.state.daemonIssue)
+        XCTAssertEqual(plan.state.nextRefreshAt, nextAt)
+        XCTAssertEqual(plan.cacheAction, LocalMetadataCacheAction.preserve)
+        XCTAssertEqual(plan.shouldPublishSnapshotCache, false)
+        XCTAssertNil(plan.replayResetVersion)
+        XCTAssertNil(plan.logMessage)
+    }
+
     private func makePane() -> AgtmuxPane {
         AgtmuxPane(
             source: "local",

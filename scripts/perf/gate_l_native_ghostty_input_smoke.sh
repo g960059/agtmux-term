@@ -8,6 +8,7 @@ source "$SCRIPT_DIR/gate_l_common.sh"
 app_path=""
 keep_running=0
 settle_timeout=10
+allow_existing=0
 
 while (( $# > 0 )); do
   case "$1" in
@@ -23,8 +24,12 @@ while (( $# > 0 )); do
       keep_running=1
       shift
       ;;
+    --allow-existing)
+      allow_existing=1
+      shift
+      ;;
     *)
-      echo "Usage: $0 [--app /path/to/Ghostty.app] [--timeout SECONDS] [--keep-running]" >&2
+      echo "Usage: $0 [--app /path/to/Ghostty.app] [--timeout SECONDS] [--keep-running] [--allow-existing]" >&2
       exit 1
       ;;
   esac
@@ -138,9 +143,15 @@ chmod +x "$pane_driver"
 
 typeset -A existing_pids
 prelaunch_pids=("${(@f)$(pgrep -f -- "$app_bin" || true)}")
+prelaunch_pids=(${prelaunch_pids:#})
 for pid in "${prelaunch_pids[@]}"; do
   [[ -n "$pid" ]] && existing_pids[$pid]=1
 done
+
+if (( allow_existing != 1 && ${#prelaunch_pids[@]} > 0 )); then
+  echo "Existing native Ghostty processes would make helper-input targeting ambiguous; rerun after closing them or pass --allow-existing: ${prelaunch_pids[*]}" >&2
+  exit 1
+fi
 
 launched_pid=""
 launch_reused_existing=0
@@ -171,10 +182,11 @@ if ! wait_for_pane_text "$socket_name" "$target" "__GATE_L_READY__" "$settle_tim
   exit 1
 fi
 
-open -na "$app_path" --args --window-inherit-working-directory=never -e tmux -L "$socket_name" attach-session -t "$session_name" >/dev/null 2>&1
+open -na "$app_path" --args -e tmux -L "$socket_name" attach-session -t "$session_name" >/dev/null 2>&1
 sleep 2
 
 postlaunch_pids=("${(@f)$(pgrep -f -- "$app_bin" || true)}")
+postlaunch_pids=(${postlaunch_pids:#})
 for pid in "${postlaunch_pids[@]}"; do
   [[ -z "$pid" ]] && continue
   if [[ -z "${existing_pids[$pid]-}" ]]; then

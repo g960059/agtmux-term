@@ -22,6 +22,9 @@ actor RemoteTmuxClient {
     ///
     /// Throws `DaemonError` on SSH failures (auth, timeout, tmux not running).
     func fetchPanes() async throws -> [AgtmuxPane] {
+        let fetchID = AgtmuxSignpost.remoteInventory.makeSignpostID()
+        let fetchState = AgtmuxSignpost.remoteInventory.beginInterval("fetchPanes", id: fetchID)
+        defer { AgtmuxSignpost.remoteInventory.endInterval("fetchPanes", fetchState) }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
         // Capture source before entering the nonisolated terminationHandler closure.

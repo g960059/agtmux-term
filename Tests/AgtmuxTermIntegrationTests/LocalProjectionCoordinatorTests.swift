@@ -322,6 +322,54 @@ final class LocalProjectionCoordinatorTests: XCTestCase {
     }
 
     @MainActor
+    func testRefreshOnceAppliesInventoryBeforeMetadataExecution() async throws {
+        let inventory = [makeInventoryPane()]
+        let client = StubProjectionClient(
+            bootstrapResults: [.success(makeEmptyBootstrapV3(seq: 0))]
+        )
+        let inventoryClient = StubInventoryClient(results: [.success(inventory)])
+        let coordinator = makeCoordinator(
+            client: client,
+            inventoryClient: inventoryClient,
+            environment: { [:] }
+        )
+
+        let metadataApplied = expectation(description: "metadata execution applied")
+        var appliedInventory: [AgtmuxPane] = []
+        let runtime = LocalProjectionSteadyStateRuntime(
+            captureState: { nil },
+            applyInventory: { refreshedInventory in
+                appliedInventory = refreshedInventory
+            },
+            applyMetadataExecution: { _ in
+                XCTAssertEqual(
+                    appliedInventory,
+                    inventory,
+                    "refreshOnce must promote fresh inventory before metadata execution can publish"
+                )
+                metadataApplied.fulfill()
+            },
+            applyHealthExecution: { _ in
+                XCTFail("inventory refresh must not publish health execution")
+            },
+            sleep: { _ in }
+        )
+
+        let refreshedInventory = try await coordinator.refreshOnce(
+            state: makeState(
+                nextMetadataRefreshAt: now.addingTimeInterval(-1),
+                nextHealthRefreshAt: now.addingTimeInterval(60)
+            ),
+            runtime: runtime,
+            classifyLocalDaemonIssue: { _ in nil },
+            classifyHealthFailure: { _ in .transientFailure }
+        )
+
+        XCTAssertEqual(refreshedInventory, inventory)
+        await fulfillment(of: [metadataApplied], timeout: 1.0)
+    }
+
+    @MainActor
     func testRunMetadataRefreshMapsFailureIntoFailureExecution() async throws {
         let client = StubProjectionClient(
             bootstrapResults: [.failure(StubError.metadataFailure)]
@@ -356,6 +404,117 @@ final class LocalProjectionCoordinatorTests: XCTestCase {
             .incompatibleMetadataProtocol(detail: "metadata failure")
         )
         XCTAssertEqual(execution.postApplyLogMessages, ["sync metadata unavailable; cleared cached overlay: metadataFailure"])
+    }
+
+    @MainActor
+    func testRunMetadataRefreshPreservesCachedOverlayOnTransientWaitFailure() async throws {
+        let client = StubProjectionClient(
+            waitResults: [
+                .failure(
+                    DaemonError.processError(
+                        exitCode: -3,
+                        stderr: "socket read failed: Resource temporarily unavailable"
+                    )
+                )
+            ]
+        )
+        let inventoryClient = StubInventoryClient(results: [.success([makeInventoryPane()])])
+        let coordinator = makeCoordinator(
+            client: client,
+            inventoryClient: inventoryClient,
+            environment: { [:] }
+        )
+
+        let inventoryPane = makeInventoryPane()
+        let key = LocalMetadataOverlayStore.paneMetadataKey(for: inventoryPane)
+        let cachedPane = AgtmuxPane(
+            source: "local",
+            paneId: inventoryPane.paneId,
+            sessionName: inventoryPane.sessionName,
+            windowId: inventoryPane.windowId,
+            activityState: .running,
+            presence: .managed,
+            provider: .codex,
+            evidenceMode: .deterministic,
+            updatedAt: now,
+            metadataSessionKey: "opaque-session-key",
+            paneInstanceID: AgtmuxSyncV2PaneInstanceID(
+                paneId: inventoryPane.paneId,
+                generation: 1,
+                birthTs: now
+            )
+        )
+        let execution = try await coordinator.runMetadataRefresh(
+            input: LocalProjectionMetadataInput(
+                context: LocalMetadataRefreshContext(
+                    syncPrimed: true,
+                    transportVersion: .v3,
+                    inventoryCount: 1,
+                    successInterval: 1.0,
+                    failureBackoff: 3.0,
+                    bootstrapNotReadyBackoff: 0.5,
+                    changeLimit: 256,
+                    useLongPoll: true,
+                    longPollTimeoutMs: 3000
+                ),
+                overlayStore: LocalMetadataOverlayStore(
+                    inventory: [inventoryPane],
+                    metadataByPaneKey: [key: cachedPane],
+                    presentationByPaneKey: [key: PanePresentationState(snapshot: AgtmuxSyncV3PaneSnapshot(
+                        sessionName: inventoryPane.sessionName,
+                        windowID: inventoryPane.windowId,
+                        sessionKey: "opaque-session-key",
+                        paneID: inventoryPane.paneId,
+                        paneInstanceID: AgtmuxSyncV3PaneInstanceID(
+                            paneId: inventoryPane.paneId,
+                            generation: 1,
+                            birthTs: now
+                        ),
+                        provider: .codex,
+                        conversationTitle: "Codex",
+                        sessionSubtitle: nil,
+                        presence: .managed,
+                        agent: AgtmuxSyncV3AgentState(lifecycle: .running),
+                        thread: AgtmuxSyncV3ThreadState(
+                            lifecycle: .active,
+                            blocking: .none,
+                            execution: .thinking,
+                            flags: AgtmuxSyncV3ThreadFlags(reviewMode: false, subagentActive: false),
+                            turn: AgtmuxSyncV3TurnState(
+                                outcome: .none,
+                                sequence: 1,
+                                startedAt: now,
+                                completedAt: nil
+                            )
+                        ),
+                        pendingRequests: [],
+                        attention: AgtmuxSyncV3AttentionSummary(
+                            activeKinds: [],
+                            highestPriority: .none,
+                            unresolvedCount: 0,
+                            generation: 0,
+                            latestAt: nil
+                        ),
+                        freshness: AgtmuxSyncV3FreshnessSummary(
+                            snapshot: .fresh,
+                            blocking: .fresh,
+                            execution: .fresh
+                        ),
+                        providerRaw: nil,
+                        updatedAt: now
+                    ))],
+                    log: { _ in }
+                )
+            ),
+            classifyLocalDaemonIssue: { _ in nil }
+        )
+
+        XCTAssertEqual(execution.plan.cacheAction, LocalMetadataCacheAction.preserve)
+        XCTAssertEqual(execution.plan.state.syncPrimed, false)
+        XCTAssertEqual(
+            execution.postApplyLogMessages,
+            ["sync metadata transiently unavailable; preserving cached overlay: agtmux process failed with exit code -3: socket read failed: Resource temporarily unavailable"]
+        )
     }
 
     @MainActor
@@ -575,6 +734,11 @@ final class LocalProjectionCoordinatorTests: XCTestCase {
         switch execution.plan.cacheAction {
         case .replace(let updated):
             cache = updated
+        case .preserve:
+            cache = LocalMetadataOverlayCache(
+                metadataByPaneKey: state.overlayStore.metadataByPaneKey,
+                presentationByPaneKey: state.overlayStore.presentationByPaneKey
+            )
         case .clear:
             cache = LocalMetadataOverlayCache(
                 metadataByPaneKey: [:],

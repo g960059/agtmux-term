@@ -161,7 +161,7 @@ final class WorkbenchStoreV2 {
 
         try persistence.save(
             .init(
-                workbenches: workbenches,
+                workbenches: workbenchesForPersistence(),
                 activeWorkbenchIndex: activeWorkbenchIndex
             )
         )
@@ -321,6 +321,12 @@ final class WorkbenchStoreV2 {
     func focusTile(id: UUID) {
         let didChangeFocus = focusTile(id: id, inWorkbenchAt: activeWorkbenchIndex)
         let didChangeActivePane = syncActivePaneRuntimeForFocusedTile(inWorkbenchAt: activeWorkbenchIndex)
+        if !didChangeFocus {
+            _ = requestFocusRestoreForTerminalTileIfNeeded(
+                id: id,
+                inWorkbenchAt: activeWorkbenchIndex
+            )
+        }
         if didChangeFocus || didChangeActivePane {
             autosaveIfNeeded()
         }
@@ -491,6 +497,41 @@ final class WorkbenchStoreV2 {
         return true
     }
 
+    private func requestFocusRestoreForTerminalTileIfNeeded(
+        id: UUID,
+        inWorkbenchAt index: Int
+    ) -> Bool {
+        guard workbenches.indices.contains(index) else { return false }
+        let workbench = workbenches[index]
+        guard workbench.focusedTileID == id else { return false }
+        guard let tile = workbench.tiles.first(where: { $0.id == id }) else { return false }
+        guard case .terminal = tile.kind else { return false }
+
+        let workbenchID = workbench.id
+        if let current = activePaneRuntimeByWorkbenchID[workbenchID],
+           current.tileID == id {
+            activePaneRuntimeByWorkbenchID[workbenchID] = WorkbenchActivePaneRuntimeState(
+                tileID: current.tileID,
+                desiredPaneRef: current.desiredPaneRef,
+                observedPaneRef: current.observedPaneRef,
+                focusRequestNonce: current.focusRequestNonce + 1,
+                desiredMatchObservationCount: current.desiredMatchObservationCount,
+                desiredObservationConfirmationTarget: current.desiredObservationConfirmationTarget
+            )
+            return true
+        }
+
+        activePaneRuntimeByWorkbenchID[workbenchID] = WorkbenchActivePaneRuntimeState(
+            tileID: id,
+            desiredPaneRef: nil,
+            observedPaneRef: nil,
+            focusRequestNonce: (activePaneRuntimeByWorkbenchID[workbenchID]?.focusRequestNonce ?? 0) + 1,
+            desiredMatchObservationCount: 0,
+            desiredObservationConfirmationTarget: 0
+        )
+        return true
+    }
+
     // MARK: - Tile Mutations
 
     /// Removes the tile with the given id from whichever workbench contains it.
@@ -573,7 +614,8 @@ final class WorkbenchStoreV2 {
         tileID: UUID,
         preferredWindowID: String?,
         preferredPaneID: String?,
-        paneInstanceID: AgtmuxSyncV2PaneInstanceID? = nil
+        paneInstanceID: AgtmuxSyncV2PaneInstanceID? = nil,
+        authoritativeRenderedClientTruth: Bool = false
     ) -> Bool {
         for index in workbenches.indices {
             guard let existingTile = workbenches[index].tiles.first(where: { $0.id == tileID }) else { continue }
@@ -590,7 +632,8 @@ final class WorkbenchStoreV2 {
                     windowID: normalizedWindowID,
                     paneID: normalizedPaneID,
                     paneInstanceID: paneInstanceID
-                )
+                ),
+                authoritativeRenderedClientTruth: authoritativeRenderedClientTruth
             )
             if didChangeActivePane {
                 autosaveIfNeeded()
@@ -690,6 +733,15 @@ final class WorkbenchStoreV2 {
         guard let value else { return nil }
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private func workbenchesForPersistence() -> [Workbench] {
+        workbenches.map { workbench in
+            var persistedWorkbench = workbench
+            persistedWorkbench.activePaneRef =
+                activePaneRuntimeByWorkbenchID[workbench.id]?.resolvedPaneRef
+            return persistedWorkbench
+        }
     }
 
     private static func targetRef(for source: String, hostsConfig: HostsConfig) -> TargetRef {
@@ -840,7 +892,8 @@ final class WorkbenchStoreV2 {
     private func syncObservedPaneRuntime(
         tileID: UUID,
         sessionRef: SessionRef,
-        observedPaneRef: ActivePaneRef?
+        observedPaneRef: ActivePaneRef?,
+        authoritativeRenderedClientTruth: Bool = false
     ) -> Bool {
         guard let observedPaneRef else { return false }
         guard let workbenchIndex = workbenches.firstIndex(where: { $0.tiles.contains(where: { $0.id == tileID }) }) else {
@@ -863,6 +916,20 @@ final class WorkbenchStoreV2 {
 
         if let desiredPaneRef = current.desiredPaneRef {
             guard observedPaneRef.matches(sessionRef: sessionRef) else { return false }
+            if authoritativeRenderedClientTruth,
+               let currentObservedPaneRef = current.observedPaneRef,
+               Self.paneRefsMatchForRuntime(currentObservedPaneRef, desiredPaneRef),
+               !Self.paneRefsMatchForRuntime(desiredPaneRef, observedPaneRef) {
+                activePaneRuntimeByWorkbenchID[workbenchID] = WorkbenchActivePaneRuntimeState(
+                    tileID: tileID,
+                    desiredPaneRef: nil,
+                    observedPaneRef: observedPaneRef,
+                    focusRequestNonce: current.focusRequestNonce,
+                    desiredMatchObservationCount: 0,
+                    desiredObservationConfirmationTarget: 0
+                )
+                return current.observedPaneRef != observedPaneRef || current.desiredPaneRef != nil
+            }
             if Self.paneRefsMatchForRuntime(desiredPaneRef, observedPaneRef) {
                 let nextMatchCount: UInt8
                 if let currentObserved = current.observedPaneRef,

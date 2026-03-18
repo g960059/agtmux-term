@@ -3,6 +3,10 @@ import XCTest
 import AgtmuxTermCore
 
 final class WorkbenchFocusedNavigationActorTests: XCTestCase {
+    private static func isTruthProbeCommand(_ command: String) -> Bool {
+        command.hasPrefix("list-clients -F ")
+    }
+
     @MainActor
     func testPollingRunExitsWithoutWritingWhenSnapshotBecomesStale() async throws {
         let targetPane = AgtmuxPane(
@@ -108,6 +112,7 @@ final class WorkbenchFocusedNavigationActorTests: XCTestCase {
                     WorkbenchFocusedNavigationControlModeHandle(
                         events: events,
                         send: { command in
+                            guard !Self.isTruthProbeCommand(command) else { return }
                             commands.append(command)
                             expectation.fulfill()
                         }
@@ -196,6 +201,7 @@ final class WorkbenchFocusedNavigationActorTests: XCTestCase {
                     WorkbenchFocusedNavigationControlModeHandle(
                         events: AsyncStream { _ in },
                         send: { command in
+                            guard !Self.isTruthProbeCommand(command) else { return }
                             attemptedCommands.append(command)
                             if attemptedCommands.count == 1 {
                                 renderedTTY = "/dev/ttys011"
@@ -277,6 +283,7 @@ final class WorkbenchFocusedNavigationActorTests: XCTestCase {
                     WorkbenchFocusedNavigationControlModeHandle(
                         events: events,
                         send: { command in
+                            guard !Self.isTruthProbeCommand(command) else { return }
                             commands.append(command)
                             expectation.fulfill()
                         }
@@ -366,6 +373,7 @@ final class WorkbenchFocusedNavigationActorTests: XCTestCase {
                     WorkbenchFocusedNavigationControlModeHandle(
                         events: AsyncStream { _ in },
                         send: { command in
+                            guard !Self.isTruthProbeCommand(command) else { return }
                             commands.append(command)
                         }
                     )
@@ -374,8 +382,8 @@ final class WorkbenchFocusedNavigationActorTests: XCTestCase {
                     XCTAssertEqual(renderedClientTTY, "/dev/ttys010")
                     return WorkbenchV2TerminalLiveTarget(
                         sessionName: "shared",
-                        windowID: "@0",
-                        paneID: "%1"
+                        windowID: secondPane.windowId,
+                        paneID: secondPane.paneId
                     )
                 },
                 applyNavigationIntent: { _, _, _ in
@@ -465,6 +473,7 @@ final class WorkbenchFocusedNavigationActorTests: XCTestCase {
                     WorkbenchFocusedNavigationControlModeHandle(
                         events: AsyncStream { _ in },
                         send: { command in
+                            guard !Self.isTruthProbeCommand(command) else { return }
                             commands.append(command)
                         }
                     )
@@ -550,6 +559,7 @@ final class WorkbenchFocusedNavigationActorTests: XCTestCase {
                     WorkbenchFocusedNavigationControlModeHandle(
                         events: AsyncStream { _ in },
                         send: { command in
+                            guard !Self.isTruthProbeCommand(command) else { return }
                             commands.append(command)
                         }
                     )
@@ -770,8 +780,8 @@ final class WorkbenchFocusedNavigationActorTests: XCTestCase {
                 liveTarget: { _, _, _ in
                     WorkbenchV2TerminalLiveTarget(
                         sessionName: "shared",
-                        windowID: "@0",
-                        paneID: "%1"
+                        windowID: secondPane.windowId,
+                        paneID: secondPane.paneId
                     )
                 },
                 applyNavigationIntent: { _, _, _ in
@@ -809,6 +819,192 @@ final class WorkbenchFocusedNavigationActorTests: XCTestCase {
             "%1",
             "session-scoped control-mode payload must not overwrite rendered-client truth"
         )
+    }
+
+    @MainActor
+    func testControlModeEventPromotesRenderedClientTruthIntoObservedStateBeforeDesiredConverges() async throws {
+        let firstPane = AgtmuxPane(
+            source: "local",
+            paneId: "%0",
+            sessionName: "shared",
+            windowId: "@0"
+        )
+        let secondPane = AgtmuxPane(
+            source: "local",
+            paneId: "%1",
+            sessionName: "shared",
+            windowId: "@0"
+        )
+        let store = WorkbenchStoreV2()
+        let runtimeStore = TerminalRuntimeStore()
+        let openResult = store.openTerminal(for: firstPane, hostsConfig: .empty)
+        let workbenchID = try XCTUnwrap(store.activeWorkbench?.id)
+        let (events, continuation) = AsyncStream<ControlModeEvent>.makeStream()
+        let actor = WorkbenchFocusedNavigationActor(
+            dependencies: WorkbenchFocusedNavigationActorDependencies(
+                renderedState: { tileID in
+                    GhosttyRenderedTerminalSurfaceState(
+                        context: self.makeSurfaceContext(
+                            workbenchID: workbenchID,
+                            tileID: tileID,
+                            sessionName: "shared"
+                        ),
+                        attachCommand: "tmux attach-session -t shared",
+                        clientTTY: "/dev/ttys001",
+                        generation: 1
+                    )
+                },
+                resolveControlMode: { _ in
+                    WorkbenchFocusedNavigationControlModeHandle(
+                        events: events,
+                        send: { _ in }
+                    )
+                },
+                liveTarget: { _, _, _ in
+                    WorkbenchV2TerminalLiveTarget(
+                        sessionName: "shared",
+                        windowID: secondPane.windowId,
+                        paneID: secondPane.paneId
+                    )
+                },
+                applyNavigationIntent: { _, _, _ in
+                    XCTFail("control-mode path must not use polling intent apply")
+                },
+                sleep: { _ in await Task.yield() }
+            )
+        )
+        defer {
+            continuation.finish()
+            actor.stop()
+        }
+
+        actor.update(
+            snapshot: makeSnapshot(
+                store: store,
+                tileID: openResult.tileID,
+                sessionRef: SessionRef(target: .local, sessionName: "shared"),
+                hostsConfig: .empty
+            ),
+            store: store,
+            runtimeStore: runtimeStore
+        ) { _ in }
+
+        continuation.yield(.windowPaneChanged(windowId: "@0", paneId: "%1"))
+        await waitUntil {
+            store.activePaneRuntimeContext?.observedPaneRef?.paneID == secondPane.paneId
+                && store.activePaneSelection(
+                    panes: [firstPane, secondPane],
+                    hostsConfig: .empty
+                )?.paneID == secondPane.paneId
+        }
+
+        XCTAssertEqual(store.activePaneRuntimeContext?.observedPaneRef?.paneID, secondPane.paneId)
+        XCTAssertEqual(
+            store.activePaneSelection(
+                panes: [firstPane, secondPane],
+                hostsConfig: .empty
+            )?.paneID,
+            secondPane.paneId,
+            "rendered-client truth must drive canonical selection even before the pending desired pane converges"
+        )
+        XCTAssertEqual(
+            store.activePaneContext?.activePaneRef.paneID,
+            firstPane.paneId,
+            "pending desired navigation should remain available while canonical selection follows observed truth"
+        )
+    }
+
+    @MainActor
+    func testControlModeEventCancelsStaleInitialAttachDesiredAfterRenderedClientReverseSync() async throws {
+        let firstPane = AgtmuxPane(
+            source: "local",
+            paneId: "%0",
+            sessionName: "shared",
+            windowId: "@0"
+        )
+        let secondPane = AgtmuxPane(
+            source: "local",
+            paneId: "%1",
+            sessionName: "shared",
+            windowId: "@0"
+        )
+        let store = WorkbenchStoreV2()
+        let runtimeStore = TerminalRuntimeStore()
+        let openResult = store.openTerminal(for: firstPane, hostsConfig: .empty)
+        _ = store.syncTerminalNavigation(
+            tileID: openResult.tileID,
+            preferredWindowID: firstPane.windowId,
+            preferredPaneID: firstPane.paneId
+        )
+        let workbenchID = try XCTUnwrap(store.activeWorkbench?.id)
+        let (events, continuation) = AsyncStream<ControlModeEvent>.makeStream()
+        var commands: [String] = []
+        let actor = WorkbenchFocusedNavigationActor(
+            dependencies: WorkbenchFocusedNavigationActorDependencies(
+                renderedState: { tileID in
+                    GhosttyRenderedTerminalSurfaceState(
+                        context: self.makeSurfaceContext(
+                            workbenchID: workbenchID,
+                            tileID: tileID,
+                            sessionName: "shared"
+                        ),
+                        attachCommand: "tmux attach-session -t shared",
+                        clientTTY: "/dev/ttys001",
+                        generation: 1
+                    )
+                },
+                resolveControlMode: { _ in
+                    WorkbenchFocusedNavigationControlModeHandle(
+                        events: events,
+                        send: { command in
+                            guard !Self.isTruthProbeCommand(command) else { return }
+                            commands.append(command)
+                        }
+                    )
+                },
+                liveTarget: { _, _, _ in
+                    WorkbenchV2TerminalLiveTarget(
+                        sessionName: "shared",
+                        windowID: "@0",
+                        paneID: "%1"
+                    )
+                },
+                applyNavigationIntent: { _, _, _ in
+                    XCTFail("control-mode path must not use polling intent apply")
+                },
+                sleep: { _ in await Task.yield() }
+            )
+        )
+        defer {
+            continuation.finish()
+            actor.stop()
+        }
+
+        actor.update(
+            snapshot: makeSnapshot(
+                store: store,
+                tileID: openResult.tileID,
+                sessionRef: SessionRef(target: .local, sessionName: "shared"),
+                hostsConfig: .empty
+            ),
+            store: store,
+            runtimeStore: runtimeStore
+        ) { _ in }
+
+        continuation.yield(.windowPaneChanged(windowId: "@0", paneId: "%1"))
+        await waitUntil {
+            store.activePaneRuntimeContext?.desiredPaneRef == nil
+                && store.activePaneRuntimeContext?.observedPaneRef?.paneID == "%1"
+                && store.activePaneContext?.activePaneRef.paneID == "%1"
+        }
+
+        XCTAssertTrue(
+            commands.isEmpty,
+            "authoritative rendered-client reverse sync must not send a stale navigation command back to the initial attach pane"
+        )
+        XCTAssertEqual(store.activePaneRuntimeContext?.observedPaneRef?.paneID, secondPane.paneId)
+        XCTAssertNil(store.activePaneRuntimeContext?.desiredPaneRef)
+        XCTAssertEqual(store.activePaneContext?.activePaneRef.paneID, secondPane.paneId)
     }
 
     @MainActor

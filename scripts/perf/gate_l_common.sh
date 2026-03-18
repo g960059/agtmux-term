@@ -70,6 +70,7 @@ function gate_l_launch_app() {
   local session_name="$2"
   local pane_count="${3:-1}"
   local shell_command="${4:-/bin/sleep 600}"
+  local inventory_only="${AGTMUX_PERF_UITEST_INVENTORY_ONLY:-1}"
   local scenario_json
 
   gate_l_socket_name="$socket_name"
@@ -82,7 +83,7 @@ function gate_l_launch_app() {
 
   env \
     AGTMUX_UITEST=1 \
-    AGTMUX_UITEST_INVENTORY_ONLY=1 \
+    AGTMUX_UITEST_INVENTORY_ONLY="$inventory_only" \
     AGTMUX_UITEST_ENABLE_GHOSTTY_SURFACES=1 \
     AGTMUX_TMUX_SOCKET_NAME="$socket_name" \
     AGTMUX_DAEMON_SOCKET_PATH="$gate_l_daemon_socket_path" \
@@ -106,6 +107,11 @@ function gate_l_launch_app() {
 }
 
 function gate_l_activate_app() {
+  if [[ -n "${gate_l_app_pid:-}" ]]; then
+    if "$GATE_L_ROOT/scripts/perf/gate_l_ax_key_sender.sh" --app-pid "$gate_l_app_pid" --activate-app >/dev/null 2>&1; then
+      return 0
+    fi
+  fi
   osascript -e 'tell application id "com.g960059.agtmux.term" to activate' >/dev/null
 }
 
@@ -174,10 +180,12 @@ function gate_l_wait_for_active_target() {
   local timeout="${4:-15}"
   local deadline=$((EPOCHREALTIME + timeout))
   local last_error=""
+  local last_output=""
 
   while (( EPOCHREALTIME < deadline )); do
     local output
     if output="$(gate_l_send_bridge_command false 2 "__agtmux_dump_active_terminal_target__" 2>"$gate_l_tmpdir/active-target.last-error.log")"; then
+      last_output="$output"
       local got_session got_window got_pane selected_window selected_pane
       got_session="$(jq -r '.sessionName' <<<"$output")"
       got_window="$(jq -r '.renderedClientWindowID' <<<"$output")"
@@ -202,6 +210,27 @@ function gate_l_wait_for_active_target() {
   echo "Timed out waiting for active target $session_name $window_id $pane_id" >&2
   if [[ -n "$last_error" ]]; then
     echo "$last_error" >&2
+  fi
+  if [[ -n "$last_output" ]]; then
+    echo "Last active-target snapshot: $last_output" >&2
+
+    local rendered_client_tty tile_id
+    rendered_client_tty="$(jq -r '.renderedClientTTY // empty' <<<"$last_output")"
+    tile_id="$(jq -r '.tileID // empty' <<<"$last_output")"
+
+    if [[ -n "$rendered_client_tty" ]]; then
+      local clients_output
+      if clients_output="$(gate_l_send_bridge_command false 2 list-clients -F '#{client_tty}|#{session_name}|#{window_id}|#{pane_id}' 2>/dev/null)"; then
+        echo "tmux list-clients: $clients_output" >&2
+      fi
+    fi
+
+    if [[ -n "$tile_id" ]]; then
+      local focus_output
+      if focus_output="$(gate_l_send_bridge_command false 2 "__agtmux_dump_focus_state__" "$tile_id" 2>/dev/null)"; then
+        echo "Terminal focus snapshot: $focus_output" >&2
+      fi
+    fi
   fi
   return 1
 }
@@ -232,6 +261,46 @@ function gate_l_wait_for_active_snapshot() {
   echo "Timed out waiting for any active snapshot for session $session_name" >&2
   if [[ -n "$last_error" ]]; then
     echo "$last_error" >&2
+  fi
+  return 1
+}
+
+function gate_l_wait_for_rendered_target() {
+  local session_name="$1"
+  local window_id="$2"
+  local pane_id="$3"
+  local timeout="${4:-15}"
+  local deadline=$((EPOCHREALTIME + timeout))
+  local last_error=""
+  local last_output=""
+
+  while (( EPOCHREALTIME < deadline )); do
+    local output
+    if output="$(gate_l_send_bridge_command false 2 "__agtmux_dump_active_terminal_target__" 2>"$gate_l_tmpdir/rendered-target.last-error.log")"; then
+      last_output="$output"
+      local got_session got_window got_pane
+      got_session="$(jq -r '.sessionName' <<<"$output")"
+      got_window="$(jq -r '.renderedClientWindowID' <<<"$output")"
+      got_pane="$(jq -r '.renderedClientPaneID' <<<"$output")"
+      if [[ "$got_session" == "$session_name" \
+         && "$got_window" == "$window_id" \
+         && "$got_pane" == "$pane_id" ]]; then
+        print -r -- "$output"
+        return 0
+      fi
+      last_error="unexpected rendered target: session=$got_session rendered_window=$got_window rendered_pane=$got_pane"
+    elif [[ -s "$gate_l_tmpdir/rendered-target.last-error.log" ]]; then
+      last_error="$(<"$gate_l_tmpdir/rendered-target.last-error.log")"
+    fi
+    sleep 0.05
+  done
+
+  echo "Timed out waiting for rendered target $session_name $window_id $pane_id" >&2
+  if [[ -n "$last_error" ]]; then
+    echo "$last_error" >&2
+  fi
+  if [[ -n "$last_output" ]]; then
+    echo "Last rendered-target snapshot: $last_output" >&2
   fi
   return 1
 }

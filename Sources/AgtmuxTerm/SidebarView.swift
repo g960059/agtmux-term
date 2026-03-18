@@ -1635,6 +1635,13 @@ struct SidebarView: View {
                 LocalDaemonIssueBanner(issue: issue)
             }
 
+            if let health = healthStore.localDaemonHealth {
+                LocalDaemonHealthStrip(
+                    health: health,
+                    topPadding: showsLocalDaemonIssueBanner ? 4 : 8
+                )
+            }
+
             if sidebarStore.panesBySession.isEmpty {
                 sidebarEmptyState
             } else {

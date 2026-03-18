@@ -203,10 +203,17 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
                 sawMainActorHop = Thread.isMainThread
             }
         ) {
-            await Self.invokeHandleActionOffMainThread(
+            let consumed = await Self.invokeHandleActionOffMainThread(
                 surfaceHandle: surfaceHandle,
                 payload: payload
             )
+            let delivered = await waitUntil {
+                sawMainActorHop
+                    && sawDispatcherOnMainThread
+                    && dispatchResult != nil
+            }
+            XCTAssertTrue(delivered)
+            return consumed
         }
 
         XCTAssertTrue(consumed)
@@ -289,16 +296,18 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
                 sawMainActorHop = Thread.isMainThread
             }
         ) {
-            await Self.invokeHandleActionOffMainThread(
+            let consumed = await Self.invokeHandleActionOffMainThread(
                 osc: 7000,
                 surfaceHandle: surfaceHandle,
                 payload: payload
             )
+            try? await Task.sleep(for: .milliseconds(50))
+            return consumed
         }
 
         XCTAssertFalse(consumed)
-        XCTAssertTrue(sawMainActorHop)
-        XCTAssertTrue(sawDispatcherOnMainThread)
+        XCTAssertFalse(sawMainActorHop)
+        XCTAssertFalse(sawDispatcherOnMainThread)
         XCTAssertNil(dispatchResult)
         XCTAssertNil(reportedError)
 
@@ -435,10 +444,17 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
                 sawMainActorHop = Thread.isMainThread
             }
         ) {
-            await Self.invokeHandleActionOffMainThread(
+            let consumed = await Self.invokeHandleActionOffMainThread(
                 surfaceHandle: surfaceHandle,
                 payload: payload
             )
+            let delivered = await waitUntil {
+                sawMainActorHop
+                    && failureReporterOnMainThread
+                    && reportedError != nil
+            }
+            XCTAssertTrue(delivered)
+            return consumed
         }
 
         XCTAssertTrue(consumed)
@@ -767,6 +783,51 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
             XCTAssertEqual(dirtyView.triggerDrawCallCount, 1)
             XCTAssertEqual(cleanView.triggerDrawCallCount, 0)
         }
+    }
+
+    @MainActor
+    func testHandleActionRenderOffMainQueuesDirtyMarkAndDrawsOnlyTargetSurface() async {
+        SurfacePool.shared.resetForTesting()
+        defer { SurfacePool.shared.resetForTesting() }
+
+        let dirtyView = GhosttyTerminalViewDrawSpy()
+        let cleanView = GhosttyTerminalViewDrawSpy()
+        let dirtyHandle = GhosttySurfaceHandle(rawValue: 0x622)
+        let cleanHandle = GhosttySurfaceHandle(rawValue: 0x623)
+        var scheduledTicks = 0
+
+        let consumed = await GhosttyApp.withTestTickScheduleObserver({
+            scheduledTicks += 1
+        }) {
+            SurfacePool.shared.register(
+                view: dirtyView,
+                leafID: UUID(),
+                tmuxPaneID: "%21",
+                surfaceHandle: dirtyHandle
+            )
+            SurfacePool.shared.register(
+                view: cleanView,
+                leafID: UUID(),
+                tmuxPaneID: "%22",
+                surfaceHandle: cleanHandle
+            )
+
+            GhosttyApp.runDirtyDrawPassForTesting()
+            dirtyView.resetDrawTracking()
+            cleanView.resetDrawTracking()
+            scheduledTicks = 0
+            let consumed = await Self.invokeHandleRenderOffMainThread(surfaceHandle: dirtyHandle)
+            let scheduled = await waitUntil {
+                scheduledTicks == 1
+            }
+            XCTAssertTrue(scheduled)
+            return consumed
+        }
+        XCTAssertTrue(consumed)
+
+        GhosttyApp.runDirtyDrawPassForTesting()
+        XCTAssertEqual(dirtyView.triggerDrawCallCount, 1)
+        XCTAssertEqual(cleanView.triggerDrawCallCount, 0)
     }
 
     @MainActor
@@ -1221,6 +1282,43 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
                 continuation.resume(returning: consumed)
             }
         }
+    }
+
+    private static func invokeHandleRenderOffMainThread(
+        surfaceHandle: GhosttySurfaceHandle
+    ) async -> Bool {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let ghosttyTarget = ghostty_target_s(
+                    tag: GHOSTTY_TARGET_SURFACE,
+                    target: ghostty_target_u(
+                        surface: UnsafeMutableRawPointer(bitPattern: surfaceHandle.rawValue)!
+                    )
+                )
+                let consumed = GhosttyApp.handleAction(
+                    nil,
+                    target: ghosttyTarget,
+                    action: ghostty_action_s(
+                        tag: GHOSTTY_ACTION_RENDER,
+                        action: ghostty_action_u()
+                    )
+                )
+                continuation.resume(returning: consumed)
+            }
+        }
+    }
+
+    private func waitUntil(
+        timeout: TimeInterval = 2.0,
+        intervalMs: UInt64 = 25,
+        condition: @escaping @MainActor () -> Bool
+    ) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if await condition() { return true }
+            try? await Task.sleep(for: .milliseconds(intervalMs))
+        }
+        return await condition()
     }
 }
 

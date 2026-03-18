@@ -8,6 +8,7 @@ source "$SCRIPT_DIR/gate_l_common.sh"
 
 app_path=""
 keep_running=0
+allow_existing=0
 
 while (( $# > 0 )); do
   case "$1" in
@@ -19,8 +20,12 @@ while (( $# > 0 )); do
       keep_running=1
       shift
       ;;
+    --allow-existing)
+      allow_existing=1
+      shift
+      ;;
     *)
-      echo "Usage: $0 [--app /path/to/Ghostty.app] [--keep-running]" >&2
+      echo "Usage: $0 [--app /path/to/Ghostty.app] [--keep-running] [--allow-existing]" >&2
       exit 1
       ;;
   esac
@@ -85,9 +90,15 @@ fi
 
 typeset -A existing_pids
 prelaunch_pids=("${(@f)$(pgrep -f -- "$app_bin" || true)}")
+prelaunch_pids=(${prelaunch_pids:#})
 for pid in "${prelaunch_pids[@]}"; do
   [[ -n "$pid" ]] && existing_pids[$pid]=1
 done
+
+if (( allow_existing != 1 && ${#prelaunch_pids[@]} > 0 )); then
+  echo "Existing native Ghostty processes would make the baseline ambiguous; rerun after closing them or pass --allow-existing: ${prelaunch_pids[*]}" >&2
+  exit 1
+fi
 
 tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/gate-l-native-ghostty-probe.XXXXXX")"
 activate_stdout="$tmpdir/activate.stdout"
@@ -111,10 +122,11 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-open -na "$app_path" --args --window-inherit-working-directory=never -e /bin/sleep 600 >/dev/null 2>&1
+open -na "$app_path" --args -e /bin/sleep 600 >/dev/null 2>&1
 sleep 3
 
 postlaunch_pids=("${(@f)$(pgrep -f -- "$app_bin" || true)}")
+postlaunch_pids=(${postlaunch_pids:#})
 for pid in "${postlaunch_pids[@]}"; do
   [[ -z "$pid" ]] && continue
   if [[ -z "${existing_pids[$pid]-}" ]]; then

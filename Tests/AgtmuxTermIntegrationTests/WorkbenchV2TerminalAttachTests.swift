@@ -57,7 +57,7 @@ final class WorkbenchV2TerminalAttachTests: XCTestCase {
         XCTAssertTrue(normalized.contains("feature branch"))
     }
 
-    func testAttachCommandRemainsSessionScopedWhenCanonicalActivePaneExists() throws {
+    func testAttachCommandPreselectsCanonicalActivePaneWhenProvided() throws {
         let sessionRef = SessionRef(target: .local, sessionName: "feature branch")
         let activePaneRef = ActivePaneRef(
             target: .local,
@@ -75,10 +75,55 @@ final class WorkbenchV2TerminalAttachTests: XCTestCase {
             ).get()
         )
 
+        assertTelemetryWrapperScaffold(plan.command)
+        let normalized = normalizeWrappedCommand(plan.command)
+        XCTAssertTrue(normalized.contains("exec env -u TMUX -u TMUX_PANE tmux -L workbench-v2-test"))
+        XCTAssertTrue(normalized.contains("select-pane -t"))
+        XCTAssertTrue(normalized.contains("%34"))
+        XCTAssertTrue(normalized.contains("attach-session -t 'feature branch'"))
+    }
+
+    func testAttachCommandIgnoresCanonicalActivePaneFromDifferentSession() throws {
+        let sessionRef = SessionRef(target: .local, sessionName: "feature branch")
+        let activePaneRef = ActivePaneRef(
+            target: .local,
+            sessionName: "other",
+            windowID: "@12",
+            paneID: "%34"
+        )
+
+        let plan = try XCTUnwrap(
+            try? WorkbenchV2TerminalAttachResolver.resolve(
+                sessionRef: sessionRef,
+                activePaneRef: activePaneRef,
+                hostsConfig: .empty,
+                env: ["AGTMUX_TMUX_SOCKET_NAME": "workbench-v2-test"]
+            ).get()
+        )
+
         assertTelemetryWrappedCommand(
             plan.command,
             baseCommand: "env -u TMUX -u TMUX_PANE tmux -L workbench-v2-test attach-session -t 'feature branch'"
         )
+    }
+
+    func testLocalAttachCommandHonorsUITestTmuxConfigPath() throws {
+        let sessionRef = SessionRef(target: .local, sessionName: "feature branch")
+        let expectedBaseCommand =
+            "env -u TMUX -u TMUX_PANE tmux -f /dev/null -L workbench-v2-test attach-session -t 'feature branch'"
+
+        let plan = try XCTUnwrap(
+            try? WorkbenchV2TerminalAttachResolver.resolve(
+                sessionRef: sessionRef,
+                hostsConfig: .empty,
+                env: [
+                    "AGTMUX_TMUX_SOCKET_NAME": "workbench-v2-test",
+                    "AGTMUX_UITEST_TMUX_CONFIG_PATH": "/dev/null",
+                ]
+            ).get()
+        )
+
+        assertTelemetryWrappedCommand(plan.command, baseCommand: expectedBaseCommand)
     }
 
     func testNavigationCommandTargetsExactRenderedClientTTY() {
@@ -189,6 +234,118 @@ final class WorkbenchV2TerminalAttachTests: XCTestCase {
         )
 
         XCTAssertEqual(result, .failure(.missingRemoteHostKey("missing-host")))
+    }
+
+    func testAttachPlanFreezeIdentityChangesWhenRemoteSSHTargetChanges() {
+        let sessionRef = SessionRef(
+            target: .remote(hostKey: "edge"),
+            sessionName: "shared"
+        )
+        let originalConfig = HostsConfig(hosts: [
+            RemoteHost(
+                id: "edge",
+                displayName: "Edge",
+                hostname: "edge.example.com",
+                user: "alice",
+                transport: .ssh
+            )
+        ])
+        let updatedConfig = HostsConfig(hosts: [
+            RemoteHost(
+                id: "edge",
+                displayName: "Edge",
+                hostname: "edge.example.com",
+                user: "bob",
+                transport: .ssh
+            )
+        ])
+
+        let originalIdentity = WorkbenchTerminalAttachPlanFreezeIdentity.make(
+            sessionRef: sessionRef,
+            desiredPaneRef: nil,
+            observedPaneRef: nil,
+            terminalState: .ready,
+            hostsConfig: originalConfig
+        )
+        let updatedIdentity = WorkbenchTerminalAttachPlanFreezeIdentity.make(
+            sessionRef: sessionRef,
+            desiredPaneRef: nil,
+            observedPaneRef: nil,
+            terminalState: .ready,
+            hostsConfig: updatedConfig
+        )
+
+        XCTAssertNotEqual(
+            originalIdentity,
+            updatedIdentity,
+            "remote attach-plan identity must change when the configured SSH target changes"
+        )
+    }
+
+    func testFrozenAttachPlanFallsBackToLiveResolutionWhenRemoteSSHTargetChanges() throws {
+        let sessionRef = SessionRef(
+            target: .remote(hostKey: "edge"),
+            sessionName: "shared"
+        )
+        let originalConfig = HostsConfig(hosts: [
+            RemoteHost(
+                id: "edge",
+                displayName: "Edge",
+                hostname: "edge.example.com",
+                user: "alice",
+                transport: .ssh
+            )
+        ])
+        let updatedConfig = HostsConfig(hosts: [
+            RemoteHost(
+                id: "edge",
+                displayName: "Edge",
+                hostname: "edge.example.com",
+                user: "bob",
+                transport: .ssh
+            )
+        ])
+        let originalIdentity = WorkbenchTerminalAttachPlanFreezeIdentity.make(
+            sessionRef: sessionRef,
+            desiredPaneRef: nil,
+            observedPaneRef: nil,
+            terminalState: .ready,
+            hostsConfig: originalConfig
+        )
+        let updatedIdentity = WorkbenchTerminalAttachPlanFreezeIdentity.make(
+            sessionRef: sessionRef,
+            desiredPaneRef: nil,
+            observedPaneRef: nil,
+            terminalState: .ready,
+            hostsConfig: updatedConfig
+        )
+        let originalPlan = try XCTUnwrap(
+            try? WorkbenchV2TerminalAttachResolver.resolve(
+                sessionRef: sessionRef,
+                hostsConfig: originalConfig
+            ).get()
+        )
+        let updatedPlan = try XCTUnwrap(
+            try? WorkbenchV2TerminalAttachResolver.resolve(
+                sessionRef: sessionRef,
+                hostsConfig: updatedConfig
+            ).get()
+        )
+        let frozenPlan = WorkbenchFrozenAttachPlan(
+            identity: originalIdentity,
+            plan: originalPlan
+        )
+
+        let resolvedPlan = try XCTUnwrap(
+            try? frozenPlan.resolved(
+                currentIdentity: updatedIdentity,
+                liveResolution: .success(updatedPlan)
+            ).get()
+        )
+
+        XCTAssertEqual(resolvedPlan, updatedPlan)
+        XCTAssertNotEqual(resolvedPlan.command, originalPlan.command)
+        XCTAssertTrue(resolvedPlan.command.contains("bob@edge.example.com"))
     }
 
     private func assertTelemetryWrappedCommand(

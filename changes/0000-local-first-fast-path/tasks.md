@@ -1,0 +1,23 @@
+# Tasks
+
+- [x] Producer hot-path closeout (`T-LF-09` through `T-LF-12`)
+- [x] Native Ghostty baseline bring-up and helper-driven input smoke
+- [x] Focused idle parity proof
+- [x] `T-LF-13` targeted fix and focused verification
+- [x] Chunk `TmuxControlMode` parsing and default `%output` elision
+- [x] Skip remote broad poll task in local-only steady state
+- [x] `T-LF-13` broader SwiftPM verification
+- [x] AX-targeted embedded terminal host lookup and focus seam
+- [x] Align local attach-session with UITest tmux config path
+- [x] Send tmux next-pane chord from a single AX helper process
+- [x] Preselect pane-targeted attach commands before tmux attach-session
+- [x] Promote rendered-client truth into observed pane state earlier in control-mode reconciliation
+- [x] Re-capture pane-switch proxy latency against rendered-client convergence
+- [x] Replay `keyDown`-accumulated embedded Ghostty text as key events instead of paste
+- [x] Add same-host keypress bench harness for embedded `agtmux-term` and native Ghostty
+- [x] Final scroll parity capture
+- [x] Final keypress-to-glyph parity capture
+- [x] Final pane-switch parity capture
+- [x] Gate-L closeout decision
+- [x] Promote Gate-L green evidence into durable docs
+- [ ] Retire `changes/0000-local-first-fast-path/` in the merge that lands the closeout

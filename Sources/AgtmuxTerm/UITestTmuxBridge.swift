@@ -1,5 +1,11 @@
 import Foundation
+import AppKit
 import AgtmuxTermCore
+
+private func uiTestBridgeDebugLog(_ message: @autoclosure () -> String) {
+    guard ProcessInfo.processInfo.environment["AGTMUX_UITEST_BRIDGE_DEBUG"] == "1" else { return }
+    FileHandle.standardError.write(Data(("[ui-test-bridge] " + message() + "\n").utf8))
+}
 
 /// UITest-only tmux bridge.
 ///
@@ -59,15 +65,40 @@ final class UITestTmuxBridge {
         let renderedSurfaceGeneration: UInt64
     }
 
+    private struct FocusStateSnapshot: Codable {
+        let appIsActive: Bool
+        let keyWindowNumber: Int?
+        let keyWindowFirstResponderClass: String?
+        let keyWindowFirstResponderDescription: String?
+        let tileID: String
+        let windowNumber: Int?
+        let windowIsKey: Bool
+        let windowIsMain: Bool
+        let windowFirstResponderClass: String?
+        let windowFirstResponderDescription: String?
+        let terminalIsFirstResponder: Bool
+        let terminalAccessibilityIdentifier: String?
+        let terminalKeyDownCount: Int
+        let terminalLastKeyCode: UInt16?
+        let terminalLastCharacters: String?
+        let terminalLastCharactersIgnoringModifiers: String?
+        let terminalLastModifierFlagsRawValue: UInt?
+        let terminalLastSendKeyResult: Bool?
+        let terminalRecentInputEvents: [String]
+    }
+
     private let viewModel: AppViewModel
     private let enableMetadataMode: @MainActor () async -> Void
     private let env: [String: String]
     private var commandLoopTask: Task<Void, Never>?
     private var createdSessions: Set<String> = []
     private let activeTerminalTargetCommand = "__agtmux_dump_active_terminal_target__"
+    private let focusStateCommand = "__agtmux_dump_focus_state__"
     private let sidebarStateCommand = "__agtmux_dump_sidebar_state__"
     private let enableMetadataCommand = "__agtmux_enable_metadata__"
     private let openTerminalForPaneCommand = "__agtmux_open_terminal_for_pane__"
+    private let focusTerminalHostCommand = "__agtmux_focus_terminal_host__"
+    private let sendTmuxNextPaneKeysCommand = "__agtmux_send_tmux_next_pane_keys__"
 
     init(
         viewModel: AppViewModel,
@@ -224,6 +255,7 @@ final class UITestTmuxBridge {
                     try? await Task.sleep(for: .milliseconds(80))
                     continue
                 }
+                uiTestBridgeDebugLog("commandLoop request id=\(request.id) args=\(request.args)")
                 if request.id == lastCommandID {
                     try? await Task.sleep(for: .milliseconds(80))
                     continue
@@ -265,6 +297,7 @@ final class UITestTmuxBridge {
 
                 if let payload = try? encoder.encode(response) {
                     try? payload.write(to: responseURL, options: .atomic)
+                    uiTestBridgeDebugLog("commandLoop response id=\(response.id) ok=\(response.ok) args=\(request.args)")
                 }
 
                 try? await Task.sleep(for: .milliseconds(80))
@@ -301,8 +334,18 @@ final class UITestTmuxBridge {
                 let snapshot = try await activeTerminalTargetSnapshot()
                 let data = try JSONEncoder().encode(snapshot)
                 stdout = String(decoding: data, as: UTF8.self)
+            case focusStateCommand:
+                let snapshot = try focusStateSnapshot(for: request.args)
+                let data = try JSONEncoder().encode(snapshot)
+                stdout = String(decoding: data, as: UTF8.self)
             case openTerminalForPaneCommand:
                 try openTerminalForPane(request.args)
+                stdout = "ok"
+            case focusTerminalHostCommand:
+                try focusTerminalHost(request.args)
+                stdout = "ok"
+            case sendTmuxNextPaneKeysCommand:
+                try sendTmuxNextPaneKeys(request.args)
                 stdout = "ok"
             case sidebarStateCommand:
                 let bootstrapProbeSummary: UITestBootstrapProbeSummary
@@ -515,6 +558,154 @@ final class UITestTmuxBridge {
             for: pane,
             hostsConfig: viewModel.hostsConfig
         )
+    }
+
+    private func focusStateSnapshot(for args: [String]) throws -> FocusStateSnapshot {
+        guard args.count >= 2 else {
+            throw NSError(
+                domain: "UITestTmuxBridge",
+                code: 12,
+                userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "\(focusStateCommand) requires <tileID>"
+                ]
+            )
+        }
+
+        guard let tileID = UUID(uuidString: args[1]) else {
+            throw NSError(
+                domain: "UITestTmuxBridge",
+                code: 13,
+                userInfo: [NSLocalizedDescriptionKey: "Invalid tile id: \(args[1])"]
+            )
+        }
+
+        guard let terminalView = SurfacePool.shared.managedView(forLeafID: tileID) else {
+            throw NSError(
+                domain: "UITestTmuxBridge",
+                code: 14,
+                userInfo: [NSLocalizedDescriptionKey: "No managed terminal view for tile \(tileID.uuidString)"]
+            )
+        }
+
+        let terminalWindow = terminalView.window
+        let terminalFirstResponder = terminalWindow?.firstResponder
+        let keyWindow = NSApp.keyWindow
+        let keyWindowFirstResponder = keyWindow?.firstResponder
+
+        return FocusStateSnapshot(
+            appIsActive: NSApp.isActive,
+            keyWindowNumber: keyWindow?.windowNumber,
+            keyWindowFirstResponderClass: keyWindowFirstResponder.map {
+                String(describing: type(of: $0))
+            },
+            keyWindowFirstResponderDescription: keyWindowFirstResponder.map(String.init(describing:)),
+            tileID: tileID.uuidString,
+            windowNumber: terminalWindow?.windowNumber,
+            windowIsKey: terminalWindow?.isKeyWindow ?? false,
+            windowIsMain: terminalWindow?.isMainWindow ?? false,
+            windowFirstResponderClass: terminalFirstResponder.map {
+                String(describing: type(of: $0))
+            },
+            windowFirstResponderDescription: terminalFirstResponder.map(String.init(describing:)),
+            terminalIsFirstResponder: terminalFirstResponder === terminalView,
+            terminalAccessibilityIdentifier: terminalView.accessibilityIdentifier(),
+            terminalKeyDownCount: terminalView.debugKeyDownCount,
+            terminalLastKeyCode: terminalView.debugLastKeyCode,
+            terminalLastCharacters: terminalView.debugLastCharacters,
+            terminalLastCharactersIgnoringModifiers: terminalView.debugLastCharactersIgnoringModifiers,
+            terminalLastModifierFlagsRawValue: terminalView.debugLastModifierFlagsRawValue,
+            terminalLastSendKeyResult: terminalView.debugLastSendKeyResult,
+            terminalRecentInputEvents: terminalView.debugRecentInputEvents
+        )
+    }
+
+    private func focusTerminalHost(_ args: [String]) throws {
+        let terminalView = try terminalView(for: args, command: focusTerminalHostCommand)
+        guard let window = terminalView.window else {
+            throw NSError(
+                domain: "UITestTmuxBridge",
+                code: 15,
+                userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "Terminal view window missing for tileID \(args[1])"
+                ]
+            )
+        }
+
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        window.makeFirstResponder(terminalView)
+    }
+
+    private func sendTmuxNextPaneKeys(_ args: [String]) throws {
+        uiTestBridgeDebugLog("sendTmuxNextPaneKeys start args=\(args)")
+        let terminalView = try terminalView(for: args, command: sendTmuxNextPaneKeysCommand)
+        guard let window = terminalView.window else {
+            throw NSError(
+                domain: "UITestTmuxBridge",
+                code: 15,
+                userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "Terminal view window missing for tileID \(args[1])"
+                ]
+            )
+        }
+
+        let tileID = args[1]
+        let windowNumber = window.windowNumber
+        uiTestBridgeDebugLog("sendTmuxNextPaneKeys schedule tileID=\(tileID) windowNumber=\(windowNumber)")
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(20)) { [weak terminalView] in
+            guard let terminalView else { return }
+            uiTestBridgeDebugLog("sendTmuxNextPaneKeys fire tileID=\(tileID) windowNumber=\(windowNumber)")
+            let sent = terminalView.sendTmuxNextPaneKeysForTesting(windowNumber: windowNumber)
+            if !sent {
+                FileHandle.standardError.write(
+                    Data(("UITestTmuxBridge failed to inject tmux next-pane keys for tileID \(tileID)\n").utf8)
+                )
+            }
+            uiTestBridgeDebugLog("sendTmuxNextPaneKeys done tileID=\(tileID) sent=\(sent)")
+        }
+        uiTestBridgeDebugLog("sendTmuxNextPaneKeys return tileID=\(tileID)")
+    }
+
+    private func terminalView(for args: [String], command: String) throws -> GhosttyTerminalView {
+        uiTestBridgeDebugLog("terminalView lookup command=\(command) args=\(args)")
+        guard args.count >= 2 else {
+            throw NSError(
+                domain: "UITestTmuxBridge",
+                code: 12,
+                userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "\(command) requires <tileID>"
+                ]
+            )
+        }
+
+        guard let tileID = UUID(uuidString: args[1]) else {
+            throw NSError(
+                domain: "UITestTmuxBridge",
+                code: 13,
+                userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "Invalid tileID for \(command): \(args[1])"
+                ]
+            )
+        }
+
+        guard let terminalView = SurfacePool.shared.view(leafID: tileID) else {
+            throw NSError(
+                domain: "UITestTmuxBridge",
+                code: 14,
+                userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "No terminal view registered for tileID \(tileID.uuidString)"
+                ]
+            )
+        }
+
+        uiTestBridgeDebugLog("terminalView resolved command=\(command) tileID=\(tileID.uuidString)")
+        return terminalView
     }
 
     private func writeBootstrapResult(_ result: BootstrapResult) {

@@ -195,6 +195,7 @@ final class LocalMetadataRefreshCoordinatorTests: XCTestCase {
         let execution = coordinator.failureExecution(
             context: makeContext(syncPrimed: true, transportVersion: nil, inventoryCount: 0),
             error: StubError.transportFailure,
+            overlayStore: makeOverlayStore(),
             classifyLocalDaemonIssue: { _ in .localDaemonUnavailable(detail: "daemon unavailable") }
         )
 
@@ -202,6 +203,35 @@ final class LocalMetadataRefreshCoordinatorTests: XCTestCase {
         XCTAssertEqual(execution.plan.cacheAction, .clear)
         XCTAssertEqual(execution.plan.state.nextRefreshAt, now.addingTimeInterval(3.0))
         XCTAssertEqual(execution.postApplyLogMessages, ["sync metadata unavailable; cleared cached overlay: transportFailure"])
+    }
+
+    func testFailureExecutionPreservesCachedOverlayOnTransientSocketReadFailure() {
+        let bridge = LocalMetadataTransportBridge()
+        let coordinator = LocalMetadataRefreshCoordinator(
+            client: StubMetadataClient(),
+            transportBridge: bridge,
+            now: { self.now }
+        )
+
+        let execution = coordinator.failureExecution(
+            context: makeContext(syncPrimed: true, transportVersion: .v3, inventoryCount: 1),
+            error: DaemonError.processError(
+                exitCode: -3,
+                stderr: "socket read failed: Resource temporarily unavailable"
+            ),
+            overlayStore: makeOverlayStoreWithCachedOverlay(),
+            classifyLocalDaemonIssue: { _ in nil }
+        )
+
+        XCTAssertEqual(execution.replayResetVersions, [.v3])
+        XCTAssertEqual(execution.plan.cacheAction, LocalMetadataCacheAction.preserve)
+        XCTAssertEqual(execution.plan.state.nextRefreshAt, now.addingTimeInterval(3.0))
+        XCTAssertEqual(
+            execution.postApplyLogMessages,
+            [
+                "sync metadata transiently unavailable; preserving cached overlay: agtmux process failed with exit code -3: socket read failed: Resource temporarily unavailable"
+            ]
+        )
     }
 
     private func makeChangesV2() -> AgtmuxSyncV2Changes {
@@ -237,6 +267,16 @@ final class LocalMetadataRefreshCoordinatorTests: XCTestCase {
             inventory: [makeInventoryPane()],
             metadataByPaneKey: [:],
             presentationByPaneKey: [:]
+        )
+    }
+
+    private func makeOverlayStoreWithCachedOverlay() -> LocalMetadataOverlayStore {
+        let inventoryPane = makeInventoryPane()
+        let key = LocalMetadataOverlayStore.paneMetadataKey(for: inventoryPane)
+        return LocalMetadataOverlayStore(
+            inventory: [inventoryPane],
+            metadataByPaneKey: [key: makeExpectedV3Pane()],
+            presentationByPaneKey: [key: PanePresentationState(snapshot: makeV3Snapshot())]
         )
     }
 

@@ -238,6 +238,14 @@ final class SurfacePool {
         }
     }
 
+    func managedView(forLeafID leafID: UUID) -> GhosttyTerminalView? {
+        pool[leafID]?.view
+    }
+
+    func view(leafID: UUID) -> GhosttyTerminalView? {
+        pool[leafID]?.view
+    }
+
     func resetForTesting() {
         gcTimer?.invalidate()
         gcTimer = nil

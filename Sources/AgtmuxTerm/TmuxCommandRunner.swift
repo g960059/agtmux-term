@@ -238,12 +238,7 @@ actor TmuxCommandRunner {
     }
 
     private func tmuxConfigArguments(from env: [String: String]) -> [String] {
-        guard let path = env["AGTMUX_UITEST_TMUX_CONFIG_PATH"]?
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-            !path.isEmpty else {
-            return []
-        }
-        return ["-f", path]
+        LocalTmuxTarget.configArguments(from: env)
     }
 }
 

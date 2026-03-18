@@ -32,9 +32,12 @@ enum WorkbenchV2TerminalAttachResolver {
         hostsConfig: HostsConfig,
         env: [String: String] = ProcessInfo.processInfo.environment
     ) -> Result<WorkbenchV2TerminalAttachPlan, WorkbenchV2TerminalAttachError> {
-        let _ = activePaneRef
         let baseCommand = telemetryWrappedCommand(
-            directAttachCommand(sessionRef: sessionRef, env: env)
+            directAttachCommand(
+                sessionRef: sessionRef,
+                activePaneRef: activePaneRef,
+                env: env
+            )
         )
 
         switch sessionRef.target {
@@ -79,12 +82,21 @@ enum WorkbenchV2TerminalAttachResolver {
 
     private static func directAttachCommand(
         sessionRef: SessionRef,
+        activePaneRef: ActivePaneRef?,
         env: [String: String]
     ) -> String {
+        let configSegment = LocalTmuxTarget.shellEscapedConfigArguments(from: env)
+        let configArgs = configSegment.isEmpty ? "" : " " + configSegment
         let socketSegment = LocalTmuxTarget.shellEscapedSocketArguments(from: env)
         let socketArgs = socketSegment.isEmpty ? "" : " " + socketSegment
         let escapedSessionName = LocalTmuxTarget.shellEscaped(sessionRef.sessionName)
-        var command = "env -u TMUX -u TMUX_PANE tmux\(socketArgs)"
+        var command = "env -u TMUX -u TMUX_PANE tmux\(configArgs)\(socketArgs)"
+        if let activePaneRef,
+           activePaneRef.target == sessionRef.target,
+           activePaneRef.sessionName == sessionRef.sessionName {
+            let escapedPaneID = LocalTmuxTarget.shellEscaped(activePaneRef.paneID)
+            command += " select-pane -t \(escapedPaneID) \\;"
+        }
         command += " attach-session -t \(escapedSessionName)"
         return command
     }

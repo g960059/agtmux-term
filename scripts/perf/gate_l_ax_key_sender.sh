@@ -24,7 +24,8 @@ fi
 
 if [[ ! -x "$BIN_PATH" || "$SOURCE_PATH" -nt "$BIN_PATH" || "$PLIST_TEMPLATE" -nt "$BIN_PATH" ]]; then
   swiftc \
-    -O \
+    -g \
+    -framework AppKit \
     -framework ApplicationServices \
     "$SOURCE_PATH" \
     -o "$BIN_PATH"

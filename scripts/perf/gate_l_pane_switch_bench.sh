@@ -9,6 +9,59 @@ iterations=20
 settle_timeout=15
 source_name="local"
 session_name=""
+mode="bridge"
+terminal_ax_identifier=""
+terminal_ax_fallback_identifier=""
+tile_id=""
+rendered_client_tty=""
+helper_json='null'
+
+function join_json_array() {
+  local values=("$@")
+  if (( ${#values[@]} == 0 )); then
+    printf '[]'
+    return 0
+  fi
+  printf '%s\n' "${values[@]}" | jq -Rsc 'split("\n")[:-1] | map(select(length > 0))'
+}
+
+function send_tmux_next_pane_keys() {
+  local sequence_json
+  if ! sequence_json="$("$SCRIPT_DIR/gate_l_ax_key_sender.sh" --app-pid "$gate_l_app_pid" --sequence tmux-next-pane)"; then
+    echo "Failed to send tmux pane-switch sequence: $sequence_json" >&2
+    return 1
+  fi
+}
+
+function switch_rendered_client_to_pane() {
+  local client_tty="$1"
+  local target_pane_id="$2"
+  env -u TMUX -u TMUX_PANE tmux \
+    -f /dev/null \
+    -L "$socket_name" \
+    select-pane \
+    -t "$target_pane_id"
+}
+
+function focus_front_window_terminal() {
+  local target_identifier="$1"
+  local fallback_identifier="${2:-}"
+  local click_json
+  local attempts=10
+  local attempt=1
+  while (( attempt <= attempts )); do
+    if click_json="$("$SCRIPT_DIR/gate_l_ax_key_sender.sh" --app-pid "$gate_l_app_pid" --click-identifier "$target_identifier" --x-frac 0.5 --y-frac 0.5 2>&1)"; then
+      return 0
+    fi
+    if [[ -n "$fallback_identifier" ]] && click_json="$("$SCRIPT_DIR/gate_l_ax_key_sender.sh" --app-pid "$gate_l_app_pid" --click-identifier "$fallback_identifier" --x-frac 0.5 --y-frac 0.5 2>&1)"; then
+      return 0
+    fi
+    sleep 0.2
+    attempt=$((attempt + 1))
+  done
+  echo "Failed to focus front window terminal: $click_json" >&2
+  return 1
+}
 
 while (( $# > 0 )); do
   case "$1" in
@@ -24,12 +77,21 @@ while (( $# > 0 )); do
       session_name="$2"
       shift 2
       ;;
+    --mode)
+      mode="$2"
+      shift 2
+      ;;
     *)
-      echo "Usage: $0 [--iterations COUNT] [--timeout SECONDS] [--session-name NAME]" >&2
+      echo "Usage: $0 [--iterations COUNT] [--timeout SECONDS] [--session-name NAME] [--mode bridge|key|client]" >&2
       exit 1
       ;;
   esac
 done
+
+if [[ "$mode" != "bridge" && "$mode" != "key" && "$mode" != "client" ]]; then
+  echo "Unsupported pane-switch mode: $mode" >&2
+  exit 1
+fi
 
 gate_l_require_app_bin
 
@@ -40,6 +102,7 @@ if [[ -z "$session_name" ]]; then
 fi
 
 gate_l_setup_paths "$token"
+export AGTMUX_PERF_UITEST_INVENTORY_ONLY=0
 
 cleanup() {
   local exit_status=$?
@@ -61,6 +124,12 @@ bootstrap_json="$(gate_l_wait_for_bootstrap "$settle_timeout")"
 if [[ "$(jq -r '.ok' <<<"$bootstrap_json")" != "true" ]]; then
   echo "App-side bootstrap failed: $(jq -r '.error // "unknown error"' <<<"$bootstrap_json")" >&2
   exit 1
+fi
+
+if [[ "$mode" == "key" ]]; then
+  gate_l_send_bridge_command true 10 set-option -g prefix C-a >/dev/null
+  gate_l_send_bridge_command true 10 set-option -s escape-time 0 >/dev/null
+  gate_l_send_bridge_command true 10 unbind C-b >/dev/null
 fi
 
 window_id="$(jq -r '.windowID' <<<"$bootstrap_json")"
@@ -88,8 +157,15 @@ fi
 
 gate_l_send_bridge_command false 10 "__agtmux_open_terminal_for_pane__" "$source_name" "$session_name" "$bootstrap_first_pane_id" >/dev/null
 gate_l_activate_app
-initial_snapshot="$(gate_l_wait_for_active_snapshot "$session_name" "$settle_timeout")"
-first_pane_id="$(jq -r '.renderedClientPaneID' <<<"$initial_snapshot")"
+initial_rendered_snapshot="$(gate_l_wait_for_active_snapshot "$session_name" "$settle_timeout")"
+first_pane_id="$(jq -r '.renderedClientPaneID' <<<"$initial_rendered_snapshot")"
+initial_snapshot="$(gate_l_wait_for_active_target "$session_name" "$window_id" "$first_pane_id" "$settle_timeout")"
+tile_id="$(jq -r '.tileID' <<<"$initial_snapshot")"
+rendered_client_tty="$(jq -r '.renderedClientTTY // empty' <<<"$initial_snapshot")"
+if [[ "$mode" == "client" && -z "$rendered_client_tty" ]]; then
+  echo "Could not resolve rendered client tty for client-mode pane-switch benchmark" >&2
+  exit 1
+fi
 
 for current_pane in "${pane_ids[@]}"; do
   if [[ "$current_pane" != "$first_pane_id" ]]; then
@@ -114,9 +190,15 @@ for (( i = 1; i <= iterations; i++ )); do
   fi
 
   start_realtime="$EPOCHREALTIME"
-  gate_l_send_bridge_command false 10 "__agtmux_open_terminal_for_pane__" "$source_name" "$session_name" "$target_pane_id" >/dev/null
-  gate_l_activate_app
-  gate_l_wait_for_active_target "$session_name" "$window_id" "$target_pane_id" "$settle_timeout" >/dev/null
+  if [[ "$mode" == "bridge" ]]; then
+    gate_l_send_bridge_command false 10 "__agtmux_open_terminal_for_pane__" "$source_name" "$session_name" "$target_pane_id" >/dev/null
+    gate_l_activate_app
+  elif [[ "$mode" == "key" ]]; then
+    gate_l_send_bridge_command false 10 "__agtmux_send_tmux_next_pane_keys__" "$tile_id" >/dev/null
+  else
+    switch_rendered_client_to_pane "$rendered_client_tty" "$target_pane_id"
+  fi
+  gate_l_wait_for_rendered_target "$session_name" "$window_id" "$target_pane_id" "$settle_timeout" >/dev/null
   latency_ms="$(awk "BEGIN { printf \"%.3f\", (($EPOCHREALTIME - $start_realtime) * 1000.0) }")"
   print -r -- "$latency_ms" >>"$latencies_file"
 done
@@ -132,11 +214,14 @@ jq -n \
   --arg session_name "$session_name" \
   --arg socket_name "$socket_name" \
   --arg source_name "$source_name" \
+  --arg mode "$mode" \
   --arg window_id "$window_id" \
   --arg first_pane_id "$first_pane_id" \
   --arg second_pane_id "$second_pane_id" \
+  --arg rendered_client_tty "$rendered_client_tty" \
   --arg bench_start "$bench_start" \
   --arg bench_end "$bench_end" \
+  --argjson helper "$helper_json" \
   --argjson app_pid "$gate_l_app_pid" \
   --argjson iterations "$iterations" \
   --argjson latencies "$latencies_json" \
@@ -166,12 +251,15 @@ jq -n \
     session_name: $session_name,
     socket_name: $socket_name,
     source_name: $source_name,
+    mode: $mode,
     window_id: $window_id,
     first_pane_id: $first_pane_id,
     second_pane_id: $second_pane_id,
+    rendered_client_tty: (if $rendered_client_tty == "" then null else $rendered_client_tty end),
     benchmark_start: $bench_start,
     benchmark_end: $bench_end,
     iterations: $iterations,
+    helper: $helper,
     latencies_ms: ($latencies | map(round3)),
     p50_ms: (($latencies | percentile(50)) | round3),
     p95_ms: (($latencies | percentile(95)) | round3),
