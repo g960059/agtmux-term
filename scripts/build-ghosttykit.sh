@@ -38,7 +38,10 @@ fi
 
 echo "Building GhosttyKit.xcframework..."
 cd "$VENDOR_GHOSTTY"
-"$ZIG" build -Demit-xcframework=true
+# We only embed the xcframework in agtmux-term, so skip Ghostty.app.
+"$ZIG" build \
+  -Demit-xcframework=true \
+  -Demit-macos-app=false
 
 XCF_SRC="$VENDOR_GHOSTTY/macos/GhosttyKit.xcframework"
 if [[ ! -d "$XCF_SRC" ]]; then
