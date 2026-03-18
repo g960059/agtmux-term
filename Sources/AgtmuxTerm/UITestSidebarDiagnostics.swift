@@ -31,6 +31,35 @@ struct UITestBootstrapTargetSummary: Codable, Equatable {
     let freshness: String?
     let sessionKey: String
     let paneInstanceID: String
+    let bindingEpochID: String?
+    let runtimeRefProvider: String?
+    let runtimeRefNativeID: String?
+
+    init(
+        sessionName: String,
+        paneID: String,
+        presence: String,
+        provider: String?,
+        primaryState: String,
+        freshness: String?,
+        sessionKey: String,
+        paneInstanceID: String,
+        bindingEpochID: String? = nil,
+        runtimeRefProvider: String? = nil,
+        runtimeRefNativeID: String? = nil
+    ) {
+        self.sessionName = sessionName
+        self.paneID = paneID
+        self.presence = presence
+        self.provider = provider
+        self.primaryState = primaryState
+        self.freshness = freshness
+        self.sessionKey = sessionKey
+        self.paneInstanceID = paneInstanceID
+        self.bindingEpochID = bindingEpochID
+        self.runtimeRefProvider = runtimeRefProvider
+        self.runtimeRefNativeID = runtimeRefNativeID
+    }
 }
 
 struct UITestDaemonLaunchRecordSnapshot: Codable, Equatable {
@@ -123,7 +152,10 @@ enum UITestSidebarDiagnostics {
             primaryState: presentation.primaryState.rawValue,
             freshness: presentation.freshnessState.rawValue,
             sessionKey: target.sessionKey,
-            paneInstanceID: String(describing: target.paneInstanceID)
+            paneInstanceID: String(describing: target.paneInstanceID),
+            bindingEpochID: target.bindingEpochID,
+            runtimeRefProvider: target.runtimeRef?.provider.rawValue,
+            runtimeRefNativeID: target.runtimeRef?.nativeID
         )
     }
 
@@ -170,14 +202,24 @@ enum UITestSidebarDiagnostics {
             : "error=\(probe.error ?? "unknown")"
         let targetSummary: String
         if let target = snapshot.bootstrapTargetSummary {
-            targetSummary = [
+            var parts = [
                 "presence=\(target.presence)",
                 "provider=\(target.provider ?? "nil")",
                 "primary=\(target.primaryState)",
                 "freshness=\(target.freshness ?? "nil")",
                 "session_key=\(target.sessionKey)",
                 "pane_instance=\(target.paneInstanceID)"
-            ].joined(separator: ",")
+            ]
+            if let bindingEpochID = target.bindingEpochID {
+                parts.append("binding_epoch_id=\(bindingEpochID)")
+            }
+            if let runtimeRef = Self.runtimeRefSummary(
+                provider: target.runtimeRefProvider,
+                nativeID: target.runtimeRefNativeID
+            ) {
+                parts.append("runtime_ref=\(runtimeRef)")
+            }
+            targetSummary = parts.joined(separator: ",")
         } else {
             targetSummary = "nil"
         }
@@ -211,5 +253,10 @@ enum UITestSidebarDiagnostics {
             "filtered=\(filteredSummary)",
             "filteredCount=\(snapshot.filteredPanePresentations.count)"
         ].joined(separator: " ")
+    }
+
+    private static func runtimeRefSummary(provider: String?, nativeID: String?) -> String? {
+        guard let provider, let nativeID else { return nil }
+        return "\(provider):\(nativeID)"
     }
 }

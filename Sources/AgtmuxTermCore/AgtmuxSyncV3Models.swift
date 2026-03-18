@@ -49,6 +49,21 @@ package struct AgtmuxSyncV3PaneInstanceID: Codable, Equatable, Hashable, Sendabl
     }
 }
 
+package struct AgtmuxRuntimeRefV3: Codable, Equatable, Sendable {
+    package let provider: Provider
+    package let nativeID: String
+
+    package init(provider: Provider, nativeID: String) {
+        self.provider = provider
+        self.nativeID = nativeID
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case provider
+        case nativeID = "native_id"
+    }
+}
+
 package enum AgtmuxSyncV3Presence: String, Codable, Equatable, Sendable {
     case managed
     case unmanaged
@@ -383,6 +398,8 @@ package struct AgtmuxSyncV3PaneSnapshot: Codable, Equatable, Sendable {
     package let paneID: String
     package let paneInstanceID: AgtmuxSyncV3PaneInstanceID
     package let provider: Provider?
+    package let bindingEpochID: String?
+    package let runtimeRef: AgtmuxRuntimeRefV3?
     package let conversationTitle: String?
     package let sessionSubtitle: String?
     package let presence: AgtmuxSyncV3Presence
@@ -400,6 +417,8 @@ package struct AgtmuxSyncV3PaneSnapshot: Codable, Equatable, Sendable {
                  paneID: String,
                  paneInstanceID: AgtmuxSyncV3PaneInstanceID,
                  provider: Provider?,
+                 bindingEpochID: String? = nil,
+                 runtimeRef: AgtmuxRuntimeRefV3? = nil,
                  conversationTitle: String? = nil,
                  sessionSubtitle: String? = nil,
                  presence: AgtmuxSyncV3Presence,
@@ -416,6 +435,8 @@ package struct AgtmuxSyncV3PaneSnapshot: Codable, Equatable, Sendable {
         self.paneID = paneID
         self.paneInstanceID = paneInstanceID
         self.provider = provider
+        self.bindingEpochID = bindingEpochID
+        self.runtimeRef = runtimeRef
         self.conversationTitle = conversationTitle
         self.sessionSubtitle = sessionSubtitle
         self.presence = presence
@@ -435,6 +456,8 @@ package struct AgtmuxSyncV3PaneSnapshot: Codable, Equatable, Sendable {
         case paneID = "pane_id"
         case paneInstanceID = "pane_instance_id"
         case provider
+        case bindingEpochID = "binding_epoch_id"
+        case runtimeRef = "runtime_ref"
         case conversationTitle = "conversation_title"
         case sessionSubtitle = "session_subtitle"
         case presence
@@ -459,6 +482,8 @@ package struct AgtmuxSyncV3PaneSnapshot: Codable, Equatable, Sendable {
             forKey: .paneInstanceID
         )
         provider = try container.decodeIfPresent(Provider.self, forKey: .provider)
+        bindingEpochID = try container.decodeIfPresent(String.self, forKey: .bindingEpochID)
+        runtimeRef = try container.decodeIfPresent(AgtmuxRuntimeRefV3.self, forKey: .runtimeRef)
         conversationTitle = try container.decodeIfPresent(String.self, forKey: .conversationTitle)
         sessionSubtitle = try container.decodeIfPresent(String.self, forKey: .sessionSubtitle)
         presence = try container.decode(AgtmuxSyncV3Presence.self, forKey: .presence)

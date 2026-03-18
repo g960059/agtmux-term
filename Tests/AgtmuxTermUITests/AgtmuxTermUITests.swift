@@ -3019,6 +3019,9 @@ final class AgtmuxTermUITests: XCTestCase {
         let freshness: String?
         let sessionKey: String
         let paneInstanceID: String
+        let bindingEpochID: String?
+        let runtimeRefProvider: String?
+        let runtimeRefNativeID: String?
     }
 
     private struct AppWorkbenchTerminalTargetSnapshot: Decodable {
@@ -3420,14 +3423,22 @@ final class AgtmuxTermUITests: XCTestCase {
             : "error=\(probe.error ?? "unknown")"
         let targetSummary: String
         if let target = snapshot.bootstrapTargetSummary {
-            targetSummary = [
+            var parts = [
                 "presence=\(target.presence)",
                 "provider=\(target.provider ?? "nil")",
                 "primary=\(target.primaryState)",
                 "freshness=\(target.freshness ?? "nil")",
                 "session_key=\(target.sessionKey)",
                 "pane_instance=\(target.paneInstanceID)"
-            ].joined(separator: ",")
+            ]
+            if let bindingEpochID = target.bindingEpochID {
+                parts.append("binding_epoch_id=\(bindingEpochID)")
+            }
+            if let runtimeRefProvider = target.runtimeRefProvider,
+               let runtimeRefNativeID = target.runtimeRefNativeID {
+                parts.append("runtime_ref=\(runtimeRefProvider):\(runtimeRefNativeID)")
+            }
+            targetSummary = parts.joined(separator: ",")
         } else {
             targetSummary = "nil"
         }

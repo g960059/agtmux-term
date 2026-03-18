@@ -73,6 +73,8 @@ final class AgtmuxSyncV3DecodingTests: XCTestCase {
         let pane = try fixturePane("unmanaged-demotion")
 
         XCTAssertNil(pane.provider)
+        XCTAssertNil(pane.bindingEpochID)
+        XCTAssertNil(pane.runtimeRef)
         XCTAssertEqual(pane.presence, .unmanaged)
         XCTAssertEqual(pane.agent.lifecycle, .unknown)
         XCTAssertEqual(pane.freshness.snapshot, .down)
@@ -160,6 +162,77 @@ final class AgtmuxSyncV3DecodingTests: XCTestCase {
         let bootstrap = try decoder.decode(AgtmuxSyncV3Bootstrap.self, from: Data(json.utf8))
 
         XCTAssertEqual(bootstrap.panes.first?.sessionSubtitle, "Pick up the sync-v3 follow-up")
+    }
+
+    func testDecodeBootstrapPreservesBindingEpochAndRuntimeRef() throws {
+        let json = """
+        {
+          "version": 3,
+          "generated_at": "2026-03-18T10:00:00Z",
+          "panes": [
+            {
+              "session_name": "demo",
+              "window_id": "@1",
+              "session_key": "codex:%4",
+              "pane_id": "%4",
+              "pane_instance_id": {
+                "pane_id": "%4",
+                "generation": 2,
+                "birth_ts": "2026-03-18T09:59:00Z"
+              },
+              "provider": "codex",
+              "binding_epoch_id": "bnd_codex_demo_01",
+              "runtime_ref": {
+                "provider": "codex",
+                "native_id": "thr-codex-demo-01"
+              },
+              "presence": "managed",
+              "agent": {
+                "lifecycle": "running"
+              },
+              "thread": {
+                "lifecycle": "active",
+                "blocking": "none",
+                "execution": "thinking",
+                "flags": {
+                  "review_mode": false,
+                  "subagent_active": false
+                },
+                "turn": {
+                  "outcome": "none",
+                  "sequence": 7,
+                  "started_at": "2026-03-18T09:59:10Z",
+                  "completed_at": null
+                }
+              },
+              "pending_requests": [],
+              "attention": {
+                "active_kinds": [],
+                "highest_priority": "none",
+                "unresolved_count": 0,
+                "generation": 0,
+                "latest_at": null
+              },
+              "freshness": {
+                "snapshot": "fresh",
+                "blocking": "fresh",
+                "execution": "fresh"
+              },
+              "updated_at": "2026-03-18T10:00:05Z"
+            }
+          ]
+        }
+        """
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let bootstrap = try decoder.decode(AgtmuxSyncV3Bootstrap.self, from: Data(json.utf8))
+
+        XCTAssertEqual(bootstrap.panes.first?.bindingEpochID, "bnd_codex_demo_01")
+        XCTAssertEqual(
+            bootstrap.panes.first?.runtimeRef,
+            AgtmuxRuntimeRefV3(provider: .codex, nativeID: "thr-codex-demo-01")
+        )
     }
 
     func testDecodeBootstrapFailsWhenExactIdentityFieldsAreMissing() throws {
@@ -398,6 +471,97 @@ final class AgtmuxSyncV3DecodingTests: XCTestCase {
         XCTAssertEqual(change.kind, .upsert)
         XCTAssertEqual(change.fieldGroups, [.thread, .pendingRequests, .attention])
         XCTAssertEqual(change.pane?.thread.blocking, .waitingApproval)
+    }
+
+    func testDecodeChangesV3ProviderFieldGroupCarriesBindingEpochAndRuntimeRef() throws {
+        let json = """
+        {
+          "version": 3,
+          "from_seq": 45,
+          "to_seq": 45,
+          "next_cursor": { "seq": 45 },
+          "changes": [
+            {
+              "seq": 45,
+              "at": "2026-03-18T10:00:06Z",
+              "kind": "upsert",
+              "session_name": "workbench",
+              "window_id": "@5",
+              "session_key": "codex:%12",
+              "pane_id": "%12",
+              "pane_instance_id": {
+                "pane_id": "%12",
+                "generation": 7,
+                "birth_ts": "2026-03-18T09:58:54Z"
+              },
+              "field_groups": ["provider"],
+              "pane": {
+                "session_name": "workbench",
+                "window_id": "@5",
+                "session_key": "codex:%12",
+                "pane_id": "%12",
+                "pane_instance_id": {
+                  "pane_id": "%12",
+                  "generation": 7,
+                  "birth_ts": "2026-03-18T09:58:54Z"
+                },
+                "provider": "codex",
+                "binding_epoch_id": "bnd_codex_workbench_02",
+                "runtime_ref": {
+                  "provider": "codex",
+                  "native_id": "thr-codex-workbench-02"
+                },
+                "presence": "managed",
+                "agent": { "lifecycle": "running" },
+                "thread": {
+                  "lifecycle": "active",
+                  "blocking": "none",
+                  "execution": "streaming",
+                  "flags": {
+                    "review_mode": false,
+                    "subagent_active": false
+                  },
+                  "turn": {
+                    "outcome": "none",
+                    "sequence": 44,
+                    "started_at": "2026-03-18T10:00:00Z",
+                    "completed_at": null
+                  }
+                },
+                "pending_requests": [],
+                "attention": {
+                  "active_kinds": [],
+                  "highest_priority": "none",
+                  "unresolved_count": 0,
+                  "generation": 13,
+                  "latest_at": null
+                },
+                "freshness": {
+                  "snapshot": "fresh",
+                  "blocking": "fresh",
+                  "execution": "fresh"
+                },
+                "updated_at": "2026-03-18T10:00:05Z"
+              }
+            }
+          ]
+        }
+        """
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let response = try decoder.decode(AgtmuxSyncV3ChangesResponse.self, from: Data(json.utf8))
+
+        guard case let .changes(payload) = response else {
+            return XCTFail("expected changes response")
+        }
+        let change = try XCTUnwrap(payload.changes.first)
+        XCTAssertEqual(change.fieldGroups, [.provider])
+        XCTAssertEqual(change.pane?.bindingEpochID, "bnd_codex_workbench_02")
+        XCTAssertEqual(
+            change.pane?.runtimeRef,
+            AgtmuxRuntimeRefV3(provider: .codex, nativeID: "thr-codex-workbench-02")
+        )
     }
 
     func testDecodeChangesV3RemoveBatchRequiresNoNestedPanePayload() throws {

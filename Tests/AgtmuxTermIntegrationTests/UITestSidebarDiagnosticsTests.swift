@@ -52,6 +52,8 @@ final class UITestSidebarDiagnosticsTests: XCTestCase {
             sessionKey: "codex:%1",
             paneID: "%1",
             provider: .codex,
+            bindingEpochID: "bnd_codex_alpha_01",
+            runtimeRef: AgtmuxRuntimeRefV3(provider: .codex, nativeID: "thr-alpha-01"),
             presence: .managed,
             threadLifecycle: .active,
             blocking: .waitingApproval,
@@ -79,6 +81,9 @@ final class UITestSidebarDiagnosticsTests: XCTestCase {
         XCTAssertEqual(target?.freshness, PanePresentationFreshnessState.degraded.rawValue)
         XCTAssertEqual(target?.sessionKey, "codex:%1")
         XCTAssertEqual(target?.paneInstanceID, String(describing: snapshot.paneInstanceID))
+        XCTAssertEqual(target?.bindingEpochID, "bnd_codex_alpha_01")
+        XCTAssertEqual(target?.runtimeRefProvider, "codex")
+        XCTAssertEqual(target?.runtimeRefNativeID, "thr-alpha-01")
     }
 
     func testPanePresentationSnapshotPrefersDisplaySemanticsOverLegacyActivity() {
@@ -201,6 +206,57 @@ final class UITestSidebarDiagnosticsTests: XCTestCase {
         XCTAssertTrue(summary.contains("current_cmd=zsh"))
         XCTAssertFalse(summary.contains("activity="))
         XCTAssertTrue(summary.contains("filteredCount=1"))
+        XCTAssertFalse(summary.contains("binding_epoch_id="))
+        XCTAssertFalse(summary.contains("runtime_ref="))
+    }
+
+    func testSidebarStateSummaryIncludesBindingEpochAndRuntimeRefWhenPresent() {
+        let snapshot = UITestSidebarStateSnapshot(
+            statusFilter: "all",
+            panePresentations: [],
+            filteredPanePresentations: [],
+            attentionCount: 0,
+            localDaemonIssueTitle: nil,
+            localDaemonIssueDetail: nil,
+            bootstrapProbeSummary: UITestBootstrapProbeSummary(
+                ok: true,
+                transportVersion: "sync-v3",
+                totalPanes: 1,
+                managedPanes: 1,
+                error: nil
+            ),
+            bootstrapTargetSummary: UITestBootstrapTargetSummary(
+                sessionName: "alpha",
+                paneID: "%1",
+                presence: "managed",
+                provider: "codex",
+                primaryState: PanePresentationPrimaryState.running.rawValue,
+                freshness: PanePresentationFreshnessState.fresh.rawValue,
+                sessionKey: "codex:%1",
+                paneInstanceID: "AgtmuxSyncV3PaneInstanceID(paneId: \"%1\", generation: 1, birthTs: \(now))",
+                bindingEpochID: "bnd_codex_alpha_01",
+                runtimeRefProvider: "codex",
+                runtimeRefNativeID: "thr-alpha-01"
+            ),
+            managedDaemonSocketPath: "/tmp/agtmuxd.sock",
+            tmuxSocketArguments: ["-L", "alpha"],
+            daemonCLIArguments: ["--socket", "/tmp/agtmuxd.sock"],
+            bootstrapResolvedTmuxSocketPath: "/tmp/tmux.sock",
+            appDirectResolvedSocketProbe: "ok",
+            appDirectResolvedSocketProbeError: nil,
+            daemonProcessCommands: ["agtmux daemon"],
+            daemonLaunchRecord: nil,
+            managedDaemonStderrTail: nil
+        )
+
+        let summary = UITestSidebarDiagnostics.sidebarStateSummary(
+            snapshot,
+            sessionName: "alpha",
+            paneID: "%1"
+        )
+
+        XCTAssertTrue(summary.contains("binding_epoch_id=bnd_codex_alpha_01"))
+        XCTAssertTrue(summary.contains("runtime_ref=codex:thr-alpha-01"))
     }
 
     private func makeSnapshot(
@@ -209,6 +265,8 @@ final class UITestSidebarDiagnosticsTests: XCTestCase {
         sessionKey: String,
         paneID: String,
         provider: Provider?,
+        bindingEpochID: String? = nil,
+        runtimeRef: AgtmuxRuntimeRefV3? = nil,
         presence: AgtmuxSyncV3Presence,
         threadLifecycle: AgtmuxSyncV3ThreadLifecycle,
         blocking: AgtmuxSyncV3BlockingState,
@@ -227,6 +285,8 @@ final class UITestSidebarDiagnosticsTests: XCTestCase {
             paneID: paneID,
             paneInstanceID: paneInstanceID,
             provider: provider,
+            bindingEpochID: bindingEpochID,
+            runtimeRef: runtimeRef,
             presence: presence,
             agent: AgtmuxSyncV3AgentState(lifecycle: provider == nil ? .unknown : .running),
             thread: AgtmuxSyncV3ThreadState(
