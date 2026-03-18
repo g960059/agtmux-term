@@ -1353,10 +1353,26 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
         view.scheduleScrollPresentationDrawIfNeeded()
         view.scheduleScrollPresentationDrawIfNeeded()
 
-        let drew = await waitUntil {
+        let drew = await waitUntil(intervalMs: 1) {
             view.scrollPresentationDrawCallCount == 1
         }
         XCTAssertTrue(drew)
+    }
+
+    @MainActor
+    func testScrollPresentationDrawPumpContinuesBrieflyAfterRecentInput() {
+        let view = GhosttyTerminalViewDrawSpy()
+
+        view.noteScrollInputTelemetryForTesting(now: 10.0)
+
+        XCTAssertTrue(view.runScrollPresentationDrawPumpPassForTesting(now: 10.01))
+        XCTAssertEqual(view.scrollPresentationDrawCallCount, 1)
+
+        XCTAssertTrue(view.runScrollPresentationDrawPumpPassForTesting(now: 10.15))
+        XCTAssertEqual(view.scrollPresentationDrawCallCount, 2)
+
+        XCTAssertFalse(view.runScrollPresentationDrawPumpPassForTesting(now: 10.25))
+        XCTAssertEqual(view.scrollPresentationDrawCallCount, 2)
     }
 
     @MainActor
@@ -1542,6 +1558,10 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
 private final class GhosttyTerminalViewDrawSpy: GhosttyTerminalView {
     private(set) var triggerDrawCallCount = 0
     private(set) var scrollPresentationDrawCallCount = 0
+
+    override func hasSurfaceForScrollPresentationDraw() -> Bool {
+        true
+    }
 
     override func triggerDraw() {
         triggerDrawCallCount += 1

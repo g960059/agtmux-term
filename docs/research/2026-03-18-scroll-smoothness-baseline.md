@@ -242,6 +242,34 @@ through the IOSurface layer without going through `GHOSTTY_ACTION_RENDER`, and
 that coalescing a synchronous draw during scroll materially improves layer
 presentation cadence.
 
+## Fourth-Wave Follow-Up
+
+The next implementation wave kept the coalesced synchronous draw, but added a
+short-lived active-scroll draw pump in `GhosttyTerminalView`. Instead of issuing
+one synchronous draw and then waiting for the next scroll event, the host now
+keeps drawing at a fixed cadence for the rest of the recent scroll burst.
+
+Validation on `2026-03-18`:
+
+- `swift test --build-path .build-codex --filter GhosttyCLIOSCBridgeTests`
+- `AGTMUX_PERF_APP_BIN="$PWD/.build-codex/arm64-apple-macosx/debug/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4`
+
+Observed result:
+
+- before active-scroll draw pump:
+  - `scroll_to_layer_present_ms p50 3.080 / p95 41.300 / max 58.542`
+  - `layer_present_gap_p50 11.750`
+- after active-scroll draw pump:
+  - `scroll_to_layer_present_ms p50 1.765 / p95 18.782 / max 24.305`
+  - `layer_present_gap_p50 8.442`
+
+Interpretation:
+
+- this change materially reduced the user-visible presentation spikes that still
+  made the app feel closer to ~20fps during long history scrolling
+- the old tmux visible-line proxy remains noisy and should still not be treated
+  as the primary acceptance metric for scroll smoothness
+
 Open questions for the next wave:
 
 1. whether the remaining roughness is still visible to users after the
