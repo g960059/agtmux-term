@@ -22,5 +22,6 @@ Current state:
 - the only broad SwiftPM failure on this host is the live Claude probe in
   `AppViewModelLiveManagedAgentTests`, where `claude -p` times out/returns
   non-zero without output before the app assertions begin
-- the current SSH-launched macOS UI E2E rerun is environment-blocked before
-  test bodies start because XCTest times out while enabling automation mode
+- after granting automation permission, the SSH-launched macOS UI E2E rerun
+  reaches test execution again and returns to the expected single remaining
+  failure: `testMetadataEnabledPlainZshCodexPaneSurfacesManagedProviderAndActivity`
