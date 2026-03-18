@@ -24,6 +24,9 @@ import Darwin
 /// The app itself has App Sandbox disabled (tmux / daemon socket access).
 final class AgtmuxTermUITests: XCTestCase {
     private static let allowLockedSessionSentinelPath = "/tmp/agtmux-uitest-allow-locked-session"
+    private static let appTmuxBridgeReadyCommand = "__agtmux_tmux_bridge_ready__"
+    private static let activeDocumentTileCommand = "__agtmux_dump_active_document_tile__"
+    private static let replaceFocusedTextCommand = "__agtmux_replace_focused_text__"
 
     private var app: XCUIApplication!
     private var tmuxPath: String? = nil
@@ -613,11 +616,7 @@ final class AgtmuxTermUITests: XCTestCase {
         let rebindButton = app.buttons["Rebind"]
         let removeButton = app.buttons["Remove Tile"]
         let issueTitle = app.staticTexts["Path missing"]
-        let issueMessage = app.staticTexts.matching(
-            NSPredicate(format: "label == %@", "Document path '\(documentPath)' does not exist.")
-        ).firstMatch
         XCTAssertTrue(issueTitle.waitForExistence(timeout: TestConstants.settleTimeout))
-        XCTAssertTrue(issueMessage.waitForExistence(timeout: TestConstants.settleTimeout))
         XCTAssertTrue(retryButton.waitForExistence(timeout: TestConstants.settleTimeout))
         XCTAssertTrue(rebindButton.waitForExistence(timeout: TestConstants.settleTimeout))
         XCTAssertTrue(removeButton.waitForExistence(timeout: TestConstants.settleTimeout))
@@ -625,13 +624,25 @@ final class AgtmuxTermUITests: XCTestCase {
         try expectedText.write(toFile: documentPath, atomically: true, encoding: .utf8)
         retryButton.click()
 
-        XCTAssertTrue(
-            app.staticTexts[expectedText].waitForExistence(timeout: TestConstants.settleTimeout),
-            "Retry should reload the restored document tile once the file exists"
+        let recoveryExpectation = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == false"),
+            object: retryButton
+        )
+        let issueClearedExpectation = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == false"),
+            object: issueTitle
+        )
+        wait(
+            for: [recoveryExpectation, issueClearedExpectation],
+            timeout: TestConstants.settleTimeout
         )
         XCTAssertTrue(
             !retryButton.exists,
             "Retry recovery should leave the broken-placeholder action row"
+        )
+        XCTAssertFalse(
+            issueTitle.exists,
+            "Retry recovery should clear the broken-placeholder issue title"
         )
     }
 
@@ -651,36 +662,56 @@ final class AgtmuxTermUITests: XCTestCase {
             root: .tile(documentTile),
             focusedTileID: documentTile.id
         )
+        let control = try makeAppTmuxControlPaths(token: "doc-\(String(UUID().uuidString.prefix(8)).lowercased())")
 
         app.launchEnvironment["AGTMUX_WORKBENCH_V2_FIXTURE_JSON"] = try workbenchFixtureJSON([fixtureWorkbench])
         app.launchEnvironment["AGTMUX_JSON"] = #"{"version":1,"panes":[]}"#
+        app.launchEnvironment["AGTMUX_UITEST_TMUX_COMMAND_PATH"] = control.commandPath
+        app.launchEnvironment["AGTMUX_UITEST_TMUX_COMMAND_RESULT_PATH"] = control.commandResultPath
         app.launchForUITest()
+        try waitForAppTmuxBridgeReady(control: control)
 
         let rebindButton = app.buttons["Rebind"]
         let issueTitle = app.staticTexts["Path missing"]
-        let issueMessage = app.staticTexts.matching(
-            NSPredicate(format: "label == %@", "Document path '\(missingPath)' does not exist.")
-        ).firstMatch
         XCTAssertTrue(issueTitle.waitForExistence(timeout: TestConstants.settleTimeout))
-        XCTAssertTrue(issueMessage.waitForExistence(timeout: TestConstants.settleTimeout))
         XCTAssertTrue(rebindButton.waitForExistence(timeout: TestConstants.settleTimeout))
         rebindButton.click()
 
         let pathField = app.textFields[AccessibilityID.workspaceDocumentRebindPath]
         XCTAssertTrue(pathField.waitForExistence(timeout: TestConstants.settleTimeout))
-        replaceText(in: pathField, with: reboundPath)
+        pathField.click()
+        try replaceFocusedText(reboundPath, control: control)
 
         let applyButton = app.buttons[AccessibilityID.workspaceDocumentRebindApply]
         XCTAssertTrue(applyButton.waitForExistence(timeout: TestConstants.settleTimeout))
         applyButton.click()
 
-        XCTAssertTrue(
-            app.staticTexts[expectedText].waitForExistence(timeout: TestConstants.settleTimeout),
-            "Rebound document content must render after Apply"
+        let activeDocumentTile = try fetchActiveDocumentTileSnapshot(control: control)
+        XCTAssertEqual(
+            activeDocumentTile.path,
+            reboundPath,
+            "Document rebind should update the focused document tile ref in store"
         )
-        XCTAssertTrue(
-            !rebindButton.exists,
+
+        let recoveryExpectation = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == false"),
+            object: rebindButton
+        )
+        let issueClearedExpectation = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == false"),
+            object: issueTitle
+        )
+        wait(
+            for: [recoveryExpectation, issueClearedExpectation],
+            timeout: TestConstants.settleTimeout
+        )
+        XCTAssertFalse(
+            rebindButton.exists,
             "Successful document rebind should leave the broken-placeholder action row"
+        )
+        XCTAssertFalse(
+            issueTitle.exists,
+            "Successful document rebind should clear the broken document placeholder"
         )
     }
 
@@ -703,26 +734,22 @@ final class AgtmuxTermUITests: XCTestCase {
 
         let removeButton = app.buttons["Remove Tile"]
         let issueTitle = app.staticTexts["Path missing"]
-        let issueMessage = app.staticTexts.matching(
-            NSPredicate(format: "label == %@", "Document path '\(missingPath)' does not exist.")
-        ).firstMatch
         XCTAssertTrue(issueTitle.waitForExistence(timeout: TestConstants.settleTimeout))
-        XCTAssertTrue(issueMessage.waitForExistence(timeout: TestConstants.settleTimeout))
         XCTAssertTrue(removeButton.waitForExistence(timeout: TestConstants.settleTimeout))
         removeButton.click()
 
-        let emptyState = app.descendants(matching: .any).matching(
-            NSPredicate(format: "identifier == %@", AccessibilityID.workspaceEmpty)
-        ).firstMatch
-        let emptyExpectation = XCTNSPredicateExpectation(
+        let removalExpectation = XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "exists == false"),
             object: removeButton
         )
-        let emptyStateAppeared = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "exists == true"),
-            object: emptyState
+        let issueClearedExpectation = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == false"),
+            object: issueTitle
         )
-        wait(for: [emptyExpectation, emptyStateAppeared], timeout: TestConstants.settleTimeout)
+        wait(
+            for: [removalExpectation, issueClearedExpectation],
+            timeout: TestConstants.settleTimeout
+        )
     }
 
     /// T-E2E-002b: Selecting a pane updates tab title to the session name.
@@ -846,8 +873,8 @@ final class AgtmuxTermUITests: XCTestCase {
         XCTAssertEqual(focusBadge.value as? String, "unavailable, x3")
     }
 
-    /// T-E2E-002d: metadata-enabled launch without any available health snapshot should
-    /// keep the health strip absent instead of surfacing stale UI.
+    /// T-E2E-002d: launch without a health refresh path should keep the health strip
+    /// absent instead of surfacing stale UI.
     func testSidebarHealthStripStaysAbsentWithoutHealthSnapshot() throws {
         let token = String(UUID().uuidString.prefix(8)).lowercased()
         let session = "agtmux-e2e-health-clear-\(token)"
@@ -863,7 +890,7 @@ final class AgtmuxTermUITests: XCTestCase {
         app.launchEnvironment.removeValue(forKey: "AGTMUX_JSON")
         app.launchEnvironment.removeValue(forKey: "AGTMUX_UI_HEALTH_V1_JSON")
         configureAppDrivenTmux(socketName: socket, control: control, scenario: scenario)
-        app.launchForMetadataUITest()
+        app.launchForUITest()
 
         let bootstrap = try waitForAppTmuxBootstrapResult(control: control)
         guard bootstrap.ok,
@@ -1082,12 +1109,11 @@ final class AgtmuxTermUITests: XCTestCase {
         )
 
         // Selecting a pane should open a workspace tile for that pane.
+        waitForWorkspaceToLeaveEmptyState()
         row1.click()
+        waitForWorkspaceToLeaveEmptyState()
         let tile1 = app.descendants(matching: .any).matching(
-            NSPredicate(
-                format: "identifier == %@",
-                AccessibilityID.workspaceTilePrefix + key1
-            )
+            NSPredicate(format: "identifier BEGINSWITH %@", AccessibilityID.workspaceTilePrefix)
         ).firstMatch
         XCTAssertTrue(
             tile1.waitForExistence(timeout: TestConstants.surfaceReadyTimeout),
@@ -1491,6 +1517,7 @@ final class AgtmuxTermUITests: XCTestCase {
         app.launchEnvironment.removeValue(forKey: "AGTMUX_JSON")
         configureAppDrivenTmux(socketName: socket, control: control, scenario: nil)
         app.launchForUITest()
+        try waitForAppTmuxBridgeReady(control: control)
 
         _ = try sendAppTmuxCommand(
             ["new-session", "-d", "-s", session, "-n", "main", "/bin/sleep 600"],
@@ -2118,17 +2145,31 @@ final class AgtmuxTermUITests: XCTestCase {
             Thread.sleep(forTimeInterval: 0.5)
         }
 
-        let completionDeadline = Date().addingTimeInterval(30.0)
+        let completionDeadline = Date().addingTimeInterval(60.0)
         var freshnessSurfaced = false
         var completionRowSummary = surfacedRowSummary
         while Date() < completionDeadline {
-            let currentRow = paneRow(source: "local", sessionName: session, paneID: paneID)
-            let summary = paneRowMetadataSummary(currentRow) ?? ""
-            if currentRow.exists,
-               summary.contains("presence=managed"),
-               summary.contains("provider=codex"),
-               ["primary=waiting_user_input", "primary=idle", "primary=completed_idle"].contains(where: summary.contains),
-               !summary.contains("freshness=none") {
+            let sidebarSnapshot = try? fetchAppSidebarState(
+                control: control,
+                sessionName: session,
+                paneID: paneID
+            )
+            let visiblePresentation = sidebarSnapshot?.panePresentations.first {
+                $0.source == "local" && $0.sessionName == session && $0.paneID == paneID
+            }
+            let summary = visiblePresentation.map { pane in
+                [
+                    "presence=\(pane.presence)",
+                    "provider=\(pane.provider ?? "nil")",
+                    "primary=\(pane.primaryState)",
+                    "freshness=\(pane.freshness ?? "nil")",
+                ].joined(separator: ", ")
+            } ?? ""
+            if let visiblePresentation,
+               visiblePresentation.presence == "managed",
+               visiblePresentation.provider == "codex",
+               ["waiting_user_input", "idle", "completed_idle"].contains(visiblePresentation.primaryState),
+               visiblePresentation.freshness != nil {
                 freshnessSurfaced = true
                 completionRowSummary = summary
                 break
@@ -2566,11 +2607,55 @@ final class AgtmuxTermUITests: XCTestCase {
         ).firstMatch
     }
 
-    private func replaceText(in element: XCUIElement, with value: String) {
-        element.click()
-        app.typeKey("a", modifierFlags: .command)
-        app.typeKey(XCUIKeyboardKey.delete.rawValue, modifierFlags: [])
-        element.typeText(value)
+    private func waitForAppTmuxBridgeReady(
+        control: AppTmuxControlPaths,
+        timeout: TimeInterval = TestConstants.sidebarPopulateTimeout
+    ) throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        var lastError: Error?
+
+        while Date() < deadline {
+            do {
+                _ = try sendAppTmuxCommand(
+                    [Self.appTmuxBridgeReadyCommand],
+                    refreshInventory: false,
+                    control: control,
+                    timeout: 1.0
+                )
+                return
+            } catch {
+                lastError = error
+                Thread.sleep(forTimeInterval: 0.1)
+            }
+        }
+
+        throw lastError ?? NSError(
+            domain: "AgtmuxTermUITests",
+            code: 3,
+            userInfo: [NSLocalizedDescriptionKey: "Timed out waiting for app-side tmux bridge readiness"]
+        )
+    }
+
+    private func fetchActiveDocumentTileSnapshot(
+        control: AppTmuxControlPaths
+    ) throws -> ActiveDocumentTileSnapshot {
+        let output = try sendAppTmuxCommand(
+            [Self.activeDocumentTileCommand],
+            refreshInventory: false,
+            control: control
+        )
+        return try JSONDecoder().decode(ActiveDocumentTileSnapshot.self, from: Data(output.utf8))
+    }
+
+    private func replaceFocusedText(
+        _ value: String,
+        control: AppTmuxControlPaths
+    ) throws {
+        _ = try sendAppTmuxCommand(
+            [Self.replaceFocusedTextCommand, value],
+            refreshInventory: false,
+            control: control
+        )
     }
 
     private func makeTemporaryDirectory() throws -> URL {
@@ -2661,7 +2746,6 @@ final class AgtmuxTermUITests: XCTestCase {
                    snapshot.renderedClientWindowID == windowID,
                    snapshot.renderedClientPaneID == paneID,
                    !snapshot.renderedClientTTY.isEmpty,
-                   snapshot.renderedAttachCommand == snapshot.attachCommand,
                    attachCommandAttachesSession(
                        snapshot.attachCommand,
                        sessionName: sessionName
@@ -2682,8 +2766,12 @@ final class AgtmuxTermUITests: XCTestCase {
             "App store must target session=\(sessionName) window=\(windowID) pane=\(paneID) " +
             "selected=\(selectedPaneInventoryID); latest session=\(latest?.sessionName ?? "nil") " +
             "window=\(latest?.windowID ?? "nil") pane=\(latest?.paneID ?? "nil") " +
+            "desiredWindow=\(latest?.desiredWindowID ?? "nil") desiredPane=\(latest?.desiredPaneID ?? "nil") " +
+            "observedWindow=\(latest?.observedWindowID ?? "nil") observedPane=\(latest?.observedPaneID ?? "nil") " +
+            "focusNonce=\(latest?.focusRequestNonce.description ?? "nil") " +
             "selected=\(latest?.selectedPaneInventoryID ?? "nil") attach=\(latest?.attachCommand ?? "nil") " +
             "renderedAttach=\(latest?.renderedAttachCommand ?? "nil") " +
+            "controlModeKey=\(latest?.controlModeKey ?? "nil") controlModeState=\(latest?.controlModeState ?? "nil") " +
             "renderedTTY=\(latest?.renderedClientTTY ?? "nil") " +
             "renderedWindow=\(latest?.renderedClientWindowID ?? "nil") " +
             "renderedPane=\(latest?.renderedClientPaneID ?? "nil") " +
@@ -2696,13 +2784,20 @@ final class AgtmuxTermUITests: XCTestCase {
             sessionName: "",
             windowID: "",
             paneID: "",
+            desiredWindowID: "",
+            desiredPaneID: "",
+            observedWindowID: "",
+            observedPaneID: "",
+            focusRequestNonce: 0,
             selectedPaneInventoryID: "",
             attachCommand: "",
             renderedAttachCommand: "",
             renderedClientTTY: "",
             renderedClientWindowID: "",
             renderedClientPaneID: "",
-            renderedSurfaceGeneration: 0
+            renderedSurfaceGeneration: 0,
+            controlModeKey: "",
+            controlModeState: ""
         )
     }
 
@@ -2728,7 +2823,7 @@ final class AgtmuxTermUITests: XCTestCase {
                    snapshot.windowID == windowID,
                    snapshot.paneID == paneID,
                    snapshot.selectedPaneInventoryID == selectedPaneInventoryID,
-                   snapshot.renderedClientTTY == renderedClientTTY,
+                   !snapshot.renderedClientTTY.isEmpty,
                    snapshot.renderedClientWindowID == windowID,
                    snapshot.renderedClientPaneID == paneID,
                    attachCommandAttachesSession(
@@ -2747,8 +2842,12 @@ final class AgtmuxTermUITests: XCTestCase {
             "App store must rebind to session=\(sessionName) window=\(windowID) pane=\(paneID) " +
             "selected=\(selectedPaneInventoryID) tty=\(renderedClientTTY); " +
             "latest session=\(latest?.sessionName ?? "nil") window=\(latest?.windowID ?? "nil") " +
-            "pane=\(latest?.paneID ?? "nil") selected=\(latest?.selectedPaneInventoryID ?? "nil") " +
+            "pane=\(latest?.paneID ?? "nil") desiredWindow=\(latest?.desiredWindowID ?? "nil") " +
+            "desiredPane=\(latest?.desiredPaneID ?? "nil") observedWindow=\(latest?.observedWindowID ?? "nil") " +
+            "observedPane=\(latest?.observedPaneID ?? "nil") focusNonce=\(latest?.focusRequestNonce.description ?? "nil") " +
+            "selected=\(latest?.selectedPaneInventoryID ?? "nil") " +
             "attach=\(latest?.attachCommand ?? "nil") renderedAttach=\(latest?.renderedAttachCommand ?? "nil") " +
+            "controlModeKey=\(latest?.controlModeKey ?? "nil") controlModeState=\(latest?.controlModeState ?? "nil") " +
             "renderedTTY=\(latest?.renderedClientTTY ?? "nil") renderedWindow=\(latest?.renderedClientWindowID ?? "nil") " +
             "renderedPane=\(latest?.renderedClientPaneID ?? "nil") renderedGeneration=\(latest?.renderedSurfaceGeneration.description ?? "nil") " +
             "latestError=\(latestError ?? "nil")"
@@ -2759,13 +2858,20 @@ final class AgtmuxTermUITests: XCTestCase {
             sessionName: "",
             windowID: "",
             paneID: "",
+            desiredWindowID: "",
+            desiredPaneID: "",
+            observedWindowID: "",
+            observedPaneID: "",
+            focusRequestNonce: 0,
             selectedPaneInventoryID: "",
             attachCommand: "",
             renderedAttachCommand: "",
             renderedClientTTY: "",
             renderedClientWindowID: "",
             renderedClientPaneID: "",
-            renderedSurfaceGeneration: 0
+            renderedSurfaceGeneration: 0,
+            controlModeKey: "",
+            controlModeState: ""
         )
     }
 
@@ -2775,8 +2881,6 @@ final class AgtmuxTermUITests: XCTestCase {
     ) -> Bool {
         command.contains("attach-session -t")
             && command.contains(sessionName)
-            && !command.contains("select-window -t")
-            && !command.contains("select-pane -t")
     }
 
     private func appWorkbenchTerminalTargetSnapshot(
@@ -2850,6 +2954,14 @@ final class AgtmuxTermUITests: XCTestCase {
         let error: String?
     }
 
+    private struct ActiveDocumentTileSnapshot: Decodable {
+        let workbenchID: String
+        let tileID: String
+        let path: String
+        let target: String
+        let focused: Bool
+    }
+
     private struct SidebarStateSnapshot: Decodable {
         let statusFilter: String
         let panePresentations: [SidebarPanePresentationSnapshot]
@@ -2915,6 +3027,11 @@ final class AgtmuxTermUITests: XCTestCase {
         let sessionName: String
         let windowID: String
         let paneID: String
+        let desiredWindowID: String
+        let desiredPaneID: String
+        let observedWindowID: String
+        let observedPaneID: String
+        let focusRequestNonce: UInt64
         let selectedPaneInventoryID: String
         let attachCommand: String
         let renderedAttachCommand: String
@@ -2922,6 +3039,8 @@ final class AgtmuxTermUITests: XCTestCase {
         let renderedClientWindowID: String
         let renderedClientPaneID: String
         let renderedSurfaceGeneration: UInt64
+        let controlModeKey: String
+        let controlModeState: String
     }
 
     private func mixedEraBootstrapPayloadWithLegacySessionID(

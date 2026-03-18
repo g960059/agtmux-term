@@ -141,6 +141,11 @@ struct WorkbenchFocusedNavigationActorDependencies {
             },
             resolveControlMode: { controlModeKey in
                 guard let controlModeKey else { return nil }
+                // Local noninteractive control-mode clients are not yet reliable in the
+                // app-hosted UITest/runtime environment. Keep remote control-mode follow,
+                // but use direct tmux polling/commands for local focused navigation until
+                // the local monitor lifetime is hardened.
+                guard controlModeKey.isRemote else { return nil }
                 TmuxControlModeRegistry.shared.startMonitoring(
                     sessionName: controlModeKey.sessionName,
                     source: controlModeKey.source

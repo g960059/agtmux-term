@@ -20,4 +20,13 @@
 - [x] Final pane-switch parity capture
 - [x] Gate-L closeout decision
 - [x] Promote Gate-L green evidence into durable docs
+- [x] Run a full macOS UI E2E rerun after Gate-L and classify failures
+- [x] Prepare daemon handoff notes for the managed Codex/provider classification failure
+- [x] Fix `testLocalSessionCreatedAfterLaunchAppearsInSidebar`
+- [x] Fix `testSidebarHealthStripStaysAbsentWithoutHealthSnapshot`
+- [x] Fix `testSidebarShowsDaemonPanes`
+- [x] Fix `testV2RestoredBrokenDocumentTileCanRebindToExistingPath`
+- [x] Fix `testV2RestoredBrokenDocumentTileRetryCanRecover`
+- [x] Rerun the full macOS UI E2E bundle on the corrected head and confirm only the daemon-side failure remains
+- [x] Rerun the remaining daemon-classified failure in isolation and attach upstream ownership points
 - [ ] Retire `changes/0000-local-first-fast-path/` in the merge that lands the closeout

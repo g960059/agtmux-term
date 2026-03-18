@@ -207,6 +207,19 @@ actor TmuxControlMode {
         case reconnecting(attempt: Int)
         case degraded
         case stopped
+
+        var debugLabel: String {
+            switch self {
+            case .connected:
+                return "connected"
+            case .reconnecting(let attempt):
+                return "reconnecting:\(attempt)"
+            case .degraded:
+                return "degraded"
+            case .stopped:
+                return "stopped"
+            }
+        }
     }
 
     // MARK: - Public state

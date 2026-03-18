@@ -21,6 +21,12 @@ Completed groundwork already moved the local steady state toward:
    active-pane highlight in the broader suite
 2. canonical workbench selection can still lag rendered tmux truth in live-app
    runs, so perf capture now keys off rendered-client convergence for pane-switch
+3. the managed Codex/provider failure looks daemon-side rather than app-side:
+   tmux capture shows `codex exec` completing, but direct `ui.bootstrap.v3`
+   diagnostics and the rendered sidebar both remain `presence=unmanaged,
+   provider=nil`
+4. an isolated rerun confirms the same split and narrows ownership to the
+   daemon-side `poll_loop -> sync_v3_runtime -> build_ui_bootstrap_v3` path
 
 ## Constraints
 
@@ -55,5 +61,19 @@ Completed groundwork already moved the local steady state toward:
   a tmux-observable proxy instead of screen-image comparison
 - embedded terminal host lookup is now addressable through the AX tree by tile
   identifier
+- the app-side UITest tmux bridge now exposes an explicit readiness ping before
+  session-creation tests issue commands, avoiding launch races on the command
+  file channel
+- broken document rebind UI tests now replace the focused sheet field through a
+  test-only app-side field-editor seam instead of unreliable runner-side text
+  synthesis; store truth is asserted through a focused document snapshot
+- the second `2026-03-18` full macOS UI E2E rerun leaves only the managed
+  Codex/provider failure from the original six-test failure set
 - producer-side signposts are split enough to attribute local inventory, remote
   inventory, publish assembly, and Ghostty bridge work separately
+- the `2026-03-18` full macOS UI E2E rerun is recorded in
+  `docs/research/2026-03-18-full-e2e-rerun-after-gate-l.md`; that note is the
+  authoritative working summary for the current failure split
+- the daemon handoff now includes exact upstream ownership points and a
+  single-test rerun proving that tmux capture sees real Codex JSON output while
+  sync-v3 still emits `session_key=shell:%0`

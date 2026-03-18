@@ -63,6 +63,16 @@ final class UITestTmuxBridge {
         let renderedClientWindowID: String
         let renderedClientPaneID: String
         let renderedSurfaceGeneration: UInt64
+        let controlModeKey: String
+        let controlModeState: String
+    }
+
+    private struct ActiveDocumentTileSnapshot: Codable {
+        let workbenchID: String
+        let tileID: String
+        let path: String
+        let target: String
+        let focused: Bool
     }
 
     private struct FocusStateSnapshot: Codable {
@@ -94,11 +104,14 @@ final class UITestTmuxBridge {
     private var createdSessions: Set<String> = []
     private let activeTerminalTargetCommand = "__agtmux_dump_active_terminal_target__"
     private let focusStateCommand = "__agtmux_dump_focus_state__"
+    private let activeDocumentTileCommand = "__agtmux_dump_active_document_tile__"
+    private let replaceFocusedTextCommand = "__agtmux_replace_focused_text__"
     private let sidebarStateCommand = "__agtmux_dump_sidebar_state__"
     private let enableMetadataCommand = "__agtmux_enable_metadata__"
     private let openTerminalForPaneCommand = "__agtmux_open_terminal_for_pane__"
     private let focusTerminalHostCommand = "__agtmux_focus_terminal_host__"
     private let sendTmuxNextPaneKeysCommand = "__agtmux_send_tmux_next_pane_keys__"
+    private let bridgeReadyCommand = "__agtmux_tmux_bridge_ready__"
 
     init(
         viewModel: AppViewModel,
@@ -334,6 +347,13 @@ final class UITestTmuxBridge {
                 let snapshot = try await activeTerminalTargetSnapshot()
                 let data = try JSONEncoder().encode(snapshot)
                 stdout = String(decoding: data, as: UTF8.self)
+            case activeDocumentTileCommand:
+                let snapshot = try activeDocumentTileSnapshot()
+                let data = try JSONEncoder().encode(snapshot)
+                stdout = String(decoding: data, as: UTF8.self)
+            case replaceFocusedTextCommand:
+                try replaceFocusedText(request.args)
+                stdout = "ok"
             case focusStateCommand:
                 let snapshot = try focusStateSnapshot(for: request.args)
                 let data = try JSONEncoder().encode(snapshot)
@@ -347,6 +367,8 @@ final class UITestTmuxBridge {
             case sendTmuxNextPaneKeysCommand:
                 try sendTmuxNextPaneKeys(request.args)
                 stdout = "ok"
+            case bridgeReadyCommand:
+                stdout = "ready"
             case sidebarStateCommand:
                 let bootstrapProbeSummary: UITestBootstrapProbeSummary
                 let bootstrapTargetSummary: UITestBootstrapTargetSummary?
@@ -503,6 +525,20 @@ final class UITestTmuxBridge {
             target: sessionRef.target,
             hostsConfig: viewModel.hostsConfig
         )
+        let controlModeKey = WorkbenchFocusedNavigationControlModeKey.make(
+            sessionRef: sessionRef,
+            hostsConfig: viewModel.hostsConfig
+        )
+        let controlModeState: String
+        if let controlModeKey,
+           let mode = TmuxControlModeRegistry.shared.existingMode(
+                for: controlModeKey.sessionName,
+                source: controlModeKey.source
+           ) {
+            controlModeState = await mode.connectionState.debugLabel
+        } else {
+            controlModeState = "missing"
+        }
 
         return ActiveTerminalTargetSnapshot(
             workbenchID: selection.workbenchID.uuidString,
@@ -521,8 +557,74 @@ final class UITestTmuxBridge {
             renderedClientTTY: renderedClientTTY,
             renderedClientWindowID: renderedClientTarget.windowID,
             renderedClientPaneID: renderedClientTarget.paneID,
-            renderedSurfaceGeneration: renderedState.generation
+            renderedSurfaceGeneration: renderedState.generation,
+            controlModeKey: controlModeKey?.identity ?? "",
+            controlModeState: controlModeState
         )
+    }
+
+    private func activeDocumentTileSnapshot() throws -> ActiveDocumentTileSnapshot {
+        guard let workbench = workbenchStoreV2.activeWorkbench else {
+            throw NSError(
+                domain: "UITestTmuxBridge",
+                code: 30,
+                userInfo: [NSLocalizedDescriptionKey: "No active workbench"]
+            )
+        }
+
+        guard let focusedTileID = workbench.focusedTileID,
+              let tile = workbench.tiles.first(where: { $0.id == focusedTileID }) else {
+            throw NSError(
+                domain: "UITestTmuxBridge",
+                code: 31,
+                userInfo: [NSLocalizedDescriptionKey: "No focused tile in active workbench"]
+            )
+        }
+        guard case .document(let ref) = tile.kind else {
+            throw NSError(
+                domain: "UITestTmuxBridge",
+                code: 32,
+                userInfo: [NSLocalizedDescriptionKey: "Focused tile is not a document tile"]
+            )
+        }
+
+        return ActiveDocumentTileSnapshot(
+            workbenchID: workbench.id.uuidString,
+            tileID: tile.id.uuidString,
+            path: ref.path,
+            target: ref.target.label,
+            focused: workbench.focusedTileID == tile.id
+        )
+    }
+
+    private func replaceFocusedText(_ args: [String]) throws {
+        guard args.count >= 2 else {
+            throw NSError(
+                domain: "UITestTmuxBridge",
+                code: 33,
+                userInfo: [NSLocalizedDescriptionKey: "\(replaceFocusedTextCommand) requires <value>"]
+            )
+        }
+        guard let keyWindow = NSApp.keyWindow else {
+            throw NSError(
+                domain: "UITestTmuxBridge",
+                code: 34,
+                userInfo: [NSLocalizedDescriptionKey: "No key window for focused text replacement"]
+            )
+        }
+        guard let textView = keyWindow.firstResponder as? NSTextView else {
+            throw NSError(
+                domain: "UITestTmuxBridge",
+                code: 35,
+                userInfo: [NSLocalizedDescriptionKey: "Focused responder is not an NSTextView field editor"]
+            )
+        }
+
+        let replacement = args[1]
+        let currentLength = textView.string.utf16.count
+        textView.setSelectedRange(NSRange(location: 0, length: currentLength))
+        textView.insertText(replacement, replacementRange: textView.selectedRange())
+        textView.setSelectedRange(NSRange(location: replacement.utf16.count, length: 0))
     }
 
     private func openTerminalForPane(_ args: [String]) throws {

@@ -137,15 +137,13 @@ struct WorkbenchFrozenAttachPlan: Equatable {
 enum WorkbenchTerminalAttachPlanFreezeIdentity {
     static func make(
         sessionRef: SessionRef,
-        desiredPaneRef: ActivePaneRef?,
-        observedPaneRef: ActivePaneRef?,
+        desiredPaneRef _: ActivePaneRef?,
+        observedPaneRef _: ActivePaneRef?,
         terminalState: WorkbenchV2TerminalTileState,
         hostsConfig: HostsConfig
     ) -> String {
-        let desiredWindowID = desiredPaneRef?.windowID ?? ""
-        let desiredPaneID = desiredPaneRef?.paneID ?? ""
-        let observedWindowID = observedPaneRef?.windowID ?? ""
-        let observedPaneID = observedPaneRef?.paneID ?? ""
+        // Keep the attach plan stable across same-session pane/window retargets.
+        // Live navigation should move the existing client without recreating the surface.
         let readiness = terminalState == .ready ? "ready" : "not-ready"
         let attachSourceIdentity: String
 
@@ -167,11 +165,6 @@ enum WorkbenchTerminalAttachPlanFreezeIdentity {
 
         return [
             attachSourceIdentity,
-            sessionRef.sessionName,
-            desiredWindowID,
-            desiredPaneID,
-            observedWindowID,
-            observedPaneID,
             readiness
         ].joined(separator: "|")
     }
@@ -383,7 +376,7 @@ private struct WorkbenchTerminalTileViewV2: View {
                 .allowsHitTesting(false)
                 .accessibilityElement()
                 .accessibilityIdentifier(AccessibilityID.workspaceTilePrefix + tile.id.uuidString + ".status")
-                .accessibilityLabel(accessibilityValue)
+                .accessibilityLabel(statusText)
                 .accessibilityValue(accessibilityValue)
         }
         .contentShape(Rectangle())
@@ -556,7 +549,7 @@ private struct WorkbenchTerminalTileViewV2: View {
         .background(statusBackground, in: Capsule(style: .continuous))
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier(AccessibilityID.workspaceTilePrefix + tile.id.uuidString + ".status")
-        .accessibilityLabel(accessibilityValue)
+        .accessibilityLabel(statusText)
         .accessibilityValue(accessibilityValue)
     }
 

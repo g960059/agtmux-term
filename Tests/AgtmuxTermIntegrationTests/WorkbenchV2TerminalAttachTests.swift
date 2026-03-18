@@ -78,6 +78,8 @@ final class WorkbenchV2TerminalAttachTests: XCTestCase {
         assertTelemetryWrapperScaffold(plan.command)
         let normalized = normalizeWrappedCommand(plan.command)
         XCTAssertTrue(normalized.contains("exec env -u TMUX -u TMUX_PANE tmux -L workbench-v2-test"))
+        XCTAssertTrue(normalized.contains("select-window -t"))
+        XCTAssertTrue(normalized.contains("@12"))
         XCTAssertTrue(normalized.contains("select-pane -t"))
         XCTAssertTrue(normalized.contains("%34"))
         XCTAssertTrue(normalized.contains("attach-session -t 'feature branch'"))
@@ -279,6 +281,69 @@ final class WorkbenchV2TerminalAttachTests: XCTestCase {
             originalIdentity,
             updatedIdentity,
             "remote attach-plan identity must change when the configured SSH target changes"
+        )
+    }
+
+    func testAttachPlanFreezeIdentityIgnoresSameSessionPaneRetarget() {
+        let sessionRef = SessionRef(target: .local, sessionName: "shared")
+        let firstPaneRef = ActivePaneRef(
+            target: .local,
+            sessionName: "shared",
+            windowID: "@1",
+            paneID: "%1"
+        )
+        let secondPaneRef = ActivePaneRef(
+            target: .local,
+            sessionName: "shared",
+            windowID: "@2",
+            paneID: "%9"
+        )
+
+        let firstIdentity = WorkbenchTerminalAttachPlanFreezeIdentity.make(
+            sessionRef: sessionRef,
+            desiredPaneRef: firstPaneRef,
+            observedPaneRef: firstPaneRef,
+            terminalState: .ready,
+            hostsConfig: .empty
+        )
+        let secondIdentity = WorkbenchTerminalAttachPlanFreezeIdentity.make(
+            sessionRef: sessionRef,
+            desiredPaneRef: secondPaneRef,
+            observedPaneRef: secondPaneRef,
+            terminalState: .ready,
+            hostsConfig: .empty
+        )
+
+        XCTAssertEqual(
+            firstIdentity,
+            secondIdentity,
+            "same-session pane retarget must not invalidate the frozen attach plan"
+        )
+    }
+
+    func testAttachPlanFreezeIdentityIgnoresSameHostSessionRetarget() {
+        let originalSessionRef = SessionRef(target: .local, sessionName: "shared")
+        let updatedSessionRef = SessionRef(target: .local, sessionName: "shared-next")
+
+        let originalIdentity = WorkbenchTerminalAttachPlanFreezeIdentity.make(
+            sessionRef: originalSessionRef,
+            desiredPaneRef: nil,
+            observedPaneRef: nil,
+            terminalState: .ready,
+            hostsConfig: .empty
+        )
+        let updatedIdentity = WorkbenchTerminalAttachPlanFreezeIdentity.make(
+            sessionRef: updatedSessionRef,
+            desiredPaneRef: nil,
+            observedPaneRef: nil,
+            terminalState: .ready,
+            hostsConfig: .empty
+        )
+
+        XCTAssertEqual(
+            originalIdentity,
+            updatedIdentity,
+            "same-host session retarget must not invalidate the frozen attach plan"
         )
     }
 

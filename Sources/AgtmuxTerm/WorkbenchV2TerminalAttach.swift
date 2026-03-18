@@ -94,7 +94,9 @@ enum WorkbenchV2TerminalAttachResolver {
         if let activePaneRef,
            activePaneRef.target == sessionRef.target,
            activePaneRef.sessionName == sessionRef.sessionName {
+            let escapedWindowID = LocalTmuxTarget.shellEscaped(activePaneRef.windowID)
             let escapedPaneID = LocalTmuxTarget.shellEscaped(activePaneRef.paneID)
+            command += " select-window -t \(escapedWindowID) \\;"
             command += " select-pane -t \(escapedPaneID) \\;"
         }
         command += " attach-session -t \(escapedSessionName)"
