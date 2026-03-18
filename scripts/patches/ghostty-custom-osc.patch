@@ -1,0 +1,497 @@
+diff --git include/ghostty.h include/ghostty.h
+index 40ff55c..c91367e 100644
+--- include/ghostty.h
++++ include/ghostty.h
+@@ -824,6 +824,13 @@ typedef struct {
+   int8_t progress;
+ } ghostty_action_progress_report_s;
+
++// terminal.osc.Command.CustomOSC.C
++typedef struct {
++  uint16_t osc;
++  const uint8_t* payload;
++  uintptr_t len;
++} ghostty_action_custom_osc_s;
++
+ // apprt.action.CommandFinished.C
+ typedef struct {
+   // -1 if no exit code was reported, otherwise 0-255
+@@ -914,6 +921,7 @@ typedef enum {
+   GHOSTTY_ACTION_SHOW_CHILD_EXITED,
+   GHOSTTY_ACTION_PROGRESS_REPORT,
+   GHOSTTY_ACTION_SHOW_ON_SCREEN_KEYBOARD,
++  GHOSTTY_ACTION_CUSTOM_OSC,
+   GHOSTTY_ACTION_COMMAND_FINISHED,
+   GHOSTTY_ACTION_START_SEARCH,
+   GHOSTTY_ACTION_END_SEARCH,
+@@ -957,6 +965,7 @@ typedef union {
+   ghostty_action_close_tab_mode_e close_tab_mode;
+   ghostty_surface_message_childexited_s child_exited;
+   ghostty_action_progress_report_s progress_report;
++  ghostty_action_custom_osc_s custom_osc;
+   ghostty_action_command_finished_s command_finished;
+   ghostty_action_start_search_s start_search;
+   ghostty_action_search_total_s search_total;
+diff --git src/Surface.zig src/Surface.zig
+index 4d66622..f4296e8 100644
+--- src/Surface.zig
++++ src/Surface.zig
+@@ -1057,6 +1057,21 @@ pub fn handleMessage(self: *Surface, msg: Message) !void {
+             );
+         },
+
++        .custom_osc => |v| {
++            defer v.req.deinit();
++
++            _ = self.rt_app.performAction(
++                .{ .surface = self },
++                .custom_osc,
++                .{
++                    .osc = v.osc,
++                    .payload = v.req.slice(),
++                },
++            ) catch |err| {
++                log.warn("apprt failed to deliver custom osc err={}", .{err});
++            };
++        },
++
+         .close => self.close(),
+
+         .child_exited => |v| self.childExited(v),
+diff --git src/apprt/action.zig src/apprt/action.zig
+index f6865af..b1a5977 100644
+--- src/apprt/action.zig
++++ src/apprt/action.zig
+@@ -318,6 +318,9 @@ pub const Action = union(Key) {
+     /// Show the on-screen keyboard.
+     show_on_screen_keyboard,
+
++    /// Surface-scoped custom OSC carrier payload.
++    custom_osc: terminal.osc.Command.CustomOSC,
++
+     /// A command has finished,
+     command_finished: CommandFinished,
+
+@@ -403,6 +406,7 @@ pub const Action = union(Key) {
+         show_child_exited,
+         progress_report,
+         show_on_screen_keyboard,
++        custom_osc,
+         command_finished,
+         start_search,
+         end_search,
+diff --git src/apprt/embedded.zig src/apprt/embedded.zig
+index 0d5a4f8..32c0794 100644
+--- src/apprt/embedded.zig
++++ src/apprt/embedded.zig
+@@ -339,6 +339,102 @@ pub const App = struct {
+     }
+ };
+
++test "embedded App.performAction forwards custom osc through action callback" {
++    const testing = std.testing;
++
++    const Capture = struct {
++        called: bool = false,
++        target_key: ?apprt.Target.Key = null,
++        surface: ?*apprt.Surface = null,
++        action_key: ?apprt.Action.Key = null,
++        osc: ?u16 = null,
++        payload: ?[]const u8 = null,
++    };
++
++    const Callbacks = struct {
++        fn wakeup(_: ?*anyopaque) callconv(.c) void {}
++
++        fn action(
++            app: *App,
++            target: apprt.Target.C,
++            action_: apprt.Action.C,
++        ) callconv(.c) bool {
++            const capture: *Capture = @ptrCast(@alignCast(app.opts.userdata.?));
++            capture.called = true;
++            capture.target_key = target.key;
++            capture.surface = switch (target.key) {
++                .app => null,
++                .surface => target.value.surface,
++            };
++            capture.action_key = action_.key;
++            capture.osc = action_.value.custom_osc.osc;
++            capture.payload = action_.value.custom_osc.payload[0..action_.value.custom_osc.len];
++            return true;
++        }
++
++        fn readClipboard(
++            _: ?*anyopaque,
++            _: c_int,
++            _: *apprt.ClipboardRequest,
++        ) callconv(.c) bool {
++            return false;
++        }
++
++        fn confirmReadClipboard(
++            _: ?*anyopaque,
++            _: [*:0]const u8,
++            _: *apprt.ClipboardRequest,
++            _: apprt.ClipboardRequestType,
++        ) callconv(.c) void {}
++
++        fn writeClipboard(
++            _: ?*anyopaque,
++            _: c_int,
++            _: [*]const CAPI.ClipboardContent,
++            _: usize,
++            _: bool,
++        ) callconv(.c) void {}
++    };
++
++    var capture = Capture{};
++    var core_app: CoreApp = undefined;
++    var runtime_surface: apprt.Surface = undefined;
++    var core_surface: CoreSurface = undefined;
++    core_surface.rt_surface = &runtime_surface;
++
++    var app: App = undefined;
++    app.core_app = &core_app;
++    app.opts = .{
++        .userdata = &capture,
++        .supports_selection_clipboard = false,
++        .wakeup = &Callbacks.wakeup,
++        .action = &Callbacks.action,
++        .read_clipboard = &Callbacks.readClipboard,
++        .confirm_read_clipboard = &Callbacks.confirmReadClipboard,
++        .write_clipboard = &Callbacks.writeClipboard,
++    };
++    app.keymap = undefined;
++    app.config = undefined;
++
++    const payload = "agtmux;v=1;kind=file;path=/tmp/spec.md";
++    const handled = try app.performAction(
++        .{ .surface = &core_surface },
++        .custom_osc,
++        .{
++            .osc = terminal.osc.AGTMUX_BRIDGE_OSC,
++            .payload = payload,
++        },
++    );
++
++    try testing.expect(handled);
++    try testing.expect(capture.called);
++    try testing.expectEqual(apprt.Target.Key.surface, capture.target_key);
++    try testing.expectEqual(&runtime_surface, capture.surface);
++    try testing.expectEqual(apprt.Action.Key.custom_osc, capture.action_key);
++    try testing.expectEqual(terminal.osc.AGTMUX_BRIDGE_OSC, capture.osc);
++    try testing.expectEqualSlices(u8, payload, capture.payload.?);
++}
++
+ /// Platform-specific configuration for libghostty.
+ pub const Platform = union(PlatformTag) {
+     macos: MacOS,
+diff --git src/apprt/gtk/class/application.zig src/apprt/gtk/class/application.zig
+index 039e853..fc35407 100644
+--- src/apprt/gtk/class/application.zig
++++ src/apprt/gtk/class/application.zig
+@@ -717,6 +717,8 @@ pub const Application = extern struct {
+
+             .open_url => Action.openUrl(self, value),
+
++            .custom_osc => return Action.customOSC(target, value),
++
+             .pwd => Action.pwd(target, value),
+
+             .present_terminal => return Action.presentTerminal(target),
+@@ -2338,6 +2340,24 @@ const Action = struct {
+         }
+     }
+
++    pub fn customOSC(
++        target: apprt.Target,
++        value: terminal.osc.Command.CustomOSC,
++    ) bool {
++        switch (target) {
++            .app => log.warn(
++                "custom_osc to app is unexpected osc={d} payload_len={d}",
++                .{ value.osc, value.payload.len },
++            ),
++            .surface => log.info(
++                "custom osc ignored in GTK runtime osc={d} payload_len={d}",
++                .{ value.osc, value.payload.len },
++            ),
++        }
++
++        return true;
++    }
++
+     pub fn quitTimer(
+         self: *Application,
+         mode: apprt.action.QuitTimer,
+diff --git src/apprt/surface.zig src/apprt/surface.zig
+index 3cb0016..d91634c 100644
+--- src/apprt/surface.zig
++++ src/apprt/surface.zig
+@@ -85,6 +85,12 @@ pub const Message = union(enum) {
+     /// The terminal has reported a change in the working directory.
+     pwd_change: WriteReq,
+
++    /// Surface-scoped custom OSC carrier payload.
++    custom_osc: struct {
++        osc: u16,
++        req: WriteReq,
++    },
++
+     /// The terminal encountered a bell character.
+     ring_bell,
+
+diff --git src/terminal/osc.zig src/terminal/osc.zig
+index 0086e48..c05ee53 100644
+--- src/terminal/osc.zig
++++ src/terminal/osc.zig
+@@ -22,6 +22,8 @@ pub const semantic_prompt = parsers.semantic_prompt;
+
+ const log = std.log.scoped(.osc);
+
++pub const AGTMUX_BRIDGE_OSC: u16 = 9911;
++
+ pub const Command = union(Key) {
+     /// This generally shouldn't ever be set except as an initial zero value.
+     /// Ignore it.
+@@ -64,6 +66,9 @@ pub const Command = union(Key) {
+         value: [:0]const u8,
+     },
+
++    /// Raw custom OSC carrier. This is currently used for the agtmux bridge.
++    custom_osc: CustomOSC,
++
+     /// OSC 22. Set the mouse shape. There doesn't seem to be a standard
+     /// naming scheme for cursors but it looks like terminals such as Foot
+     /// are moving towards using the W3C CSS cursor names. For OSC parsing,
+@@ -174,6 +179,7 @@ pub const Command = union(Key) {
+             "semantic_prompt",
+             "clipboard_contents",
+             "report_pwd",
++            "custom_osc",
+             "mouse_shape",
+             "color_operation",
+             "kitty_color_protocol",
+@@ -230,6 +236,39 @@ pub const Command = union(Key) {
+         }
+     };
+
++    pub const CustomOSC = struct {
++        osc: u16,
++        payload: []const u8,
++
++        // Sync with: ghostty_action_custom_osc_s
++        pub const C = extern struct {
++            osc: u16,
++            payload: [*]const u8,
++            len: usize,
++        };
++
++        pub fn cval(self: CustomOSC) C {
++            return .{
++                .osc = self.osc,
++                .payload = self.payload.ptr,
++                .len = self.payload.len,
++            };
++        }
++
++        pub fn format(
++            value: CustomOSC,
++            comptime _: []const u8,
++            _: std.fmt.FormatOptions,
++            writer: anytype,
++        ) !void {
++            try writer.print("{s}{{ osc: {d}, len: {d} }}", .{
++                @typeName(CustomOSC),
++                value.osc,
++                value.payload.len,
++            });
++        }
++    };
++
+     comptime {
+         assert(@sizeOf(Command) == switch (@sizeOf(usize)) {
+             4 => 44,
+@@ -327,6 +366,9 @@ pub const Parser = struct {
+         @"7",
+         @"8",
+         @"9",
++        @"99",
++        @"991",
++        @"9911",
+         @"30",
+         @"300",
+         @"3008",
+@@ -420,6 +462,7 @@ pub const Parser = struct {
+             .invalid,
+             .mouse_shape,
+             .report_pwd,
++            .custom_osc,
+             .semantic_prompt,
+             .show_desktop_notification,
+             .kitty_text_sizing,
+@@ -640,6 +683,27 @@ pub const Parser = struct {
+                 else => self.state = .invalid,
+             },
+
++            .@"9" => switch (c) {
++                '9' => self.state = .@"99",
++                ';' => self.writeToFixed(),
++                else => self.state = .invalid,
++            },
++
++            .@"99" => switch (c) {
++                '1' => self.state = .@"991",
++                else => self.state = .invalid,
++            },
++
++            .@"991" => switch (c) {
++                '1' => self.state = .@"9911",
++                else => self.state = .invalid,
++            },
++
++            .@"9911" => switch (c) {
++                ';' => self.writeToAllocating(),
++                else => self.state = .invalid,
++            },
++
+             .@"77" => switch (c) {
+                 '7' => self.state = .@"777",
+                 else => self.state = .invalid,
+@@ -673,7 +737,6 @@ pub const Parser = struct {
+             .@"22",
+             .@"777",
+             .@"8",
+-            .@"9",
+             => switch (c) {
+                 ';' => self.writeToFixed(),
+                 else => self.state = .invalid,
+@@ -737,11 +800,22 @@ pub const Parser = struct {
+
+             .@"52" => parsers.clipboard_operation.parse(self, terminator_ch),
+
++            .@"9911" => custom_osc: {
++                const writer = self.writer orelse return null;
++                self.command = .{ .custom_osc = .{
++                    .osc = AGTMUX_BRIDGE_OSC,
++                    .payload = writer.buffered(),
++                } };
++                break :custom_osc &self.command;
++            },
++
+             .@"55" => null,
+
+             .@"3",
+             .@"30",
+             .@"300",
++            .@"99",
++            .@"991",
+             => null,
+
+             .@"3008" => parsers.context_signal.parse(self, terminator_ch),
+diff --git src/terminal/stream.zig src/terminal/stream.zig
+index e89c73e..35e3b23 100644
+--- src/terminal/stream.zig
++++ src/terminal/stream.zig
+@@ -116,6 +116,7 @@ pub const Action = union(Key) {
+     decaln,
+     window_title: WindowTitle,
+     report_pwd: ReportPwd,
++    custom_osc: osc.Command.CustomOSC,
+     show_desktop_notification: ShowDesktopNotification,
+     progress_report: osc.Command.ProgressReport,
+     start_hyperlink: StartHyperlink,
+@@ -213,6 +214,7 @@ pub const Action = union(Key) {
+             "decaln",
+             "window_title",
+             "report_pwd",
++            "custom_osc",
+             "show_desktop_notification",
+             "progress_report",
+             "start_hyperlink",
+@@ -1996,6 +1998,8 @@ pub fn Stream(comptime Handler: type) type {
+                     try self.handler.vt(.report_pwd, .{ .url = v.value });
+                 },
+
++                .custom_osc => |v| try self.handler.vt(.custom_osc, v),
++
+                 .mouse_shape => |v| {
+                     const shape = MouseShape.fromString(v.value) orelse {
+                         @branchHint(.unlikely);
+@@ -3038,6 +3042,31 @@ test "stream: SCORC" {
+     try testing.expect(s.handler.called);
+ }
+
++test "stream: custom osc 9911 reaches handler with ST terminator" {
++    const H = struct {
++        const Self = @This();
++        payload: ?osc.Command.CustomOSC = null,
++
++        pub fn vt(
++            self: *Self,
++            comptime action: streampkg.Action.Tag,
++            value: streampkg.Action.Value(action),
++        ) !void {
++            switch (action) {
++                .custom_osc => self.payload = value,
++                else => {},
++            }
++        }
++    };
++
++    var s: Stream(H) = .init(.{});
++    try s.nextSlice("\x1b]9911;agtmux;open=/tmp/demo.md\x1b\\");
++
++    const payload = s.handler.payload orelse return error.TestUnexpectedResult;
++    try testing.expectEqual(osc.AGTMUX_BRIDGE_OSC, payload.osc);
++    try testing.expectEqualSlices(u8, "agtmux;open=/tmp/demo.md", payload.payload);
++}
++
+ test "stream: too many csi params" {
+     const H = struct {
+         pub fn vt(
+diff --git src/terminal/stream_readonly.zig src/terminal/stream_readonly.zig
+index 5b97beb..36feca7 100644
+--- src/terminal/stream_readonly.zig
++++ src/terminal/stream_readonly.zig
+@@ -184,6 +184,7 @@ pub const Handler = struct {
+             .kitty_keyboard_query,
+             .window_title,
+             .report_pwd,
++            .custom_osc,
+             .show_desktop_notification,
+             .progress_report,
+             .clipboard_contents,
+diff --git src/termio/stream_handler.zig src/termio/stream_handler.zig
+index 8c1b5b8..7b3f009 100644
+--- src/termio/stream_handler.zig
++++ src/termio/stream_handler.zig
+@@ -316,6 +316,7 @@ pub const StreamHandler = struct {
+             .decaln => try self.decaln(),
+             .window_title => try self.windowTitle(value.title),
+             .report_pwd => try self.reportPwd(value.url),
++            .custom_osc => try self.customOSC(value),
+             .show_desktop_notification => try self.showDesktopNotification(value.title, value.body),
+             .progress_report => self.progressReport(value),
+             .start_hyperlink => try self.startHyperlink(value.uri, value.id),
+@@ -1201,6 +1202,19 @@ pub const StreamHandler = struct {
+         }
+     }
+
++    pub fn customOSC(
++        self: *StreamHandler,
++        osc_payload: terminal.osc.Command.CustomOSC,
++    ) !void {
++        self.surfaceMessageWriter(.{ .custom_osc = .{
++            .osc = osc_payload.osc,
++            .req = try apprt.surface.Message.WriteReq.init(
++                self.alloc,
++                osc_payload.payload,
++            ),
++        } });
++    }
++
+     fn colorOperation(
+         self: *StreamHandler,
+         op: terminal.osc.color.Operation,

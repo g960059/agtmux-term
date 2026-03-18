@@ -28,9 +28,12 @@ fixtures_root="${AGTMUX_SYNC_V3_FIXTURES_ROOT:-$repo_root/../agtmux/fixtures/syn
   exit 1
 }
 
+echo "Preparing GhosttyKit if needed"
+"$repo_root/scripts/dev/prepare-ghosttykit.sh"
+
 [[ -d "$repo_root/GhosttyKit/GhosttyKit.xcframework" ]] || {
   echo "Missing GhosttyKit/GhosttyKit.xcframework" >&2
-  echo "Run: $repo_root/scripts/build-ghosttykit.sh" >&2
+  echo "Run: $repo_root/scripts/dev/prepare-ghosttykit.sh" >&2
   exit 1
 }
 

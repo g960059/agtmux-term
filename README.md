@@ -48,15 +48,13 @@ Download the latest `AgtmuxTerm-vx.y.z.dmg` from [Releases](https://github.com/g
 ## Build from Source
 
 ```bash
-# 1. Clone with submodules (Ghostty source)
-git clone --recursive https://github.com/g960059/agtmux-term
+# 1. Clone the repo
+git clone https://github.com/g960059/agtmux-term
 cd agtmux-term
 
-# 2. Build GhosttyKit.xcframework
-cd vendor/ghostty
-zig build xcframework
-cp -r zig-out/lib/GhosttyKit.xcframework ../../GhosttyKit/
-cd ../..
+# 2. Prepare GhosttyKit.xcframework
+brew install zig
+./scripts/dev/prepare-ghosttykit.sh
 
 # 3. Generate Xcode project
 brew install xcodegen
@@ -115,7 +113,7 @@ The `agtmux` binary is resolved in this order:
 
 ```
 agtmux-term (Swift macOS App)
-├── GhosttyKit.xcframework    ← Built from Ghostty source via zig
+├── GhosttyKit.xcframework    ← Checked-in artifact; rebuilt from Ghostty source via zig when needed
 ├── CockpitView (SwiftUI)     ← Top-level layout: sidebar + workbench
 ├── SidebarView (SwiftUI)     ← Session list, filters, settings
 ├── WorkbenchAreaV2 (SwiftUI) ← Tab-based terminal workspace
@@ -166,6 +164,10 @@ git push origin v0.2.0
 ```
 
 The workflow builds a universal (arm64 + x86_64) app with the `agtmux` daemon bundled, signs and notarizes it, creates a DMG, publishes a GitHub Release, and updates the Homebrew tap cask automatically.
+
+`prepare-ghosttykit.sh` rebuilds from pinned upstream Ghostty `v1.3.1` when
+needed and applies the repo's custom OSC bridge patch before producing the
+checked-in `GhosttyKit.xcframework`.
 
 Required GitHub secrets:
 

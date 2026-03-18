@@ -33,14 +33,29 @@ This sets `core.hooksPath=.githooks` for the repository.
 The macOS CI parity script expects:
 
 - `xcodegen` installed
-- `GhosttyKit/GhosttyKit.xcframework` already built
 - `../agtmux/fixtures/sync-v3` present, or `AGTMUX_SYNC_V3_FIXTURES_ROOT` set
+
+If `GhosttyKit/GhosttyKit.xcframework` is missing or only present as Git LFS
+pointers, the parity script will try to rebuild it from `ghostty v1.3.1`. For
+that path you also need:
+
+- `zig 0.15.2` installed
+- network access to clone `https://github.com/ghostty-org/ghostty`
 
 Prepare the fixture checkout with:
 
 ```bash
 ./scripts/dev/prepare-agtmux-fixtures.sh
 ```
+
+Prepare or rebuild `GhosttyKit` explicitly with:
+
+```bash
+./scripts/dev/prepare-ghosttykit.sh
+```
+
+That helper also applies the repo's custom Ghostty OSC bridge patch before the
+xcframework is rebuilt.
 
 ## Manual Commands
 

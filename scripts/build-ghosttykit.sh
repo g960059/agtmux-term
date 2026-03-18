@@ -1,14 +1,15 @@
 #!/bin/bash
 # build-ghosttykit.sh — Rebuild GhosttyKit.xcframework from Ghostty source
-# Prerequisites: zig 0.14.x, Xcode (with Metal Toolchain)
-#   brew install zig@0.14
+# Expects any repo-required patches to already be applied to the source tree.
+# Prerequisites: zig 0.15.x, Xcode (with Metal Toolchain)
+#   brew install zig
 #   xcodebuild -downloadComponent MetalToolchain
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-VENDOR_GHOSTTY="$REPO_ROOT/vendor/ghostty"
-DEST="$REPO_ROOT/GhosttyKit/GhosttyKit.xcframework"
+VENDOR_GHOSTTY="${AGTMUX_VENDOR_GHOSTTY_DIR:-$REPO_ROOT/vendor/ghostty}"
+DEST="${AGTMUX_GHOSTTYKIT_DIR:-$REPO_ROOT/GhosttyKit/GhosttyKit.xcframework}"
 
 if [[ ! -d "$VENDOR_GHOSTTY" ]]; then
   echo "ERROR: vendor/ghostty not found. Run:" >&2
@@ -16,23 +17,23 @@ if [[ ! -d "$VENDOR_GHOSTTY" ]]; then
   exit 1
 fi
 
-# Prefer zig@0.14 from homebrew
-ZIG="${ZIG:-}"
+# Prefer zig from PATH, then Homebrew's default prefix.
+ZIG="${AGTMUX_ZIG_BIN:-${ZIG:-}}"
 if [[ -z "$ZIG" ]]; then
   if command -v zig &>/dev/null; then
     ZIG="zig"
-  elif [[ -x "/opt/homebrew/opt/zig@0.14/bin/zig" ]]; then
-    ZIG="/opt/homebrew/opt/zig@0.14/bin/zig"
+  elif [[ -x "/opt/homebrew/opt/zig/bin/zig" ]]; then
+    ZIG="/opt/homebrew/opt/zig/bin/zig"
   else
-    echo "ERROR: zig not found. Install with: brew install zig@0.14" >&2
+    echo "ERROR: zig not found. Install with: brew install zig" >&2
     exit 1
   fi
 fi
 
 ZIG_VERSION="$("$ZIG" version)"
 echo "Using zig $ZIG_VERSION"
-if [[ "$ZIG_VERSION" != 0.14.* ]]; then
-  echo "WARNING: expected zig 0.14.x, got $ZIG_VERSION — build may fail"
+if [[ "$ZIG_VERSION" != 0.15.* ]]; then
+  echo "WARNING: expected zig 0.15.x, got $ZIG_VERSION — build may fail"
 fi
 
 echo "Building GhosttyKit.xcframework..."

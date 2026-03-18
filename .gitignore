@@ -86,6 +86,7 @@ vendor/
 /AgtmuxDaemonService.swiftmodule/
 /include/
 /libghostty.a
+/GhosttyKit/.ghostty-source-ref
 
 # Local release artifacts
 *.dmg
@@ -95,3 +96,9 @@ vendor/
 scripts/perf/.apps/
 scripts/perf/.bin/
 scripts/perf/.DS_Store
+
+# git-lfs may generate additional hook shims inside the repo-managed hooks dir
+.githooks/post-checkout
+.githooks/post-commit
+.githooks/post-merge
+.githooks/pre-push

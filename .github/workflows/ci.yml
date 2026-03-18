@@ -10,14 +10,15 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
-        with:
-          lfs: true
 
       - name: Checkout agtmux fixtures (sparse)
         run: scripts/dev/prepare-agtmux-fixtures.sh
 
-      - name: Install XcodeGen
-        run: brew install xcodegen
+      - name: Install XcodeGen and Zig
+        run: brew install xcodegen zig
+
+      - name: Prepare GhosttyKit fallback
+        run: scripts/dev/prepare-ghosttykit.sh
 
       - name: Run macOS CI parity checks
         run: scripts/dev/validate-macos-ci.sh
