@@ -35,6 +35,19 @@ Current state:
   `scroll_to_layer_present_ms p50 2.107 / p95 26.922 / max 55.768`, so long
   burst trains still show `25-55ms` spikes even though the short-burst path is
   much closer to native
+- a native Ghostty companion script now exists for the same transcript-style
+  pixel-burst input path:
+  `scripts/perf/gate_l_native_ghostty_trackpad_history_scroll_bench.sh`
+- on this host on 2026-03-19, that same-input `tmux_visible_line_change_ms`
+  proxy was effectively identical between embedded and native:
+  embedded `p50 567.724 / p95 583.263 / max 583.263`,
+  native `p50 575.531 / p95 578.756 / max 578.756`
+- that near-parity confirms again that the tmux-visible-line proxy is not the
+  metric that matches the remaining user-visible jank
+- an apples-to-apples screen/image-diff parity attempt was blocked on this host
+  because `screencapture` failed with `could not create image from display`,
+  which indicates missing Screen Recording capability for the current terminal
+  environment
 - the latest accepted improvement is a present-aware immediate-draw throttle:
   it only suppresses another immediate draw once the previous scroll draw has
   actually produced a layer presentation

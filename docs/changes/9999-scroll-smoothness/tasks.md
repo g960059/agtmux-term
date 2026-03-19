@@ -35,6 +35,9 @@
 - `AGTMUX_PERF_APP_BIN="/Applications/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4` twice after reinstalling the release app
 - `AGTMUX_PERF_APP_BIN="$PWD/.build-codex/arm64-apple-macosx/debug/AgtmuxTerm" scripts/perf/gate_l_scroll_bench.sh --iterations 5`
 - `scripts/perf/gate_l_native_ghostty_scroll_bench.sh --iterations 5`
+- `zsh -n scripts/perf/gate_l_native_ghostty_trackpad_history_scroll_bench.sh`
+- `AGTMUX_PERF_APP_BIN="/Applications/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4 > /tmp/agtmux-embedded-trackpad-proxy-serial.json`
+- `scripts/perf/gate_l_native_ghostty_trackpad_history_scroll_bench.sh --iterations 4 > /tmp/agtmux-native-trackpad-proxy-serial.json`
 
 ## 2026-03-18 validation notes
 
@@ -150,3 +153,19 @@
     reduced wake-lateness telemetry but still regressed the user-visible path
     to release `4-burst p50 7.340 / p95 23.081 / max 23.868` and
     `8-burst p50 8.124 / p95 41.497 / max 90.814`
+- A same-input native companion bench now exists for the transcript-style
+  pixel-burst path, and fresh serial reruns on 2026-03-19 confirmed that the
+  `tmux_visible_line_change_ms` proxy is effectively identical between
+  embedded and native:
+  - embedded `/Applications/AgtmuxTerm.app`:
+    `p50 567.724 / p95 583.263 / max 583.263`
+  - native `/Applications/Ghostty.app`:
+    `p50 575.531 / p95 578.756 / max 578.756`
+  - interpretation:
+    the tmux-visible-line proxy is blind to the remaining user-visible jank,
+    so future native parity work needs a presentation-path metric rather than
+    more proxy tuning
+- An attempted apples-to-apples screen/image-diff parity bench was blocked on
+  this host because `screencapture` failed with
+  `could not create image from display`, which indicates the current terminal
+  environment does not have usable Screen Recording capability.

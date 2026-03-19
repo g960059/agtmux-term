@@ -35,6 +35,7 @@ scripts/perf/gate_l_ax_key_sender.sh --dry-run
 - `scripts/perf/gate_l_scroll_bench.sh`
 - `scripts/perf/gate_l_native_ghostty_scroll_bench.sh`
 - `scripts/perf/gate_l_trackpad_history_scroll_bench.sh`
+- `scripts/perf/gate_l_native_ghostty_trackpad_history_scroll_bench.sh`
 - `scripts/perf/gate_l_keypress_bench.sh`
 - `scripts/perf/gate_l_native_ghostty_keypress_bench.sh`
 - `scripts/perf/gate_l_pane_switch_bench.sh`
@@ -55,6 +56,15 @@ scripts/perf/gate_l_ax_key_sender.sh --dry-run
   presentation path. `scroll_to_render_request_ms`, `scroll_to_first_draw_ms`,
   and `draw_gap_*` remain diagnostic for the `GHOSTTY_ACTION_RENDER` host path
   and may legitimately stay empty when the scroll path bypasses that callback.
+- `gate_l_native_ghostty_trackpad_history_scroll_bench.sh` is the native
+  companion for the same transcript fixture and pixel-burst input path. Use it
+  when you need the exact same `tmux_visible_line_change_ms` proxy against
+  `/Applications/Ghostty.app`, but do not confuse that proxy with the actual
+  user-visible presentation seam.
+- A true screen/image-diff native parity bench requires Screen Recording
+  capability for the current terminal environment. If `/usr/sbin/screencapture`
+  fails with `could not create image from display`, treat visual parity work as
+  blocked until that permission path is fixed.
 - Set `AGTMUX_PERF_KEEP_TMP=1` if you need the bench temp directory for failed
   captures or ad hoc inspection.
 

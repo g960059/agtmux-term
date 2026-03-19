@@ -677,3 +677,37 @@ Interpretation:
 - the current branch should stay on the existing main-queue draw pump /
   delayed-present recovery implementation until the next step is backed by
   deeper main-thread / present-path evidence
+
+### 2026-03-19 same-input native proxy parity
+
+To remove fixture drift from the embedded/native comparison, this wave added a
+native companion script that reuses the same transcript-style `less -R -N`
+fixture and the same pixel-burst trackpad input path:
+`scripts/perf/gate_l_native_ghostty_trackpad_history_scroll_bench.sh`
+
+Validation:
+
+```bash
+zsh -n scripts/perf/gate_l_native_ghostty_trackpad_history_scroll_bench.sh
+AGTMUX_PERF_APP_BIN="/Applications/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" \
+  scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4 \
+  > /tmp/agtmux-embedded-trackpad-proxy-serial.json
+scripts/perf/gate_l_native_ghostty_trackpad_history_scroll_bench.sh \
+  --iterations 4 > /tmp/agtmux-native-trackpad-proxy-serial.json
+```
+
+Result highlights from the serial reruns:
+
+- embedded same-input proxy:
+  `tmux_visible_line_change_ms p50 567.724 / p95 583.263 / max 583.263`
+- native same-input proxy:
+  `tmux_visible_line_change_ms p50 575.531 / p95 578.756 / max 578.756`
+- interpretation:
+  the `tmux_visible_line_change_ms` proxy is effectively identical between
+  embedded and native when the fixture and input path are actually matched, so
+  it is not the metric that explains the remaining user-visible jank
+
+An attempted apples-to-apples visual parity bench through screen capture was
+blocked on this host. `/usr/sbin/screencapture` failed with
+`could not create image from display`, so any native comparison that depends on
+screen/image diffs still needs a Screen Recording-capable environment.
