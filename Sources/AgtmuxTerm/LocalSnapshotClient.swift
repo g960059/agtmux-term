@@ -17,6 +17,8 @@ protocol LocalHealthClient {
     func fetchUIHealthV1() async throws -> AgtmuxUIHealthV1
 }
 
+protocol LocalMetadataHealthClient: ProductLocalMetadataClient, LocalHealthClient {}
+
 /// Product-facing local metadata surface.
 /// Product code should consume snapshot + sync-v3 metadata + health only.
 protocol ProductLocalMetadataClient: LocalSnapshotClient {
@@ -42,5 +44,5 @@ extension ProductLocalMetadataClient {
     func resetUIChangesV3() async {}
 }
 
-extension AgtmuxDaemonClient: ProductLocalMetadataClient, LocalHealthClient {}
-extension AgtmuxDaemonXPCClient: LocalHealthClient {}
+extension AgtmuxDaemonClient: ProductLocalMetadataClient, LocalMetadataHealthClient {}
+extension AgtmuxDaemonXPCClient: LocalHealthClient, LocalMetadataHealthClient {}

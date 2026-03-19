@@ -82,6 +82,13 @@ final class RuntimeHardeningTests: XCTestCase {
         XCTAssertFalse(AgtmuxBinaryResolver.defaultSocketPath.contains("/tmp/agtmux-"))
     }
 
+    func testEmbeddedXPCServiceNameMatchesBundledServiceIdentifier() {
+        XCTAssertEqual(
+            AgtmuxDaemonXPC.serviceName,
+            "com.g960059.agtmux.term.daemonservice"
+        )
+    }
+
     func testResolvedSocketPathPrefersExplicitManagedSocketOverride() async throws {
         let tempDirectory = try makeTemporaryDirectory(prefix: "agtmux-daemon-socket-override")
         defer { try? FileManager.default.removeItem(at: tempDirectory) }

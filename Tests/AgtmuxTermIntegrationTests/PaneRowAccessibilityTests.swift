@@ -18,7 +18,7 @@ final class PaneRowAccessibilityTests: XCTestCase {
 
         XCTAssertEqual(
             PaneRowAccessibility.summary(for: pane, presentation: nil, isSelected: true),
-            "selection=selected, presence=managed, provider=codex, primary=waiting_user_input, freshness=12s"
+            "selection=selected, presence=managed, provider=codex, primary=waiting_user_input, badge_ring=waiting_user_input, freshness=12s, trailing_timestamp=12s, trailing_timestamp_visible=true"
         )
     }
 
@@ -37,7 +37,7 @@ final class PaneRowAccessibilityTests: XCTestCase {
 
         XCTAssertEqual(
             PaneRowAccessibility.summary(for: pane, presentation: nil, isSelected: false),
-            "selection=unselected, presence=unmanaged, provider=none, primary=inactive, freshness=none"
+            "selection=unselected, presence=unmanaged, provider=none, primary=inactive, badge_ring=none, freshness=none, trailing_timestamp=none, trailing_timestamp_visible=false"
         )
     }
 
@@ -98,7 +98,26 @@ final class PaneRowAccessibilityTests: XCTestCase {
 
         XCTAssertEqual(
             PaneRowAccessibility.summary(for: pane, presentation: presentation, isSelected: true),
-            "selection=selected, presence=managed, provider=codex, primary=completed_idle, freshness=none"
+            "selection=selected, presence=managed, provider=codex, primary=completed_idle, badge_ring=none, freshness=none, trailing_timestamp=none, trailing_timestamp_visible=false"
+        )
+    }
+
+    func testRunningPaneSummaryKeepsFreshnessDiagnosticButHidesTrailingTimestamp() {
+        let pane = AgtmuxPane(
+            source: "local",
+            paneId: "%15",
+            sessionName: "demo",
+            windowId: "@2",
+            activityState: .running,
+            presence: .managed,
+            provider: .codex,
+            currentCmd: "node",
+            ageSecs: 45
+        )
+
+        XCTAssertEqual(
+            PaneRowAccessibility.summary(for: pane, presentation: nil, isSelected: false),
+            "selection=unselected, presence=managed, provider=codex, primary=running, badge_ring=running, freshness=45s, trailing_timestamp=none, trailing_timestamp_visible=false"
         )
     }
 }

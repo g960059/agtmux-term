@@ -378,12 +378,11 @@ final class AppViewModel: ObservableObject {
            !overridden.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return overridden
         }
-        return pane.primaryLabel
+        return paneDisplayState(for: pane).titleText
     }
 
     func paneDisplaySubtitle(for pane: AgtmuxPane) -> String? {
-        guard pane.presence == .managed else { return nil }
-        return pane.sessionSubtitle
+        paneDisplayState(for: pane).subtitleText
     }
 
     func setPaneDisplayTitleOverride(_ title: String?, for pane: AgtmuxPane) {

@@ -721,6 +721,7 @@ struct PaneRowView: View {
     private var provider: Provider? { displayState.provider }
     private var primaryState: PanePresentationPrimaryState { displayState.primaryState }
     private var freshnessText: String? { displayState.freshnessText }
+    private var trailingTimestampText: String? { displayState.trailingTimestampText }
     private var isManaged: Bool { displayState.isManaged }
     private var subtitle: String? { viewModel.paneDisplaySubtitle(for: pane) }
 
@@ -742,10 +743,8 @@ struct PaneRowView: View {
 
             Spacer()
 
-            // Elapsed time since last state change (managed panes only)
-            if isManaged,
-               let freshnessText {
-                FreshnessLabel(text: freshnessText)
+            if let trailingTimestampText {
+                FreshnessLabel(text: trailingTimestampText)
             }
         }
         .padding(.horizontal, 10)
@@ -993,9 +992,13 @@ struct ProviderStatusBadge: View {
         .frame(width: ringDiameter, height: ringDiameter)
     }
 
+    static func ringAccessibilityValue(for primaryState: PanePresentationPrimaryState) -> String {
+        "ring=\(ringState(for: primaryState).rawValue)"
+    }
+
     @ViewBuilder
     private var ringView: some View {
-        switch primaryState {
+        switch Self.ringState(for: primaryState) {
         case .running:
             SpinnerView(
                 color: .green,
@@ -1009,10 +1012,23 @@ struct ProviderStatusBadge: View {
             ringStroke(Color.yellow, lineWidth: 2)
         case .error:
             ringStroke(Color.red, lineWidth: 2)
-        case .completedIdle, .idle:
-            ringStroke(Color.white.opacity(0.2), lineWidth: 1.5)
-        case .inactive:
+        case .none:
             EmptyView()
+        }
+    }
+
+    private static func ringState(for primaryState: PanePresentationPrimaryState) -> ProviderStatusRingState {
+        switch primaryState {
+        case .running:
+            return .running
+        case .waitingApproval:
+            return .waitingApproval
+        case .waitingUserInput:
+            return .waitingUserInput
+        case .error:
+            return .error
+        case .completedIdle, .idle, .inactive:
+            return .none
         }
     }
 
@@ -1021,6 +1037,14 @@ struct ProviderStatusBadge: View {
             .strokeBorder(color, lineWidth: lineWidth)
             .frame(width: ringDiameter, height: ringDiameter)
     }
+}
+
+private enum ProviderStatusRingState: String {
+    case running
+    case waitingApproval = "waiting_approval"
+    case waitingUserInput = "waiting_user_input"
+    case error
+    case none
 }
 
 private extension Provider {

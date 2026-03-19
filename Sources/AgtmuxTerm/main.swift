@@ -89,7 +89,7 @@ if requiresGhosttyRuntime {
 // main.swift top-level code always executes on the main thread, so using
 // MainActor.assumeIsolated is correct and avoids forcing everything async.
 let xpcClient: AgtmuxDaemonXPCClient? = useXPCDaemonService ? AgtmuxDaemonXPCClient() : nil
-let daemonSupervisor: AgtmuxDaemonSupervisor? = useXPCDaemonService ? nil : AgtmuxDaemonSupervisor()
+let daemonSupervisor = AgtmuxDaemonSupervisor()
 let enableBroadPolling = !isUITest || enableUITestPolling
 
 let interruptCleanupQueue = DispatchQueue(label: "local.agtmux.term.sigint-cleanup")
@@ -97,7 +97,7 @@ signal(SIGINT, SIG_IGN)
 let interruptCleanupSource: DispatchSourceSignal = {
     let source = DispatchSource.makeSignalSource(signal: SIGINT, queue: interruptCleanupQueue)
     source.setEventHandler {
-        daemonSupervisor?.stopIfOwned()
+        daemonSupervisor.stopIfOwned()
 
         let sema = DispatchSemaphore(value: 0)
         Task.detached {
@@ -154,7 +154,7 @@ func kickOffManagedDaemonBringUp() {
             }
         },
         startManagedDaemonSupervisorIfNeededAsync: {
-            daemonSupervisor?.startIfNeededAsync()
+            daemonSupervisor.startIfNeededAsync()
         }
     )
 }
@@ -180,7 +180,16 @@ func runStartupSequence(
 
 let localMetadataClient: any ProductLocalMetadataClient
 if let xpcClient {
-    localMetadataClient = xpcClient
+    localMetadataClient = PreferredLocalMetadataClient(
+        primary: xpcClient,
+        fallback: AgtmuxDaemonClient(),
+        startFallbackRuntimeIfNeeded: {
+            daemonSupervisor.startIfNeeded()
+        },
+        log: { message in
+            fputs(message, stderr)
+        }
+    )
 } else {
     localMetadataClient = AgtmuxDaemonClient()
 }
@@ -356,7 +365,6 @@ if isUITest {
             sema.signal()
         }
         _ = sema.wait(timeout: .now() + 2.0)
-    } else {
-        daemonSupervisor?.stopIfOwned()
     }
+    daemonSupervisor.stopIfOwned()
 }

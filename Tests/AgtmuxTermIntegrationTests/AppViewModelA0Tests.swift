@@ -4399,6 +4399,7 @@ final class AppViewModelA0Tests: XCTestCase {
                 && display.provider == .codex
                 && display.isManaged
                 && display.primaryState == .running
+                && model.paneDisplayTitle(for: pane) == "codex"
                 && model.filteredPanes.count == 1
                 && model.filteredPanes.first?.paneId == "%12"
         }

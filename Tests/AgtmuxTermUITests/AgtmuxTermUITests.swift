@@ -1128,6 +1128,61 @@ final class AgtmuxTermUITests: XCTestCase {
         )
     }
 
+    /// T-E2E-007b: Managed pane rows restore provider badge state and trailing freshness semantics.
+    func testSidebarManagedPaneRowsShowProviderBadgeRingAndTrailingTimestamp() throws {
+        let runningPaneID = "%70"
+        let idlePaneID = "%71"
+        let sessionName = "agtmux-e2e-sidebar-managed-visuals"
+
+        let json = """
+        {"version":1,"panes":[
+          {"pane_id":"\(runningPaneID)","session_name":"\(sessionName)","window_id":"@7",
+           "window_index":1,"window_name":"codex","activity_state":"running",
+           "presence":"managed","provider":"codex","evidence_mode":"deterministic",
+           "current_cmd":"node","updated_at":"2026-03-08T00:00:00Z","age_secs":12},
+          {"pane_id":"\(idlePaneID)","session_name":"\(sessionName)","window_id":"@7",
+           "window_index":1,"window_name":"codex","activity_state":"idle",
+           "presence":"managed","provider":"codex","evidence_mode":"deterministic",
+           "current_cmd":"node","updated_at":"2026-03-08T00:00:00Z","age_secs":3600}
+        ]}
+        """
+
+        app.launchEnvironment["AGTMUX_JSON"] = json
+        app.launchForUITest()
+
+        let runningRow = paneRow(sessionName: sessionName, paneID: runningPaneID)
+        XCTAssertTrue(
+            runningRow.waitForExistence(timeout: TestConstants.sidebarPopulateTimeout),
+            "Running managed pane must appear in sidebar"
+        )
+        XCTAssertEqual(runningRow.label, "codex", "Managed row title should prefer provider over current_cmd=node")
+        let runningSummary = paneRowMetadataSummary(runningRow) ?? ""
+        XCTAssertTrue(
+            runningSummary.contains("provider=codex")
+                && runningSummary.contains("primary=running")
+                && runningSummary.contains("badge_ring=running")
+                && runningSummary.contains("trailing_timestamp=none")
+                && runningSummary.contains("trailing_timestamp_visible=false"),
+            "Running managed row must expose provider metadata, running ring state, and hide trailing freshness. row='\(runningSummary)'"
+        )
+
+        let idleRow = paneRow(sessionName: sessionName, paneID: idlePaneID)
+        XCTAssertTrue(
+            idleRow.waitForExistence(timeout: TestConstants.sidebarPopulateTimeout),
+            "Idle managed pane must appear in sidebar"
+        )
+        XCTAssertEqual(idleRow.label, "codex", "Idle managed row should also avoid current_cmd=node fallback")
+        let idleSummary = paneRowMetadataSummary(idleRow) ?? ""
+        XCTAssertTrue(
+            idleSummary.contains("provider=codex")
+                && idleSummary.contains("primary=idle")
+                && idleSummary.contains("badge_ring=none")
+                && idleSummary.contains("trailing_timestamp=1h")
+                && idleSummary.contains("trailing_timestamp_visible=true"),
+            "Idle managed row must keep provider metadata, drop the ring, and show trailing freshness. row='\(idleSummary)'"
+        )
+    }
+
     /// T-E2E-008: linked-looking session names remain visible because the normal
     /// sidebar path now reflects real tmux sessions exactly.
     func testLinkedPrefixedSessionsRemainVisibleAsRealSessions() throws {
@@ -2571,13 +2626,7 @@ final class AgtmuxTermUITests: XCTestCase {
 
     private func paneRowMetadataSummary(_ row: XCUIElement) -> String? {
         guard row.waitForExistence(timeout: 0.5) else { return nil }
-        if let value = row.value as? String {
-            return value
-        }
-        if let value = row.value {
-            return String(describing: value)
-        }
-        return nil
+        return stringValue(of: row)
     }
 
     private func paneRowByPaneID(source: String = "local", paneID: String) -> XCUIElement {
@@ -2593,6 +2642,16 @@ final class AgtmuxTermUITests: XCTestCase {
                 "_" + paneSuffix
             )
         ).firstMatch
+    }
+
+    private func stringValue(of element: XCUIElement) -> String? {
+        if let value = element.value as? String {
+            return value
+        }
+        if let value = element.value {
+            return String(describing: value)
+        }
+        return nil
     }
 
     private func workbenchV2TerminalTile(sessionName: String) -> XCUIElement {

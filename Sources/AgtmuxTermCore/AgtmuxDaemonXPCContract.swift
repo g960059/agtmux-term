@@ -3,7 +3,7 @@ import Foundation
 /// Shared constants for agtmux XPC service integration.
 public enum AgtmuxDaemonXPC {
     /// XPC service bundle identifier used by `NSXPCConnection(serviceName:)`.
-    public static let serviceName = "local.agtmux.term.daemonservice"
+    public static let serviceName = "com.g960059.agtmux.term.daemonservice"
 }
 
 /// XPC contract exposed by the bundled daemon service.
