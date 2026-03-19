@@ -240,6 +240,10 @@ sleep 0.2
 empty_burst_count=0
 last_send_json='null'
 last_visible_line=""
+previous_scroll_to_first_draw_sample_count=0
+previous_scroll_to_layer_present_sample_count=0
+previous_scroll_presentation_draw_gap_sample_count=0
+previous_layer_present_gap_sample_count=0
 bench_start="$(date '+%Y-%m-%d %H:%M:%S%z')"
 
 for (( i = 1; i <= iterations; i++ )); do
@@ -275,19 +279,89 @@ for (( i = 1; i <= iterations; i++ )); do
     burst_latency_ms="$(awk "BEGIN { printf \"%.3f\", ((${EPOCHREALTIME} - ${burst_started_at}) * 1000.0) }")"
   fi
 
+  burst_scroll_telemetry_json="$(gate_l_send_bridge_command false 10 "__agtmux_dump_scroll_telemetry__" "$tile_id")"
+  current_scroll_to_first_draw_sample_count="$(jq '(.scroll.scrollToFirstDrawSamplesMs // []) | length' <<<"$burst_scroll_telemetry_json")"
+  current_scroll_to_layer_present_sample_count="$(jq '(.scroll.scrollToLayerPresentSamplesMs // []) | length' <<<"$burst_scroll_telemetry_json")"
+  current_scroll_presentation_draw_gap_sample_count="$(jq '(.scroll.scrollPresentationDrawGapSamplesMs // []) | length' <<<"$burst_scroll_telemetry_json")"
+  current_layer_present_gap_sample_count="$(jq '(.scroll.layerPresentGapSamplesMs // []) | length' <<<"$burst_scroll_telemetry_json")"
+
   jq -n \
     --argjson iteration "$i" \
     --arg direction "$direction" \
     --argjson baseline_line "$baseline_line" \
     --argjson visible_line "${last_visible_line:-null}" \
     --argjson latency_ms "$burst_latency_ms" \
-    '{
-      iteration: $iteration,
-      direction: $direction,
-      baseline_line: $baseline_line,
-      visible_line: $visible_line,
-      latency_ms: $latency_ms
-    }' >>"$burst_metrics_path"
+    --argjson telemetry "$burst_scroll_telemetry_json" \
+    --argjson scroll_to_first_draw_start "$previous_scroll_to_first_draw_sample_count" \
+    --argjson scroll_to_layer_present_start "$previous_scroll_to_layer_present_sample_count" \
+    --argjson scroll_presentation_draw_gap_start "$previous_scroll_presentation_draw_gap_sample_count" \
+    --argjson layer_present_gap_start "$previous_layer_present_gap_sample_count" \
+    '
+      def percentile($samples; $p):
+        if ($samples | length) == 0 then
+          null
+        else
+          ($samples | sort) as $sorted
+          | ($sorted | length) as $n
+          | (((($p / 100.0) * $n) | ceil) - 1) as $index
+          | $sorted[
+              if $index < 0 then
+                0
+              elif $index >= $n then
+                ($n - 1)
+              else
+                $index
+              end
+            ]
+        end;
+      def summary($samples):
+        if ($samples | length) == 0 then
+          {count: 0, p50_ms: null, p95_ms: null, max_ms: null}
+        else
+          {
+            count: ($samples | length),
+            p50_ms: percentile($samples; 50),
+            p95_ms: percentile($samples; 95),
+            max_ms: ($samples | max)
+          }
+        end;
+      def suffix($samples; $start):
+        if $start <= 0 then
+          $samples
+        elif $start >= ($samples | length) then
+          []
+        else
+          $samples[$start:]
+        end;
+      ($telemetry.scroll.scrollToFirstDrawSamplesMs // []) as $scroll_to_first_draw_samples
+      | ($telemetry.scroll.scrollToLayerPresentSamplesMs // []) as $scroll_to_layer_present_samples
+      | ($telemetry.scroll.scrollPresentationDrawGapSamplesMs // []) as $scroll_presentation_draw_gap_samples
+      | ($telemetry.scroll.layerPresentGapSamplesMs // []) as $layer_present_gap_samples
+      | (suffix($scroll_to_first_draw_samples; $scroll_to_first_draw_start)) as $burst_scroll_to_first_draw_samples
+      | (suffix($scroll_to_layer_present_samples; $scroll_to_layer_present_start)) as $burst_scroll_to_layer_present_samples
+      | (suffix($scroll_presentation_draw_gap_samples; $scroll_presentation_draw_gap_start)) as $burst_scroll_presentation_draw_gap_samples
+      | (suffix($layer_present_gap_samples; $layer_present_gap_start)) as $burst_layer_present_gap_samples
+      | {
+          iteration: $iteration,
+          direction: $direction,
+          baseline_line: $baseline_line,
+          visible_line: $visible_line,
+          latency_ms: $latency_ms,
+          scroll_to_first_draw_ms: summary($burst_scroll_to_first_draw_samples),
+          scroll_to_first_draw_samples_ms: $burst_scroll_to_first_draw_samples,
+          scroll_to_layer_present_ms: summary($burst_scroll_to_layer_present_samples),
+          scroll_to_layer_present_samples_ms: $burst_scroll_to_layer_present_samples,
+          scroll_presentation_draw_gap_ms: summary($burst_scroll_presentation_draw_gap_samples),
+          scroll_presentation_draw_gap_samples_ms: $burst_scroll_presentation_draw_gap_samples,
+          layer_present_gap_ms: summary($burst_layer_present_gap_samples),
+          layer_present_gap_samples_ms: $burst_layer_present_gap_samples
+        }
+    ' >>"$burst_metrics_path"
+
+  previous_scroll_to_first_draw_sample_count="$current_scroll_to_first_draw_sample_count"
+  previous_scroll_to_layer_present_sample_count="$current_scroll_to_layer_present_sample_count"
+  previous_scroll_presentation_draw_gap_sample_count="$current_scroll_presentation_draw_gap_sample_count"
+  previous_layer_present_gap_sample_count="$current_layer_present_gap_sample_count"
 
   sleep "$(awk "BEGIN { printf \"%.3f\", (${burst_pause_ms} / 1000.0) }")"
 done

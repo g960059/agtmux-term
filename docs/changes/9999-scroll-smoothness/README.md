@@ -20,6 +20,10 @@ Current state:
 - the latest accepted code change in this branch is telemetry-only: it surfaces
   scroll-presentation draw cadence and first-draw completion directly in the
   full-app bench without changing pacing behavior
+- the latest accepted telemetry follow-up adds per-burst raw sample slices for
+  `scroll_to_first_draw`, `scroll_to_layer_present`, and draw-gap metrics so
+  long-burst tails can be attributed to specific bursts instead of only to the
+  whole run
 - the current best-known installed-app result on this host for the default
   4-burst run is `scroll_to_layer_present_ms p50 1.936 / p95 12.991 / max 19.428`
 - the current longer-run installed stress sample is still noisier at
@@ -37,6 +41,11 @@ Current state:
   run-loop timer, relaxing the immediate-draw throttle below the pump cadence,
   moving the delayed-present recovery probe earlier to `1/240s`, shortening the
   draw-pump tail to `0.12s`, and slowing the draw-pump interval to `1/100s`
+- three later experiments were also rejected after burst-level telemetry made
+  the tails attributable: inline first-draw execution regressed both the short
+  and long release paths, direction-change cadence resets produced false wins by
+  altering the visible-line path itself, and backlog-aware recovery redraws
+  regressed both `4-burst` and `8-burst` release samples
 - repo-local validation is green for `validate-macos-ci.sh` and
   `swift test --build-path .build-codex --skip AppViewModelLiveManagedAgentTests`
 - the only broad SwiftPM failure on this host is the live Claude probe in

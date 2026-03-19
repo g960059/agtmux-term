@@ -499,3 +499,53 @@ Interpretation:
   or slower
 - the next useful investigation should target why extended burst trains still
   accumulate delayed first draws despite healthy median cadence
+
+### Burst-level telemetry slices and rejected false wins
+
+The next telemetry-only follow-up exposed the raw sample suffix for each burst
+instead of only summarizing the whole run. The bench now records, per burst:
+
+- `scroll_to_first_draw_samples_ms`
+- `scroll_to_layer_present_samples_ms`
+- `scroll_presentation_draw_gap_samples_ms`
+- `layer_present_gap_samples_ms`
+
+Validation:
+
+```bash
+swift test --build-path .build-codex --filter GhosttyCLIOSCBridgeTests
+zsh -n scripts/perf/gate_l_trackpad_history_scroll_bench.sh
+AGTMUX_PERF_APP_BIN="$PWD/build/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" \
+  scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4
+AGTMUX_PERF_APP_BIN="$PWD/build/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" \
+  scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 8
+```
+
+Result highlights from the accepted baseline with those burst slices:
+
+- release bundle, 4 bursts:
+  - `scroll_to_first_draw_ms p50 0.214 / p95 8.993 / max 9.477`
+  - `scroll_to_layer_present_ms p50 2.509 / p95 10.855 / max 11.174`
+- release bundle, 8 bursts:
+  - `scroll_to_first_draw_ms p50 0.232 / p95 58.921 / max 126.058`
+  - `scroll_to_layer_present_ms p50 2.083 / p95 60.616 / max 127.624`
+  - the worst samples clustered in the alternating `up` bursts, while the
+    `down` bursts stayed near the earlier `~9-11ms` range
+
+Three follow-up ideas were then measured and rejected:
+
+- inline first-draw execution regressed both `4-burst` and `8-burst` release
+  samples
+- direction-change cadence resets produced apparently good `8-burst` numbers
+  only by changing the visible-line path itself, so they were false wins
+- backlog-aware recovery redraws regressed both the short and long release
+  paths
+
+Interpretation:
+
+- the new per-burst slices are useful and should stay
+- the remaining tail really is concentrated in specific burst phases, not
+  evenly smeared across the whole train
+- the next real fix should preserve the visible-line path and burst shape while
+  reducing those `up`-burst tails; changes that alter the benchmark path should
+  be treated as invalid, not improvements

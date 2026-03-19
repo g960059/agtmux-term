@@ -23,6 +23,9 @@
 - `AGTMUX_PERF_APP_BIN="$PWD/.build-codex/arm64-apple-macosx/debug/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4` after adding the active-scroll draw pump
 - `AGTMUX_PERF_APP_BIN="/Applications/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4` for the best-known installed app
 - `AGTMUX_PERF_APP_BIN="$PWD/build/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4` after surfacing scroll-presentation draw telemetry
+- `zsh -n scripts/perf/gate_l_trackpad_history_scroll_bench.sh`
+- `AGTMUX_PERF_APP_BIN="$PWD/build/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4` after adding burst-level telemetry slices
+- `AGTMUX_PERF_APP_BIN="$PWD/build/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 8` after adding burst-level telemetry slices
 - `AGTMUX_PERF_APP_BIN="/Applications/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4` after reinstalling the telemetry-instrumented release app
 - `AGTMUX_PERF_APP_BIN="/Applications/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 8` to stress longer burst trains
 - `cd ../agtmux && cargo build -p agtmux --release >/dev/null && cd ../agtmux-term && xcodegen generate --spec project.yml >/dev/null && xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -configuration Release -derivedDataPath "$PWD/build" CONFIGURATION_BUILD_DIR="$PWD/build/Release" ONLY_ACTIVE_ARCH=NO CODE_SIGN_IDENTITY='-' CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES ENABLE_HARDENED_RUNTIME=NO AGTMUX_BIN="$PWD/../agtmux/target/release/agtmux" build`
@@ -93,3 +96,15 @@
     8-burst sample to `scroll_to_layer_present_ms p50 2.277 / p95 30.084 / max 77.817`
   - slowing the draw-pump interval to `1/100s` regressed the release-bundle
     8-burst sample to `scroll_to_layer_present_ms p50 2.124 / p95 40.836 / max 123.922`
+- Burst-level telemetry is now sliced per burst in the full-app bench, which
+  exposed that the long-tail spikes in the accepted release path cluster in the
+  alternating `up` bursts rather than spreading evenly across the train.
+- Three later experiments were explicitly rejected after those burst slices were
+  added:
+  - inline first-draw execution regressed both `4-burst` and `8-burst`
+    release-bundle samples
+  - direction-change cadence resets produced apparently good `8-burst` numbers
+    only by changing the visible-line path itself, so they were treated as
+    false wins
+  - backlog-aware recovery redraws regressed both `4-burst` and `8-burst`
+    release-bundle samples

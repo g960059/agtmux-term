@@ -38,6 +38,10 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         let drawGap: ScrollTelemetryMetricSummary
         let scrollPresentationDrawGap: ScrollTelemetryMetricSummary
         let layerPresentGap: ScrollTelemetryMetricSummary
+        let scrollToFirstDrawSamplesMs: [Double]
+        let scrollToLayerPresentSamplesMs: [Double]
+        let scrollPresentationDrawGapSamplesMs: [Double]
+        let layerPresentGapSamplesMs: [Double]
         let drawCount: Int
         let scrollPresentationDrawCount: Int
         let layerPresentCount: Int
@@ -741,7 +745,6 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
 
     override func scrollWheel(with event: NSEvent) {
         guard let surface else { return }
-        noteScrollInputTelemetry()
         // Pass deltas raw — Ghostty expects the same sign convention as
         // NSEvent.scrollingDeltaY (positive = up). Negating was inverting scroll.
         var x = event.scrollingDeltaX
@@ -751,6 +754,7 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
             x *= 2
             y *= 2
         }
+        noteScrollInputTelemetry()
         ghostty_surface_mouse_scroll(surface, x, y, GhosttyInput.toScrollMods(event))
         scheduleScrollPresentationDrawIfNeeded()
     }
@@ -892,6 +896,10 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
             drawGap: summary(for: drawGapSamplesMs),
             scrollPresentationDrawGap: summary(for: scrollPresentationDrawGapSamplesMs),
             layerPresentGap: summary(for: layerPresentGapSamplesMs),
+            scrollToFirstDrawSamplesMs: scrollToDrawSamplesMs,
+            scrollToLayerPresentSamplesMs: scrollToLayerPresentSamplesMs,
+            scrollPresentationDrawGapSamplesMs: scrollPresentationDrawGapSamplesMs,
+            layerPresentGapSamplesMs: layerPresentGapSamplesMs,
             drawCount: drawCount,
             scrollPresentationDrawCount: scrollPresentationDrawCount,
             layerPresentCount: layerPresentCount,
@@ -947,7 +955,6 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         }
         guard scrollPresentationDrawPending == false else { return }
         scrollPresentationDrawPending = true
-
         let mainRunLoop = CFRunLoopGetMain()
         CFRunLoopPerformBlock(mainRunLoop, CFRunLoopMode.commonModes.rawValue) { [weak self] in
             guard let self else { return }
