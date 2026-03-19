@@ -37,10 +37,16 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         let renderRequestToDraw: ScrollTelemetryMetricSummary
         let drawGap: ScrollTelemetryMetricSummary
         let scrollPresentationDrawGap: ScrollTelemetryMetricSummary
+        let scrollPresentationImmediateQueueDelay: ScrollTelemetryMetricSummary
+        let scrollPresentationPumpWakeLateness: ScrollTelemetryMetricSummary
+        let scrollPresentationRecoveryProbeWakeLateness: ScrollTelemetryMetricSummary
         let layerPresentGap: ScrollTelemetryMetricSummary
         let scrollToFirstDrawSamplesMs: [Double]
         let scrollToLayerPresentSamplesMs: [Double]
         let scrollPresentationDrawGapSamplesMs: [Double]
+        let scrollPresentationImmediateQueueDelaySamplesMs: [Double]
+        let scrollPresentationPumpWakeLatenessSamplesMs: [Double]
+        let scrollPresentationRecoveryProbeWakeLatenessSamplesMs: [Double]
         let layerPresentGapSamplesMs: [Double]
         let drawCount: Int
         let scrollPresentationDrawCount: Int
@@ -89,6 +95,9 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     private var renderToDrawSamplesMs: [Double] = []
     private var drawGapSamplesMs: [Double] = []
     private var scrollPresentationDrawGapSamplesMs: [Double] = []
+    private var scrollPresentationImmediateQueueDelaySamplesMs: [Double] = []
+    private var scrollPresentationPumpWakeLatenessSamplesMs: [Double] = []
+    private var scrollPresentationRecoveryProbeWakeLatenessSamplesMs: [Double] = []
     private var layerPresentGapSamplesMs: [Double] = []
     private var drawCount = 0
     private var scrollPresentationDrawCount = 0
@@ -813,6 +822,39 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     }
 
     @MainActor
+    func noteScrollPresentationImmediateQueueDelayTelemetryForTesting(
+        scheduledAt: TimeInterval,
+        now: TimeInterval
+    ) {
+        noteScrollPresentationImmediateQueueDelayTelemetry(
+            scheduledAt: scheduledAt,
+            now: now
+        )
+    }
+
+    @MainActor
+    func noteScrollPresentationDrawPumpWakeLatenessTelemetryForTesting(
+        scheduledFor: TimeInterval,
+        now: TimeInterval
+    ) {
+        noteScrollPresentationDrawPumpWakeLatenessTelemetry(
+            scheduledFor: scheduledFor,
+            now: now
+        )
+    }
+
+    @MainActor
+    func noteScrollPresentationRecoveryProbeWakeLatenessTelemetryForTesting(
+        scheduledFor: TimeInterval,
+        now: TimeInterval
+    ) {
+        noteScrollPresentationRecoveryProbeWakeLatenessTelemetry(
+            scheduledFor: scheduledFor,
+            now: now
+        )
+    }
+
+    @MainActor
     private func noteScrollPresentationDrawTelemetry(now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
         completePendingScrollToDrawTelemetry(at: now)
         if let lastScrollPresentationDrawTelemetryUptime {
@@ -822,6 +864,36 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         }
         lastScrollPresentationDrawTelemetryUptime = now
         scrollPresentationDrawCount += 1
+    }
+
+    @MainActor
+    private func noteScrollPresentationImmediateQueueDelayTelemetry(
+        scheduledAt: TimeInterval,
+        now: TimeInterval = ProcessInfo.processInfo.systemUptime
+    ) {
+        scrollPresentationImmediateQueueDelaySamplesMs.append(
+            max(0, (now - scheduledAt) * 1000.0)
+        )
+    }
+
+    @MainActor
+    private func noteScrollPresentationDrawPumpWakeLatenessTelemetry(
+        scheduledFor: TimeInterval,
+        now: TimeInterval = ProcessInfo.processInfo.systemUptime
+    ) {
+        scrollPresentationPumpWakeLatenessSamplesMs.append(
+            max(0, (now - scheduledFor) * 1000.0)
+        )
+    }
+
+    @MainActor
+    private func noteScrollPresentationRecoveryProbeWakeLatenessTelemetry(
+        scheduledFor: TimeInterval,
+        now: TimeInterval = ProcessInfo.processInfo.systemUptime
+    ) {
+        scrollPresentationRecoveryProbeWakeLatenessSamplesMs.append(
+            max(0, (now - scheduledFor) * 1000.0)
+        )
     }
 
     @MainActor
@@ -862,6 +934,9 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         renderToDrawSamplesMs.removeAll(keepingCapacity: false)
         drawGapSamplesMs.removeAll(keepingCapacity: false)
         scrollPresentationDrawGapSamplesMs.removeAll(keepingCapacity: false)
+        scrollPresentationImmediateQueueDelaySamplesMs.removeAll(keepingCapacity: false)
+        scrollPresentationPumpWakeLatenessSamplesMs.removeAll(keepingCapacity: false)
+        scrollPresentationRecoveryProbeWakeLatenessSamplesMs.removeAll(keepingCapacity: false)
         layerPresentGapSamplesMs.removeAll(keepingCapacity: false)
         drawCount = 0
         scrollPresentationDrawCount = 0
@@ -895,10 +970,16 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
             renderRequestToDraw: summary(for: renderToDrawSamplesMs),
             drawGap: summary(for: drawGapSamplesMs),
             scrollPresentationDrawGap: summary(for: scrollPresentationDrawGapSamplesMs),
+            scrollPresentationImmediateQueueDelay: summary(for: scrollPresentationImmediateQueueDelaySamplesMs),
+            scrollPresentationPumpWakeLateness: summary(for: scrollPresentationPumpWakeLatenessSamplesMs),
+            scrollPresentationRecoveryProbeWakeLateness: summary(for: scrollPresentationRecoveryProbeWakeLatenessSamplesMs),
             layerPresentGap: summary(for: layerPresentGapSamplesMs),
             scrollToFirstDrawSamplesMs: scrollToDrawSamplesMs,
             scrollToLayerPresentSamplesMs: scrollToLayerPresentSamplesMs,
             scrollPresentationDrawGapSamplesMs: scrollPresentationDrawGapSamplesMs,
+            scrollPresentationImmediateQueueDelaySamplesMs: scrollPresentationImmediateQueueDelaySamplesMs,
+            scrollPresentationPumpWakeLatenessSamplesMs: scrollPresentationPumpWakeLatenessSamplesMs,
+            scrollPresentationRecoveryProbeWakeLatenessSamplesMs: scrollPresentationRecoveryProbeWakeLatenessSamplesMs,
             layerPresentGapSamplesMs: layerPresentGapSamplesMs,
             drawCount: drawCount,
             scrollPresentationDrawCount: scrollPresentationDrawCount,
@@ -955,12 +1036,17 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         }
         guard scrollPresentationDrawPending == false else { return }
         scrollPresentationDrawPending = true
+        let scheduledAt = now
         let mainRunLoop = CFRunLoopGetMain()
         CFRunLoopPerformBlock(mainRunLoop, CFRunLoopMode.commonModes.rawValue) { [weak self] in
             guard let self else { return }
             MainActor.assumeIsolated {
                 self.scrollPresentationDrawPending = false
                 let drawUptime = ProcessInfo.processInfo.systemUptime
+                self.noteScrollPresentationImmediateQueueDelayTelemetry(
+                    scheduledAt: scheduledAt,
+                    now: drawUptime
+                )
                 self.lastScrollPresentationDrawUptime = drawUptime
                 self.performScrollPresentationDraw()
                 self.scheduleScrollPresentationRecoveryProbeIfNeeded(forDrawAt: drawUptime)
@@ -985,16 +1071,20 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
 
         scrollPresentationDrawPumpScheduled = true
         let generation = scrollPresentationDrawPumpGeneration
+        let scheduledFor = now + Self.scrollPresentationDrawPumpIntervalSeconds
         DispatchQueue.main.asyncAfter(
             deadline: .now() + Self.scrollPresentationDrawPumpIntervalSeconds
         ) { [weak self] in
             guard let self else { return }
             MainActor.assumeIsolated {
                 guard generation == self.scrollPresentationDrawPumpGeneration else { return }
-                self.scrollPresentationDrawPumpScheduled = false
-                _ = self.runScrollPresentationDrawPumpPass(
-                    now: ProcessInfo.processInfo.systemUptime
+                let callbackNow = ProcessInfo.processInfo.systemUptime
+                self.noteScrollPresentationDrawPumpWakeLatenessTelemetry(
+                    scheduledFor: scheduledFor,
+                    now: callbackNow
                 )
+                self.scrollPresentationDrawPumpScheduled = false
+                _ = self.runScrollPresentationDrawPumpPass(now: callbackNow)
             }
         }
     }
@@ -1006,16 +1096,22 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
 
         scrollPresentationRecoveryProbeScheduled = true
         let generation = scrollPresentationRecoveryProbeGeneration
+        let scheduledFor = drawUptime + Self.scrollPresentationDrawRecoveryProbeDelaySeconds
         DispatchQueue.main.asyncAfter(
             deadline: .now() + Self.scrollPresentationDrawRecoveryProbeDelaySeconds
         ) { [weak self] in
             guard let self else { return }
             MainActor.assumeIsolated {
                 guard generation == self.scrollPresentationRecoveryProbeGeneration else { return }
+                let callbackNow = ProcessInfo.processInfo.systemUptime
+                self.noteScrollPresentationRecoveryProbeWakeLatenessTelemetry(
+                    scheduledFor: scheduledFor,
+                    now: callbackNow
+                )
                 self.scrollPresentationRecoveryProbeScheduled = false
                 _ = self.runScrollPresentationRecoveryProbePass(
                     drawUptime: drawUptime,
-                    now: ProcessInfo.processInfo.systemUptime
+                    now: callbackNow
                 )
             }
         }

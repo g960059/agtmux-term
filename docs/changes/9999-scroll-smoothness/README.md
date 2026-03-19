@@ -24,6 +24,11 @@ Current state:
   `scroll_to_first_draw`, `scroll_to_layer_present`, and draw-gap metrics so
   long-burst tails can be attributed to specific bursts instead of only to the
   whole run
+- the latest accepted telemetry follow-up also surfaces scheduler-specific
+  latency slices for `scroll_presentation_immediate_queue_delay`,
+  `scroll_presentation_pump_wake_lateness`, and
+  `scroll_presentation_recovery_probe_wake_lateness` in both the aggregate and
+  per-burst bench output
 - the current best-known installed-app result on this host for the default
   4-burst run is `scroll_to_layer_present_ms p50 1.936 / p95 12.991 / max 19.428`
 - the current longer-run installed stress sample is still noisier at
@@ -44,8 +49,29 @@ Current state:
 - three later experiments were also rejected after burst-level telemetry made
   the tails attributable: inline first-draw execution regressed both the short
   and long release paths, direction-change cadence resets produced false wins by
-  altering the visible-line path itself, and backlog-aware recovery redraws
-  regressed both `4-burst` and `8-burst` release samples
+  altering the visible-line path itself, backlog-aware recovery redraws
+  regressed both `4-burst` and `8-burst` release samples, and backlog-aware
+  immediate-throttle bypass thresholds (`0.85x`, `0.90x`, `0.95x`) never
+  improved both the short and long release paths at the same time
+- the new scheduler telemetry shows that immediate queue delay is not the
+  limiter on this host; the persistent long-burst tails line up with large
+  `pump_wake_lateness` / `recovery_probe_wake_lateness` spikes in alternating
+  `up` bursts
+- four additional pacing ideas were measured and rejected after that telemetry:
+  an overdue-pump immediate-draw bypass, moving the draw pump to one-shot
+  `RunLoop.main` `.common` timers, limiting delayed-present recovery probes to
+  immediate draws only, and bypassing the throttle after two pending scroll
+  inputs. All four either regressed the short path, kept the long-path `p95`
+  flat, or made variance worse despite isolated wins on `max`
+- three wake-path follow-ups were also rejected after direct measurement:
+  a view-scoped `NSView.displayLink(...)` pump/recovery replacement, a
+  background-queue timer that hopped back through
+  `CFRunLoopPerformBlock(... commonModes ...)`, and draw-relative timer
+  rescheduling after every successful scroll draw. All three reduced some wake
+  telemetry, but none beat the best-known baseline on user-visible
+  `scroll_to_layer_present_ms`; the draw-relative reschedule variant still
+  landed at release `4-burst p50 7.340 / p95 23.081 / max 23.868` and
+  `8-burst p50 8.124 / p95 41.497 / max 90.814`
 - repo-local validation is green for `validate-macos-ci.sh` and
   `swift test --build-path .build-codex --skip AppViewModelLiveManagedAgentTests`
 - the only broad SwiftPM failure on this host is the live Claude probe in

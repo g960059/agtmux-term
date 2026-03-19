@@ -26,6 +26,8 @@
 - `zsh -n scripts/perf/gate_l_trackpad_history_scroll_bench.sh`
 - `AGTMUX_PERF_APP_BIN="$PWD/build/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4` after adding burst-level telemetry slices
 - `AGTMUX_PERF_APP_BIN="$PWD/build/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 8` after adding burst-level telemetry slices
+- `AGTMUX_PERF_APP_BIN="$PWD/build/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4` after adding scheduler-lateness telemetry slices
+- `AGTMUX_PERF_APP_BIN="$PWD/build/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 8` after adding scheduler-lateness telemetry slices
 - `AGTMUX_PERF_APP_BIN="/Applications/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4` after reinstalling the telemetry-instrumented release app
 - `AGTMUX_PERF_APP_BIN="/Applications/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 8` to stress longer burst trains
 - `cd ../agtmux && cargo build -p agtmux --release >/dev/null && cd ../agtmux-term && xcodegen generate --spec project.yml >/dev/null && xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -configuration Release -derivedDataPath "$PWD/build" CONFIGURATION_BUILD_DIR="$PWD/build/Release" ONLY_ACTIVE_ARCH=NO CODE_SIGN_IDENTITY='-' CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES ENABLE_HARDENED_RUNTIME=NO AGTMUX_BIN="$PWD/../agtmux/target/release/agtmux" build`
@@ -108,3 +110,43 @@
     false wins
   - backlog-aware recovery redraws regressed both `4-burst` and `8-burst`
     release-bundle samples
+  - backlog-aware immediate-throttle bypass also failed to produce a clear net
+    win: `0.85x`, `0.90x`, and `0.95x` frame-age thresholds each improved one
+    side of the tradeoff while regressing the other. The best long-burst sample
+    (`0.85x`) reached `scroll_to_layer_present_ms p50 2.155 / p95 22.527 / max 49.470`
+    on release `8-burst`, but its paired `4-burst` run regressed to
+    `p50 4.817 / p95 17.756 / max 24.291`, so the change was rejected.
+- The accepted scheduler telemetry follow-up showed:
+  - baseline release bundle, 8 bursts:
+    `scroll_to_layer_present_ms p50 9.082 / p95 26.610 / max 55.803`
+    `scroll_presentation_immediate_queue_delay_ms p50 0.193 / p95 0.285 / max 0.296`
+    `scroll_presentation_pump_wake_lateness_ms p50 1.145 / p95 9.432 / max 206.878`
+    `scroll_presentation_recovery_probe_wake_lateness_ms p50 3.295 / p95 15.025 / max 210.987`
+  - interpretation:
+    immediate queue delay stayed tiny while the worst `up` bursts lined up with
+    very large pump/recovery wake-lateness spikes
+- Four more pacing ideas were measured and rejected after that telemetry:
+  - overdue-pump immediate-draw bypass:
+    release `8-burst` moved to `p50 10.173 / p95 29.304 / max 55.283`
+    and was rejected
+  - one-shot `RunLoop.main` `.common` timers for draw pump / recovery:
+    release `8-burst` regressed to `p50 9.438 / p95 27.809 / max 160.401`
+  - limiting delayed-present recovery probes to immediate draws only:
+    release `8-burst` improved `max` to `36.810` but `4-burst` stayed noisy at
+    `p50 4.203 / p95 16.598 / max 38.696`, so it was rejected
+  - bypassing the throttle after two pending scroll inputs:
+    release `8-burst` reached `p50 1.937 / p95 28.526 / max 31.426`, but the
+    paired `4-burst` sample regressed hard to
+    `p50 2.363 / p95 28.538 / max 34.824`, so it was also rejected
+- Three later wake-path experiments were also rejected after measurement:
+  - replacing the timer wakeups with view-scoped `NSView.displayLink(...)`
+    callbacks regressed release `4-burst` to
+    `p50 1.791 / p95 46.401 / max 48.806`
+  - moving the timer wakeups onto a background queue and hopping back to the
+    main run loop via `CFRunLoopPerformBlock(... commonModes ...)` improved some
+    wake-lateness slices but still regressed release `8-burst` to
+    `p50 8.224 / p95 44.481 / max 144.741`
+  - rescheduling pump / recovery timers after every successful draw also
+    reduced wake-lateness telemetry but still regressed the user-visible path
+    to release `4-burst p50 7.340 / p95 23.081 / max 23.868` and
+    `8-burst p50 8.124 / p95 41.497 / max 90.814`

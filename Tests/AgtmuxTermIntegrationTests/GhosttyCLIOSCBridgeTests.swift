@@ -1321,9 +1321,15 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
         XCTAssertEqual(snapshot.renderRequestToDraw.count, 2)
         XCTAssertEqual(snapshot.drawGap.count, 1)
         XCTAssertEqual(snapshot.scrollPresentationDrawGap.count, 0)
+        XCTAssertEqual(snapshot.scrollPresentationImmediateQueueDelay.count, 0)
+        XCTAssertEqual(snapshot.scrollPresentationPumpWakeLateness.count, 0)
+        XCTAssertEqual(snapshot.scrollPresentationRecoveryProbeWakeLateness.count, 0)
         XCTAssertEqual(snapshot.scrollToFirstDrawSamplesMs.count, 2)
         XCTAssertEqual(snapshot.scrollToLayerPresentSamplesMs.count, 2)
         XCTAssertEqual(snapshot.scrollPresentationDrawGapSamplesMs.count, 0)
+        XCTAssertEqual(snapshot.scrollPresentationImmediateQueueDelaySamplesMs.count, 0)
+        XCTAssertEqual(snapshot.scrollPresentationPumpWakeLatenessSamplesMs.count, 0)
+        XCTAssertEqual(snapshot.scrollPresentationRecoveryProbeWakeLatenessSamplesMs.count, 0)
         XCTAssertEqual(snapshot.layerPresentGapSamplesMs.count, 1)
         XCTAssertEqual(snapshot.drawCount, 2)
         XCTAssertEqual(snapshot.scrollPresentationDrawCount, 0)
@@ -1348,9 +1354,15 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
         XCTAssertEqual(resetSnapshot.renderRequestToDraw.count, 0)
         XCTAssertEqual(resetSnapshot.drawGap.count, 0)
         XCTAssertEqual(resetSnapshot.scrollPresentationDrawGap.count, 0)
+        XCTAssertEqual(resetSnapshot.scrollPresentationImmediateQueueDelay.count, 0)
+        XCTAssertEqual(resetSnapshot.scrollPresentationPumpWakeLateness.count, 0)
+        XCTAssertEqual(resetSnapshot.scrollPresentationRecoveryProbeWakeLateness.count, 0)
         XCTAssertEqual(resetSnapshot.scrollToFirstDrawSamplesMs, [])
         XCTAssertEqual(resetSnapshot.scrollToLayerPresentSamplesMs, [])
         XCTAssertEqual(resetSnapshot.scrollPresentationDrawGapSamplesMs, [])
+        XCTAssertEqual(resetSnapshot.scrollPresentationImmediateQueueDelaySamplesMs, [])
+        XCTAssertEqual(resetSnapshot.scrollPresentationPumpWakeLatenessSamplesMs, [])
+        XCTAssertEqual(resetSnapshot.scrollPresentationRecoveryProbeWakeLatenessSamplesMs, [])
         XCTAssertEqual(resetSnapshot.layerPresentGapSamplesMs, [])
         XCTAssertEqual(resetSnapshot.drawCount, 0)
         XCTAssertEqual(resetSnapshot.scrollPresentationDrawCount, 0)
@@ -1375,6 +1387,35 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
         XCTAssertEqual(snapshot.scrollPresentationDrawCount, 2)
         XCTAssertEqual(snapshot.pendingScrollToDrawCount, 0)
         XCTAssertNotNil(snapshot.scrollPresentationDrawGap.maxMs)
+    }
+
+    @MainActor
+    func testScrollPresentationSchedulerTelemetryTracksQueueAndWakeLateness() {
+        let view = GhosttyTerminalViewDrawSpy()
+
+        view.noteScrollPresentationImmediateQueueDelayTelemetryForTesting(
+            scheduledAt: 10.0,
+            now: 10.003
+        )
+        view.noteScrollPresentationDrawPumpWakeLatenessTelemetryForTesting(
+            scheduledFor: 10.010,
+            now: 10.012
+        )
+        view.noteScrollPresentationRecoveryProbeWakeLatenessTelemetryForTesting(
+            scheduledFor: 10.020,
+            now: 10.021
+        )
+
+        let snapshot = view.scrollTelemetrySnapshotForTesting()
+        XCTAssertEqual(snapshot.scrollPresentationImmediateQueueDelay.count, 1)
+        XCTAssertEqual(snapshot.scrollPresentationPumpWakeLateness.count, 1)
+        XCTAssertEqual(snapshot.scrollPresentationRecoveryProbeWakeLateness.count, 1)
+        XCTAssertEqual(snapshot.scrollPresentationImmediateQueueDelaySamplesMs.count, 1)
+        XCTAssertEqual(snapshot.scrollPresentationPumpWakeLatenessSamplesMs.count, 1)
+        XCTAssertEqual(snapshot.scrollPresentationRecoveryProbeWakeLatenessSamplesMs.count, 1)
+        XCTAssertNotNil(snapshot.scrollPresentationImmediateQueueDelay.maxMs)
+        XCTAssertNotNil(snapshot.scrollPresentationPumpWakeLateness.maxMs)
+        XCTAssertNotNil(snapshot.scrollPresentationRecoveryProbeWakeLateness.maxMs)
     }
 
     @MainActor

@@ -243,6 +243,9 @@ last_visible_line=""
 previous_scroll_to_first_draw_sample_count=0
 previous_scroll_to_layer_present_sample_count=0
 previous_scroll_presentation_draw_gap_sample_count=0
+previous_scroll_presentation_immediate_queue_delay_sample_count=0
+previous_scroll_presentation_pump_wake_lateness_sample_count=0
+previous_scroll_presentation_recovery_probe_wake_lateness_sample_count=0
 previous_layer_present_gap_sample_count=0
 bench_start="$(date '+%Y-%m-%d %H:%M:%S%z')"
 
@@ -283,6 +286,9 @@ for (( i = 1; i <= iterations; i++ )); do
   current_scroll_to_first_draw_sample_count="$(jq '(.scroll.scrollToFirstDrawSamplesMs // []) | length' <<<"$burst_scroll_telemetry_json")"
   current_scroll_to_layer_present_sample_count="$(jq '(.scroll.scrollToLayerPresentSamplesMs // []) | length' <<<"$burst_scroll_telemetry_json")"
   current_scroll_presentation_draw_gap_sample_count="$(jq '(.scroll.scrollPresentationDrawGapSamplesMs // []) | length' <<<"$burst_scroll_telemetry_json")"
+  current_scroll_presentation_immediate_queue_delay_sample_count="$(jq '(.scroll.scrollPresentationImmediateQueueDelaySamplesMs // []) | length' <<<"$burst_scroll_telemetry_json")"
+  current_scroll_presentation_pump_wake_lateness_sample_count="$(jq '(.scroll.scrollPresentationPumpWakeLatenessSamplesMs // []) | length' <<<"$burst_scroll_telemetry_json")"
+  current_scroll_presentation_recovery_probe_wake_lateness_sample_count="$(jq '(.scroll.scrollPresentationRecoveryProbeWakeLatenessSamplesMs // []) | length' <<<"$burst_scroll_telemetry_json")"
   current_layer_present_gap_sample_count="$(jq '(.scroll.layerPresentGapSamplesMs // []) | length' <<<"$burst_scroll_telemetry_json")"
 
   jq -n \
@@ -295,6 +301,9 @@ for (( i = 1; i <= iterations; i++ )); do
     --argjson scroll_to_first_draw_start "$previous_scroll_to_first_draw_sample_count" \
     --argjson scroll_to_layer_present_start "$previous_scroll_to_layer_present_sample_count" \
     --argjson scroll_presentation_draw_gap_start "$previous_scroll_presentation_draw_gap_sample_count" \
+    --argjson scroll_presentation_immediate_queue_delay_start "$previous_scroll_presentation_immediate_queue_delay_sample_count" \
+    --argjson scroll_presentation_pump_wake_lateness_start "$previous_scroll_presentation_pump_wake_lateness_sample_count" \
+    --argjson scroll_presentation_recovery_probe_wake_lateness_start "$previous_scroll_presentation_recovery_probe_wake_lateness_sample_count" \
     --argjson layer_present_gap_start "$previous_layer_present_gap_sample_count" \
     '
       def percentile($samples; $p):
@@ -336,10 +345,16 @@ for (( i = 1; i <= iterations; i++ )); do
       ($telemetry.scroll.scrollToFirstDrawSamplesMs // []) as $scroll_to_first_draw_samples
       | ($telemetry.scroll.scrollToLayerPresentSamplesMs // []) as $scroll_to_layer_present_samples
       | ($telemetry.scroll.scrollPresentationDrawGapSamplesMs // []) as $scroll_presentation_draw_gap_samples
+      | ($telemetry.scroll.scrollPresentationImmediateQueueDelaySamplesMs // []) as $scroll_presentation_immediate_queue_delay_samples
+      | ($telemetry.scroll.scrollPresentationPumpWakeLatenessSamplesMs // []) as $scroll_presentation_pump_wake_lateness_samples
+      | ($telemetry.scroll.scrollPresentationRecoveryProbeWakeLatenessSamplesMs // []) as $scroll_presentation_recovery_probe_wake_lateness_samples
       | ($telemetry.scroll.layerPresentGapSamplesMs // []) as $layer_present_gap_samples
       | (suffix($scroll_to_first_draw_samples; $scroll_to_first_draw_start)) as $burst_scroll_to_first_draw_samples
       | (suffix($scroll_to_layer_present_samples; $scroll_to_layer_present_start)) as $burst_scroll_to_layer_present_samples
       | (suffix($scroll_presentation_draw_gap_samples; $scroll_presentation_draw_gap_start)) as $burst_scroll_presentation_draw_gap_samples
+      | (suffix($scroll_presentation_immediate_queue_delay_samples; $scroll_presentation_immediate_queue_delay_start)) as $burst_scroll_presentation_immediate_queue_delay_samples
+      | (suffix($scroll_presentation_pump_wake_lateness_samples; $scroll_presentation_pump_wake_lateness_start)) as $burst_scroll_presentation_pump_wake_lateness_samples
+      | (suffix($scroll_presentation_recovery_probe_wake_lateness_samples; $scroll_presentation_recovery_probe_wake_lateness_start)) as $burst_scroll_presentation_recovery_probe_wake_lateness_samples
       | (suffix($layer_present_gap_samples; $layer_present_gap_start)) as $burst_layer_present_gap_samples
       | {
           iteration: $iteration,
@@ -353,6 +368,12 @@ for (( i = 1; i <= iterations; i++ )); do
           scroll_to_layer_present_samples_ms: $burst_scroll_to_layer_present_samples,
           scroll_presentation_draw_gap_ms: summary($burst_scroll_presentation_draw_gap_samples),
           scroll_presentation_draw_gap_samples_ms: $burst_scroll_presentation_draw_gap_samples,
+          scroll_presentation_immediate_queue_delay_ms: summary($burst_scroll_presentation_immediate_queue_delay_samples),
+          scroll_presentation_immediate_queue_delay_samples_ms: $burst_scroll_presentation_immediate_queue_delay_samples,
+          scroll_presentation_pump_wake_lateness_ms: summary($burst_scroll_presentation_pump_wake_lateness_samples),
+          scroll_presentation_pump_wake_lateness_samples_ms: $burst_scroll_presentation_pump_wake_lateness_samples,
+          scroll_presentation_recovery_probe_wake_lateness_ms: summary($burst_scroll_presentation_recovery_probe_wake_lateness_samples),
+          scroll_presentation_recovery_probe_wake_lateness_samples_ms: $burst_scroll_presentation_recovery_probe_wake_lateness_samples,
           layer_present_gap_ms: summary($burst_layer_present_gap_samples),
           layer_present_gap_samples_ms: $burst_layer_present_gap_samples
         }
@@ -361,6 +382,9 @@ for (( i = 1; i <= iterations; i++ )); do
   previous_scroll_to_first_draw_sample_count="$current_scroll_to_first_draw_sample_count"
   previous_scroll_to_layer_present_sample_count="$current_scroll_to_layer_present_sample_count"
   previous_scroll_presentation_draw_gap_sample_count="$current_scroll_presentation_draw_gap_sample_count"
+  previous_scroll_presentation_immediate_queue_delay_sample_count="$current_scroll_presentation_immediate_queue_delay_sample_count"
+  previous_scroll_presentation_pump_wake_lateness_sample_count="$current_scroll_presentation_pump_wake_lateness_sample_count"
+  previous_scroll_presentation_recovery_probe_wake_lateness_sample_count="$current_scroll_presentation_recovery_probe_wake_lateness_sample_count"
   previous_layer_present_gap_sample_count="$current_layer_present_gap_sample_count"
 
   sleep "$(awk "BEGIN { printf \"%.3f\", (${burst_pause_ms} / 1000.0) }")"
@@ -498,6 +522,24 @@ jq -n \
       scroll_presentation_draw_gap_p95_ms: $scroll_telemetry.scroll.scrollPresentationDrawGap.p95Ms,
       scroll_presentation_draw_gap_max_ms: $scroll_telemetry.scroll.scrollPresentationDrawGap.maxMs,
       scroll_presentation_draw_count: $scroll_telemetry.scroll.scrollPresentationDrawCount,
+      scroll_presentation_immediate_queue_delay_ms: {
+        count: $scroll_telemetry.scroll.scrollPresentationImmediateQueueDelay.count,
+        p50_ms: $scroll_telemetry.scroll.scrollPresentationImmediateQueueDelay.p50Ms,
+        p95_ms: $scroll_telemetry.scroll.scrollPresentationImmediateQueueDelay.p95Ms,
+        max_ms: $scroll_telemetry.scroll.scrollPresentationImmediateQueueDelay.maxMs
+      },
+      scroll_presentation_pump_wake_lateness_ms: {
+        count: $scroll_telemetry.scroll.scrollPresentationPumpWakeLateness.count,
+        p50_ms: $scroll_telemetry.scroll.scrollPresentationPumpWakeLateness.p50Ms,
+        p95_ms: $scroll_telemetry.scroll.scrollPresentationPumpWakeLateness.p95Ms,
+        max_ms: $scroll_telemetry.scroll.scrollPresentationPumpWakeLateness.maxMs
+      },
+      scroll_presentation_recovery_probe_wake_lateness_ms: {
+        count: $scroll_telemetry.scroll.scrollPresentationRecoveryProbeWakeLateness.count,
+        p50_ms: $scroll_telemetry.scroll.scrollPresentationRecoveryProbeWakeLateness.p50Ms,
+        p95_ms: $scroll_telemetry.scroll.scrollPresentationRecoveryProbeWakeLateness.p95Ms,
+        max_ms: $scroll_telemetry.scroll.scrollPresentationRecoveryProbeWakeLateness.maxMs
+      },
       layer_present_gap_p50_ms: $scroll_telemetry.scroll.layerPresentGap.p50Ms,
       layer_present_gap_p95_ms: $scroll_telemetry.scroll.layerPresentGap.p95Ms,
       layer_present_gap_max_ms: $scroll_telemetry.scroll.layerPresentGap.maxMs,

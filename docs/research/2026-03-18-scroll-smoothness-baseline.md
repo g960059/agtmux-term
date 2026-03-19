@@ -540,6 +540,13 @@ Three follow-up ideas were then measured and rejected:
   only by changing the visible-line path itself, so they were false wins
 - backlog-aware recovery redraws regressed both the short and long release
   paths
+- backlog-aware immediate-throttle bypass also split the tradeoff the wrong way:
+  `0.85x`, `0.90x`, and `0.95x` frame-age thresholds each improved either the
+  short path or the long path, but not both at once. The strongest long-burst
+  variant (`0.85x`) brought release `8-burst`
+  `scroll_to_layer_present_ms` to `p50 2.155 / p95 22.527 / max 49.470`, but
+  its paired `4-burst` sample regressed to `p50 4.817 / p95 17.756 / max 24.291`,
+  so it was rejected as another non-net-win pacing tweak.
 
 Interpretation:
 
@@ -549,3 +556,124 @@ Interpretation:
 - the next real fix should preserve the visible-line path and burst shape while
   reducing those `up`-burst tails; changes that alter the benchmark path should
   be treated as invalid, not improvements
+
+### Scheduler-lateness telemetry follow-up
+
+The next accepted change kept pacing behavior unchanged and only added
+scheduler-specific slices to the full-app bench:
+
+- `scroll_presentation_immediate_queue_delay_ms`
+- `scroll_presentation_pump_wake_lateness_ms`
+- `scroll_presentation_recovery_probe_wake_lateness_ms`
+
+Validation:
+
+```bash
+swift test --build-path .build-codex --filter GhosttyCLIOSCBridgeTests
+zsh -n scripts/perf/gate_l_trackpad_history_scroll_bench.sh
+AGTMUX_PERF_APP_BIN="$PWD/build/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" \
+  scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4
+AGTMUX_PERF_APP_BIN="$PWD/build/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" \
+  scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 8
+```
+
+Result highlights from the accepted telemetry-only build:
+
+- release bundle, 4 bursts:
+  - `scroll_to_layer_present_ms p50 8.507 / p95 14.948 / max 19.525`
+  - `scroll_presentation_immediate_queue_delay_ms p50 0.179 / p95 0.296 / max 0.335`
+  - `scroll_presentation_pump_wake_lateness_ms p50 1.275 / p95 9.257 / max 27.961`
+  - `scroll_presentation_recovery_probe_wake_lateness_ms p50 3.387 / p95 15.544 / max 35.703`
+- release bundle, 8 bursts:
+  - `scroll_to_layer_present_ms p50 9.082 / p95 26.610 / max 55.803`
+  - `scroll_presentation_immediate_queue_delay_ms p50 0.193 / p95 0.285 / max 0.296`
+  - `scroll_presentation_pump_wake_lateness_ms p50 1.145 / p95 9.432 / max 206.878`
+  - `scroll_presentation_recovery_probe_wake_lateness_ms p50 3.295 / p95 15.025 / max 210.987`
+- per-burst slices showed the same pattern repeatedly:
+  `down` bursts stayed near `~2-12ms`, while the bad `up` bursts were the ones
+  that also carried `35-206ms` pump / recovery wake-lateness outliers
+
+Interpretation:
+
+- immediate queue delay is effectively white on this host; it does not explain
+  the subjective jank
+- the tail is now attributable to the scheduler wake path, not to the
+  `CFRunLoopPerformBlock` immediate queue
+- any next real fix should either reduce reliance on those wakeups during
+  active input, or make the wake path itself more reliable without changing the
+  benchmark's visible-line path
+
+Measured-and-rejected follow-ups on top of that telemetry:
+
+- overdue-pump immediate-draw bypass:
+  - release `8-burst`
+    `scroll_to_layer_present_ms p50 10.173 / p95 29.304 / max 55.283`
+  - verdict: rejected; it did not improve the long path and made the aggregate
+    tradeoff worse
+- one-shot `RunLoop.main` `.common` timers for draw pump and recovery:
+  - release `8-burst`
+    `scroll_to_layer_present_ms p50 9.438 / p95 27.809 / max 160.401`
+  - verdict: rejected; timer replacement made variance materially worse
+- limiting delayed-present recovery probes to immediate draws only:
+  - release `8-burst`
+    `scroll_to_layer_present_ms p50 3.660 / p95 27.884 / max 36.810`
+  - paired release `4-burst`
+    `scroll_to_layer_present_ms p50 4.203 / p95 16.598 / max 38.696`
+  - verdict: rejected; it improved some medians and long-burst max, but short
+    bursts stayed too noisy and reruns were not stable enough
+- bypassing the throttle after two pending scroll inputs:
+  - release `8-burst`
+    `scroll_to_layer_present_ms p50 1.937 / p95 28.526 / max 31.426`
+  - paired release `4-burst`
+    `scroll_to_layer_present_ms p50 2.363 / p95 28.538 / max 34.824`
+  - verdict: rejected; it traded a better long-burst max for a clearly worse
+    short-path `p95`
+
+### Wake-path replacement dead ends
+
+Three later experiments tried to replace or tighten the wake path itself rather
+than changing throttle constants. All three were rejected.
+
+Validation:
+
+```bash
+swift test --build-path .build-codex --filter GhosttyCLIOSCBridgeTests
+AGTMUX_PERF_APP_BIN="$PWD/build/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" \
+  scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4
+AGTMUX_PERF_APP_BIN="$PWD/build/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" \
+  scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 8
+```
+
+Measured-and-rejected variants:
+
+- view-scoped `NSView.displayLink(...)` callbacks for the draw pump / recovery:
+  - release `4-burst`
+    `scroll_to_layer_present_ms p50 1.791 / p95 46.401 / max 48.806`
+  - release `8-burst`
+    `scroll_to_layer_present_ms p50 1.775 / p95 28.697 / max 57.809`
+  - verdict: rejected; it materially increased short-path `p95`, and the
+    immediate-queue slice itself also regressed
+- background-queue timer wakeups that hopped back to the main run loop through
+  `CFRunLoopPerformBlock(... commonModes ...)`:
+  - release `4-burst`
+    `scroll_to_layer_present_ms p50 7.957 / p95 17.734 / max 22.726`
+  - release `8-burst`
+    `scroll_to_layer_present_ms p50 8.224 / p95 44.481 / max 144.741`
+  - verdict: rejected; wake-lateness metrics moved, but the user-visible seam
+    regressed badly on longer burst trains
+- draw-relative timer rescheduling after every successful scroll draw:
+  - release `4-burst`
+    `scroll_to_layer_present_ms p50 7.340 / p95 23.081 / max 23.868`
+  - release `8-burst`
+    `scroll_to_layer_present_ms p50 8.124 / p95 41.497 / max 90.814`
+  - verdict: rejected; timer freshness alone is not the limiter, because the
+    visible presentation path still regressed even when wake-lateness slices
+    became much cleaner
+
+Interpretation:
+
+- reducing wake-lateness telemetry by itself is not sufficient; the best-known
+  baseline still beats these replacements on the visible seam
+- the current branch should stay on the existing main-queue draw pump /
+  delayed-present recovery implementation until the next step is backed by
+  deeper main-thread / present-path evidence
