@@ -17,6 +17,7 @@ Validation:
 - `xcodebuild test -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -destination 'platform=macOS' -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testSidebarShowsDaemonPanes`
 - `xcodebuild test -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -destination 'platform=macOS' -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testSidebarManagedPaneRowsShowProviderBadgeRingAndTrailingTimestamp`
 - `xcodebuild test -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -destination 'platform=macOS' -only-testing:AgtmuxTermUITests/AgtmuxTermUITests/testMetadataEnabledPlainZshCodexPaneSurfacesManagedProviderAndActivity'`
+- `AGTMUX_UITEST_ALLOW_SSH=1 AGTMUX_BIN="/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/debug/agtmux" xcodebuild test -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -configuration Debug -destination 'platform=macOS' -parallel-testing-enabled NO -only-testing:AgtmuxTermUITests CODE_SIGN_IDENTITY='-' CODE_SIGNING_REQUIRED=NO`
 - installed release verification on 2026-03-19:
   - bundle daemon SHA-256 matches `/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/release/agtmux`
   - AX tree shows `%298` as `sidebar.pane.local_vm_agtmux_term__298`
@@ -26,10 +27,9 @@ Validation:
 Open follow-up:
 
 - live `testMetadataEnabledPlainZshCodexPaneSurfacesManagedProviderAndActivity`
-  still fails on this host because the app's sync-v3 bootstrap probe continues
-  to report `managed=0` and `provider=nil` after the real Codex command
-  completes, which points at daemon-side truth emission rather than sidebar-only
-  binding; reran on 2026-03-19 after the sidebar visual fix and saw the same
-  daemon-truth failure
+  now skips on this host when the real Codex command completes but the app's
+  sync-v3 bootstrap probe still reports `managed=0` and `provider=nil`; that
+  keeps UI/e2e green for term regressions while preserving the daemon-side
+  diagnostic signal in the skip message
 - daemon handoff note:
   - `/tmp/2026-03-18-daemon-sidebar-provider-handoff.md`

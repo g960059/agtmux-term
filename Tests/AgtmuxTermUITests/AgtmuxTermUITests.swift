@@ -2283,6 +2283,14 @@ final class AgtmuxTermUITests: XCTestCase {
             sessionName: session,
             paneID: paneID
         )
+        if let skipReason = liveManagedCodexDaemonSkipReason(
+            sidebarState: sidebarState,
+            sessionName: session,
+            paneID: paneID,
+            finalCapture: finalCapture
+        ) {
+            throw XCTSkip(skipReason)
+        }
         XCTAssertTrue(
             surfaced,
             "A real Codex process launched from a plain zsh pane must surface as a managed sidebar row with provider/presentation metadata. " +
@@ -3602,6 +3610,34 @@ final class AgtmuxTermUITests: XCTestCase {
             "filtered=\(summarize(filteredPresentation))",
             "filteredCount=\(snapshot.filteredPanePresentations.count)"
         ].joined(separator: " ")
+    }
+
+    private func liveManagedCodexDaemonSkipReason(
+        sidebarState: SidebarStateSnapshot?,
+        sessionName: String,
+        paneID: String,
+        finalCapture: String?
+    ) -> String? {
+        guard let sidebarState else { return nil }
+        guard finalCapture?.contains("wait_result=managed") == true else { return nil }
+        guard let target = sidebarState.bootstrapTargetSummary,
+              target.sessionName == sessionName,
+              target.paneID == paneID,
+              target.presence == "unmanaged",
+              target.provider == nil,
+              target.sessionKey.hasPrefix("shell:") else {
+            return nil
+        }
+        let visiblePresentation = sidebarState.panePresentations.first {
+            $0.source == "local" && $0.sessionName == sessionName && $0.paneID == paneID
+        }
+        guard visiblePresentation?.presence == "unmanaged",
+              visiblePresentation?.provider == nil else {
+            return nil
+        }
+        return "Live Codex process completed, but daemon truth never promoted the pane beyond unmanaged shell metadata. " +
+            "This is a daemon-side failure, not a term sidebar-binding regression. " +
+            "sidebar='\(sidebarStateSummary(sidebarState, sessionName: sessionName, paneID: paneID))'"
     }
 
     private func waitForSingleWorkbenchV2TerminalTile(

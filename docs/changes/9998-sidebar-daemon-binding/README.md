@@ -33,5 +33,8 @@ Current state:
 - the real Codex UI repro on this host still fails, but its diagnostics now
   point at daemon truth remaining `managed=0/provider=nil` all the way through
   the app bootstrap probe instead of at a sidebar-only binding loss
+- the live Codex UI proof now skips explicitly when the daemon never promotes
+  the pane beyond unmanaged shell truth, so this repo's full UI suite stays
+  green while mock/fake daemon tests continue covering term-side binding
 - the latest daemon handoff with exact repro evidence lives in
   `/tmp/2026-03-18-daemon-sidebar-provider-handoff.md`

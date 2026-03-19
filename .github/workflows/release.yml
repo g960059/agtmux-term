@@ -11,7 +11,7 @@ permissions:
 env:
   # Version of the bundled agtmux daemon binary.
   # Update this var when bumping the bundled daemon version.
-  AGTMUX_DAEMON_TAG: v0.1.11
+  AGTMUX_DAEMON_TAG: v0.1.20
 
 jobs:
   # ─────────────────────────────────────────────────────────────────
