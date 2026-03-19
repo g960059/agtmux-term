@@ -16,6 +16,14 @@ The first wave keeps two tracks in parallel:
      on every `plan.command` change
    - letting `GhosttyIslandViewController.update(...)` handle command changes
      without controller teardown/recreation
+4. Treat same-window pane retargets as another presentation seam on the
+   existing surface instead of as an attach problem:
+   - keep the attach plan frozen and the Ghostty island stable
+   - when only the visible pane target changes, schedule one coalesced
+     `ghostty_surface_draw()` on the existing surface plus a short recovery
+     probe if the layer still has not advanced
+   - stop animating the sidebar's auto-scroll on pane-selection changes so
+     pane retargets do not add extra main-thread/compositing churn
 
 The new evidence from 2026-03-18 changed one design assumption: trackpad
 history scroll currently reaches `GhosttyTerminalView.scrollWheel`, but the
@@ -32,8 +40,10 @@ surface instead of failing when render callbacks stay at zero.
   - `GhosttyTerminalView` scroll telemetry capture and test seams
   - UITest bridge commands for resetting/dumping scroll telemetry
   - `AppViewModel` same-value store sync suppression
+  - `SidebarView` pane-selection auto-scroll pacing
   - `WorkbenchAreaV2` stable Ghostty island identity
-  - `WorkbenchGhosttyIsland` lower-overhead update path
+  - `WorkbenchGhosttyIsland` lower-overhead update path plus pane-retarget
+    presentation refresh scheduling
   - perf harness support for pixel/trackpad bursts and transcript-history bench
 - unchanged:
   - native Ghostty behavior

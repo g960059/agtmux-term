@@ -79,8 +79,12 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     private var scrollPresentationDrawPumpGeneration: UInt64 = 0
     private var scrollPresentationRecoveryProbeScheduled = false
     private var scrollPresentationRecoveryProbeGeneration: UInt64 = 0
+    private var paneRetargetPresentationDrawPending = false
+    private var paneRetargetPresentationRecoveryProbeScheduled = false
+    private var paneRetargetPresentationRecoveryProbeGeneration: UInt64 = 0
     private var lastScrollInputUptime: TimeInterval?
     private var lastScrollPresentationDrawUptime: TimeInterval?
+    private var lastPaneRetargetPresentationDrawUptime: TimeInterval?
     private var pendingScrollToRenderStates: [OSSignpostIntervalState] = []
     private var pendingScrollToDrawStates: [OSSignpostIntervalState] = []
     private var pendingScrollToLayerPresentStates: [OSSignpostIntervalState] = []
@@ -944,6 +948,10 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         lastHostDrawUptime = nil
         lastScrollPresentationDrawTelemetryUptime = nil
         lastLayerPresentUptime = nil
+        paneRetargetPresentationDrawPending = false
+        paneRetargetPresentationRecoveryProbeScheduled = false
+        lastPaneRetargetPresentationDrawUptime = nil
+        paneRetargetPresentationRecoveryProbeGeneration &+= 1
     }
 
     @MainActor
@@ -1058,9 +1066,38 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
 
     @MainActor
     func performScrollPresentationDraw() {
-        guard let surface else { return }
         noteScrollPresentationDrawTelemetry()
+        performImmediatePresentationDraw()
+    }
+
+    @MainActor
+    private func performImmediatePresentationDraw() {
+        guard let surface else { return }
         ghostty_surface_draw(surface)
+    }
+
+    /// Same-window pane retargets should keep the existing Ghostty surface alive.
+    /// Schedule a coalesced immediate draw on the current surface so the view does
+    /// not momentarily show a blank/black frame while tmux focus and sidebar state
+    /// converge on the new pane.
+    @MainActor
+    func schedulePaneRetargetPresentationRefreshIfNeeded() {
+        guard surface != nil else { return }
+        guard paneRetargetPresentationDrawPending == false else { return }
+
+        paneRetargetPresentationDrawPending = true
+        let mainRunLoop = CFRunLoopGetMain()
+        CFRunLoopPerformBlock(mainRunLoop, CFRunLoopMode.commonModes.rawValue) { [weak self] in
+            guard let self else { return }
+            MainActor.assumeIsolated {
+                self.paneRetargetPresentationDrawPending = false
+                let drawUptime = ProcessInfo.processInfo.systemUptime
+                self.lastPaneRetargetPresentationDrawUptime = drawUptime
+                self.performImmediatePresentationDraw()
+                self.schedulePaneRetargetPresentationRecoveryProbeIfNeeded(forDrawAt: drawUptime)
+            }
+        }
+        CFRunLoopWakeUp(mainRunLoop)
     }
 
     @MainActor
@@ -1113,6 +1150,28 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
                     drawUptime: drawUptime,
                     now: callbackNow
                 )
+            }
+        }
+    }
+
+    @MainActor
+    private func schedulePaneRetargetPresentationRecoveryProbeIfNeeded(forDrawAt drawUptime: TimeInterval) {
+        guard paneRetargetPresentationRecoveryProbeScheduled == false else { return }
+
+        paneRetargetPresentationRecoveryProbeScheduled = true
+        let generation = paneRetargetPresentationRecoveryProbeGeneration
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + Self.scrollPresentationDrawRecoveryProbeDelaySeconds
+        ) { [weak self] in
+            guard let self else { return }
+            MainActor.assumeIsolated {
+                guard generation == self.paneRetargetPresentationRecoveryProbeGeneration else { return }
+                self.paneRetargetPresentationRecoveryProbeScheduled = false
+                guard self.lastPaneRetargetPresentationDrawUptime == drawUptime else { return }
+                guard self.shouldRecoverDelayedScrollPresentation(afterDrawAt: drawUptime) else { return }
+                let now = ProcessInfo.processInfo.systemUptime
+                self.lastPaneRetargetPresentationDrawUptime = now
+                self.performImmediatePresentationDraw()
             }
         }
     }
@@ -1189,10 +1248,14 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         scrollPresentationDrawPending = false
         scrollPresentationDrawPumpScheduled = false
         scrollPresentationRecoveryProbeScheduled = false
+        paneRetargetPresentationDrawPending = false
+        paneRetargetPresentationRecoveryProbeScheduled = false
         lastScrollInputUptime = nil
         lastScrollPresentationDrawUptime = nil
+        lastPaneRetargetPresentationDrawUptime = nil
         scrollPresentationDrawPumpGeneration &+= 1
         scrollPresentationRecoveryProbeGeneration &+= 1
+        paneRetargetPresentationRecoveryProbeGeneration &+= 1
     }
 
     private func updateWindowObservers() {

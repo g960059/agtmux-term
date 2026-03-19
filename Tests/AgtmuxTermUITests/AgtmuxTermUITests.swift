@@ -2035,6 +2035,7 @@ final class AgtmuxTermUITests: XCTestCase {
             paneID: firstPaneID
         )
 
+        try resetAppScrollTelemetry(control: control, tileID: firstSnapshot.tileID)
         XCTAssertTrue(
             clickSidebarPaneRow(source: "local", sessionName: session, paneID: secondPaneID),
             "Split pane must be selectable under metadata-enabled launch"
@@ -2062,7 +2063,22 @@ final class AgtmuxTermUITests: XCTestCase {
             firstSnapshot.renderedSurfaceGeneration,
             "Metadata-enabled same-session retarget must preserve the rendered Ghostty surface"
         )
+        let sidebarRetargetTelemetry = try dumpAppScrollTelemetry(
+            control: control,
+            tileID: firstSnapshot.tileID
+        )
+        XCTAssertEqual(
+            sidebarRetargetTelemetry.island.applyCommandCount,
+            0,
+            "Same-window sidebar retarget must not reattach the Ghostty surface"
+        )
+        XCTAssertGreaterThanOrEqual(
+            sidebarRetargetTelemetry.island.paneRetargetRefreshCount,
+            1,
+            "Same-window sidebar retarget must schedule a presentation refresh on the existing surface"
+        )
 
+        try resetAppScrollTelemetry(control: control, tileID: secondSnapshot.tileID)
         _ = try sendAppTmuxCommand(
             ["switch-client", "-c", secondSnapshot.renderedClientTTY, "-t", firstPaneID],
             refreshInventory: false,
@@ -2095,6 +2111,20 @@ final class AgtmuxTermUITests: XCTestCase {
             reverseSyncSnapshot.renderedSurfaceGeneration,
             secondSnapshot.renderedSurfaceGeneration,
             "Rendered-client reverse sync must keep the same Ghostty surface alive"
+        )
+        let reverseSyncTelemetry = try dumpAppScrollTelemetry(
+            control: control,
+            tileID: secondSnapshot.tileID
+        )
+        XCTAssertEqual(
+            reverseSyncTelemetry.island.applyCommandCount,
+            0,
+            "Same-window rendered-client reverse sync must not reattach the Ghostty surface"
+        )
+        XCTAssertGreaterThanOrEqual(
+            reverseSyncTelemetry.island.paneRetargetRefreshCount,
+            1,
+            "Same-window rendered-client reverse sync must schedule a presentation refresh on the existing surface"
         )
     }
 
@@ -3112,6 +3142,15 @@ final class AgtmuxTermUITests: XCTestCase {
         let controlModeState: String
     }
 
+    private struct GhosttyIslandTelemetrySnapshot: Decodable {
+        let applyCommandCount: Int
+        let paneRetargetRefreshCount: Int
+    }
+
+    private struct ScrollBenchTelemetrySnapshot: Decodable {
+        let island: GhosttyIslandTelemetrySnapshot
+    }
+
     private func mixedEraBootstrapPayloadWithLegacySessionID(
         sessionName: String,
         paneID: String,
@@ -3390,6 +3429,31 @@ final class AgtmuxTermUITests: XCTestCase {
             timeout: 2.0
         )
         return try JSONDecoder().decode(SidebarStateSnapshot.self, from: Data(output.utf8))
+    }
+
+    private func resetAppScrollTelemetry(
+        control: AppTmuxControlPaths,
+        tileID: String
+    ) throws {
+        _ = try sendAppTmuxCommand(
+            ["__agtmux_reset_scroll_telemetry__", tileID],
+            refreshInventory: false,
+            control: control,
+            timeout: 2.0
+        )
+    }
+
+    private func dumpAppScrollTelemetry(
+        control: AppTmuxControlPaths,
+        tileID: String
+    ) throws -> ScrollBenchTelemetrySnapshot {
+        let output = try sendAppTmuxCommand(
+            ["__agtmux_dump_scroll_telemetry__", tileID],
+            refreshInventory: false,
+            control: control,
+            timeout: 2.0
+        )
+        return try JSONDecoder().decode(ScrollBenchTelemetrySnapshot.self, from: Data(output.utf8))
     }
 
     private func enableAppManagedMetadata(control: AppTmuxControlPaths) throws {

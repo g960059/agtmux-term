@@ -343,6 +343,31 @@ private struct WorkbenchTerminalTileViewV2: View {
         desiredPaneRef ?? observedPaneRef
     }
 
+    private var visiblePaneIdentity: String? {
+        guard let activePaneRef else { return nil }
+        let paneInstanceIdentity: String
+        if let paneInstanceID = activePaneRef.paneInstanceID {
+            let generation = paneInstanceID.generation.map(String.init) ?? ""
+            let birthTimestamp = paneInstanceID.birthTs.map {
+                String($0.timeIntervalSince1970)
+            } ?? ""
+            paneInstanceIdentity = [
+                paneInstanceID.paneId,
+                generation,
+                birthTimestamp,
+            ].joined(separator: "@")
+        } else {
+            paneInstanceIdentity = ""
+        }
+
+        return [
+            activePaneRef.sessionName,
+            activePaneRef.windowID,
+            activePaneRef.paneID,
+            paneInstanceIdentity,
+        ].joined(separator: "|")
+    }
+
     private var focusRestoreNonce: UInt64 {
         activePaneRuntimeContext?.focusRequestNonce ?? 0
     }
@@ -465,6 +490,7 @@ private struct WorkbenchTerminalTileViewV2: View {
                             surfaceKey: plan.surfaceKey,
                             sessionRef: sessionRef
                         ),
+                        visiblePaneIdentity: visiblePaneIdentity,
                         isFocused: isFocused,
                         focusRestoreNonce: focusRestoreNonce
                     )

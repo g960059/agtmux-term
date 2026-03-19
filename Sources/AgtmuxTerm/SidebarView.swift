@@ -1700,7 +1700,7 @@ struct SidebarView: View {
                         scrollToSelectedPane(with: proxy, animated: false)
                     }
                     .onChange(of: selectedPaneID) { _, _ in
-                        scrollToSelectedPane(with: proxy, animated: true)
+                        scrollToSelectedPane(with: proxy, animated: false)
                     }
                 }
             }

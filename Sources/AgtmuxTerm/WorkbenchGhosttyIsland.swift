@@ -13,6 +13,7 @@ final class GhosttyIslandUpdateTelemetry {
         let focusChangeCount: Int
         let focusRestoreChangeCount: Int
         let applyCommandCount: Int
+        let paneRetargetRefreshCount: Int
         let retryCount: Int
     }
 
@@ -23,6 +24,7 @@ final class GhosttyIslandUpdateTelemetry {
         var focusChangeCount = 0
         var focusRestoreChangeCount = 0
         var applyCommandCount = 0
+        var paneRetargetRefreshCount = 0
         var retryCount = 0
     }
 
@@ -52,6 +54,12 @@ final class GhosttyIslandUpdateTelemetry {
         statesByTileID[tileID] = state
     }
 
+    func recordPaneRetargetRefresh(tileID: UUID) {
+        var state = statesByTileID[tileID] ?? State()
+        state.paneRetargetRefreshCount += 1
+        statesByTileID[tileID] = state
+    }
+
     func recordRetry(tileID: UUID) {
         var state = statesByTileID[tileID] ?? State()
         state.retryCount += 1
@@ -71,6 +79,7 @@ final class GhosttyIslandUpdateTelemetry {
             focusChangeCount: state.focusChangeCount,
             focusRestoreChangeCount: state.focusRestoreChangeCount,
             applyCommandCount: state.applyCommandCount,
+            paneRetargetRefreshCount: state.paneRetargetRefreshCount,
             retryCount: state.retryCount
         )
     }
@@ -86,6 +95,7 @@ struct GhosttyIslandRepresentable: NSViewControllerRepresentable, Equatable {
     let poolKey: String
     let attachCommand: String?
     let surfaceContext: GhosttyTerminalSurfaceContext?
+    let visiblePaneIdentity: String?
     let isFocused: Bool
     let focusRestoreNonce: UInt64
 
@@ -94,7 +104,8 @@ struct GhosttyIslandRepresentable: NSViewControllerRepresentable, Equatable {
             surfaceID: surfaceID,
             poolKey: poolKey,
             attachCommand: attachCommand,
-            surfaceContext: surfaceContext
+            surfaceContext: surfaceContext,
+            visiblePaneIdentity: visiblePaneIdentity
         )
     }
 
@@ -102,6 +113,7 @@ struct GhosttyIslandRepresentable: NSViewControllerRepresentable, Equatable {
         controller.update(
             attachCommand: attachCommand,
             surfaceContext: surfaceContext,
+            visiblePaneIdentity: visiblePaneIdentity,
             isFocused: isFocused,
             focusRestoreNonce: focusRestoreNonce
         )
@@ -112,11 +124,22 @@ struct GhosttyIslandRepresentable: NSViewControllerRepresentable, Equatable {
 
 @MainActor
 final class GhosttyIslandViewController: NSViewController {
+    nonisolated static func shouldSchedulePaneRetargetPresentationRefresh(
+        previousVisiblePaneIdentity: String?,
+        nextVisiblePaneIdentity: String?,
+        commandChanged: Bool
+    ) -> Bool {
+        guard commandChanged == false else { return false }
+        guard previousVisiblePaneIdentity != nextVisiblePaneIdentity else { return false }
+        return nextVisiblePaneIdentity != nil
+    }
+
     // MARK: Init params
     private let surfaceID: UUID
     private let poolKey: String
     private var pendingAttachCommand: String?
     private var pendingSurfaceContext: GhosttyTerminalSurfaceContext?
+    private var visiblePaneIdentity: String?
 
     // MARK: Coordinator state (mirrors GhosttySurfaceHostView.Coordinator)
     private var currentCommand: String?
@@ -133,12 +156,14 @@ final class GhosttyIslandViewController: NSViewController {
         surfaceID: UUID,
         poolKey: String,
         attachCommand: String?,
-        surfaceContext: GhosttyTerminalSurfaceContext?
+        surfaceContext: GhosttyTerminalSurfaceContext?,
+        visiblePaneIdentity: String?
     ) {
         self.surfaceID = surfaceID
         self.poolKey = poolKey
         self.pendingAttachCommand = attachCommand
         self.pendingSurfaceContext = surfaceContext
+        self.visiblePaneIdentity = visiblePaneIdentity
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -191,10 +216,12 @@ final class GhosttyIslandViewController: NSViewController {
     func update(
         attachCommand cmd: String?,
         surfaceContext: GhosttyTerminalSurfaceContext?,
+        visiblePaneIdentity: String?,
         isFocused: Bool,
         focusRestoreNonce: UInt64
     ) {
         let commandChanged = currentCommand != cmd
+        let previousVisiblePaneIdentity = self.visiblePaneIdentity
 
         if commandChanged {
             lastAppliedFocus = nil
@@ -204,6 +231,16 @@ final class GhosttyIslandViewController: NSViewController {
             } else {
                 currentCommand = nil
             }
+        }
+
+        self.visiblePaneIdentity = visiblePaneIdentity
+        if Self.shouldSchedulePaneRetargetPresentationRefresh(
+            previousVisiblePaneIdentity: previousVisiblePaneIdentity,
+            nextVisiblePaneIdentity: visiblePaneIdentity,
+            commandChanged: commandChanged
+        ) {
+            terminalView?.schedulePaneRetargetPresentationRefreshIfNeeded()
+            GhosttyIslandUpdateTelemetry.shared.recordPaneRetargetRefresh(tileID: surfaceID)
         }
 
         // Update surface context registration if it changed

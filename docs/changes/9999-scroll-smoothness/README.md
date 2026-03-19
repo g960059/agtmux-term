@@ -29,6 +29,11 @@ Current state:
   `scroll_presentation_pump_wake_lateness`, and
   `scroll_presentation_recovery_probe_wake_lateness` in both the aggregate and
   per-burst bench output
+- the latest accepted UI-path follow-up treats same-window pane retargets as a
+  presentation seam on the existing Ghostty surface: the island now schedules a
+  coalesced immediate draw plus a short recovery probe when the visible pane
+  target changes without an attach-command change, and the sidebar no longer
+  animates its auto-scroll on pane-selection changes
 - the current best-known installed-app result on this host for the default
   4-burst run is `scroll_to_layer_present_ms p50 1.936 / p95 12.991 / max 19.428`
 - the current longer-run installed stress sample is still noisier at
@@ -93,3 +98,6 @@ Current state:
 - after granting automation permission, the SSH-launched macOS UI E2E rerun
   reaches test execution again and returns to the expected single remaining
   failure: `testMetadataEnabledPlainZshCodexPaneSurfacesManagedProviderAndActivity`
+- the new metadata-enabled same-window pane-switch UI regression compiles and
+  reaches the runner, but on this host the xcodebuild rerun still failed before
+  test execution with `Timed out while enabling automation mode`

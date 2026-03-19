@@ -14,6 +14,8 @@ host-side scheduling stalls.
   scheduling or bypass it entirely
 - reduce host-side render callback latency for surfaces that do flow through
   `GHOSTTY_ACTION_RENDER`
+- avoid visible black flashes when the active pane changes within the same tmux
+  window and the existing Ghostty surface should remain attached
 - document the current evidence, including the tests and perf runs from
   2026-03-18
 
@@ -33,5 +35,7 @@ host-side scheduling stalls.
       and scroll telemetry accumulation/reset
 - [x] runbook and dated research capture the commands and results from the
       2026-03-18 investigation
+- [x] same-window pane retarget logic preserves the existing surface path and
+      has regression coverage for the pane-retarget refresh decision
 - [ ] embedded trackpad/history smoothness reaches native-like behavior in the
       real UI, not just proxy parity

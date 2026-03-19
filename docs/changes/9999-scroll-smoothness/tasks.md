@@ -10,6 +10,7 @@
 - `swift build -c debug --build-path .build-codex`
 - `swift test --build-path .build-codex --filter GhosttyCLIOSCBridgeTests`
 - `swift test --build-path .build-codex --filter 'GhosttyCLIOSCBridgeTests|WorkbenchV2TerminalRestoreTests|WorkbenchV2TerminalAttachTests'`
+- `swift test --build-path .build-codex --filter 'WorkbenchGhosttyIslandTests|WorkbenchV2TerminalAttachTests|GhosttyTerminalSurfaceRegistryTests|WorkbenchFocusedNavigationActorTests'`
 - `./scripts/dev/validate-macos-ci.sh`
 - `swift test --build-path .build-codex`
 - `swift test --build-path .build-codex --skip AppViewModelLiveManagedAgentTests`
@@ -169,3 +170,16 @@
   this host because `screencapture` failed with
   `could not create image from display`, which indicates the current terminal
   environment does not have usable Screen Recording capability.
+- Same-window pane-switch flicker mitigation is now in the worktree:
+  - the Ghostty island schedules a pane-retarget presentation refresh on the
+    existing surface when the visible pane target changes without an attach
+    command change
+  - the sidebar no longer animates its auto-scroll on pane-selection changes
+- `swift test --build-path .build-codex --filter 'WorkbenchGhosttyIslandTests|WorkbenchV2TerminalAttachTests|GhosttyTerminalSurfaceRegistryTests|WorkbenchFocusedNavigationActorTests'`
+  passed with 39 tests and 0 failures.
+- A targeted metadata-enabled UI rerun for
+  `testMetadataEnabledPaneSelectionAndReverseSyncWithRealTmux` built the app and
+  test bundle successfully but failed before test execution with
+  `Timed out while enabling automation mode`.
+- The latest UI rerun bundle is:
+  - `/Users/virtualmachine/Library/Developer/Xcode/DerivedData/AgtmuxTerm-fceaqdlhjyreqtdcfsbnupqgkkjc/Logs/Test/Test-AgtmuxTerm-2026.03.19_06-12-13--0700.xcresult`
