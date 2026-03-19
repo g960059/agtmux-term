@@ -338,13 +338,23 @@ struct LocalMetadataOverlayStore {
     }
 
     private func allowsVisibleRowReplacement(existingPane: AgtmuxPane, incomingPane: AgtmuxPane) -> Bool {
-        existingPane.source == "local"
-            && incomingPane.source == "local"
-            && existingPane.paneId == incomingPane.paneId
-            && existingPane.sessionName == incomingPane.sessionName
-            && existingPane.windowId == incomingPane.windowId
-            && incomingPane.presence == .unmanaged
-            && incomingPane.provider == nil
+        guard existingPane.source == "local", incomingPane.source == "local" else {
+            return false
+        }
+        guard existingPane.paneId == incomingPane.paneId,
+              existingPane.sessionName == incomingPane.sessionName,
+              existingPane.windowId == incomingPane.windowId else {
+            return false
+        }
+
+        // Daemon session_key is agent-owned metadata identity, not the visible tmux
+        // row identity. A plain shell pane can legitimately promote to a Codex/Claude
+        // row in place without a remove, as long as the exact pane instance is the same.
+        guard let existingPaneInstanceID = existingPane.paneInstanceID,
+              let incomingPaneInstanceID = incomingPane.paneInstanceID else {
+            return false
+        }
+        return existingPaneInstanceID == incomingPaneInstanceID
     }
 
     private func matchesV3ExactIdentity(

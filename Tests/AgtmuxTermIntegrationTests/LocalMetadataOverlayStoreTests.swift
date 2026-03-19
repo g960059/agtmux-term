@@ -388,7 +388,7 @@ final class LocalMetadataOverlayStoreTests: XCTestCase {
         XCTAssertEqual(nextCache.presentationByPaneKey[key], PanePresentationState(snapshot: demotedSnapshot))
     }
 
-    func testApplyV3ChangesDropsManagedPromotionUpsertAtSameLocationWhenSessionKeyChangesWithoutRemove() {
+    func testApplyV3ChangesAllowsManagedPromotionUpsertAtSameLocationWhenPaneInstanceMatches() {
         let cachedPane = makePane(
             paneID: "%1",
             sessionName: "visible-session",
@@ -453,14 +453,12 @@ final class LocalMetadataOverlayStoreTests: XCTestCase {
         )
 
         let key = "local:visible-session:@1:%1"
-        XCTAssertEqual(nextCache.metadataByPaneKey[key]?.presence, .unmanaged)
-        XCTAssertNil(nextCache.metadataByPaneKey[key]?.provider)
-        XCTAssertEqual(nextCache.metadataByPaneKey[key]?.metadataSessionKey, "shell:%1")
-        XCTAssertEqual(nextCache.presentationByPaneKey[key], cachedPresentation)
-        XCTAssertEqual(
-            logMessages,
-            ["sync-v3 pane upsert dropped for conflicting exact pane codex:%1/%1"]
-        )
+        XCTAssertEqual(nextCache.metadataByPaneKey[key]?.presence, .managed)
+        XCTAssertEqual(nextCache.metadataByPaneKey[key]?.provider, .codex)
+        XCTAssertEqual(nextCache.metadataByPaneKey[key]?.activityState, .running)
+        XCTAssertEqual(nextCache.metadataByPaneKey[key]?.metadataSessionKey, "codex:%1")
+        XCTAssertEqual(nextCache.presentationByPaneKey[key], PanePresentationState(snapshot: promotedSnapshot))
+        XCTAssertTrue(logMessages.isEmpty)
     }
 
     private func makeStore(

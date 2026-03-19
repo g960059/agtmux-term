@@ -4311,6 +4311,106 @@ final class AppViewModelA0Tests: XCTestCase {
     }
 
     @MainActor
+    func testBootstrapV3ChangesV3ManagedPromotionAtSameVisibleLocationSurfacesSidebarDisplayState() async {
+        let paneInstanceID = AgtmuxSyncV2PaneInstanceID(
+            paneId: "%12",
+            generation: 7,
+            birthTs: Date(timeIntervalSince1970: 1_778_822_260)
+        )
+        let inventoryPane = makeInventoryPane(
+            paneId: "%12",
+            sessionName: "workbench",
+            windowId: "@5",
+            activityState: .unknown,
+            currentCmd: "zsh"
+        )
+        let bootstrapPane = AgtmuxPane(
+            source: "local",
+            paneId: "%12",
+            sessionName: "workbench",
+            windowId: "@5",
+            activityState: .idle,
+            presence: .unmanaged,
+            evidenceMode: .none,
+            currentCmd: "zsh",
+            updatedAt: Date(timeIntervalSince1970: 1_778_822_260),
+            metadataSessionKey: "shell:%12",
+            paneInstanceID: paneInstanceID
+        )
+        let promotedPane = AgtmuxPane(
+            source: "local",
+            paneId: "%12",
+            sessionName: "workbench",
+            windowId: "@5",
+            activityState: .running,
+            presence: .managed,
+            provider: .codex,
+            evidenceMode: .deterministic,
+            currentCmd: "zsh",
+            updatedAt: Date(timeIntervalSince1970: 1_778_822_320),
+            metadataSessionKey: "codex:%12",
+            paneInstanceID: paneInstanceID
+        )
+        let bootstrap = AgtmuxSyncV3Bootstrap(
+            version: 3,
+            panes: [Self.makeV3Snapshot(from: bootstrapPane)],
+            generatedAt: Date(timeIntervalSince1970: 1_778_822_260),
+            replayCursor: AgtmuxSyncV3Cursor(seq: 40)
+        )
+        let promotedSnapshot = Self.makeV3Snapshot(from: promotedPane)
+        let client = StubMetadataClient(
+            bootstrapV3Steps: [
+                BootstrapV3Step(delayMs: 20, result: .success(bootstrap))
+            ],
+            bootstrapSteps: [],
+            changesV3Steps: [
+                ChangesV3Step(delayMs: 20, result: .success(makeChangesV3Response(
+                    pane: promotedSnapshot,
+                    seq: 41
+                )))
+            ]
+        )
+        let model = AppViewModel(
+            localClient: client,
+            localInventoryClient: StubInventoryClient(panes: [inventoryPane]),
+            hostsConfig: .empty
+        )
+
+        await model.fetchAll()
+        let initialUnmanagedOverlayApplied = await waitUntil {
+            guard let pane = model.panes.first else { return false }
+            return pane.metadataSessionKey == "shell:%12"
+                && pane.provider == nil
+                && model.paneDisplayState(for: pane).provider == nil
+        }
+        XCTAssertTrue(initialUnmanagedOverlayApplied)
+
+        try? await Task.sleep(for: .milliseconds(1100))
+        await model.fetchAll()
+
+        let managedPromotionSurfaced = await waitUntil {
+            guard let pane = model.panes.first else { return false }
+            let display = model.paneDisplayState(for: pane)
+            model.statusFilter = .managed
+            return pane.metadataSessionKey == "codex:%12"
+                && pane.provider == .codex
+                && pane.presence == .managed
+                && pane.activityState == .running
+                && display.provider == .codex
+                && display.isManaged
+                && display.primaryState == .running
+                && model.filteredPanes.count == 1
+                && model.filteredPanes.first?.paneId == "%12"
+        }
+
+        XCTAssertTrue(
+            managedPromotionSurfaced,
+            "a same-pane-instance shell to agent promotion must surface daemon provider/activity in sidebar-facing display state"
+        )
+        XCTAssertNil(model.localDaemonIssue)
+    }
+
+    @MainActor
     func testBootstrapV3ChangesV3RemoveClearsOverlayAndReturnsToInventoryTruth() async throws {
         let bootstrap = try loadSyncV3Fixture(named: "codex-running")
         let pane = try XCTUnwrap(bootstrap.panes.first)

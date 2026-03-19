@@ -1094,6 +1094,13 @@ final class AgtmuxTermUITests: XCTestCase {
             row1.waitForExistence(timeout: TestConstants.sidebarPopulateTimeout),
             "Pane \(pane1ID) must appear in sidebar (AX id: \(AccessibilityID.sidebarPanePrefix + key1))"
         )
+        let row1Summary = paneRowMetadataSummary(row1) ?? ""
+        XCTAssertTrue(
+            row1Summary.contains("presence=managed")
+                && row1Summary.contains("provider=claude")
+                && row1Summary.contains("primary=running"),
+            "Managed mock-daemon row must surface provider/activity metadata in the visible sidebar summary. row='\(row1Summary)'"
+        )
 
         // Pane 2 (idle, unmanaged) must also appear
         let key2 = AccessibilityID.paneKey(
