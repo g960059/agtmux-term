@@ -34,11 +34,11 @@ brew install agtmux
 
 Download the latest `AgtmuxTerm-vx.y.z.dmg` from [Releases](https://github.com/g960059/agtmux-term/releases), open it, and drag `AgtmuxTerm.app` to Applications.
 
-> **Note (v0.1.0):** This build is ad-hoc signed (not yet notarized). On first launch, right-click → Open, or run:
+> **Note:** While Apple Developer signing is still pending, release CI falls back to an unsigned, non-notarized DMG. On first launch, right-click → Open, or run:
 > ```bash
 > xattr -dr com.apple.quarantine /Applications/AgtmuxTerm.app
 > ```
-> Future releases will be fully notarized once Apple Developer signing is set up.
+> Once signing secrets are configured, the same workflow returns to the fully notarized path.
 
 ## Requirements
 
@@ -154,7 +154,7 @@ Normal GitHub flow is:
 |----------|---------|-------------|
 | `ci.yml` | push / PR | Build + unit tests |
 | `docs-validate.yml` | push / PR / merge queue | Validate docs layout, ADR naming, research naming, and change-pack completeness |
-| `release.yml` | `v*` tag | Build universal binary → sign → notarize → DMG → GitHub Release → update Homebrew tap |
+| `release.yml` | `v*` tag | Build universal binary → sign/notarize when secrets exist, otherwise fall back to unsigned DMG → GitHub Release; update Homebrew only for signed releases |
 
 To release a new version:
 
@@ -163,7 +163,7 @@ git tag v0.2.0
 git push origin v0.2.0
 ```
 
-The workflow builds a universal (arm64 + x86_64) app with the `agtmux` daemon bundled, signs and notarizes it, creates a DMG, publishes a GitHub Release, and updates the Homebrew tap cask automatically.
+The workflow builds a universal (arm64 + x86_64) app with the `agtmux` daemon bundled. When Apple signing secrets are present it signs, notarizes, creates a DMG, publishes a GitHub Release, and updates the Homebrew tap cask. When those Apple secrets are absent it still publishes a GitHub Release with an unsigned, non-notarized DMG and skips the Homebrew tap update.
 
 `prepare-ghosttykit.sh` rebuilds from pinned upstream Ghostty `v1.3.1` when
 needed and applies the repo's custom OSC bridge patch before producing the
@@ -173,12 +173,12 @@ Required GitHub secrets:
 
 | Secret | Description |
 |--------|-------------|
-| `APPLE_DEVELOPER_CERTIFICATE_P12` | Base64-encoded Developer ID .p12 |
+| `APPLE_DEVELOPER_CERTIFICATE_P12` | Base64-encoded Developer ID .p12 for signed/notarized releases |
 | `APPLE_DEVELOPER_CERTIFICATE_PASSWORD` | Password for the .p12 |
 | `APPLE_TEAM_ID` | 10-character Apple Team ID |
 | `APPLE_ID` | Apple ID email for notarytool |
 | `APPLE_APP_SPECIFIC_PASSWORD` | App-specific password for notarytool |
-| `HOMEBREW_TAP_TOKEN` | GitHub PAT with write access to `g960059/homebrew-tap` |
+| `HOMEBREW_TAP_TOKEN` | GitHub PAT with write access to `g960059/homebrew-tap` for signed releases |
 
 ## Related
 

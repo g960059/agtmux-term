@@ -98,6 +98,8 @@ jobs:
       dmg_name: ${{ steps.dmg.outputs.dmg_name }}
       sha256: ${{ steps.dmg.outputs.sha256 }}
       version: ${{ steps.version.outputs.version }}
+      unsigned_release: ${{ steps.signing_mode.outputs.unsigned_release }}
+      homebrew_update: ${{ steps.signing_mode.outputs.homebrew_update }}
     env:
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
     steps:
@@ -127,7 +129,33 @@ jobs:
           name: agtmux-universal
           path: artifacts/
 
+      - name: Detect signing mode
+        id: signing_mode
+        env:
+          CERTIFICATE_P12: ${{ secrets.APPLE_DEVELOPER_CERTIFICATE_P12 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.APPLE_DEVELOPER_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [[ -n "$APPLE_TEAM_ID" && -n "$CERTIFICATE_P12" && -n "$CERTIFICATE_PASSWORD" && -n "$APPLE_ID" && -n "$APPLE_APP_SPECIFIC_PASSWORD" ]]; then
+            echo "signed_release=true" >> "$GITHUB_OUTPUT"
+            echo "unsigned_release=false" >> "$GITHUB_OUTPUT"
+            echo "Release mode: signed + notarized"
+          else
+            echo "signed_release=false" >> "$GITHUB_OUTPUT"
+            echo "unsigned_release=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::Apple signing secrets are absent; falling back to an unsigned, non-notarized DMG release."
+          fi
+
+          if [[ -n "$HOMEBREW_TAP_TOKEN" && -n "$APPLE_TEAM_ID" && -n "$CERTIFICATE_P12" && -n "$CERTIFICATE_PASSWORD" && -n "$APPLE_ID" && -n "$APPLE_APP_SPECIFIC_PASSWORD" ]]; then
+            echo "homebrew_update=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "homebrew_update=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Import Developer ID certificate
+        if: steps.signing_mode.outputs.signed_release == 'true'
         env:
           CERTIFICATE_P12: ${{ secrets.APPLE_DEVELOPER_CERTIFICATE_P12 }}
           CERTIFICATE_PASSWORD: ${{ secrets.APPLE_DEVELOPER_CERTIFICATE_PASSWORD }}
@@ -147,6 +175,7 @@ jobs:
           rm /tmp/certificate.p12
 
       - name: Sign daemon binary
+        if: steps.signing_mode.outputs.signed_release == 'true'
         run: |
           chmod +x artifacts/agtmux
           codesign --sign "Developer ID Application" \
@@ -156,6 +185,7 @@ jobs:
           codesign --verify --verbose artifacts/agtmux
 
       - name: Archive app
+        if: steps.signing_mode.outputs.signed_release == 'true'
         run: |
           xcodebuild archive \
             -project AgtmuxTerm.xcodeproj \
@@ -175,6 +205,7 @@ jobs:
             | xcpretty
 
       - name: Export archive
+        if: steps.signing_mode.outputs.signed_release == 'true'
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
@@ -188,6 +219,7 @@ jobs:
             | xcpretty
 
       - name: Notarize app
+        if: steps.signing_mode.outputs.signed_release == 'true'
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
@@ -207,42 +239,72 @@ jobs:
           xcrun stapler staple "$RUNNER_TEMP/export/AgtmuxTerm.app"
           xcrun stapler validate "$RUNNER_TEMP/export/AgtmuxTerm.app"
 
+      - name: Build unsigned app bundle
+        if: steps.signing_mode.outputs.signed_release != 'true'
+        run: |
+          mkdir -p "$RUNNER_TEMP/export"
+          xcodebuild build \
+            -project AgtmuxTerm.xcodeproj \
+            -scheme AgtmuxTerm \
+            -configuration Release \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            CONFIGURATION_BUILD_DIR="$RUNNER_TEMP/export" \
+            ONLY_ACTIVE_ARCH=NO \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=YES \
+            ENABLE_HARDENED_RUNTIME=NO \
+            MARKETING_VERSION="$VERSION" \
+            CURRENT_PROJECT_VERSION="${{ github.run_number }}" \
+            AGTMUX_BIN="$GITHUB_WORKSPACE/artifacts/agtmux" \
+            | xcpretty
+          test -d "$RUNNER_TEMP/export/AgtmuxTerm.app"
+
       - name: Create DMG
         id: dmg
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
         run: |
-          DMG_NAME="AgtmuxTerm-${VERSION}.dmg"
+          DMG_NAME="AgtmuxTerm-v${VERSION}.dmg"
           mkdir -p "$RUNNER_TEMP/dmg-staging"
           cp -r "$RUNNER_TEMP/export/AgtmuxTerm.app" "$RUNNER_TEMP/dmg-staging/"
+          if [[ "${{ steps.signing_mode.outputs.signed_release }}" == "true" ]]; then
+            create-dmg \
+              --volname "AgtmuxTerm ${VERSION}" \
+              --window-pos 200 120 \
+              --window-size 600 400 \
+              --icon-size 100 \
+              --icon "AgtmuxTerm.app" 175 190 \
+              --hide-extension "AgtmuxTerm.app" \
+              --app-drop-link 425 190 \
+              --no-internet-enable \
+              "${DMG_NAME}" \
+              "$RUNNER_TEMP/dmg-staging/"
 
-          create-dmg \
-            --volname "AgtmuxTerm ${VERSION}" \
-            --window-pos 200 120 \
-            --window-size 600 400 \
-            --icon-size 100 \
-            --icon "AgtmuxTerm.app" 175 190 \
-            --hide-extension "AgtmuxTerm.app" \
-            --app-drop-link 425 190 \
-            --no-internet-enable \
-            "${DMG_NAME}" \
-            "$RUNNER_TEMP/dmg-staging/"
+            # Sign the DMG
+            codesign --sign "Developer ID Application" \
+              --timestamp "${DMG_NAME}"
 
-          # Sign the DMG
-          codesign --sign "Developer ID Application" \
-            --timestamp "${DMG_NAME}"
-
-          # Notarize and staple the DMG
-          xcrun notarytool submit "${DMG_NAME}" \
-            --apple-id "$APPLE_ID" \
-            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
-            --team-id "$APPLE_TEAM_ID" \
-            --wait \
-            --output-format json | tee /tmp/dmg-notarization.json
-          DMG_STATUS=$(jq -r '.status' /tmp/dmg-notarization.json)
-          [ "$DMG_STATUS" = "Accepted" ] || { echo "::error::DMG notarization failed"; exit 1; }
-          xcrun stapler staple "${DMG_NAME}"
+            # Notarize and staple the DMG
+            xcrun notarytool submit "${DMG_NAME}" \
+              --apple-id "$APPLE_ID" \
+              --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+              --team-id "$APPLE_TEAM_ID" \
+              --wait \
+              --output-format json | tee /tmp/dmg-notarization.json
+            DMG_STATUS=$(jq -r '.status' /tmp/dmg-notarization.json)
+            [ "$DMG_STATUS" = "Accepted" ] || { echo "::error::DMG notarization failed"; exit 1; }
+            xcrun stapler staple "${DMG_NAME}"
+          else
+            ln -s /Applications "$RUNNER_TEMP/dmg-staging/Applications"
+            hdiutil create \
+              -volname "AgtmuxTerm ${VERSION}" \
+              -srcfolder "$RUNNER_TEMP/dmg-staging" \
+              -ov \
+              -format UDZO \
+              "${DMG_NAME}"
+          fi
 
           SHA256=$(shasum -a 256 "${DMG_NAME}" | cut -d' ' -f1)
           echo "${SHA256}  ${DMG_NAME}" > "${DMG_NAME}.sha256"
@@ -255,8 +317,8 @@ jobs:
         with:
           name: dmg-release
           path: |
-            AgtmuxTerm-${{ env.VERSION }}.dmg
-            AgtmuxTerm-${{ env.VERSION }}.dmg.sha256
+            AgtmuxTerm-v${{ env.VERSION }}.dmg
+            AgtmuxTerm-v${{ env.VERSION }}.dmg.sha256
 
   # ─────────────────────────────────────────────────────────────────
   # 4. Create GitHub Release
@@ -266,6 +328,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       VERSION: ${{ needs.build-release.outputs.version }}
+      UNSIGNED_RELEASE: ${{ needs.build-release.outputs.unsigned_release }}
     steps:
       - uses: actions/checkout@v4
 
@@ -278,16 +341,34 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            --title "AgtmuxTerm ${VERSION}" \
-            --generate-notes \
-            "release-artifacts/AgtmuxTerm-${VERSION}.dmg" \
-            "release-artifacts/AgtmuxTerm-${VERSION}.dmg.sha256"
+          if [[ "$UNSIGNED_RELEASE" == "true" ]]; then
+            EXTRA_NOTES=$(printf '%s\n' \
+              'This release is temporarily unsigned and not notarized while Apple Developer signing is pending.' \
+              '' \
+              'On first launch, macOS may block the app. Use right-click -> Open, or run:' \
+              '' \
+              '```bash' \
+              'xattr -dr com.apple.quarantine /Applications/AgtmuxTerm.app' \
+              '```')
+            gh release create "$GITHUB_REF_NAME" \
+              --title "AgtmuxTerm ${VERSION}" \
+              --generate-notes \
+              --notes "$EXTRA_NOTES" \
+              "release-artifacts/AgtmuxTerm-v${VERSION}.dmg" \
+              "release-artifacts/AgtmuxTerm-v${VERSION}.dmg.sha256"
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              --title "AgtmuxTerm ${VERSION}" \
+              --generate-notes \
+              "release-artifacts/AgtmuxTerm-v${VERSION}.dmg" \
+              "release-artifacts/AgtmuxTerm-v${VERSION}.dmg.sha256"
+          fi
 
   # ─────────────────────────────────────────────────────────────────
   # 5. Update Homebrew tap cask
   # ─────────────────────────────────────────────────────────────────
   update-homebrew-cask:
+    if: needs.build-release.outputs.homebrew_update == 'true'
     needs: [github-release, build-release]
     runs-on: ubuntu-latest
     env:
