@@ -18,4 +18,7 @@ Current state:
   Homebrew tap update
 - local validation is green for docs validation, workflow YAML parsing, and a
   manual unsigned universal DMG build
-- the remaining validation step is re-running `v0.2.0` through GitHub Actions
+- `v0.2.0` was re-published successfully via workflow run `23322785794`
+- the published GitHub Release now carries `AgtmuxTerm-v0.2.0.dmg` and
+  `AgtmuxTerm-v0.2.0.dmg.sha256`, while `update-homebrew-cask` is skipped
+  intentionally in unsigned mode
