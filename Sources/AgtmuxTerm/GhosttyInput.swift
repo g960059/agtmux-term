@@ -231,23 +231,49 @@ enum GhosttyInput {
     /// ghostty_input_scroll_mods_t is `typedef int` — a packed bitmask:
     ///   bit 0       : precision (1 = high-precision trackpad/Magic Mouse)
     ///   bits 1..3   : momentum phase (ghostty_input_mouse_momentum_e value)
+    ///   bits 4..6   : direct gesture phase (ghostty input mouse phase value)
     static func toScrollMods(_ event: NSEvent) -> ghostty_input_scroll_mods_t {
+        packedScrollMods(
+            precision: event.hasPreciseScrollingDeltas,
+            momentumPhase: event.momentumPhase,
+            phase: event.phase
+        )
+    }
+
+    static func packedScrollMods(
+        precision: Bool,
+        momentumPhase: NSEvent.Phase,
+        phase: NSEvent.Phase
+    ) -> ghostty_input_scroll_mods_t {
         // bit 0: precision
-        let precision: Int32 = event.hasPreciseScrollingDeltas ? 1 : 0
+        let precisionBit: Int32 = precision ? 1 : 0
 
         // bits 1..3: momentum phase mapped from NSEvent.Phase
-        let momentumBits: Int32
-        switch event.momentumPhase {
-        case .began:       momentumBits = Int32(GHOSTTY_MOUSE_MOMENTUM_BEGAN.rawValue)
-        case .stationary:  momentumBits = Int32(GHOSTTY_MOUSE_MOMENTUM_STATIONARY.rawValue)
-        case .changed:     momentumBits = Int32(GHOSTTY_MOUSE_MOMENTUM_CHANGED.rawValue)
-        case .ended:       momentumBits = Int32(GHOSTTY_MOUSE_MOMENTUM_ENDED.rawValue)
-        case .cancelled:   momentumBits = Int32(GHOSTTY_MOUSE_MOMENTUM_CANCELLED.rawValue)
-        case .mayBegin:    momentumBits = Int32(GHOSTTY_MOUSE_MOMENTUM_MAY_BEGIN.rawValue)
-        default:           momentumBits = Int32(GHOSTTY_MOUSE_MOMENTUM_NONE.rawValue)
-        }
+        let momentumBits = scrollPhaseBits(momentumPhase)
+        let phaseBits = scrollPhaseBits(phase)
+        return precisionBit | (momentumBits << 1) | (phaseBits << 4)
+    }
 
-        return precision | (momentumBits << 1)
+    static func scrollPhaseBits(_ phase: NSEvent.Phase) -> Int32 {
+        if phase.contains(.cancelled) {
+            return 5
+        }
+        if phase.contains(.ended) {
+            return 4
+        }
+        if phase.contains(.changed) {
+            return 3
+        }
+        if phase.contains(.stationary) {
+            return 2
+        }
+        if phase.contains(.began) {
+            return 1
+        }
+        if phase.contains(.mayBegin) {
+            return 6
+        }
+        return 0
     }
 }
 

@@ -2,35 +2,62 @@
 
 ## Chosen Approach
 
-The first wave keeps two tracks in parallel:
+The first wave validated a useful baseline:
 
-1. Improve the host-side render callback path by marking render-targeted active
-   surfaces dirty and scheduling one coalesced direct draw pass on the main run
-   loop, instead of always waiting for the next `tick()`.
-2. Add a continuous trackpad-style bench in full-app mode with transcript-like
-   history data. The bench reports both tmux-visible-line latency and host-side
-   scroll telemetry.
-3. Reduce SwiftUI-side churn around the terminal island by:
-   - guarding AppViewModel store sync helpers against same-value writes
-   - keeping the Ghostty island identity stable per tile instead of remounting
-     on every `plan.command` change
-   - letting `GhosttyIslandViewController.update(...)` handle command changes
-     without controller teardown/recreation
-4. Treat same-window pane retargets as another presentation seam on the
-   existing surface instead of as an attach problem:
-   - keep the attach plan frozen and the Ghostty island stable
-   - when only the visible pane target changes, schedule one coalesced
-     `ghostty_surface_draw()` on the existing surface plus a short recovery
-     probe if the layer still has not advanced
-   - stop animating the sidebar's auto-scroll on pane-selection changes so
-     pane retargets do not add extra main-thread/compositing churn
+1. keep the full-app transcript-style trackpad bench and presentation telemetry
+2. reduce surrounding SwiftUI/store churn and pane-retarget flashes
+3. use coalesced host-side draws only where the host truly owns the seam
+   already (`GHOSTTY_ACTION_RENDER`, pane retarget refresh, attach/activate)
 
-The new evidence from 2026-03-18 changed one design assumption: trackpad
-history scroll currently reaches `GhosttyTerminalView.scrollWheel`, but the
-bench does not observe `GHOSTTY_ACTION_RENDER`, `runDirtyDrawPass()`, or any
-`SurfaceDraw` signposts for that path. The bench therefore treats tmux-visible
-line change as the primary metric and host telemetry as a secondary diagnostic
-surface instead of failing when render callbacks stay at zero.
+That work improved short bursts, but it also changed the main design
+assumption:
+
+- the remaining difference versus native Ghostty is no longer explained by the
+  old tmux visible-line proxy
+- full-app history scroll still mostly bypasses `GHOSTTY_ACTION_RENDER`
+- the worst remaining hitches line up with host-owned wake/pump behavior during
+  long bursts
+- mixed experiments that partially replaced forced draws with queued refreshes
+  or alternative timer implementations regressed the long path instead of
+  converging on native behavior
+
+The replanned direction is therefore structural rather than incremental:
+
+1. keep the existing host-side scheduler as the fallback baseline, but stop
+   treating it as the target architecture for history scroll
+2. introduce a native-cadence-led branch for history scroll where the host:
+   - forwards scroll input, precision, and momentum to libghostty
+   - does not own per-burst cadence with a synthetic draw pump during the main
+     direct-touch path
+   - only injects host-side recovery draws for explicit host seams
+3. treat pane-retarget / attach presentation as separate seams from continuous
+   history scroll so those compensations do not dictate the steady-state scroll
+   cadence
+4. expand parity validation around the user-visible presentation seam, not the
+   tmux visible-line proxy alone
+
+Native Ghostty remains the reference: its AppKit scroll path is thin and hands
+precision + momentum through to libghostty, while pacing is primarily
+renderer/display-link-led rather than host-timer-led.
+
+The latest accepted implementation result updates that plan in one important
+way: the first material structural win did not come from making the embedded
+path fully renderer-owned. It came from deleting redundant work inside
+Ghostty's repeated `updateFrame()` / `rebuildCells(...)` path when the host
+asks for another draw without any viewport, mouse, or cursor change. That
+vendor-side optimization is now part of the checked-in aggregate Ghostty patch,
+and the build provenance is normalized around upstream `v1.2.3` plus that
+patch because the tag's original `build.zig.zon` theme tarball URL now 404s.
+The latest accepted follow-up keeps that same direction: once a viewport shift
+does require a redraw, Ghostty now rebuilds only the explicit row set that can
+actually change on a reusable shift instead of scanning every visible row. That
+means the next wave should keep attacking embedded renderer/update-frame cost
+directly, not return to host-owned timer policy. The newest accepted refinement
+cuts the fixed `abs_shift == 1` row-copy cost inside `Contents.shiftRows(...)`
+itself by switching those single-row shifts from swap loops to block moves with
+recycled row lists. That reduces the first `up` transition further and shifts
+the remaining boundary toward later-`up` wake/presentation variance plus any
+fixed per-frame work that still survives after the row copy.
 
 ## Boundaries
 
@@ -45,6 +72,10 @@ surface instead of failing when render callbacks stay at zero.
   - `WorkbenchGhosttyIsland` lower-overhead update path plus pane-retarget
     presentation refresh scheduling
   - perf harness support for pixel/trackpad bursts and transcript-history bench
+  - `scripts/dev/prepare-ghosttykit.sh` pin/patch provenance
+  - `scripts/patches/ghostty-agtmux.patch`
+  - the next wave will likely change `GhosttyTerminalView` scroll ownership
+    boundaries more substantially than the earlier tuning-only passes
 - unchanged:
   - native Ghostty behavior
   - the existing Gate-L proxy benches
@@ -52,19 +83,25 @@ surface instead of failing when render callbacks stay at zero.
 
 ## Failure Modes
 
-- If scroll path telemetry never completes, the bench still records burst
-  latency and flags `render_callback_captured=false` / `first_draw_captured=false`
-  so we do not mistake missing instrumentation for a clean result.
-- If no burst changes tmux-visible content, the bench exits non-zero instead of
-  silently emitting empty metrics.
-- The direct-draw path stays coalesced and is skipped for backgrounded surfaces
-  so render callbacks do not cause re-entrant or invisible draw work.
+- If we keep mixing host-forced draws with renderer-queued refreshes in the
+  same burst path, we risk improving one run-loop seam while making cadence
+  variance worse overall. Recent rejected experiments hit exactly that failure
+  mode.
+- If native parity work is judged only by tmux-visible-line latency, we can
+  declare false wins while the user-visible presentation seam remains worse
+  than native Ghostty.
+- If host-owned recovery logic bleeds back into the direct-touch path, the
+  design collapses into another timer-tuning loop instead of actually reducing
+  host cadence ownership.
 
 ## Follow-On Risks
 
-- `WorkbenchTerminalTileViewV2` still sits near runtime-store, health, and
-  active-pane context updates plus attach/navigation tasks. If the real scroll
-  path bypasses host render callbacks, those surrounding main-thread updates
-  remain a leading next-wave suspect.
-- `GhosttyIslandRepresentable(...).id("ghostty-island:...:\(plan.command)")`
-  remains a watchpoint if attach-plan identity drifts more often than expected.
+- A native-cadence-led branch may expose new bugs around when the host is
+  allowed to call `ghostty_surface_draw()` versus `ghostty_surface_refresh()`,
+  especially across activation, pane retarget, and background/foreground
+  transitions.
+- Native Ghostty parity still lacks a perfect apples-to-apples presentation
+  benchmark on this host, so the bench strategy must continue to improve in
+  parallel with runtime changes.
+- Runtime-store or SwiftUI churn may still be secondary contributors, but they
+  are no longer the primary design center for the next wave.

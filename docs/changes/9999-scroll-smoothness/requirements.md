@@ -18,12 +18,18 @@ host-side scheduling stalls.
   window and the existing Ghostty surface should remain attached
 - document the current evidence, including the tests and perf runs from
   2026-03-18
+- replan the remaining scroll work around native-cadence parity instead of
+  continuing timer-by-timer host scheduler tuning
+- make the accepted vendor-side Ghostty optimization reproducible from a fresh
+  pinned upstream checkout instead of depending on an already-dirty local
+  `vendor/ghostty`
 
 ## Non-Goals
 
 - redesigning the entire SwiftUI workbench or polling architecture in this wave
 - adding user-facing settings for scroll behavior
 - forcing a `ghostty_surface_draw()` regression to synchronous drawing
+- claiming native parity from the tmux visible-line proxy alone
 
 ## Acceptance
 
@@ -37,5 +43,10 @@ host-side scheduling stalls.
       2026-03-18 investigation
 - [x] same-window pane retarget logic preserves the existing surface path and
       has regression coverage for the pane-retarget refresh decision
+- [x] the change pack is replanned around a native-cadence-led architecture for
+      the remaining history-scroll gap
+- [x] `prepare-ghosttykit.sh` can rebuild from a fresh pinned upstream Ghostty
+      checkout using the checked-in aggregate patch that carries both the
+      scroll optimization and any required build-fix drift
 - [ ] embedded trackpad/history smoothness reaches native-like behavior in the
       real UI, not just proxy parity

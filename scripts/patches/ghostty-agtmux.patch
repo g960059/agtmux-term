@@ -1,0 +1,2062 @@
+diff --git a/build.zig.zon b/build.zig.zon
+index f8d8c1676..41199b9bf 100644
+--- a/build.zig.zon
++++ b/build.zig.zon
+@@ -113,8 +113,8 @@
+         // Other
+         .apple_sdk = .{ .path = "./pkg/apple-sdk" },
+         .iterm2_themes = .{
+-            .url = "https://github.com/mbadolato/iTerm2-Color-Schemes/releases/download/release-20251002-142451-4a5043e/ghostty-themes.tgz",
+-            .hash = "N-V-__8AALIsAwDyo88G5mGJGN2lSVmmFMx4YePfUvp_2o3Y",
++            .url = "https://github.com/mbadolato/iTerm2-Color-Schemes/releases/download/release-20260216-151611-fc73ce3/ghostty-themes.tgz",
++            .hash = "N-V-__8AABVbAwBwDRyZONfx553tvMW8_A2OKUoLzPUSRiLF",
+             .lazy = true,
+         },
+     },
+diff --git a/include/ghostty.h b/include/ghostty.h
+index 3f1e0c9d9..a39ea6a12 100644
+--- a/include/ghostty.h
++++ b/include/ghostty.h
+@@ -733,6 +733,13 @@ typedef struct {
+   int8_t progress;
+ } ghostty_action_progress_report_s;
+
++// terminal.osc.Command.CustomOSC.C
++typedef struct {
++  uint16_t osc;
++  const uint8_t* payload;
++  uintptr_t len;
++} ghostty_action_custom_osc_s;
++
+ // apprt.Action.Key
+ typedef enum {
+   GHOSTTY_ACTION_QUIT,
+@@ -788,6 +795,7 @@ typedef enum {
+   GHOSTTY_ACTION_SHOW_CHILD_EXITED,
+   GHOSTTY_ACTION_PROGRESS_REPORT,
+   GHOSTTY_ACTION_SHOW_ON_SCREEN_KEYBOARD,
++  GHOSTTY_ACTION_CUSTOM_OSC,
+ } ghostty_action_tag_e;
+
+ typedef union {
+@@ -819,6 +827,7 @@ typedef union {
+   ghostty_action_close_tab_mode_e close_tab_mode;
+   ghostty_surface_message_childexited_s child_exited;
+   ghostty_action_progress_report_s progress_report;
++  ghostty_action_custom_osc_s custom_osc;
+ } ghostty_action_u;
+
+ typedef struct {
+diff --git a/src/Surface.zig b/src/Surface.zig
+index 2df720fcb..145a9b985 100644
+--- a/src/Surface.zig
++++ b/src/Surface.zig
+@@ -937,6 +937,21 @@ pub fn handleMessage(self: *Surface, msg: Message) !void {
+             );
+         },
+
++        .custom_osc => |v| {
++            defer v.req.deinit();
++
++            _ = self.rt_app.performAction(
++                .{ .surface = self },
++                .custom_osc,
++                .{
++                    .osc = v.osc,
++                    .payload = v.req.slice(),
++                },
++            ) catch |err| {
++                log.warn("apprt failed to deliver custom osc err={}", .{err});
++            };
++        },
++
+         .close => self.close(),
+
+         .child_exited => |v| self.childExited(v),
+@@ -2018,6 +2033,14 @@ fn queueRender(self: *Surface) !void {
+     try self.renderer_thread.wakeup.notify();
+ }
+
++/// Queue a render and force the renderer thread to immediately draw the
++/// refreshed frame once its state update completes. This is reserved for
++/// explicit host seams such as refresh/occlusion where we need an immediate
++/// redraw but still want it renderer-owned.
++fn queueRenderAndDraw(self: *Surface) !void {
++    try self.renderer_thread.requestRenderAndDraw();
++}
++
+ pub fn sizeCallback(self: *Surface, size: apprt.SurfaceSize) !void {
+     // Crash metadata in case we crash in here
+     crash.sentry.thread_state = self.crashThreadState();
+@@ -2694,7 +2717,7 @@ pub fn occlusionCallback(self: *Surface, visible: bool) !void {
+     _ = self.renderer_thread.mailbox.push(.{
+         .visible = visible,
+     }, .{ .forever = {} });
+-    try self.queueRender();
++    try self.queueRenderAndDraw();
+ }
+
+ pub fn focusCallback(self: *Surface, focused: bool) !void {
+@@ -2790,7 +2813,7 @@ pub fn refreshCallback(self: *Surface) !void {
+     defer crash.sentry.thread_state = null;
+
+     // The point of this callback is to schedule a render, so do that.
+-    try self.queueRender();
++    try self.queueRenderAndDraw();
+ }
+
+ // The amount to scroll. This structure is always normalized so that
+@@ -2986,6 +3009,8 @@ pub fn scrollCallback(
+         }
+     }
+
++    if (y.delta == 0 and x.delta == 0) return;
++
+     try self.queueRender();
+ }
+
+diff --git a/src/apprt/action.zig b/src/apprt/action.zig
+index b7dc80e03..c29127f4b 100644
+--- a/src/apprt/action.zig
++++ b/src/apprt/action.zig
+@@ -295,6 +295,9 @@ pub const Action = union(Key) {
+     /// Show the on-screen keyboard.
+     show_on_screen_keyboard,
+
++    /// Surface-scoped custom OSC carrier payload.
++    custom_osc: terminal.osc.Command.CustomOSC,
++
+     /// Sync with: ghostty_action_tag_e
+     pub const Key = enum(c_int) {
+         quit,
+@@ -350,6 +353,7 @@ pub const Action = union(Key) {
+         show_child_exited,
+         progress_report,
+         show_on_screen_keyboard,
++        custom_osc,
+     };
+
+     /// Sync with: ghostty_action_u
+diff --git a/src/apprt/embedded.zig b/src/apprt/embedded.zig
+index 08d8291ef..df7ea4e9a 100644
+--- a/src/apprt/embedded.zig
++++ b/src/apprt/embedded.zig
+@@ -332,6 +332,99 @@ pub const App = struct {
+     }
+ };
+
++test "embedded App.performAction forwards custom osc through action callback" {
++    const testing = std.testing;
++
++    const Capture = struct {
++        called: bool = false,
++        target_key: ?apprt.Target.Key = null,
++        surface: ?*apprt.Surface = null,
++        action_key: ?apprt.Action.Key = null,
++        osc: ?u16 = null,
++        payload: ?[]const u8 = null,
++    };
++
++    const Callbacks = struct {
++        fn wakeup(_: ?*anyopaque) callconv(.c) void {}
++
++        fn action(
++            app: *App,
++            target: apprt.Target.C,
++            action_: apprt.Action.C,
++        ) callconv(.c) bool {
++            const capture: *Capture = @ptrCast(@alignCast(app.opts.userdata.?));
++            capture.called = true;
++            capture.target_key = target.key;
++            capture.surface = switch (target.key) {
++                .app => null,
++                .surface => target.value.surface,
++            };
++            capture.action_key = action_.key;
++            capture.osc = action_.value.custom_osc.osc;
++            capture.payload = action_.value.custom_osc.payload[0..action_.value.custom_osc.len];
++            return true;
++        }
++
++        fn readClipboard(
++            _: ?*anyopaque,
++            _: c_int,
++            _: *apprt.ClipboardRequest,
++        ) callconv(.c) void {}
++
++        fn confirmReadClipboard(
++            _: ?*anyopaque,
++            _: [*:0]const u8,
++            _: *apprt.ClipboardRequest,
++            _: apprt.ClipboardRequestType,
++        ) callconv(.c) void {}
++
++        fn writeClipboard(
++            _: ?*anyopaque,
++            _: [*:0]const u8,
++            _: c_int,
++            _: bool,
++        ) callconv(.c) void {}
++    };
++
++    var capture = Capture{};
++    var core_app: CoreApp = undefined;
++    var runtime_surface: apprt.Surface = undefined;
++    var core_surface: CoreSurface = undefined;
++    core_surface.rt_surface = &runtime_surface;
++
++    var app: App = undefined;
++    app.core_app = &core_app;
++    app.opts = .{
++        .userdata = &capture,
++        .supports_selection_clipboard = false,
++        .wakeup = &Callbacks.wakeup,
++        .action = &Callbacks.action,
++        .read_clipboard = &Callbacks.readClipboard,
++        .confirm_read_clipboard = &Callbacks.confirmReadClipboard,
++        .write_clipboard = &Callbacks.writeClipboard,
++    };
++    app.keymap = undefined;
++    app.config = undefined;
++
++    const payload = "agtmux;v=1;kind=file;path=/tmp/spec.md";
++    const handled = try app.performAction(
++        .{ .surface = &core_surface },
++        .custom_osc,
++        .{
++            .osc = terminal.osc.AGTMUX_BRIDGE_OSC,
++            .payload = payload,
++        },
++    );
++
++    try testing.expect(handled);
++    try testing.expect(capture.called);
++    try testing.expectEqual(apprt.Target.Key.surface, capture.target_key);
++    try testing.expectEqual(&runtime_surface, capture.surface);
++    try testing.expectEqual(apprt.Action.Key.custom_osc, capture.action_key);
++    try testing.expectEqual(terminal.osc.AGTMUX_BRIDGE_OSC, capture.osc);
++    try testing.expectEqualSlices(u8, payload, capture.payload.?);
++}
++
+ /// Platform-specific configuration for libghostty.
+ pub const Platform = union(PlatformTag) {
+     macos: MacOS,
+diff --git a/src/renderer/cell.zig b/src/renderer/cell.zig
+index 51cd5f5bc..3a4b018c4 100644
+--- a/src/renderer/cell.zig
++++ b/src/renderer/cell.zig
+@@ -2,6 +2,7 @@ const std = @import("std");
+ const Allocator = std.mem.Allocator;
+ const assert = std.debug.assert;
+ const font = @import("../font/main.zig");
++const fastmem = @import("../fastmem.zig");
+ const terminal = @import("../terminal/main.zig");
+ const renderer = @import("../renderer.zig");
+ const shaderpkg = renderer.Renderer.API.shaders;
+@@ -140,6 +141,115 @@ pub const Contents = struct {
+         self.fg_rows.reset();
+     }
+
++    /// Shift the visible rows by the given amount without reshaping any glyphs.
++    ///
++    /// Positive values move content toward larger row indices (downward on the
++    /// screen). Negative values move content toward smaller row indices
++    /// (upward on the screen). Exposed fringe rows are cleared.
++    pub fn shiftRows(self: *Contents, row_shift: i32) void {
++        if (self.size.rows == 0 or row_shift == 0) return;
++
++        const rows: usize = @intCast(self.size.rows);
++        const abs_shift: usize = @intCast(@abs(row_shift));
++        if (abs_shift >= rows) {
++            self.reset();
++            return;
++        }
++
++        if (abs_shift == 1) {
++            if (row_shift > 0) {
++                self.shiftRowsDownOne();
++            } else {
++                self.shiftRowsUpOne();
++            }
++            return;
++        }
++
++        if (row_shift > 0) {
++            var dst = rows;
++            while (dst > abs_shift) {
++                dst -= 1;
++                self.swapRow(dst, dst - abs_shift);
++            }
++
++            var y: usize = abs_shift;
++            while (y < rows) : (y += 1) self.remapRowGridY(y);
++
++            y = 0;
++            while (y < abs_shift) : (y += 1) self.clear(@intCast(y));
++        } else {
++            var dst: usize = 0;
++            while (dst + abs_shift < rows) : (dst += 1) {
++                self.swapRow(dst, dst + abs_shift);
++            }
++
++            var y: usize = 0;
++            while (y < rows - abs_shift) : (y += 1) self.remapRowGridY(y);
++
++            y = rows - abs_shift;
++            while (y < rows) : (y += 1) self.clear(@intCast(y));
++        }
++    }
++
++    fn shiftRowsDownOne(self: *Contents) void {
++        const rows: usize = @intCast(self.size.rows);
++        const cols: usize = self.size.columns;
++        const TextRowList = std.ArrayListUnmanaged(shaderpkg.CellText);
++
++        if (cols > 0) {
++            fastmem.move(
++                shaderpkg.CellBg,
++                self.bg_cells[cols .. rows * cols],
++                self.bg_cells[0 .. (rows - 1) * cols],
++            );
++            @memset(self.bg_cells[0..cols], .{ 0, 0, 0, 0 });
++        }
++
++        const row_lists = self.fg_rows.lists[1 .. rows + 1];
++        const recycled = row_lists[rows - 1];
++        fastmem.move(
++            TextRowList,
++            row_lists[1..rows],
++            row_lists[0 .. rows - 1],
++        );
++        row_lists[0] = recycled;
++        row_lists[0].clearRetainingCapacity();
++
++        var y: usize = 1;
++        while (y < rows) : (y += 1) self.remapRowGridY(y);
++    }
++
++    fn shiftRowsUpOne(self: *Contents) void {
++        const rows: usize = @intCast(self.size.rows);
++        const cols: usize = self.size.columns;
++        const TextRowList = std.ArrayListUnmanaged(shaderpkg.CellText);
++
++        if (cols > 0) {
++            fastmem.move(
++                shaderpkg.CellBg,
++                self.bg_cells[0 .. (rows - 1) * cols],
++                self.bg_cells[cols .. rows * cols],
++            );
++            @memset(
++                self.bg_cells[(rows - 1) * cols .. rows * cols],
++                .{ 0, 0, 0, 0 },
++            );
++        }
++
++        const row_lists = self.fg_rows.lists[1 .. rows + 1];
++        const recycled = row_lists[0];
++        fastmem.move(
++            TextRowList,
++            row_lists[0 .. rows - 1],
++            row_lists[1..rows],
++        );
++        row_lists[rows - 1] = recycled;
++        row_lists[rows - 1].clearRetainingCapacity();
++
++        var y: usize = 0;
++        while (y < rows - 1) : (y += 1) self.remapRowGridY(y);
++    }
++
+     /// Set the cursor value. If the value is null then the cursor is hidden.
+     pub fn setCursor(
+         self: *Contents,
+@@ -221,6 +331,31 @@ pub const Contents = struct {
+         // the correct index.
+         self.fg_rows.lists[y + 1].clearRetainingCapacity();
+     }
++
++    fn swapRow(self: *Contents, a: usize, b: usize) void {
++        if (a == b) return;
++
++        for (0..self.size.columns) |x| {
++            std.mem.swap(
++                shaderpkg.CellBg,
++                self.bgCell(a, x),
++                self.bgCell(b, x),
++            );
++        }
++
++        std.mem.swap(
++            std.ArrayListUnmanaged(shaderpkg.CellText),
++            &self.fg_rows.lists[a + 1],
++            &self.fg_rows.lists[b + 1],
++        );
++    }
++
++    fn remapRowGridY(self: *Contents, y: usize) void {
++        const row_y: u16 = @intCast(y);
++        for (self.fg_rows.lists[y + 1].items) |*cell| {
++            cell.grid_pos[1] = row_y;
++        }
++    }
+ };
+
+ /// Returns true if a codepoint for a cell is a covering character. A covering
+@@ -519,6 +654,72 @@ test "Contents with zero-sized screen" {
+     try testing.expect(c.getCursorGlyph() == null);
+ }
+
++test "Contents shiftRows positive moves content downward and clears exposed top rows" {
++    const testing = std.testing;
++    const alloc = testing.allocator;
++
++    var c: Contents = .{};
++    try c.resize(alloc, .{ .rows = 4, .columns = 3 });
++    defer c.deinit(alloc);
++
++    for (0..4) |y| {
++        c.bgCell(y, 0).* = .{ @intCast(y + 1), 0, 0, 255 };
++        try c.add(alloc, .text, .{
++            .atlas = .grayscale,
++            .grid_pos = .{ 0, @intCast(y) },
++            .color = .{ @intCast(y + 1), 0, 0, 255 },
++        });
++    }
++
++    c.shiftRows(1);
++
++    try testing.expectEqual(shaderpkg.CellBg{ 0, 0, 0, 0 }, c.bgCell(0, 0).*);
++    try testing.expectEqual(@as(usize, 0), c.fg_rows.lists[1].items.len);
++
++    for (1..4) |y| {
++        try testing.expectEqual(
++            shaderpkg.CellBg{ @intCast(y), 0, 0, 255 },
++            c.bgCell(y, 0).*,
++        );
++        try testing.expectEqual(@as(usize, 1), c.fg_rows.lists[y + 1].items.len);
++        try testing.expectEqual(@as(u16, @intCast(y)), c.fg_rows.lists[y + 1].items[0].grid_pos[1]);
++        try testing.expectEqual(@as(u8, @intCast(y)), c.fg_rows.lists[y + 1].items[0].color[0]);
++    }
++}
++
++test "Contents shiftRows negative moves content upward and clears exposed bottom rows" {
++    const testing = std.testing;
++    const alloc = testing.allocator;
++
++    var c: Contents = .{};
++    try c.resize(alloc, .{ .rows = 4, .columns = 3 });
++    defer c.deinit(alloc);
++
++    for (0..4) |y| {
++        c.bgCell(y, 0).* = .{ @intCast(y + 1), 0, 0, 255 };
++        try c.add(alloc, .text, .{
++            .atlas = .grayscale,
++            .grid_pos = .{ 0, @intCast(y) },
++            .color = .{ @intCast(y + 1), 0, 0, 255 },
++        });
++    }
++
++    c.shiftRows(-1);
++
++    for (0..3) |y| {
++        try testing.expectEqual(
++            shaderpkg.CellBg{ @intCast(y + 2), 0, 0, 255 },
++            c.bgCell(y, 0).*,
++        );
++        try testing.expectEqual(@as(usize, 1), c.fg_rows.lists[y + 1].items.len);
++        try testing.expectEqual(@as(u16, @intCast(y)), c.fg_rows.lists[y + 1].items[0].grid_pos[1]);
++        try testing.expectEqual(@as(u8, @intCast(y + 2)), c.fg_rows.lists[y + 1].items[0].color[0]);
++    }
++
++    try testing.expectEqual(shaderpkg.CellBg{ 0, 0, 0, 0 }, c.bgCell(3, 0).*);
++    try testing.expectEqual(@as(usize, 0), c.fg_rows.lists[4].items.len);
++}
++
+ test "Cell constraint widths" {
+     const testing = std.testing;
+     const alloc = testing.allocator;
+diff --git a/src/renderer/generic.zig b/src/renderer/generic.zig
+index 946f84a8a..a09f7ec26 100644
+--- a/src/renderer/generic.zig
++++ b/src/renderer/generic.zig
+@@ -143,12 +143,36 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+         /// cells goes into a separate shader.
+         cells: cellpkg.Contents,
+
+-        /// The last viewport that we based our rebuild off of. If this changes,
+-        /// then we do a full rebuild of the cells. The pointer values in this pin
+-        /// are NOT SAFE to read because they may be modified, freed, etc from the
+-        /// termio thread. We treat the pointers as integers for comparison only.
++        /// The last viewport pin that our cached cells were based on. The
++        /// pointer values in this pin are NOT SAFE to read because they may be
++        /// modified, freed, etc from the termio thread. We keep it only for
++        /// identity and invalidation; viewport-shift reuse is driven by the
++        /// separate screen-space Y coordinate below.
+         cells_viewport: ?terminal.Pin = null,
+
++        /// The screen-space Y coordinate of the viewport top row for the
++        /// currently cached cell contents. This remains safe to compare across
++        /// frames and lets pure viewport shifts reuse row buffers.
++        cells_viewport_screen_y: ?u32 = null,
++
++        /// Whether the cached viewport was at the live bottom. We keep bottom
++        /// transitions on the conservative full-rebuild path because cursor and
++        /// prompt shaping behavior changes there.
++        cells_viewport_is_bottom: bool = false,
++
++        /// Mouse state associated with the currently cached cells. If the
++        /// viewport is unchanged and the mouse state is identical, we can
++        /// skip redundant cell rebuilds on repeated host-driven draws.
++        cells_mouse: renderer.State.Mouse = .{},
++
++        /// Cursor style associated with the currently cached cells.
++        cells_cursor_style: ?renderer.CursorStyle = null,
++
++        /// Visible cursor row associated with the currently cached cells. This
++        /// lets a viewport shift rebuild the row that previously held a cursor
++        /// when we leave the live bottom.
++        cells_cursor_row: ?terminal.size.CellCountInt = null,
++
+         /// Set to true after rebuildCells is called. This can be used
+         /// to determine if any possible changes have been made to the
+         /// cells for the draw call.
+@@ -959,6 +983,9 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+         /// Mark the full screen as dirty so that we redraw everything.
+         pub fn markDirty(self: *Self) void {
+             self.cells_viewport = null;
++            self.cells_viewport_screen_y = null;
++            self.cells_viewport_is_bottom = false;
++            self.cells_cursor_row = null;
+         }
+
+         /// Called when we get an updated display ID for our display link.
+@@ -1065,6 +1092,9 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+             // an outdated atlas from the old grid and this can cause garbage
+             // to be rendered.
+             self.cells_viewport = null;
++            self.cells_viewport_screen_y = null;
++            self.cells_viewport_is_bottom = false;
++            self.cells_cursor_row = null;
+         }
+
+         /// Update uniforms that are based on the font grid.
+@@ -1086,19 +1116,30 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+             // Data we extract out of the critical area.
+             const Critical = struct {
+                 bg: terminal.color.RGB,
+-                screen: terminal.Screen,
++                screen: *terminal.Screen,
+                 screen_type: terminal.ScreenType,
+                 mouse: renderer.State.Mouse,
+                 preedit: ?renderer.State.Preedit,
+                 cursor_style: ?renderer.CursorStyle,
+                 color_palette: terminal.color.Palette,
++                viewport_is_bottom: bool,
+
+                 /// If true, rebuild the full screen.
+                 full_rebuild: bool,
++
++                /// When non-zero, the cached rows can be shifted by this many
++                /// screen rows before rebuilding only the exposed fringe.
++                viewport_row_shift: i32,
++
++                /// Extra visible row that must be rebuilt during a viewport
++                /// shift. We use this to erase a previously visible cursor when
++                /// leaving the live bottom without forcing a full rebuild.
++                shift_extra_row: ?terminal.size.CellCountInt,
+             };
+
+             // Update all our data as tightly as possible within the mutex.
+-            var critical: Critical = critical: {
++            var live_viewport_shift_bg: ?terminal.color.RGB = null;
++            const critical: ?Critical = critical: {
+                 // const start = try std.time.Instant.now();
+                 // const start_micro = std.time.microTimestamp();
+                 // defer {
+@@ -1149,16 +1190,11 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+
+                 // Get the viewport pin so that we can compare it to the current.
+                 const viewport_pin = state.terminal.screen.pages.pin(.{ .viewport = .{} }).?;
+-
+-                // We used to share terminal state, but we've since learned through
+-                // analysis that it is faster to copy the terminal state than to
+-                // hold the lock while rebuilding GPU cells.
+-                var screen_copy = try state.terminal.screen.clone(
+-                    self.alloc,
+-                    .{ .viewport = .{} },
+-                    null,
+-                );
+-                errdefer screen_copy.deinit();
++                const viewport_screen_y = state.terminal.screen.pages.pointFromPin(
++                    .screen,
++                    viewport_pin,
++                ).?.screen.y;
++                const viewport_is_bottom = state.terminal.screen.viewportIsBottom();
+
+                 // Whether to draw our cursor or not.
+                 const cursor_style = if (state.terminal.flags.password_input)
+@@ -1185,34 +1221,160 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+                 // If we have any virtual references, we must also rebuild our
+                 // kitty state on every frame because any cell change can move
+                 // an image.
+-                if (state.terminal.screen.kitty_images.dirty or
+-                    self.image_virtual)
+-                {
++                const kitty_graphics_active = self.hasActiveKittyGraphics(
++                    &state.terminal.screen,
++                );
++                const kitty_graphics_dirty =
++                    kitty_graphics_active and state.terminal.screen.kitty_images.dirty;
++                if (kitty_graphics_dirty or self.image_virtual) {
+                     try self.prepKittyGraphics(state.terminal);
+                 }
+
+                 // If we have any terminal dirty flags set then we need to rebuild
+-                // the entire screen. This can be optimized in the future.
+-                const full_rebuild: bool = rebuild: {
++                // the entire screen. Pure viewport-only history scrollback is the
++                // one exception: there we can shift cached rows and rebuild only
++                // the newly exposed fringe.
++                const terminal_dirty: bool = terminal_dirty: {
++                    const Int = @typeInfo(terminal.Terminal.Dirty).@"struct".backing_integer.?;
++                    const v: Int = @bitCast(state.terminal.flags.dirty);
++                    break :terminal_dirty v > 0;
++                };
++                const screen_dirty: bool = screen_dirty: {
++                    const Int = @typeInfo(terminal.Screen.Dirty).@"struct".backing_integer.?;
++                    const v: Int = @bitCast(state.terminal.screen.dirty);
++                    break :screen_dirty v > 0;
++                };
++                const prev_viewport_screen_y = self.cells_viewport_screen_y;
++                const row_shift_i64: ?i64 = if (prev_viewport_screen_y) |prev_y|
++                    @as(i64, prev_y) - @as(i64, viewport_screen_y)
++                else
++                    null;
++                const leaving_bottom =
++                    self.cells_viewport_is_bottom and !viewport_is_bottom;
++                const can_reuse_cached_frame =
++                    !terminal_dirty and
++                    !screen_dirty and
++                    !self.image_virtual and
++                    !kitty_graphics_dirty and
++                    state.terminal.screen.selection == null and
++                    preedit == null and
++                    self.cells_viewport_screen_y != null and
++                    row_shift_i64 != null and
++                    row_shift_i64.? == 0 and
++                    self.cells_viewport_is_bottom == viewport_is_bottom and
++                    self.cells_cursor_style == cursor_style and
++                    mouseStateEqual(self.cells_mouse, state.mouse);
++                const can_reuse_viewport_shift =
++                    !terminal_dirty and
++                    !screen_dirty and
++                    !self.image_virtual and
++                    !kitty_graphics_dirty and
++                    state.terminal.screen.selection == null and
++                    preedit == null and
++                    row_shift_i64 != null and
++                    row_shift_i64.? != 0 and
++                    ((!viewport_is_bottom and !self.cells_viewport_is_bottom) or
++                        leaving_bottom) and
++                    @as(u64, @intCast(@abs(row_shift_i64.?))) <
++                        @as(u64, state.terminal.screen.pages.rows);
++                const viewport_row_shift: i32 = if (can_reuse_viewport_shift)
++                    (std.math.cast(i32, row_shift_i64.?) orelse 0)
++                else
++                    0;
++                const shift_extra_row: ?terminal.size.CellCountInt = shift_extra_row: {
++                    if (!leaving_bottom) break :shift_extra_row null;
++                    const prev_cursor_row = self.cells_cursor_row orelse break :shift_extra_row null;
++                    const shifted_cursor_row =
++                        @as(i32, @intCast(prev_cursor_row)) + viewport_row_shift;
++                    if (shifted_cursor_row < 0 or
++                        shifted_cursor_row >= @as(i32, @intCast(state.terminal.screen.pages.rows)))
+                     {
+-                        const Int = @typeInfo(terminal.Terminal.Dirty).@"struct".backing_integer.?;
+-                        const v: Int = @bitCast(state.terminal.flags.dirty);
+-                        if (v > 0) break :rebuild true;
++                        break :shift_extra_row null;
+                     }
++                    if (!self.needsLeavingBottomCursorRowRebuild(
++                        &state.terminal.screen,
++                        @intCast(shifted_cursor_row),
++                        state.terminal.screen.cursor.x,
++                    )) {
++                        break :shift_extra_row null;
++                    }
++                    break :shift_extra_row @intCast(shifted_cursor_row);
++                };
++
++                if (can_reuse_cached_frame) {
++                    self.cells_viewport = viewport_pin;
++                    self.cells_viewport_screen_y = viewport_screen_y;
++                    self.cells_viewport_is_bottom = viewport_is_bottom;
++                    self.cells_mouse = state.mouse;
++                    self.cells_cursor_style = cursor_style;
++                    self.cells_cursor_row = if (viewport_is_bottom and cursor_style != null)
++                        state.terminal.screen.cursor.y
++                    else
++                        null;
++                    live_viewport_shift_bg = self.background_color orelse self.default_background_color;
++                    break :critical null;
++                }
++
++                const full_rebuild =
++                    terminal_dirty or
++                    screen_dirty or
++                    self.cells_viewport_screen_y == null or
++                    self.image_virtual or
++                    kitty_graphics_dirty or
++                    preedit != null or
++                    viewport_is_bottom or
++                    self.cells_viewport_is_bottom or
++                    (row_shift_i64 != null and row_shift_i64.? != 0 and !can_reuse_viewport_shift);
++
++                if (can_reuse_viewport_shift) {
++                    try self.rebuildCells(
++                        false,
++                        viewport_row_shift,
++                        &state.terminal.screen,
++                        state.terminal.active_screen,
++                        state.mouse,
++                        null,
++                        cursor_style,
++                        &state.terminal.color_palette.colors,
++                        viewport_is_bottom,
++                        shift_extra_row,
++                    );
++
++                    state.terminal.flags.dirty = .{};
++                    state.terminal.screen.dirty = .{};
+                     {
+-                        const Int = @typeInfo(terminal.Screen.Dirty).@"struct".backing_integer.?;
+-                        const v: Int = @bitCast(state.terminal.screen.dirty);
+-                        if (v > 0) break :rebuild true;
++                        var it = state.terminal.screen.pages.pageIterator(
++                            .right_down,
++                            .{ .screen = .{} },
++                            null,
++                        );
++                        while (it.next()) |chunk| {
++                            var dirty_set = chunk.node.data.dirtyBitSet();
++                            dirty_set.unsetAll();
++                        }
+                     }
+
+-                    // If our viewport changed then we need to rebuild the entire
+-                    // screen because it means we scrolled. If we have no previous
+-                    // viewport then we must rebuild.
+-                    const prev_viewport = self.cells_viewport orelse break :rebuild true;
+-                    if (!prev_viewport.eql(viewport_pin)) break :rebuild true;
++                    self.cells_viewport = viewport_pin;
++                    self.cells_viewport_screen_y = viewport_screen_y;
++                    self.cells_viewport_is_bottom = viewport_is_bottom;
++                    self.cells_mouse = state.mouse;
++                    self.cells_cursor_style = cursor_style;
++                    self.cells_cursor_row = if (viewport_is_bottom and cursor_style != null)
++                        state.terminal.screen.cursor.y
++                    else
++                        null;
++                    live_viewport_shift_bg = self.background_color orelse self.default_background_color;
++                    break :critical null;
++                }
+
+-                    break :rebuild false;
+-                };
++                var screen_copy = try state.terminal.screen.clone(
++                    self.alloc,
++                    .{ .viewport = .{} },
++                    .{ .viewport = .{
++                        .y = state.terminal.screen.pages.rows - 1,
++                    } },
++                );
++                errdefer screen_copy.deinit();
+
+                 // Reset the dirty flags in the terminal and screen. We assume
+                 // that our rebuild will be successful since so we optimize for
+@@ -1234,33 +1396,56 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+
+                 // Update our viewport pin
+                 self.cells_viewport = viewport_pin;
++                self.cells_viewport_screen_y = viewport_screen_y;
++                self.cells_viewport_is_bottom = viewport_is_bottom;
++                self.cells_mouse = state.mouse;
++                self.cells_cursor_style = cursor_style;
++                self.cells_cursor_row = if (viewport_is_bottom and cursor_style != null)
++                    state.terminal.screen.cursor.y
++                else
++                    null;
+
+                 break :critical .{
+                     .bg = self.background_color orelse self.default_background_color,
+-                    .screen = screen_copy,
++                    .screen = &screen_copy,
+                     .screen_type = state.terminal.active_screen,
+                     .mouse = state.mouse,
+                     .preedit = preedit,
+                     .cursor_style = cursor_style,
+                     .color_palette = state.terminal.color_palette.colors,
++                    .viewport_is_bottom = viewport_is_bottom,
+                     .full_rebuild = full_rebuild,
++                    .viewport_row_shift = viewport_row_shift,
++                    .shift_extra_row = shift_extra_row,
+                 };
+             };
+-            defer {
+-                critical.screen.deinit();
+-                if (critical.preedit) |p| p.deinit(self.alloc);
+-            }
+-
+-            // Build our GPU cells
+-            try self.rebuildCells(
+-                critical.full_rebuild,
+-                &critical.screen,
+-                critical.screen_type,
+-                critical.mouse,
+-                critical.preedit,
+-                critical.cursor_style,
+-                &critical.color_palette,
+-            );
++            const bg = bg: {
++                if (critical) |critical_v| {
++                    defer {
++                        critical_v.screen.deinit();
++                        if (critical_v.preedit) |p| p.deinit(self.alloc);
++                    }
++
++                    // Build our GPU cells
++                    _ = try self.rebuildCells(
++                        critical_v.full_rebuild,
++                        critical_v.viewport_row_shift,
++                        critical_v.screen,
++                        critical_v.screen_type,
++                        critical_v.mouse,
++                        critical_v.preedit,
++                        critical_v.cursor_style,
++                        &critical_v.color_palette,
++                        critical_v.viewport_is_bottom,
++                        critical_v.shift_extra_row,
++                    );
++
++                    break :bg critical_v.bg;
++                }
++
++                break :bg live_viewport_shift_bg orelse
++                    self.background_color orelse self.default_background_color;
++            };
+
+             // Notify our shaper we're done for the frame. For some shapers,
+             // such as CoreText, this triggers off-thread cleanup logic.
+@@ -1273,9 +1458,9 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+
+                 // Update our background color
+                 self.uniforms.bg_color = .{
+-                    critical.bg.r,
+-                    critical.bg.g,
+-                    critical.bg.b,
++                    bg.r,
++                    bg.g,
++                    bg.b,
+                     @intFromFloat(@round(self.config.background_opacity * 255.0)),
+                 };
+             }
+@@ -1754,6 +1939,15 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+                 text_end orelse @intCast(self.image_placements.items.len);
+         }
+
++        fn hasActiveKittyGraphics(
++            self: *const Self,
++            screen: *const terminal.Screen,
++        ) bool {
++            return self.image_virtual or
++                self.image_placements.items.len > 0 or
++                screen.kitty_images.placements.count() > 0;
++        }
++
+         fn prepKittyVirtualPlacement(
+             self: *Self,
+             t: *terminal.Terminal,
+@@ -2103,6 +2297,9 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+
+             // Reset our viewport to force a rebuild, in case of a font change.
+             self.cells_viewport = null;
++            self.cells_viewport_screen_y = null;
++            self.cells_viewport_is_bottom = false;
++            self.cells_cursor_row = null;
+
+             const blending_changed = old_blending != config.blending;
+
+@@ -2323,18 +2520,596 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+             }
+         }
+
++        const PreeditRange = struct {
++            y: terminal.size.CellCountInt,
++            x: [2]terminal.size.CellCountInt,
++            cp_offset: usize,
++        };
++
++        fn appendUniqueViewportRow(
++            alloc: Allocator,
++            rows: *std.ArrayListUnmanaged(terminal.size.CellCountInt),
++            y: terminal.size.CellCountInt,
++        ) Allocator.Error!void {
++            for (rows.items) |existing| {
++                if (existing == y) return;
++            }
++            try rows.append(alloc, y);
++        }
++
++        fn appendViewportDirtyRows(
++            alloc: Allocator,
++            rows: *std.ArrayListUnmanaged(terminal.size.CellCountInt),
++            screen: *terminal.Screen,
++        ) Allocator.Error!void {
++            const tl_pin = screen.pages.pin(.{ .viewport = .{} }) orelse return;
++            const br_pin = screen.pages.getBottomRight(.viewport) orelse return;
++            var page_it = tl_pin.pageIterator(.right_down, br_pin);
++            var viewport_y: terminal.size.CellCountInt = 0;
++            while (page_it.next()) |chunk| {
++                var dirty = chunk.node.data.dirtyBitSet();
++                var dirty_it = dirty.iterator(.{});
++                while (dirty_it.next()) |dirty_y| {
++                    if (dirty_y < chunk.start or dirty_y >= chunk.end) continue;
++                    const relative_y: terminal.size.CellCountInt = @intCast(dirty_y - chunk.start);
++                    try appendUniqueViewportRow(
++                        alloc,
++                        rows,
++                        viewport_y + relative_y,
++                    );
++                }
++                viewport_y += @intCast(chunk.end - chunk.start);
++            }
++        }
++
++        fn collectViewportShiftRows(
++            alloc: Allocator,
++            cells_rows: terminal.size.CellCountInt,
++            screen: *terminal.Screen,
++            viewport_row_shift: i32,
++            mouse: renderer.State.Mouse,
++            shift_extra_row: ?terminal.size.CellCountInt,
++        ) !std.ArrayListUnmanaged(terminal.size.CellCountInt) {
++            var result: std.ArrayListUnmanaged(terminal.size.CellCountInt) = .{};
++            errdefer result.deinit(alloc);
++
++            if (cells_rows == 0 or viewport_row_shift == 0) return result;
++
++            const abs_shift: terminal.size.CellCountInt = @intCast(@abs(viewport_row_shift));
++            const exposed_rows = @min(abs_shift, cells_rows);
++
++            if (viewport_row_shift > 0) {
++                var y: terminal.size.CellCountInt = 0;
++                while (y < exposed_rows) : (y += 1) {
++                    try appendUniqueViewportRow(alloc, &result, y);
++                }
++            } else {
++                var y = cells_rows - exposed_rows;
++                while (y < cells_rows) : (y += 1) {
++                    try appendUniqueViewportRow(alloc, &result, y);
++                }
++            }
++
++            if (shift_extra_row) |extra_row| {
++                if (extra_row < cells_rows) {
++                    try appendUniqueViewportRow(alloc, &result, extra_row);
++                }
++            }
++
++            if (mouse.point) |mouse_pt| {
++                if (mouse_pt.y < @as(u32, @intCast(cells_rows))) {
++                    const mouse_y: terminal.size.CellCountInt = @intCast(mouse_pt.y);
++                    try appendUniqueViewportRow(alloc, &result, mouse_y);
++
++                    const previous_mouse_y = @as(i32, @intCast(mouse_y)) + viewport_row_shift;
++                    if (previous_mouse_y >= 0 and previous_mouse_y < @as(i32, @intCast(cells_rows))) {
++                        try appendUniqueViewportRow(
++                            alloc,
++                            &result,
++                            @intCast(previous_mouse_y),
++                        );
++                    }
++                }
++            }
++
++            try appendViewportDirtyRows(
++                alloc,
++                &result,
++                screen,
++            );
++            return result;
++        }
++
++        fn rebuildCellRow(
++            self: *Self,
++            y: terminal.size.CellCountInt,
++            row: terminal.Pin,
++            screen: *terminal.Screen,
++            preedit_range: ?PreeditRange,
++            color_palette: *const terminal.color.Palette,
++            viewport_is_bottom: bool,
++            link_match_set: *link.MatchSet,
++        ) !void {
++            // True if we want to do font shaping around the cursor.
++            // We want to do font shaping as long as the cursor is enabled.
++            const shape_cursor = viewport_is_bottom and
++                y == screen.cursor.y;
++
++            // We need to get this row's selection, if
++            // there is one, for proper run splitting.
++            const row_selection = sel: {
++                const sel = screen.selection orelse break :sel null;
++                break :sel sel.containedRow(screen, row) orelse null;
++            };
++
++            // On primary screen, we still apply vertical padding
++            // extension under certain conditions we feel are safe.
++            //
++            // This helps make some scenarios look better while
++            // avoiding scenarios we know do NOT look good.
++            switch (self.config.padding_color) {
++                // These already have the correct values set above.
++                .background, .@"extend-always" => {},
++
++                // Apply heuristics for padding extension.
++                .extend => if (y == 0) {
++                    self.uniforms.padding_extend.up = !row.neverExtendBg(
++                        color_palette,
++                        self.background_color orelse self.default_background_color,
++                    );
++                } else if (y == self.cells.size.rows - 1) {
++                    self.uniforms.padding_extend.down = !row.neverExtendBg(
++                        color_palette,
++                        self.background_color orelse self.default_background_color,
++                    );
++                },
++            }
++
++            // Iterator of runs for shaping.
++            var run_iter_opts: font.shape.RunOptions = .{
++                .grid = self.font_grid,
++                .screen = screen,
++                .row = row,
++                .selection = row_selection,
++                .cursor_x = if (shape_cursor) screen.cursor.x else null,
++            };
++            run_iter_opts.applyBreakConfig(self.config.font_shaping_break);
++            var run_iter = self.font_shaper.runIterator(run_iter_opts);
++            var shaper_run: ?font.shape.TextRun = try run_iter.next(self.alloc);
++            var shaper_cells: ?[]const font.shape.Cell = null;
++            var shaper_cells_i: usize = 0;
++
++            const row_cells_all = row.cells(.all);
++
++            // If our viewport is wider than our cell contents buffer,
++            // we still only process cells up to the width of the buffer.
++            const row_cells = row_cells_all[0..@min(row_cells_all.len, self.cells.size.columns)];
++
++            for (row_cells, 0..) |*cell, x| {
++                // If this cell falls within our preedit range then we
++                // skip this because preedits are setup separately.
++                if (preedit_range) |range| preedit: {
++                    // We're not on the preedit line, no actions necessary.
++                    if (range.y != y) break :preedit;
++                    // We're before the preedit range, no actions necessary.
++                    if (x < range.x[0]) break :preedit;
++                    // We're in the preedit range, skip this cell.
++                    if (x <= range.x[1]) continue;
++                    // After exiting the preedit range we need to catch
++                    // the run position up because of the missed cells.
++                    // In all other cases, no action is necessary.
++                    if (x != range.x[1] + 1) break :preedit;
++
++                    // Step the run iterator until we find a run that ends
++                    // after the current cell, which will be the soonest run
++                    // that might contain glyphs for our cell.
++                    while (shaper_run) |run| {
++                        if (run.offset + run.cells > x) break;
++                        shaper_run = try run_iter.next(self.alloc);
++                        shaper_cells = null;
++                        shaper_cells_i = 0;
++                    }
++
++                    const run = shaper_run orelse break :preedit;
++
++                    // If we haven't shaped this run, do so now.
++                    shaper_cells = shaper_cells orelse
++                        // Try to read the cells from the shaping cache if we can.
++                        self.font_shaper_cache.get(run) orelse
++                        cache: {
++                            // Otherwise we have to shape them.
++                            const cells = try self.font_shaper.shape(run);
++
++                            // Try to cache them. If caching fails for any reason we
++                            // continue because it is just a performance optimization,
++                            // not a correctness issue.
++                            self.font_shaper_cache.put(
++                                self.alloc,
++                                run,
++                                cells,
++                            ) catch |err| {
++                                log.warn(
++                                    "error caching font shaping results err={}",
++                                    .{err},
++                                );
++                            };
++
++                            // The cells we get from direct shaping are always owned
++                            // by the shaper and valid until the next shaping call so
++                            // we can safely use them.
++                            break :cache cells;
++                        };
++
++                    const cells = shaper_cells.?;
++
++                    // Advance our index until we reach or pass
++                    // our current x position in the shaper cells.
++                    while (run.offset + cells[shaper_cells_i].x < x) {
++                        shaper_cells_i += 1;
++                    }
++                }
++
++                const wide = cell.wide;
++
++                const style = row.style(cell);
++
++                const cell_pin: terminal.Pin = cell: {
++                    var copy = row;
++                    copy.x = @intCast(x);
++                    break :cell copy;
++                };
++
++                // True if this cell is selected
++                const selected: bool = if (screen.selection) |sel|
++                    sel.contains(screen, .{
++                        .node = row.node,
++                        .y = row.y,
++                        .x = @intCast(
++                            // Spacer tails should show the selection
++                            // state of the wide cell they belong to.
++                            if (wide == .spacer_tail)
++                                x -| 1
++                            else
++                                x,
++                        ),
++                    })
++                else
++                    false;
++
++                // The `_style` suffixed values are the colors based on
++                // the cell style (SGR), before applying any additional
++                // configuration, inversions, selections, etc.
++                const bg_style = style.bg(cell, color_palette);
++                const fg_style = style.fg(.{
++                    .default = self.foreground_color orelse self.default_foreground_color,
++                    .palette = color_palette,
++                    .bold = self.config.bold_color,
++                });
++
++                // The final background color for the cell.
++                const bg = bg: {
++                    if (selected) {
++                        // If we have an explicit selection background color
++                        // specified int he config, use that
++                        if (self.config.selection_background) |v| {
++                            break :bg switch (v) {
++                                .color => |color| color.toTerminalRGB(),
++                                .@"cell-foreground" => if (style.flags.inverse) bg_style else fg_style,
++                                .@"cell-background" => if (style.flags.inverse) fg_style else bg_style,
++                            };
++                        }
++
++                        // If no configuration, then our selection background
++                        // is our foreground color.
++                        break :bg self.foreground_color orelse self.default_foreground_color;
++                    }
++
++                    // Not selected
++                    break :bg if (style.flags.inverse != isCovering(cell.codepoint()))
++                        // Two cases cause us to invert (use the fg color as the bg)
++                        // - The "inverse" style flag.
++                        // - A "covering" glyph; we use fg for bg in that
++                        //   case to help make sure that padding extension
++                        //   works correctly.
++                        //
++                        // If one of these is true (but not the other)
++                        // then we use the fg style color for the bg.
++                        fg_style
++                    else
++                        // Otherwise they cancel out.
++                        bg_style;
++                };
++
++                const fg = fg: {
++                    // Our happy-path non-selection background color
++                    // is our style or our configured defaults.
++                    const final_bg = bg_style orelse
++                        self.background_color orelse
++                        self.default_background_color;
++
++                    // Whether we need to use the bg color as our fg color:
++                    // - Cell is selected, inverted, and set to cell-foreground
++                    // - Cell is selected, not inverted, and set to cell-background
++                    // - Cell is inverted and not selected
++                    if (selected) {
++                        // Use the selection foreground if set
++                        if (self.config.selection_foreground) |v| {
++                            break :fg switch (v) {
++                                .color => |color| color.toTerminalRGB(),
++                                .@"cell-foreground" => if (style.flags.inverse) final_bg else fg_style,
++                                .@"cell-background" => if (style.flags.inverse) fg_style else final_bg,
++                            };
++                        }
++
++                        break :fg self.background_color orelse self.default_background_color;
++                    }
++
++                    break :fg if (style.flags.inverse)
++                        final_bg
++                    else
++                        fg_style;
++                };
++
++                // Foreground alpha for this cell.
++                const alpha: u8 = if (style.flags.faint) self.config.faint_opacity else 255;
++
++                // Set the cell's background color.
++                {
++                    const rgb = bg orelse self.background_color orelse self.default_background_color;
++
++                    // Determine our background alpha. If we have transparency configured
++                    // then this is dynamic depending on some situations. This is all
++                    // in an attempt to make transparency look the best for various
++                    // situations. See inline comments.
++                    const bg_alpha: u8 = bg_alpha: {
++                        const default: u8 = 255;
++
++                        // Cells that are selected should be fully opaque.
++                        if (selected) break :bg_alpha default;
++
++                        // Cells that are reversed should be fully opaque.
++                        if (style.flags.inverse) break :bg_alpha default;
++
++                        // If the user requested to have opacity on all cells, apply it.
++                        if (self.config.background_opacity_cells and bg_style != null) {
++                            var opacity: f64 = @floatFromInt(default);
++                            opacity *= self.config.background_opacity;
++                            break :bg_alpha @intFromFloat(opacity);
++                        }
++
++                        // Cells that have an explicit bg color should be fully opaque.
++                        if (bg_style != null) break :bg_alpha default;
++
++                        // Otherwise, we won't draw the bg for this cell,
++                        // we'll let the already-drawn background color
++                        // show through.
++                        break :bg_alpha 0;
++                    };
++
++                    self.cells.bgCell(y, x).* = .{
++                        rgb.r, rgb.g, rgb.b, bg_alpha,
++                    };
++                }
++
++                // If the invisible flag is set on this cell then we
++                // don't need to render any foreground elements, so
++                // we just skip all glyphs with this x coordinate.
++                //
++                // NOTE: This behavior matches xterm. Some other terminal
++                // emulators, e.g. Alacritty, still render text decorations
++                // and only make the text itself invisible. The decision
++                // has been made here to match xterm's behavior for this.
++                if (style.flags.invisible) {
++                    continue;
++                }
++
++                // Give links a single underline, unless they already have
++                // an underline, in which case use a double underline to
++                // distinguish them.
++                const link_match = link_match_set.contains(screen, cell_pin);
++                const underline: terminal.Attribute.Underline = if (link_match)
++                    if (style.flags.underline == .single)
++                        .double
++                    else
++                        .single
++                else
++                    style.flags.underline;
++
++                // We draw underlines first so that they layer underneath text.
++                // This improves readability when a colored underline is used
++                // which intersects parts of the text (descenders).
++                if (underline != .none) self.addUnderline(
++                    @intCast(x),
++                    @intCast(y),
++                    underline,
++                    style.underlineColor(color_palette) orelse fg,
++                    alpha,
++                ) catch |err| {
++                    log.warn(
++                        "error adding underline to cell, will be invalid x={} y={}, err={}",
++                        .{ x, y, err },
++                    );
++                };
++
++                if (style.flags.overline) self.addOverline(@intCast(x), @intCast(y), fg, alpha) catch |err| {
++                    log.warn(
++                        "error adding overline to cell, will be invalid x={} y={}, err={}",
++                        .{ x, y, err },
++                    );
++                };
++
++                // If we're at or past the end of our shaper run then
++                // we need to get the next run from the run iterator.
++                if (shaper_cells != null and shaper_cells_i >= shaper_cells.?.len) {
++                    shaper_run = try run_iter.next(self.alloc);
++                    shaper_cells = null;
++                    shaper_cells_i = 0;
++                }
++
++                if (shaper_run) |run| glyphs: {
++                    // If we haven't shaped this run yet, do so.
++                    shaper_cells = shaper_cells orelse
++                        // Try to read the cells from the shaping cache if we can.
++                        self.font_shaper_cache.get(run) orelse
++                        cache: {
++                            // Otherwise we have to shape them.
++                            const cells = try self.font_shaper.shape(run);
++
++                            // Try to cache them. If caching fails for any reason we
++                            // continue because it is just a performance optimization,
++                            // not a correctness issue.
++                            self.font_shaper_cache.put(
++                                self.alloc,
++                                run,
++                                cells,
++                            ) catch |err| {
++                                log.warn(
++                                    "error caching font shaping results err={}",
++                                    .{err},
++                                );
++                            };
++
++                            // The cells we get from direct shaping are always owned
++                            // by the shaper and valid until the next shaping call so
++                            // we can safely use them.
++                            break :cache cells;
++                        };
++
++                    const cells = shaper_cells orelse break :glyphs;
++
++                    // If there are no shaper cells for this run, ignore it.
++                    // This can occur for runs of empty cells, and is fine.
++                    if (cells.len == 0) break :glyphs;
++
++                    // If we encounter a shaper cell to the left of the current
++                    // cell then we have some problems. This logic relies on x
++                    // position monotonically increasing.
++                    assert(run.offset + cells[shaper_cells_i].x >= x);
++
++                    // NOTE: An assumption is made here that a single cell will never
++                    // be present in more than one shaper run. If that assumption is
++                    // violated, this logic breaks.
++
++                    while (shaper_cells_i < cells.len and run.offset + cells[shaper_cells_i].x == x) : ({
++                        shaper_cells_i += 1;
++                    }) {
++                        self.addGlyph(
++                            @intCast(x),
++                            @intCast(y),
++                            cell_pin,
++                            cells[shaper_cells_i],
++                            shaper_run.?,
++                            fg,
++                            alpha,
++                        ) catch |err| {
++                            log.warn(
++                                "error adding glyph to cell, will be invalid x={} y={}, err={}",
++                                .{ x, y, err },
++                            );
++                        };
++                    }
++                }
++
++                // Finally, draw a strikethrough if necessary.
++                if (style.flags.strikethrough) self.addStrikethrough(
++                    @intCast(x),
++                    @intCast(y),
++                    fg,
++                    alpha,
++                ) catch |err| {
++                    log.warn(
++                        "error adding strikethrough to cell, will be invalid x={} y={}, err={}",
++                        .{ x, y, err },
++                    );
++                };
++            }
++        }
++
++        fn refreshViewportShiftPaddingExtension(
++            self: *Self,
++            screen: *terminal.Screen,
++            color_palette: *const terminal.color.Palette,
++            refresh_up: bool,
++            refresh_down: bool,
++        ) void {
++            switch (self.config.padding_color) {
++                .background, .@"extend-always" => return,
++                .extend => {},
++            }
++
++            if (self.cells.size.rows == 0 or (!refresh_up and !refresh_down)) return;
++
++            const default_background =
++                self.background_color orelse self.default_background_color;
++
++            if (refresh_up) {
++                if (screen.pages.pin(.{ .viewport = .{} })) |top_row| {
++                    self.uniforms.padding_extend.up = !top_row.neverExtendBg(
++                        color_palette,
++                        default_background,
++                    );
++                }
++            }
++
++            const bottom_y = self.cells.size.rows - 1;
++            if (refresh_down) {
++                if (screen.pages.pin(.{ .viewport = .{ .y = bottom_y } })) |bottom_row| {
++                    self.uniforms.padding_extend.down = !bottom_row.neverExtendBg(
++                        color_palette,
++                        default_background,
++                    );
++                }
++            }
++        }
++
++        fn needsLeavingBottomCursorRowRebuild(
++            self: *Self,
++            screen: *terminal.Screen,
++            shifted_cursor_row: terminal.size.CellCountInt,
++            cursor_x: terminal.size.CellCountInt,
++        ) bool {
++            if (!self.config.font_shaping_break.cursor) return false;
++
++            const row_pin = screen.pages.pin(.{
++                .viewport = .{ .y = shifted_cursor_row },
++            }) orelse return false;
++            const rac = row_pin.rowAndCell();
++            const row = rac.row;
++
++            if (row.wrap or row.wrap_continuation or row.grapheme or row.styled or row.hyperlink) {
++                return true;
++            }
++
++            const cells = row_pin.cells(.all);
++            if (cursor_x >= cells.len) return false;
++
++            const cell = &cells[cursor_x];
++            if (cell.hasText() or cell.wide != .narrow) return true;
++
++            if (cursor_x > 0 and cells[cursor_x - 1].wide != .narrow) return true;
++            if (cursor_x + 1 < cells.len and cells[cursor_x + 1].wide != .narrow) return true;
++
++            // Plain unstyled rows with the cursor resting on an empty narrow
++            // cell do not need a dedicated rebuild when leaving the live
++            // bottom; clearing the cursor overlay is sufficient.
++            return false;
++        }
++
+         /// Convert the terminal state to GPU cells stored in CPU memory. These
+         /// are then synced to the GPU in the next frame. This only updates CPU
+         /// memory and doesn't touch the GPU.
+         fn rebuildCells(
+             self: *Self,
+             wants_rebuild: bool,
++            viewport_row_shift: i32,
+             screen: *terminal.Screen,
+             screen_type: terminal.ScreenType,
+             mouse: renderer.State.Mouse,
+             preedit: ?renderer.State.Preedit,
+             cursor_style_: ?renderer.CursorStyle,
+             color_palette: *const terminal.color.Palette,
++            viewport_is_bottom: bool,
++            shift_extra_row: ?terminal.size.CellCountInt,
+         ) !void {
+             self.draw_mutex.lock();
+             defer self.draw_mutex.unlock();
+@@ -2364,11 +3139,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+
+             // Determine our x/y range for preedit. We don't want to render anything
+             // here because we will render the preedit separately.
+-            const preedit_range: ?struct {
+-                y: terminal.size.CellCountInt,
+-                x: [2]terminal.size.CellCountInt,
+-                cp_offset: usize,
+-            } = if (preedit) |preedit_v| preedit: {
++            const preedit_range: ?PreeditRange = if (preedit) |preedit_v| preedit: {
+                 const range = preedit_v.range(screen.cursor.x, screen.pages.cols - 1);
+                 break :preedit .{
+                     .y = screen.cursor.y,
+@@ -2376,7 +3147,6 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+                     .cp_offset = range.cp_offset,
+                 };
+             } else null;
+-
+             const grid_size_diff =
+                 self.cells.size.rows != screen.pages.rows or
+                 self.cells.size.columns != screen.pages.cols;
+@@ -2413,427 +3183,82 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+                         };
+                     },
+                 }
++            } else if (viewport_row_shift != 0) {
++                self.cells.shiftRows(viewport_row_shift);
+             }
+
+-            // We rebuild the cells row-by-row because we
+-            // do font shaping and dirty tracking by row.
+-            var row_it = screen.pages.rowIterator(.left_up, .{ .viewport = .{} }, null);
+-            // If our cell contents buffer is shorter than the screen viewport,
+-            // we render the rows that fit, starting from the bottom. If instead
+-            // the viewport is shorter than the cell contents buffer, we align
+-            // the top of the viewport with the top of the contents buffer.
+-            var y: terminal.size.CellCountInt = @min(
+-                screen.pages.rows,
+-                self.cells.size.rows,
+-            );
+-            while (row_it.next()) |row| {
+-                // The viewport may have more rows than our cell contents,
+-                // so we need to break from the loop early if we hit y = 0.
+-                if (y == 0) break;
+-
+-                y -= 1;
+-
+-                if (!rebuild) {
+-                    // Only rebuild if we are doing a full rebuild or this row is dirty.
+-                    if (!row.isDirty()) continue;
+-
+-                    // Clear the cells if the row is dirty
++            if (!rebuild and viewport_row_shift != 0) {
++                var viewport_shift_rows = try collectViewportShiftRows(
++                    arena_alloc,
++                    self.cells.size.rows,
++                    screen,
++                    viewport_row_shift,
++                    mouse,
++                    shift_extra_row,
++                );
++                defer viewport_shift_rows.deinit(arena_alloc);
++
++                const bottom_y = self.cells.size.rows - 1;
++                var rebuilt_top = false;
++                var rebuilt_bottom = false;
++                for (viewport_shift_rows.items) |y| {
++                    const row = screen.pages.pin(.{ .viewport = .{ .y = y } }) orelse continue;
++                    if (y == 0) rebuilt_top = true;
++                    if (y == bottom_y) rebuilt_bottom = true;
+                     self.cells.clear(y);
++                    try self.rebuildCellRow(
++                        y,
++                        row,
++                        screen,
++                        preedit_range,
++                        color_palette,
++                        viewport_is_bottom,
++                        &link_match_set,
++                    );
+                 }
+
+-                // True if we want to do font shaping around the cursor.
+-                // We want to do font shaping as long as the cursor is enabled.
+-                const shape_cursor = screen.viewportIsBottom() and
+-                    y == screen.cursor.y;
+-
+-                // We need to get this row's selection, if
+-                // there is one, for proper run splitting.
+-                const row_selection = sel: {
+-                    const sel = screen.selection orelse break :sel null;
+-                    const pin = screen.pages.pin(.{ .viewport = .{ .y = y } }) orelse
+-                        break :sel null;
+-                    break :sel sel.containedRow(screen, pin) orelse null;
+-                };
+-
+-                // On primary screen, we still apply vertical padding
+-                // extension under certain conditions we feel are safe.
+-                //
+-                // This helps make some scenarios look better while
+-                // avoiding scenarios we know do NOT look good.
+-                switch (self.config.padding_color) {
+-                    // These already have the correct values set above.
+-                    .background, .@"extend-always" => {},
+-
+-                    // Apply heuristics for padding extension.
+-                    .extend => if (y == 0) {
+-                        self.uniforms.padding_extend.up = !row.neverExtendBg(
+-                            color_palette,
+-                            self.background_color orelse self.default_background_color,
+-                        );
+-                    } else if (y == self.cells.size.rows - 1) {
+-                        self.uniforms.padding_extend.down = !row.neverExtendBg(
+-                            color_palette,
+-                            self.background_color orelse self.default_background_color,
+-                        );
+-                    },
+-                }
+-
+-                // Iterator of runs for shaping.
+-                var run_iter_opts: font.shape.RunOptions = .{
+-                    .grid = self.font_grid,
+-                    .screen = screen,
+-                    .row = row,
+-                    .selection = row_selection,
+-                    .cursor_x = if (shape_cursor) screen.cursor.x else null,
+-                };
+-                run_iter_opts.applyBreakConfig(self.config.font_shaping_break);
+-                var run_iter = self.font_shaper.runIterator(run_iter_opts);
+-                var shaper_run: ?font.shape.TextRun = try run_iter.next(self.alloc);
+-                var shaper_cells: ?[]const font.shape.Cell = null;
+-                var shaper_cells_i: usize = 0;
+-
+-                const row_cells_all = row.cells(.all);
+-
+-                // If our viewport is wider than our cell contents buffer,
+-                // we still only process cells up to the width of the buffer.
+-                const row_cells = row_cells_all[0..@min(row_cells_all.len, self.cells.size.columns)];
+-
+-                for (row_cells, 0..) |*cell, x| {
+-                    // If this cell falls within our preedit range then we
+-                    // skip this because preedits are setup separately.
+-                    if (preedit_range) |range| preedit: {
+-                        // We're not on the preedit line, no actions necessary.
+-                        if (range.y != y) break :preedit;
+-                        // We're before the preedit range, no actions necessary.
+-                        if (x < range.x[0]) break :preedit;
+-                        // We're in the preedit range, skip this cell.
+-                        if (x <= range.x[1]) continue;
+-                        // After exiting the preedit range we need to catch
+-                        // the run position up because of the missed cells.
+-                        // In all other cases, no action is necessary.
+-                        if (x != range.x[1] + 1) break :preedit;
+-
+-                        // Step the run iterator until we find a run that ends
+-                        // after the current cell, which will be the soonest run
+-                        // that might contain glyphs for our cell.
+-                        while (shaper_run) |run| {
+-                            if (run.offset + run.cells > x) break;
+-                            shaper_run = try run_iter.next(self.alloc);
+-                            shaper_cells = null;
+-                            shaper_cells_i = 0;
+-                        }
+-
+-                        const run = shaper_run orelse break :preedit;
+-
+-                        // If we haven't shaped this run, do so now.
+-                        shaper_cells = shaper_cells orelse
+-                            // Try to read the cells from the shaping cache if we can.
+-                            self.font_shaper_cache.get(run) orelse
+-                            cache: {
+-                                // Otherwise we have to shape them.
+-                                const cells = try self.font_shaper.shape(run);
+-
+-                                // Try to cache them. If caching fails for any reason we
+-                                // continue because it is just a performance optimization,
+-                                // not a correctness issue.
+-                                self.font_shaper_cache.put(
+-                                    self.alloc,
+-                                    run,
+-                                    cells,
+-                                ) catch |err| {
+-                                    log.warn(
+-                                        "error caching font shaping results err={}",
+-                                        .{err},
+-                                    );
+-                                };
+-
+-                                // The cells we get from direct shaping are always owned
+-                                // by the shaper and valid until the next shaping call so
+-                                // we can safely use them.
+-                                break :cache cells;
+-                            };
+-
+-                        const cells = shaper_cells.?;
+-
+-                        // Advance our index until we reach or pass
+-                        // our current x position in the shaper cells.
+-                        while (run.offset + cells[shaper_cells_i].x < x) {
+-                            shaper_cells_i += 1;
+-                        }
+-                    }
+-
+-                    const wide = cell.wide;
+-
+-                    const style = row.style(cell);
+-
+-                    const cell_pin: terminal.Pin = cell: {
+-                        var copy = row;
+-                        copy.x = @intCast(x);
+-                        break :cell copy;
+-                    };
+-
+-                    // True if this cell is selected
+-                    const selected: bool = if (screen.selection) |sel|
+-                        sel.contains(screen, .{
+-                            .node = row.node,
+-                            .y = row.y,
+-                            .x = @intCast(
+-                                // Spacer tails should show the selection
+-                                // state of the wide cell they belong to.
+-                                if (wide == .spacer_tail)
+-                                    x -| 1
+-                                else
+-                                    x,
+-                            ),
+-                        })
+-                    else
+-                        false;
+-
+-                    // The `_style` suffixed values are the colors based on
+-                    // the cell style (SGR), before applying any additional
+-                    // configuration, inversions, selections, etc.
+-                    const bg_style = style.bg(cell, color_palette);
+-                    const fg_style = style.fg(.{
+-                        .default = self.foreground_color orelse self.default_foreground_color,
+-                        .palette = color_palette,
+-                        .bold = self.config.bold_color,
+-                    });
+-
+-                    // The final background color for the cell.
+-                    const bg = bg: {
+-                        if (selected) {
+-                            // If we have an explicit selection background color
+-                            // specified int he config, use that
+-                            if (self.config.selection_background) |v| {
+-                                break :bg switch (v) {
+-                                    .color => |color| color.toTerminalRGB(),
+-                                    .@"cell-foreground" => if (style.flags.inverse) bg_style else fg_style,
+-                                    .@"cell-background" => if (style.flags.inverse) fg_style else bg_style,
+-                                };
+-                            }
+-
+-                            // If no configuration, then our selection background
+-                            // is our foreground color.
+-                            break :bg self.foreground_color orelse self.default_foreground_color;
+-                        }
+-
+-                        // Not selected
+-                        break :bg if (style.flags.inverse != isCovering(cell.codepoint()))
+-                            // Two cases cause us to invert (use the fg color as the bg)
+-                            // - The "inverse" style flag.
+-                            // - A "covering" glyph; we use fg for bg in that
+-                            //   case to help make sure that padding extension
+-                            //   works correctly.
+-                            //
+-                            // If one of these is true (but not the other)
+-                            // then we use the fg style color for the bg.
+-                            fg_style
+-                        else
+-                            // Otherwise they cancel out.
+-                            bg_style;
+-                    };
+-
+-                    const fg = fg: {
+-                        // Our happy-path non-selection background color
+-                        // is our style or our configured defaults.
+-                        const final_bg = bg_style orelse
+-                            self.background_color orelse
+-                            self.default_background_color;
+-
+-                        // Whether we need to use the bg color as our fg color:
+-                        // - Cell is selected, inverted, and set to cell-foreground
+-                        // - Cell is selected, not inverted, and set to cell-background
+-                        // - Cell is inverted and not selected
+-                        if (selected) {
+-                            // Use the selection foreground if set
+-                            if (self.config.selection_foreground) |v| {
+-                                break :fg switch (v) {
+-                                    .color => |color| color.toTerminalRGB(),
+-                                    .@"cell-foreground" => if (style.flags.inverse) final_bg else fg_style,
+-                                    .@"cell-background" => if (style.flags.inverse) fg_style else final_bg,
+-                                };
+-                            }
+-
+-                            break :fg self.background_color orelse self.default_background_color;
+-                        }
+-
+-                        break :fg if (style.flags.inverse)
+-                            final_bg
+-                        else
+-                            fg_style;
+-                    };
+-
+-                    // Foreground alpha for this cell.
+-                    const alpha: u8 = if (style.flags.faint) self.config.faint_opacity else 255;
+-
+-                    // Set the cell's background color.
+-                    {
+-                        const rgb = bg orelse self.background_color orelse self.default_background_color;
+-
+-                        // Determine our background alpha. If we have transparency configured
+-                        // then this is dynamic depending on some situations. This is all
+-                        // in an attempt to make transparency look the best for various
+-                        // situations. See inline comments.
+-                        const bg_alpha: u8 = bg_alpha: {
+-                            const default: u8 = 255;
+-
+-                            // Cells that are selected should be fully opaque.
+-                            if (selected) break :bg_alpha default;
+-
+-                            // Cells that are reversed should be fully opaque.
+-                            if (style.flags.inverse) break :bg_alpha default;
+-
+-                            // If the user requested to have opacity on all cells, apply it.
+-                            if (self.config.background_opacity_cells and bg_style != null) {
+-                                var opacity: f64 = @floatFromInt(default);
+-                                opacity *= self.config.background_opacity;
+-                                break :bg_alpha @intFromFloat(opacity);
+-                            }
+-
+-                            // Cells that have an explicit bg color should be fully opaque.
+-                            if (bg_style != null) break :bg_alpha default;
+-
+-                            // Otherwise, we won't draw the bg for this cell,
+-                            // we'll let the already-drawn background color
+-                            // show through.
+-                            break :bg_alpha 0;
+-                        };
+-
+-                        self.cells.bgCell(y, x).* = .{
+-                            rgb.r, rgb.g, rgb.b, bg_alpha,
+-                        };
+-                    }
+-
+-                    // If the invisible flag is set on this cell then we
+-                    // don't need to render any foreground elements, so
+-                    // we just skip all glyphs with this x coordinate.
+-                    //
+-                    // NOTE: This behavior matches xterm. Some other terminal
+-                    // emulators, e.g. Alacritty, still render text decorations
+-                    // and only make the text itself invisible. The decision
+-                    // has been made here to match xterm's behavior for this.
+-                    if (style.flags.invisible) {
+-                        continue;
+-                    }
+-
+-                    // Give links a single underline, unless they already have
+-                    // an underline, in which case use a double underline to
+-                    // distinguish them.
+-                    const underline: terminal.Attribute.Underline = if (link_match_set.contains(screen, cell_pin))
+-                        if (style.flags.underline == .single)
+-                            .double
+-                        else
+-                            .single
+-                    else
+-                        style.flags.underline;
+-
+-                    // We draw underlines first so that they layer underneath text.
+-                    // This improves readability when a colored underline is used
+-                    // which intersects parts of the text (descenders).
+-                    if (underline != .none) self.addUnderline(
+-                        @intCast(x),
+-                        @intCast(y),
+-                        underline,
+-                        style.underlineColor(color_palette) orelse fg,
+-                        alpha,
+-                    ) catch |err| {
+-                        log.warn(
+-                            "error adding underline to cell, will be invalid x={} y={}, err={}",
+-                            .{ x, y, err },
+-                        );
+-                    };
+-
+-                    if (style.flags.overline) self.addOverline(@intCast(x), @intCast(y), fg, alpha) catch |err| {
+-                        log.warn(
+-                            "error adding overline to cell, will be invalid x={} y={}, err={}",
+-                            .{ x, y, err },
+-                        );
+-                    };
++                self.refreshViewportShiftPaddingExtension(
++                    screen,
++                    color_palette,
++                    !rebuilt_top,
++                    !rebuilt_bottom,
++                );
++            } else {
++                // We rebuild the cells row-by-row because we
++                // do font shaping and dirty tracking by row.
++                var row_it = screen.pages.rowIterator(.left_up, .{ .viewport = .{} }, null);
++                // If our cell contents buffer is shorter than the screen viewport,
++                // we render the rows that fit, starting from the bottom. If instead
++                // the viewport is shorter than the cell contents buffer, we align
++                // the top of the viewport with the top of the contents buffer.
++                var y: terminal.size.CellCountInt = @min(
++                    screen.pages.rows,
++                    self.cells.size.rows,
++                );
++                while (row_it.next()) |row| {
++                    // The viewport may have more rows than our cell contents,
++                    // so we need to break from the loop early if we hit y = 0.
++                    if (y == 0) break;
+
+-                    // If we're at or past the end of our shaper run then
+-                    // we need to get the next run from the run iterator.
+-                    if (shaper_cells != null and shaper_cells_i >= shaper_cells.?.len) {
+-                        shaper_run = try run_iter.next(self.alloc);
+-                        shaper_cells = null;
+-                        shaper_cells_i = 0;
+-                    }
++                    y -= 1;
+
+-                    if (shaper_run) |run| glyphs: {
+-                        // If we haven't shaped this run yet, do so.
+-                        shaper_cells = shaper_cells orelse
+-                            // Try to read the cells from the shaping cache if we can.
+-                            self.font_shaper_cache.get(run) orelse
+-                            cache: {
+-                                // Otherwise we have to shape them.
+-                                const cells = try self.font_shaper.shape(run);
+-
+-                                // Try to cache them. If caching fails for any reason we
+-                                // continue because it is just a performance optimization,
+-                                // not a correctness issue.
+-                                self.font_shaper_cache.put(
+-                                    self.alloc,
+-                                    run,
+-                                    cells,
+-                                ) catch |err| {
+-                                    log.warn(
+-                                        "error caching font shaping results err={}",
+-                                        .{err},
+-                                    );
+-                                };
+-
+-                                // The cells we get from direct shaping are always owned
+-                                // by the shaper and valid until the next shaping call so
+-                                // we can safely use them.
+-                                break :cache cells;
+-                            };
++                    if (!rebuild) {
++                        // Only rebuild if we are doing a full rebuild or this row is dirty.
++                        if (!row.isDirty()) continue;
+
+-                        const cells = shaper_cells orelse break :glyphs;
+-
+-                        // If there are no shaper cells for this run, ignore it.
+-                        // This can occur for runs of empty cells, and is fine.
+-                        if (cells.len == 0) break :glyphs;
+-
+-                        // If we encounter a shaper cell to the left of the current
+-                        // cell then we have some problems. This logic relies on x
+-                        // position monotonically increasing.
+-                        assert(run.offset + cells[shaper_cells_i].x >= x);
+-
+-                        // NOTE: An assumption is made here that a single cell will never
+-                        // be present in more than one shaper run. If that assumption is
+-                        // violated, this logic breaks.
+-
+-                        while (shaper_cells_i < cells.len and run.offset + cells[shaper_cells_i].x == x) : ({
+-                            shaper_cells_i += 1;
+-                        }) {
+-                            self.addGlyph(
+-                                @intCast(x),
+-                                @intCast(y),
+-                                cell_pin,
+-                                cells[shaper_cells_i],
+-                                shaper_run.?,
+-                                fg,
+-                                alpha,
+-                            ) catch |err| {
+-                                log.warn(
+-                                    "error adding glyph to cell, will be invalid x={} y={}, err={}",
+-                                    .{ x, y, err },
+-                                );
+-                            };
+-                        }
++                        // Clear the cells if the row is dirty
++                        self.cells.clear(y);
+                     }
+
+-                    // Finally, draw a strikethrough if necessary.
+-                    if (style.flags.strikethrough) self.addStrikethrough(
+-                        @intCast(x),
+-                        @intCast(y),
+-                        fg,
+-                        alpha,
+-                    ) catch |err| {
+-                        log.warn(
+-                            "error adding strikethrough to cell, will be invalid x={} y={}, err={}",
+-                            .{ x, y, err },
+-                        );
+-                    };
++                    try self.rebuildCellRow(
++                        y,
++                        row,
++                        screen,
++                        preedit_range,
++                        color_palette,
++                        viewport_is_bottom,
++                        &link_match_set,
++                    );
+                 }
+             }
+
+@@ -2886,7 +3311,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+                 self.addCursor(screen, style, cursor_color);
+
+                 // If the cursor is visible then we set our uniforms.
+-                if (style == .block and screen.viewportIsBottom()) {
++                if (style == .block and viewport_is_bottom) {
+                     const wide = screen.cursor.page_cell.wide;
+
+                     self.uniforms.cursor_pos = .{
+@@ -2964,6 +3389,53 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+             // });
+         }
+
++        fn shouldRebuildViewportShiftRow(
++            self: *Self,
++            y: terminal.size.CellCountInt,
++            viewport_row_shift: i32,
++            mouse: renderer.State.Mouse,
++            shift_extra_row: ?terminal.size.CellCountInt,
++        ) bool {
++            if (viewport_row_shift == 0 or self.cells.size.rows == 0) return false;
++
++            const rows = self.cells.size.rows;
++            const abs_shift: terminal.size.CellCountInt = @intCast(@abs(viewport_row_shift));
++
++            if (shift_extra_row) |extra_row| {
++                if (y == extra_row) return true;
++            }
++
++            if (viewport_row_shift > 0) {
++                if (y < abs_shift) return true;
++                if (y == rows - 1) return true;
++            } else {
++                if (y >= rows - abs_shift) return true;
++                if (y == 0) return true;
++            }
++
++            const mouse_pt = mouse.point orelse return false;
++            if (mouse_pt.y >= @as(u32, @intCast(rows))) return false;
++
++            const mouse_y: terminal.size.CellCountInt = @intCast(mouse_pt.y);
++            if (y == mouse_y) return true;
++
++            const previous_mouse_y = @as(i32, @intCast(mouse_y)) + viewport_row_shift;
++            if (previous_mouse_y < 0 or previous_mouse_y >= @as(i32, @intCast(rows))) return false;
++
++            return y == @as(terminal.size.CellCountInt, @intCast(previous_mouse_y));
++        }
++
++        fn mouseStateEqual(
++            lhs: renderer.State.Mouse,
++            rhs: renderer.State.Mouse,
++        ) bool {
++            const points_equal = if (lhs.point) |pt|
++                if (rhs.point) |other| pt.eql(other) else false
++            else
++                rhs.point == null;
++            return points_equal and lhs.mods.equal(rhs.mods);
++        }
++
+         /// Add an underline decoration to the specified cell
+         fn addUnderline(
+             self: *Self,

@@ -711,3 +711,883 @@ An attempted apples-to-apples visual parity bench through screen capture was
 blocked on this host. `/usr/sbin/screencapture` failed with
 `could not create image from display`, so any native comparison that depends on
 screen/image diffs still needs a Screen Recording-capable environment.
+
+### 2026-03-19 phase-aware synthetic bursts and gesture-boundary invalidation
+
+The next follow-up tried to make the synthetic trackpad input closer to real
+AppKit gestures before touching the host scheduler again.
+
+Changes:
+
+- `scripts/perf/GateLAXKeySender.swift` gained
+  `--scroll-phase-mode trackpad-burst`, which stamps pixel scroll bursts with
+  `began -> changed -> ended` phase fields
+- both transcript-style trackpad benches now use that mode
+- `GhosttyTerminalView.scrollWheel(with:)` now treats only
+  `event.phase == .began` as a scheduler boundary and invalidates stale pump /
+  recovery timers there
+
+Validation:
+
+```bash
+./scripts/perf/gate_l_ax_key_sender.sh --dry-run --scroll-pixels -24 --scroll-repeat 6 --scroll-phase-mode trackpad-burst
+swift test --build-path .build-codex --filter GhosttyCLIOSCBridgeTests
+xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -configuration Release -derivedDataPath build AGTMUX_BIN=/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/release/agtmux build
+AGTMUX_PERF_APP_BIN="$PWD/build/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" \
+  scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4
+AGTMUX_PERF_APP_BIN="$PWD/build/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" \
+  scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 8
+```
+
+Rejected first attempt:
+
+- giving phase/momentum its own continuation deadline regressed release samples
+  badly:
+  - `4-burst scroll_to_layer_present_ms p50 3.338 / p95 43.484 / max 53.892`
+  - `8-burst scroll_to_layer_present_ms p50 2.859 / p95 69.332 / max 146.293`
+
+Accepted follow-up:
+
+- keep the phase-aware sender
+- use phase only to invalidate stale timers at gesture start
+
+Measured release A/B with the same phase-aware harness:
+
+- without `phase.began` invalidation:
+  - `4-burst scroll_to_layer_present_ms p50 2.390 / p95 30.491 / max 52.183`
+  - `8-burst scroll_to_layer_present_ms p50 4.686 / p95 51.290 / max 176.185`
+- with `phase.began` invalidation:
+  - `4-burst scroll_to_layer_present_ms p50 4.009 / p95 16.917 / max 24.102`
+  - `8-burst scroll_to_layer_present_ms p50 3.991 / p95 49.586 / max 115.386`
+
+Interpretation:
+
+- phase-aware synthetic bursts are useful enough to keep; they expose a real
+  scheduler seam that the old burst sender never modeled
+- phase should not own continuation policy directly in this host path
+- the low-risk win is killing stale timers at gesture boundaries, which cuts
+  both short-burst `p95/max` and long-burst `max` without reopening the worse
+  regressions from the deadline-based variant
+
+### 2026-03-19 stale pending immediate-draw invalidation at gesture start
+
+The next follow-up kept the phase-aware sender and the existing
+`phase.began` timer invalidation, but expanded the gesture boundary to also
+cancel a stale pending immediate draw. The goal was to stop an `up` burst from
+waiting behind an older coalesced draw block that had been queued by the
+previous gesture.
+
+Changes:
+
+- `GhosttyTerminalView` now versions/coalesces immediate scroll-presentation
+  draws and treats `event.phase == .began` as a boundary for both:
+  - pending immediate scroll-presentation draws
+  - delayed pump / recovery timer callbacks
+
+Validation:
+
+```bash
+swift test --build-path .build-codex --filter GhosttyCLIOSCBridgeTests
+xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -configuration Release -derivedDataPath build AGTMUX_BIN=/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/release/agtmux build
+AGTMUX_PERF_APP_BIN="$PWD/build/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" \
+  scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4
+AGTMUX_PERF_APP_BIN="$PWD/build/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" \
+  scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 8
+scripts/perf/gate_l_native_ghostty_trackpad_history_scroll_bench.sh \
+  --app /Applications/Ghostty.app --iterations 4
+```
+
+Accepted release samples from the serial reruns:
+
+- embedded release `4-burst`
+  `scroll_to_layer_present_ms p50 3.032 / p95 29.512 / max 46.259`
+- embedded release `8-burst`
+  `scroll_to_layer_present_ms p50 6.518 / p95 28.570 / max 69.155`
+- native same-input proxy rerun stayed at
+  `tmux_visible_line_change_ms p50 574.549 / p95 576.174 / max 576.174`
+
+Temporary rollback check:
+
+- a local A/B that removed the pending-draw invalidation again was not kept
+- the focused scheduler regression test immediately failed because
+  `phase.began` no longer cleared the pending immediate-draw state
+- the ad-hoc benchmark reruns without that invalidation also became noisy
+  enough to produce empty bursts / app-inactive samples, so the branch stayed
+  on the pending-draw invalidation version
+
+Interpretation:
+
+- the remaining visible difference versus native is still a presentation-path
+  tail, but a new burst should not have to inherit stale coalesced draw state
+  from the previous gesture
+- on this host the accepted follow-up materially improved the long-burst tail
+  relative to the earlier phase-aware baseline without pending-draw
+  invalidation (`8-burst p95 51.290 / max 176.185`)
+- short-burst results still vary enough that future work should continue to use
+  serial reruns and avoid overfitting one sample
+
+### 2026-03-19 production-path scroll telemetry gating
+
+This follow-up did not change the scheduler. It removed scroll benchmark
+bookkeeping from normal app launches so the user path no longer pays for
+per-event signposts and sample-array appends.
+
+Implementation summary:
+
+- `GhosttyTerminalView` now enables scroll telemetry only when one of these is
+  true:
+  - `AGTMUX_UITEST=1`
+  - the process is running under XCTest
+  - `AGTMUX_SCROLL_TELEMETRY=1`
+- normal app launches therefore still track the functional
+  `lastScrollInputUptime` / `lastLayerPresentUptime` state that the scheduler
+  needs, but they no longer record `scrollToFirstDraw`, `scrollToLayerPresent`,
+  queue-delay, wake-lateness, or signpost samples on every scroll event
+
+Validation:
+
+```bash
+swift test --build-path .build-codex --filter GhosttyCLIOSCBridgeTests
+./scripts/dev/validate-docs.sh
+xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -configuration Release -derivedDataPath build AGTMUX_BIN=/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/release/agtmux build
+AGTMUX_SCROLL_TELEMETRY=0 AGTMUX_PERF_APP_BIN="$PWD/build/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" \
+  ./scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4
+AGTMUX_PERF_APP_BIN="$PWD/build/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" \
+  ./scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4
+```
+
+Results:
+
+- explicit telemetry-off release smoke:
+  - `tmux_visible_line_change_ms p50 584.144 / p95 590.875 / max 590.875`
+  - all scroll telemetry metrics dropped to `count: 0` as intended
+- telemetry-enabled rerun on the same release build:
+  - `tmux_visible_line_change_ms p50 568.004 / p95 576.575 / max 576.575`
+  - `scroll_to_layer_present_ms p50 5.346 / p95 39.518 / max 53.005`
+
+Interpretation:
+
+- this is worth keeping because it removes benchmark-only work from the user
+  hot path
+- it is not a measured presentation-seam win by itself; the telemetry-enabled
+  rerun remained noisy on this host
+- the next scheduler iteration should treat this as cleanup that lowers
+  production overhead, then continue to target the remaining
+  `25-50ms` presentation tail directly
+
+### 2026-03-19 native-cadence subset experiments
+
+The next wave explicitly tried to reduce host-owned cadence during precise
+trackpad scrolling, guided by a code review of native Ghostty and cmux. Both
+codebases keep AppKit scroll input thin and let cadence stay with the renderer /
+display-linked wake path rather than with extra host timers.
+
+Three small subsets were measured on top of the current embedded baseline and
+all three were rejected.
+
+#### 1. Disable timer continuation during active precise gestures
+
+This variant kept immediate draws on each scroll event, but stopped scheduling
+the draw-pump continuation while `phase` or `momentumPhase` was active.
+
+Validation:
+
+```bash
+xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -configuration Release -derivedDataPath build-native-cadence AGTMUX_BIN=/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/release/agtmux build
+AGTMUX_PERF_APP_BIN="$PWD/build-native-cadence/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" \
+  scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4 > /tmp/agtmux-native-cadence-release-4.json
+AGTMUX_PERF_APP_BIN="$PWD/build-native-cadence/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" \
+  scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 8 > /tmp/agtmux-native-cadence-release-8.json
+```
+
+Results:
+
+- `4-burst`: `scroll_to_layer_present_ms p50 4.721 / p95 10.828 / max 11.451`
+  with `empty_burst_count 2`
+- `8-burst`: `scroll_to_layer_present_ms p50 4.508 / p95 127.399 / max 240.782`
+
+Verdict:
+
+- rejected; the short path looked good in isolation, but the long path blew up
+  and the empty bursts were not acceptable
+
+#### 2. Defer all precise steady-state changed events to a single input recovery probe
+
+This variant kept the immediate draw on `phase == .began`, but routed precise
+`changed` / momentum-`changed` events through a single outstanding
+input-recovery probe instead of an immediate host draw.
+
+Validation:
+
+```bash
+AGTMUX_PERF_APP_BIN="$PWD/build-native-cadence/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" \
+  scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4 > /tmp/agtmux-phase-aware-4.json
+AGTMUX_PERF_APP_BIN="$PWD/build-native-cadence/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" \
+  scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 8 > /tmp/agtmux-phase-aware-8.json
+```
+
+Results:
+
+- `4-burst`: `scroll_to_layer_present_ms p50 7.453 / p95 24.636 / max 48.092`
+- `8-burst`: `scroll_to_layer_present_ms p50 7.454 / p95 39.471 / max 57.612`
+- per-burst slices still showed the same structure as before: `down` bursts
+  stayed healthy, while alternating `up` bursts owned the tail
+
+Verdict:
+
+- rejected; this reduced some long-path spikes relative to experiment 1, but it
+  clearly regressed the short path and still left the `up` bursts as the
+  dominant failure mode
+
+#### 3. Present-aware precise defer
+
+This variant only deferred precise `changed` events once the previous scroll
+draw had already produced a layer present, falling back to immediate draws when
+presentation had not caught up.
+
+Validation:
+
+```bash
+AGTMUX_PERF_APP_BIN="$PWD/build-native-cadence/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" \
+  scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4 > /tmp/agtmux-present-aware-4.json
+AGTMUX_PERF_APP_BIN="$PWD/build-native-cadence/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" \
+  scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 8 > /tmp/agtmux-present-aware-8.json
+```
+
+Results:
+
+- `4-burst`: `scroll_to_layer_present_ms p50 5.262 / p95 10.579 / max 11.592`
+  with `empty_burst_count 2`
+- `8-burst`: `scroll_to_layer_present_ms p50 3.793 / p95 116.754 / max 157.261`
+- per-burst slices made the asymmetry obvious:
+  - `down` bursts stayed around `10-12ms`
+  - alternating `up` bursts jumped into the `87-157ms` range
+
+Verdict:
+
+- rejected; even a present-aware defer path still regressed the long path
+  sharply and reproduced the same `up`-burst asymmetry
+
+Takeaway:
+
+- the strong pattern across all three rejected native-cadence subsets is that
+  `up` scrollback bursts still rely on host immediate draws much more than
+  `down` bursts do
+- blindly reducing host ownership helps some medians, but it does not yet
+  produce a net win because the alternating `up` bursts collapse first
+- the next structural investigation should target the actual `up` scrollback
+  presentation seam inside the embedded Ghostty path rather than trying more
+  timer-level policy tweaks
+
+### 2026-03-20 stricter renderer-owned branches
+
+After the subset experiments above, the next wave removed progressively more of
+the custom embedded scroll cadence so the path would converge on native Ghostty
+ownership rather than on host-side policy.
+
+Validation:
+
+```bash
+./scripts/dev/prepare-ghosttykit.sh
+swift test --build-path .build-codex --filter 'GhosttyInputTests|GhosttyCLIOSCBridgeTests'
+xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -configuration Release -derivedDataPath build-renderer-native-cadence AGTMUX_BIN=/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/release/agtmux build
+```
+
+#### 1. Display-link active-session branch
+
+This branch kept a renderer-owned scroll session alive across direct phase /
+momentum and refreshed frame data on display-link ticks while the session was
+active.
+
+Results:
+
+- `4-burst`: `scroll_to_layer_present_ms p50 16.611 / p95 50.387 / max 71.750`
+- `8-burst`: `scroll_to_layer_present_ms p50 25.430 / p95 124.453 / max 392.601`
+
+Verdict:
+
+- rejected; better than some later stricter branches, but still materially
+  worse than the earlier hybrid best-known path and still dominated by
+  alternating `up` bursts
+
+#### 2. Renderer wakeup plus display-link fallback
+
+This branch moved state preparation back onto the renderer wakeup path for each
+precise scroll input and let display-link only catch up if a pending request
+survived until draw time.
+
+Results:
+
+- `4-burst`: `scroll_to_layer_present_ms p50 25.089 / p95 92.284 / max 395.373`
+- `8-burst`: `scroll_to_layer_present_ms p50 17.730 / p95 94.427 / max 378.578`
+
+Verdict:
+
+- rejected; the `8-burst` median improved relative to the active-session path,
+  but the short path regressed badly and `up` burst tails still remained far
+  above the hybrid baseline
+
+#### 3. Pure upstream scroll path
+
+This branch removed the custom precision-scroll renderer path entirely and
+returned to the upstream Ghostty shape: `scrollViewport -> queueRender()` on
+input, then display-link draw cadence.
+
+Results:
+
+- `4-burst`: `scroll_to_layer_present_ms p50 24.039 / p95 88.319 / max 117.684`
+- `8-burst`: `scroll_to_layer_present_ms p50 26.922 / p95 270.136 / max 378.850`
+- `8-burst down`: `p50 12.032 / p95 31.642 / max 108.994`
+- `8-burst up`: `p50 74.245 / p95 327.194 / max 378.850`
+
+Verdict:
+
+- strongly rejected; this was the clearest proof that pure renderer ownership
+  alone does not solve the embedded case on this host
+
+Interpretation:
+
+- the failure pattern across all three stricter branches is consistent:
+  `down` bursts stay near frame budget, while alternating `up` bursts own the
+  tail
+- this now points away from host timer cadence as the dominant limiter and
+  toward the cost of embedded Ghostty's `updateFrameData()` / viewport-change
+  rebuild work during scrollback
+- this last sentence is an inference from the measured asymmetry plus the
+  renderer code paths, not a direct instrumented proof yet
+
+### 2026-03-20 vendor update-frame no-op short-circuit
+
+The next follow-up tested the new hypothesis directly inside embedded Ghostty's
+renderer. Instead of changing cadence ownership again, it targeted repeated
+host-driven draws that were still re-entering `rebuildCells(...)` even when the
+viewport and presentation inputs had not changed.
+
+Validation:
+
+```bash
+PATH="/opt/homebrew/opt/zig@0.14/bin:$PATH" \
+  AGTMUX_VENDOR_GHOSTTY_DIR="$PWD/vendor/ghostty" \
+  AGTMUX_GHOSTTYKIT_DIR="$PWD/GhosttyKit/GhosttyKit.xcframework" \
+  ./scripts/build-ghosttykit.sh
+swift test --build-path .build-codex --filter 'GhosttyCLIOSCBridgeTests|GhosttyTerminalSurfaceRegistryTests'
+xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -configuration Release \
+  -derivedDataPath build-scroll-root \
+  AGTMUX_BIN=/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/release/agtmux build
+AGTMUX_PERF_APP_BIN="$PWD/build-scroll-root/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" \
+  scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4
+AGTMUX_PERF_APP_BIN="$PWD/build-scroll-root/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" \
+  scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 8
+```
+
+Rejected first attempt:
+
+- relaxed the first-`up` viewport-shift fast-path guard
+- replaced full-screen dirty clearing with fringe-row-only clearing
+
+Results:
+
+- `4-burst`: `scroll_to_layer_present_ms p50 8.817 / p95 61.803 / max 82.141`
+- `8-burst`: `scroll_to_layer_present_ms p50 9.657 / p95 60.814 / max 132.388`
+
+Verdict:
+
+- rejected; the lower `max` did not compensate for the much worse `p95`
+
+Rejected second attempt:
+
+- kept the first-`up` relaxation
+- widened dirty clearing from fringe rows to viewport pages
+
+Results:
+
+- `4-burst`: `scroll_to_layer_present_ms p50 8.891 / p95 62.591 / max 88.392`
+- `8-burst`: `scroll_to_layer_present_ms p50 9.288 / p95 57.770 / max 114.206`
+
+Verdict:
+
+- rejected; still worse than the earlier live-screen/no-clone baseline on the
+  tail that users actually feel
+
+Accepted follow-up:
+
+- keep the live-screen/no-clone viewport-shift path unchanged
+- add cached mouse/cursor metadata to the renderer
+- if all frame-affecting inputs are unchanged:
+  - terminal dirty bits clear
+  - screen dirty bits clear
+  - viewport row unchanged
+  - bottom/non-bottom state unchanged
+  - selection/preedit absent
+  - kitty/image paths inactive
+  - cursor style unchanged
+  - mouse state unchanged
+  then skip `rebuildCells(...)` entirely and reuse the previous cell buffers
+
+Results:
+
+- `4-burst`: `scroll_to_layer_present_ms p50 8.068 / p95 23.153 / max 24.423`
+- `8-burst`: `scroll_to_layer_present_ms p50 9.407 / p95 28.712 / max 30.561`
+
+Previous accepted baseline:
+
+- `4-burst`: `scroll_to_layer_present_ms p50 8.561 / p95 37.247 / max 109.972`
+- `8-burst`: `scroll_to_layer_present_ms p50 8.982 / p95 53.995 / max 146.282`
+
+Interpretation:
+
+- the first strong structural win after the rejected renderer-owned branches
+  came from removing redundant renderer work, not from changing scheduler
+  ownership again
+- this is strong evidence that a meaningful part of the remaining hitch lived
+  inside embedded Ghostty's repeated `updateFrame()` path itself
+- it does not prove the renderer path is fully solved; the next likely seam is
+  the expensive first `up`-scrollback transition and any remaining full-page
+  dirty work, which were exactly the places where the two rejected variants
+  regressed
+
+### 2026-03-20 provenance repair and fresh rebuild
+
+The accepted vendor-side win above originally existed only on the current dirty
+`vendor/ghostty` checkout. This turn repaired that provenance so the same win
+can be reproduced from a fresh upstream clone.
+
+What changed:
+
+- `prepare-ghosttykit.sh` is now pinned to upstream Ghostty `v1.2.3`, which is
+  the actual base commit for the current vendor diff (`6d2dd585...`)
+- the checked-in aggregate patch is now `scripts/patches/ghostty-agtmux.patch`
+  and exactly matches the current vendor diff
+- patch application switched from `git apply -p0` to plain `git apply` because
+  the aggregate patch is standard `git diff` format
+- the aggregate patch now also carries the minimal `build.zig.zon` refresh
+  required because upstream `v1.2.3` points at an iTerm themes tarball that
+  now returns `404 Not Found`
+
+Fresh validation:
+
+- fresh clone rebuild:
+  `PATH="/opt/homebrew/opt/zig@0.14/bin:$PATH" AGTMUX_GHOSTTYKIT_DIR="$tmp_root/GhosttyKit.xcframework" AGTMUX_GHOSTTYKIT_MARKER_FILE="$tmp_root/.ghostty-source-ref" ./scripts/dev/prepare-ghosttykit.sh`
+- repo artifact rebuild:
+  `PATH="/opt/homebrew/opt/zig@0.14/bin:$PATH" ./scripts/dev/prepare-ghosttykit.sh`
+- tests:
+  `swift test --build-path .build-codex --filter 'GhosttyInputTests|GhosttyCLIOSCBridgeTests|GhosttyTerminalSurfaceRegistryTests'`
+- release build:
+  `xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -configuration Release -derivedDataPath build-scroll-root AGTMUX_BIN=/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/release/agtmux build`
+- perf:
+  `AGTMUX_PERF_APP_BIN="$PWD/build-scroll-root/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4`
+  `AGTMUX_PERF_APP_BIN="$PWD/build-scroll-root/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 8`
+
+Fresh-provenance release results:
+
+- `4-burst`: `scroll_to_layer_present_ms p50 9.830 / p95 22.510 / max 23.349`
+- `8-burst`: `scroll_to_layer_present_ms p50 7.998 / p95 28.669 / max 50.843`
+
+Interpretation:
+
+- the earlier vendor-side renderer short-circuit win was real; it survives a
+  clean upstream checkout and a true rebuild of `GhosttyKit`
+- the remaining gap is no longer a provenance problem
+- the next target remains the expensive first `up` / full-page dirty seam,
+  because that is still where the long-burst tail shows up after the
+  reproducible vendor optimization lands
+
+### 2026-03-20 reusable viewport-shift row-set rebuild
+
+The fresh-provenance baseline above confirmed that the earlier no-op frame
+short-circuit was real, but it still left a reusable viewport-shift redraw path
+that scanned every visible row on each shift. The next follow-up kept cadence
+ownership unchanged and narrowed that redraw itself.
+
+What changed:
+
+- keep the accepted no-op identical-frame short-circuit intact
+- keep the existing viewport-shift cache reuse via `self.cells.shiftRows(...)`
+- replace the reusable viewport-shift O(visible_rows) scan with an explicit row
+  set:
+  - newly exposed fringe rows
+  - the sentinel row and any `shift_extra_row`
+  - current and previous mouse rows
+  - rows still marked dirty in the viewport dirty bitset
+- rebuild only those rows instead of iterating across the full visible
+  viewport after every reusable shift
+
+Validation:
+
+- vendor rebuild:
+  `PATH="/opt/homebrew/opt/zig@0.14/bin:$PATH" AGTMUX_VENDOR_GHOSTTY_DIR="$PWD/vendor/ghostty" AGTMUX_GHOSTTYKIT_DIR="$PWD/GhosttyKit/GhosttyKit.xcframework" ./scripts/build-ghosttykit.sh`
+- tests:
+  `swift test --build-path .build-codex --filter 'GhosttyInputTests|GhosttyCLIOSCBridgeTests|GhosttyTerminalSurfaceRegistryTests'`
+- release build:
+  `xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -configuration Release -derivedDataPath build-scroll-final AGTMUX_BIN=/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/release/agtmux build`
+- perf:
+  `AGTMUX_PERF_APP_BIN="$PWD/build-scroll-final/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4`
+  `AGTMUX_PERF_APP_BIN="$PWD/build-scroll-final/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 8`
+
+Results:
+
+- `4-burst`: `scroll_to_layer_present_ms p50 6.243 / p95 21.078 / max 42.474`
+- `8-burst`: `scroll_to_layer_present_ms p50 4.393 / p95 24.264 / max 39.498`
+
+Fresh-provenance baseline for comparison:
+
+- `4-burst`: `scroll_to_layer_present_ms p50 9.830 / p95 22.510 / max 23.349`
+- `8-burst`: `scroll_to_layer_present_ms p50 7.998 / p95 28.669 / max 50.843`
+
+Interpretation:
+
+- this is the first accepted follow-up after provenance repair that improves
+  the longer burst train itself rather than only identical-frame redraws
+- the dominant remaining work is still likely the expensive first `up`
+  scrollback transition, but the reusable viewport-shift visible-row scan was
+  clearly part of the residual tail
+- `4-burst max` remained noisier than the fresh-provenance baseline, so the
+  short path still needs more reruns before claiming a universal win there
+
+### 2026-03-20 rejected conditional full dirty-clear skip
+
+The next experiment kept the accepted sparse viewport-shift row rebuild but
+tried to avoid the full-screen dirty-bit clear when the viewport dirty-bit scan
+found no dirty rows to consume.
+
+What changed:
+
+- keep the accepted sparse row-set rebuild in the reusable viewport-shift path
+- keep `state.terminal.flags.dirty = .{}` and `state.terminal.screen.dirty = .{}`
+  exactly as before
+- only skip the global `pageIterator(...).dirtyBitSet().unsetAll()` sweep when
+  the viewport dirty-bit scan rebuilt zero dirty rows
+
+Why this looked plausible:
+
+- on pure history scroll with no new terminal output, there are often no
+  viewport dirty rows at all
+- that made the unconditional full-screen dirty-bit clear look like a fixed
+  extra cost in the common case
+
+Validation:
+
+- tests:
+  `swift test --build-path .build-codex --filter 'GhosttyInputTests|GhosttyCLIOSCBridgeTests|GhosttyTerminalSurfaceRegistryTests'`
+- release build:
+  `xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -configuration Release -derivedDataPath build-renderer-dirtyskip AGTMUX_BIN=/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/release/agtmux build`
+- perf:
+  `AGTMUX_PERF_APP_BIN="$PWD/build-renderer-dirtyskip/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4`
+  `AGTMUX_PERF_APP_BIN="$PWD/build-renderer-dirtyskip/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 8`
+
+Results:
+
+- `4-burst`: `scroll_to_layer_present_ms p50 5.921 / p95 24.784 / max 26.345`
+- `8-burst`: `scroll_to_layer_present_ms p50 5.138 / p95 28.508 / max 68.647`
+
+Accepted row-set baseline for comparison:
+
+- `4-burst`: `scroll_to_layer_present_ms p50 6.243 / p95 21.078 / max 42.474`
+- `8-burst`: `scroll_to_layer_present_ms p50 4.393 / p95 24.264 / max 39.498`
+
+Interpretation:
+
+- the idea is semantically safe, but it is not a win on the user-visible seam
+- the branch slightly improved `4-burst p50`, but it regressed `4-burst p95`
+  and badly regressed `8-burst max`
+- this is strong evidence that the remaining cost is not the unconditional
+  dirty-bit clear itself
+- the next likely seam stays the expensive first `up` transition:
+  `leaving_bottom`, `shift_extra_row`, and old-cursor-row rebuild work
+
+### 2026-03-20 accepted viewport-shift edge-padding recompute
+
+The next follow-up kept the accepted sparse viewport-shift row set, but removed
+the sentinel-row full rebuild that existed mainly to refresh padding heuristics
+at the viewport edge.
+
+What changed:
+
+- keep the accepted reusable viewport-shift sparse row set for exposed fringe,
+  `shift_extra_row`, mouse rows, and viewport dirty rows
+- stop always appending the top/bottom sentinel row to that rebuild set
+- after the partial row rebuild finishes, recompute
+  `padding_extend.up/down` directly from the current viewport edge rows using
+  `neverExtendBg(...)`
+
+Why this looked plausible:
+
+- `self.cells.shiftRows(viewport_row_shift)` already remaps cached row content
+  to the new screen Y without reshaping glyphs
+- for many shifts, the sentinel row did not need a full `rebuildCellRow(...)`
+  for glyph correctness; it only needed updated padding-extension heuristics at
+  the viewport edge
+- that made the sentinel-row rebuild a good candidate for removing real
+  renderer work from the expensive first `up` transition
+
+Validation:
+
+- vendor rebuild:
+  `PATH="/opt/homebrew/opt/zig@0.14/bin:$PATH" AGTMUX_VENDOR_GHOSTTY_DIR="$PWD/vendor/ghostty" AGTMUX_GHOSTTYKIT_DIR="$PWD/GhosttyKit/GhosttyKit.xcframework" ./scripts/build-ghosttykit.sh`
+- tests:
+  `swift test --build-path .build-codex --filter 'GhosttyInputTests|GhosttyCLIOSCBridgeTests|GhosttyTerminalSurfaceRegistryTests'`
+- release build:
+  `xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -configuration Release -derivedDataPath build-renderer-edgepad AGTMUX_BIN=/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/release/agtmux build`
+- perf:
+  `AGTMUX_PERF_APP_BIN="$PWD/build-renderer-edgepad/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4`
+  `AGTMUX_PERF_APP_BIN="$PWD/build-renderer-edgepad/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 8`
+  `AGTMUX_PERF_APP_BIN="$PWD/build-renderer-edgepad/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 8`
+
+Results:
+
+- `4-burst`: `scroll_to_layer_present_ms p50 5.279 / p95 16.338 / max 22.517`
+- `8-burst`: `scroll_to_layer_present_ms p50 4.307 / p95 23.698 / max 125.957`
+- `8-burst rerun`: `scroll_to_layer_present_ms p50 5.032 / p95 25.835 / max 72.321`
+
+Accepted sparse-row baseline for comparison:
+
+- `4-burst`: `scroll_to_layer_present_ms p50 6.243 / p95 21.078 / max 42.474`
+- `8-burst`: `scroll_to_layer_present_ms p50 4.393 / p95 24.264 / max 39.498`
+
+Interpretation:
+
+- this is a real renderer-side win on the short path; the first `up`
+  transition got materially cheaper
+- `8-burst p95` held roughly flat-to-better versus the accepted baseline, so
+  removing the sentinel full rebuild did not regress the long train itself
+- the bad `8-burst` reruns were not shaped like a pure renderer regression:
+  the worst `up` burst lined up with very large
+  `pump_wake_lateness` / `recovery_probe_wake_lateness` outliers rather than a
+  broad degradation across all bursts
+- that makes the current boundary clearer:
+  first-`up` renderer work is now smaller, while the remaining worst-case tail
+  is increasingly a later `up` burst wake/presentation problem
+
+### 2026-03-20 accepted phase-aware host continuation suppression
+
+The next step kept the accepted vendor-side renderer wins intact and changed the
+host scheduler so that active precise trackpad contact no longer depends on the
+host draw pump for steady-state cadence.
+
+What changed:
+
+- `GhosttyTerminalView.scrollWheel(with:)` now tracks:
+  - direct gesture `event.phase`
+  - `event.momentumPhase`
+  - precise vertical direction across bursts
+- direct finger-contact phases (`began/changed/stationary`) now bypass
+  `shouldThrottleImmediateScrollPresentationDraw(...)`
+- while direct contact is active, host pump/recovery continuation is suppressed
+  and only the immediate coalesced draw remains
+- precise direction flips invalidate scheduled pump/recovery wakeups so a new
+  `up` burst does not inherit the prior burst's continuation state
+- `GhosttyInput.toScrollMods(...)` now also packs direct gesture phase in bits
+  `4..6`, matching the Ghostty core `input.ScrollMods` layout
+
+Why this looked plausible:
+
+- after the accepted edge-padding change, the worst remaining `8-burst` outlier
+  aligned more strongly with host `pump_wake_lateness` /
+  `recovery_probe_wake_lateness` than with broad renderer work
+- the current host scheduler still throttled active precise scroll after the
+  first present, which forced later changed events to wait for
+  `DispatchQueue.main.asyncAfter` wakeups even while fingers were still on the
+  trackpad
+- shifting active contact back to input/run-loop ownership is closer to native
+  Ghostty's cadence model than adding more timer variants
+
+Validation:
+
+- tests:
+  `swift test --build-path .build-codex --filter 'GhosttyInputTests|GhosttyCLIOSCBridgeTests|GhosttyTerminalSurfaceRegistryTests'`
+- release build:
+  `xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -configuration Release -derivedDataPath build-scroll-phase-aware AGTMUX_BIN=/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/release/agtmux build`
+- perf:
+  `AGTMUX_PERF_APP_BIN="$PWD/build-scroll-phase-aware/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4`
+  `AGTMUX_PERF_APP_BIN="$PWD/build-scroll-phase-aware/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 8`
+  `AGTMUX_PERF_APP_BIN="$PWD/build-scroll-phase-aware/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 8`
+
+Results:
+
+- `4-burst`: `scroll_to_layer_present_ms p50 5.751 / p95 15.761 / max 18.422`
+- `8-burst`: `scroll_to_layer_present_ms p50 5.395 / p95 29.695 / max 39.215`
+- `8-burst rerun`: `scroll_to_layer_present_ms p50 5.611 / p95 29.781 / max 33.833`
+
+Accepted edge-padding baseline for comparison:
+
+- `4-burst`: `scroll_to_layer_present_ms p50 5.279 / p95 16.338 / max 22.517`
+- `8-burst`: `scroll_to_layer_present_ms p50 4.307 / p95 23.698 / max 125.957`
+- `8-burst rerun`: `scroll_to_layer_present_ms p50 5.032 / p95 25.835 / max 72.321`
+
+Interpretation:
+
+- this is a real structural shift in cadence ownership:
+  active precise contact is now input/run-loop owned, while host timers are
+  reserved for momentum tail and delayed recovery
+- short bursts improved again, and the late-`up` worst-case cap fell from
+  `72-126ms` reruns to repeatable low-`30ms` spikes
+- the tradeoff is visible in `8-burst p95`, which moved into the high-`20ms`
+  band rather than staying near the earlier low-`20ms` result
+- that means the dominant remaining issue is no longer catastrophic hitching
+  from stale timer wakeups; it is a flatter later-`up` tail that still needs a
+  follow-up if native parity is the goal
+
+### 2026-03-20 accepted renderer shiftRows fast path
+
+The next follow-up kept the accepted phase-aware host scheduler and the earlier
+vendor renderer wins, but cut the fixed one-row viewport-shift copy cost inside
+`Contents.shiftRows(...)` itself.
+
+What changed:
+
+- keep the accepted sparse viewport-shift row-set rebuild and edge-padding
+  recompute
+- keep the accepted phase-aware direct-gesture cadence ownership in
+  `GhosttyTerminalView`
+- special-case `Contents.shiftRows(...)` for `abs_shift == 1`
+- use `fastmem.move(...)` to block-copy:
+  - background cell rows
+  - foreground row-list slices
+- recycle the fallen-off edge row list into the newly exposed fringe row
+  instead of swapping rows one-by-one
+- keep the same semantic behavior:
+  - the fringe row still clears
+  - moved glyph rows still remap `grid_pos[1]`
+
+Why this looked plausible:
+
+- after the accepted sparse row-set and edge-padding work, the renderer had
+  already stopped scanning or rebuilding most visible rows on a reusable
+  viewport shift
+- that left `Contents.shiftRows(...)` as the obvious remaining fixed-cost row
+  walk on every one-row scrollback move
+- the common case in this bench is a single-row viewport shift, so
+  `abs_shift == 1` is the highest-value fast path
+
+Validation:
+
+- vendor rebuild:
+  `PATH="/opt/homebrew/opt/zig@0.14/bin:$PATH" AGTMUX_VENDOR_GHOSTTY_DIR="$PWD/vendor/ghostty" AGTMUX_GHOSTTYKIT_DIR="$PWD/GhosttyKit/GhosttyKit.xcframework" ./scripts/build-ghosttykit.sh`
+- tests:
+  `swift test --build-path .build-codex --filter 'GhosttyInputTests|GhosttyCLIOSCBridgeTests|GhosttyTerminalSurfaceRegistryTests'`
+- release build:
+  `xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -configuration Release -derivedDataPath build-renderer-shiftrows AGTMUX_BIN=/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/release/agtmux build`
+- perf:
+  `AGTMUX_PERF_APP_BIN="$PWD/build-renderer-shiftrows/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4`
+  `AGTMUX_PERF_APP_BIN="$PWD/build-renderer-shiftrows/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 8`
+  `AGTMUX_PERF_APP_BIN="$PWD/build-renderer-shiftrows/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 8`
+
+Results:
+
+- `4-burst`: `scroll_to_layer_present_ms p50 4.909 / p95 16.984 / max 18.636`
+- `8-burst`: `scroll_to_layer_present_ms p50 4.303 / p95 26.875 / max 71.277`
+- `8-burst rerun`: `scroll_to_layer_present_ms p50 5.730 / p95 29.408 / max 31.928`
+
+Accepted phase-aware baseline for comparison:
+
+- `4-burst`: `scroll_to_layer_present_ms p50 5.751 / p95 15.761 / max 18.422`
+- `8-burst`: `scroll_to_layer_present_ms p50 5.395 / p95 29.695 / max 39.215`
+- `8-burst rerun`: `scroll_to_layer_present_ms p50 5.611 / p95 29.781 / max 33.833`
+
+Interpretation:
+
+- this is a real renderer-side reduction in fixed reusable-shift cost; the
+  common one-row viewport move is cheaper now
+- the short path stayed essentially flat on `max`, improved `p50`, and only
+  nudged `p95` slightly upward
+- the long-burst train improved where it matters most for the accepted path:
+  `8-burst p95` and rerun `max` both moved down
+- one first `8-burst` sample still hit a noisy `71.277ms` outlier, so the
+  remaining tail is no longer best explained by row-shift copy cost alone
+- that makes the current boundary clearer again:
+  fixed renderer row-shift work is lower, and the next likely seam is later-`up`
+  wake/presentation variance plus any remaining fixed per-frame work outside
+  the row-shift copy itself
+
+### 2026-03-20 rejected monotonic sparse-row walk
+
+The next renderer follow-up tried to make the sparse viewport-shift row walk
+more monotonic:
+
+- sort the sparse viewport row set ascending
+- walk rows with `Pin.down(...)` instead of re-pinning each row
+- use `link.MatchSet.orderedContains(...)` on that sparse path
+
+Validation:
+
+- vendor rebuild:
+  `PATH="/opt/homebrew/opt/zig@0.14/bin:$PATH" AGTMUX_VENDOR_GHOSTTY_DIR="$PWD/vendor/ghostty" AGTMUX_GHOSTTYKIT_DIR="$PWD/GhosttyKit/GhosttyKit.xcframework" ./scripts/build-ghosttykit.sh`
+- tests:
+  `swift test --build-path .build-codex --filter 'GhosttyInputTests|GhosttyCLIOSCBridgeTests|GhosttyTerminalSurfaceRegistryTests'`
+- release build:
+  `xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -configuration Release -derivedDataPath build-monotonic-sparse AGTMUX_BIN=/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/release/agtmux build`
+- perf:
+  `AGTMUX_PERF_APP_BIN="$PWD/build-monotonic-sparse/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4`
+  `AGTMUX_PERF_APP_BIN="$PWD/build-monotonic-sparse/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 8`
+
+Results:
+
+- `4-burst`: `scroll_to_layer_present_ms p50 5.523 / p95 24.295 / max 26.607`
+- `8-burst`: `scroll_to_layer_present_ms p50 4.864 / p95 26.322 / max 79.141`
+
+Verdict:
+
+- reject
+- the short path regressed too hard to justify the row-walk change
+- `8-burst p95` moved only marginally while `max` remained noisy
+- this means the next useful win was not in row ordering itself
+
+### 2026-03-20 accepted sparse first-up seam reduction
+
+The next accepted follow-up kept the accepted phase-aware host path and the
+renderer `shiftRows` fast path, then reduced the remaining first-`up` fixed
+renderer work inside `renderer/generic.zig`.
+
+What changed:
+
+- keep the accepted sparse viewport-shift row-set rebuild and one-row
+  `Contents.shiftRows(...)` fast path
+- when leaving the live bottom, stop rebuilding `shift_extra_row` for plain
+  empty-tail cursor rows where clearing the cursor overlay is enough
+- refresh `padding_extend.up/down` only for viewport edges that were not
+  already rebuilt by the sparse row-set itself
+
+Why this looked plausible:
+
+- after the accepted `shiftRows` fast path, the remaining first-`up` fixed
+  work was the unconditional old-cursor-row rebuild plus the redundant
+  top/bottom edge padding refresh
+- both pieces are narrow and deterministic, so they are better targets than
+  changing cadence ownership again
+- the short-path user-visible seam was already close enough that trimming this
+  fixed first-`up` work had a credible chance to show up directly in `4-burst`
+
+Validation:
+
+- vendor rebuild:
+  `PATH="/opt/homebrew/opt/zig@0.14/bin:$PATH" AGTMUX_VENDOR_GHOSTTY_DIR="$PWD/vendor/ghostty" AGTMUX_GHOSTTYKIT_DIR="$PWD/GhosttyKit/GhosttyKit.xcframework" ./scripts/build-ghosttykit.sh`
+- tests:
+  `swift test --build-path .build-codex --filter 'GhosttyInputTests|GhosttyCLIOSCBridgeTests|GhosttyTerminalSurfaceRegistryTests'`
+- release build:
+  `xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -configuration Release -derivedDataPath build-shift-extra-skip AGTMUX_BIN=/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/release/agtmux build`
+- perf:
+  `AGTMUX_PERF_APP_BIN="$PWD/build-shift-extra-skip/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4`
+  `AGTMUX_PERF_APP_BIN="$PWD/build-shift-extra-skip/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 8`
+  `AGTMUX_PERF_APP_BIN="$PWD/build-shift-extra-skip/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 8`
+
+Results:
+
+- `4-burst`: `scroll_to_layer_present_ms p50 6.124 / p95 13.778 / max 21.418`
+- `8-burst`: `scroll_to_layer_present_ms p50 3.849 / p95 29.281 / max 53.626`
+- `8-burst rerun`: `scroll_to_layer_present_ms p50 4.585 / p95 29.430 / max 38.933`
+
+Accepted renderer `shiftRows` baseline for comparison:
+
+- `4-burst`: `scroll_to_layer_present_ms p50 4.909 / p95 16.984 / max 18.636`
+- `8-burst`: `scroll_to_layer_present_ms p50 4.303 / p95 26.875 / max 71.277`
+- `8-burst rerun`: `scroll_to_layer_present_ms p50 5.730 / p95 29.408 / max 31.928`
+
+Interpretation:
+
+- the short path improved materially again, especially `4-burst p95`
+- the long train held flat on `p95` while the first-run outlier dropped from
+  `71.277ms` to `53.626ms`
+- rerun `max` stayed in the same high-`30ms` band as the accepted baseline,
+  which means first-`up` fixed renderer work is no longer the dominant gap
+- the next remaining seam is later-`up` wake/presentation variance, not
+  unconditional old-cursor-row or redundant edge-padding rebuild work

@@ -1473,6 +1473,65 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
     }
 
     @MainActor
+    func testActivePreciseGestureBypassesImmediateDrawThrottle() {
+        let view = GhosttyTerminalViewDrawSpy()
+
+        view.noteScrollInputTelemetryForTesting(now: 10.0)
+        view.updateScrollPresentationGestureStateForTesting(
+            precision: true,
+            phase: .changed,
+            momentumPhase: [],
+            verticalDelta: 2.0,
+            now: 10.0
+        )
+        view.noteScrollPresentationDrawForTesting(now: 10.0)
+        view.noteLayerPresentationForTesting(now: 10.001)
+
+        XCTAssertFalse(view.shouldThrottleImmediateScrollPresentationDrawForTesting(now: 10.005))
+    }
+
+    @MainActor
+    func testActivePreciseGestureDisablesHostContinuationPump() {
+        let view = GhosttyTerminalViewDrawSpy()
+
+        view.noteScrollInputTelemetryForTesting(now: 10.0)
+        view.updateScrollPresentationGestureStateForTesting(
+            precision: true,
+            phase: .began,
+            momentumPhase: [],
+            verticalDelta: -3.0,
+            now: 10.0
+        )
+
+        XCTAssertFalse(view.shouldUseHostScrollPresentationContinuationForTesting(now: 10.01))
+        XCTAssertFalse(view.runScrollPresentationDrawPumpPassForTesting(now: 10.01))
+        XCTAssertEqual(view.scrollPresentationDrawCallCount, 0)
+    }
+
+    @MainActor
+    func testMomentumTailReEnablesHostContinuationAfterDirectGestureEnds() {
+        let view = GhosttyTerminalViewDrawSpy()
+
+        view.noteScrollInputTelemetryForTesting(now: 10.0)
+        view.updateScrollPresentationGestureStateForTesting(
+            precision: true,
+            phase: .began,
+            momentumPhase: [],
+            verticalDelta: -3.0,
+            now: 10.0
+        )
+        view.updateScrollPresentationGestureStateForTesting(
+            precision: true,
+            phase: .ended,
+            momentumPhase: .changed,
+            verticalDelta: -2.0,
+            now: 10.03
+        )
+
+        XCTAssertTrue(view.shouldUseHostScrollPresentationContinuationForTesting(now: 10.031))
+    }
+
+    @MainActor
     func testScrollPresentationRecoveryProbeRedrawsWhenLayerPresentLags() {
         let view = GhosttyTerminalViewDrawSpy()
 

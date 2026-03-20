@@ -7,21 +7,29 @@ if [[ -z "$repo_root" ]]; then
 fi
 cd "$repo_root"
 
-ghostty_ref="${AGTMUX_GHOSTTY_REF:-v1.3.1}"
+ghostty_ref="${AGTMUX_GHOSTTY_REF:-v1.2.3}"
 ghostty_url="${AGTMUX_GHOSTTY_REPO_URL:-https://github.com/ghostty-org/ghostty}"
 vendor_dir="${AGTMUX_VENDOR_GHOSTTY_DIR:-$repo_root/vendor/ghostty}"
 xcframework_dir="${AGTMUX_GHOSTTYKIT_DIR:-$repo_root/GhosttyKit/GhosttyKit.xcframework}"
 marker_file="${AGTMUX_GHOSTTYKIT_MARKER_FILE:-$repo_root/GhosttyKit/.ghostty-source-ref}"
-patch_file="${AGTMUX_GHOSTTY_PATCH_FILE:-$repo_root/scripts/patches/ghostty-custom-osc.patch}"
+patch_files=(
+  "${AGTMUX_GHOSTTY_PATCH_FILE:-$repo_root/scripts/patches/ghostty-agtmux.patch}"
+)
 temp_vendor_root=""
 
-if [[ ! -f "$patch_file" ]]; then
-  echo "Missing required Ghostty patch at $patch_file" >&2
-  exit 1
-fi
+for patch_file in "${patch_files[@]}"; do
+  if [[ ! -f "$patch_file" ]]; then
+    echo "Missing required Ghostty patch at $patch_file" >&2
+    exit 1
+  fi
+done
 
-patch_sha256="$(shasum -a 256 "$patch_file" | awk '{print $1}')"
-marker_value="${ghostty_ref}+ghostty-custom-osc@${patch_sha256}"
+marker_value="$ghostty_ref"
+for patch_file in "${patch_files[@]}"; do
+  patch_sha256="$(shasum -a 256 "$patch_file" | awk '{print $1}')"
+  patch_name="$(basename "$patch_file" .patch)"
+  marker_value+="+${patch_name}@${patch_sha256}"
+done
 
 cleanup() {
   if [[ -n "$temp_vendor_root" && -d "$temp_vendor_root" ]]; then
@@ -61,34 +69,23 @@ ghosttykit_ready() {
   [[ "$(tr -d '\n' < "$marker_file")" == "$marker_value" ]] || return 1
 }
 
-ghostty_source_has_custom_osc() {
-  local header="$vendor_dir/include/ghostty.h"
-  local osc_file="$vendor_dir/src/terminal/osc.zig"
+apply_required_patch() {
+  local patch_file="$1"
+  local patch_name
+  patch_name="$(basename "$patch_file")"
 
-  [[ -f "$header" && -f "$osc_file" ]] || return 1
-  grep -q 'GHOSTTY_ACTION_CUSTOM_OSC' "$header" &&
-    grep -q 'AGTMUX_BRIDGE_OSC' "$osc_file"
-}
-
-apply_custom_patch() {
-  if ghostty_source_has_custom_osc; then
-    echo "Ghostty custom OSC patch already present in $vendor_dir"
+  if git -C "$vendor_dir" apply --reverse --check "$patch_file" >/dev/null 2>&1; then
+    echo "Ghostty patch already present in $vendor_dir: $patch_name"
     return 0
   fi
 
-  echo "Applying Ghostty custom OSC patch to $vendor_dir"
-  if ! git -C "$vendor_dir" apply -p0 --check "$patch_file"; then
-    echo "Ghostty custom OSC patch no longer applies cleanly to $ghostty_ref." >&2
-    echo "Update $patch_file or choose a compatible Ghostty ref." >&2
+  echo "Applying Ghostty patch to $vendor_dir: $patch_name"
+  if ! git -C "$vendor_dir" apply --check "$patch_file"; then
+    echo "Ghostty patch no longer applies cleanly to $ghostty_ref: $patch_name" >&2
     exit 1
   fi
 
-  git -C "$vendor_dir" apply -p0 "$patch_file"
-
-  ghostty_source_has_custom_osc || {
-    echo "Ghostty custom OSC patch applied, but expected symbols are still missing." >&2
-    exit 1
-  }
+  git -C "$vendor_dir" apply "$patch_file"
 }
 
 clone_vendor_checkout() {
@@ -114,7 +111,7 @@ command -v git >/dev/null 2>&1 || {
   exit 1
 }
 command -v zig >/dev/null 2>&1 || {
-  echo "Missing required dependency: zig (expected 0.15.x)." >&2
+  echo "Missing required dependency: zig (expected 0.15.2 or compatible 0.15.x)." >&2
   echo "Install with: brew install zig" >&2
   exit 1
 }
@@ -141,7 +138,9 @@ else
   fi
 fi
 
-apply_custom_patch
+for patch_file in "${patch_files[@]}"; do
+  apply_required_patch "$patch_file"
+done
 
 AGTMUX_VENDOR_GHOSTTY_DIR="$vendor_dir" \
 AGTMUX_GHOSTTYKIT_DIR="$xcframework_dir" \

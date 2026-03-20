@@ -14,6 +14,7 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     private static let scrollPresentationDrawPumpIntervalSeconds = 1.0 / 120.0
     private static let scrollPresentationDrawPumpTailSeconds = 0.18
     private static let scrollPresentationDrawRecoveryProbeDelaySeconds = 1.0 / 180.0
+    private static let scrollDirectionFlipEpsilon = 0.001
 
     struct SurfaceMetrics: Equatable {
         let pixelWidth: UInt32
@@ -57,6 +58,11 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         let pendingRenderToDrawCount: Int
     }
 
+    private enum ScrollVerticalDirection: Equatable {
+        case up
+        case down
+    }
+
     // MARK: - State
 
     private(set) var surface: ghostty_surface_t?
@@ -85,6 +91,8 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     private var lastScrollInputUptime: TimeInterval?
     private var lastScrollPresentationDrawUptime: TimeInterval?
     private var lastPaneRetargetPresentationDrawUptime: TimeInterval?
+    private var scrollPresentationDirectGestureActive = false
+    private var lastPreciseScrollVerticalDirection: ScrollVerticalDirection?
     private var pendingScrollToRenderStates: [OSSignpostIntervalState] = []
     private var pendingScrollToDrawStates: [OSSignpostIntervalState] = []
     private var pendingScrollToLayerPresentStates: [OSSignpostIntervalState] = []
@@ -768,6 +776,12 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
             y *= 2
         }
         noteScrollInputTelemetry()
+        updateScrollPresentationGestureState(
+            precision: event.hasPreciseScrollingDeltas,
+            phase: event.phase,
+            momentumPhase: event.momentumPhase,
+            verticalDelta: y
+        )
         ghostty_surface_mouse_scroll(surface, x, y, GhosttyInput.toScrollMods(event))
         scheduleScrollPresentationDrawIfNeeded()
     }
@@ -960,6 +974,23 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     }
 
     @MainActor
+    func updateScrollPresentationGestureStateForTesting(
+        precision: Bool,
+        phase: NSEvent.Phase,
+        momentumPhase: NSEvent.Phase,
+        verticalDelta: Double,
+        now: TimeInterval
+    ) {
+        lastScrollInputUptime = now
+        updateScrollPresentationGestureState(
+            precision: precision,
+            phase: phase,
+            momentumPhase: momentumPhase,
+            verticalDelta: verticalDelta
+        )
+    }
+
+    @MainActor
     func noteScrollPresentationDrawForTesting(now: TimeInterval) {
         lastScrollPresentationDrawUptime = now
     }
@@ -970,6 +1001,10 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     }
 
     @MainActor
+    func shouldUseHostScrollPresentationContinuationForTesting(now: TimeInterval) -> Bool {
+        shouldUseHostScrollPresentationContinuation(now: now)
+    }
+
     func scrollTelemetrySnapshotForTesting() -> ScrollTelemetrySnapshot {
         ScrollTelemetrySnapshot(
             scrollToRenderRequest: summary(for: scrollToRenderSamplesMs),
@@ -1058,7 +1093,9 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
                 self.lastScrollPresentationDrawUptime = drawUptime
                 self.performScrollPresentationDraw()
                 self.scheduleScrollPresentationRecoveryProbeIfNeeded(forDrawAt: drawUptime)
-                self.scheduleNextScrollPresentationDrawPumpIfNeeded()
+                if self.shouldUseHostScrollPresentationContinuation(now: drawUptime) {
+                    self.scheduleNextScrollPresentationDrawPumpIfNeeded()
+                }
             }
         }
         CFRunLoopWakeUp(mainRunLoop)
@@ -1104,7 +1141,7 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     private func scheduleNextScrollPresentationDrawPumpIfNeeded() {
         guard scrollPresentationDrawPumpScheduled == false else { return }
         let now = ProcessInfo.processInfo.systemUptime
-        guard shouldContinueScrollPresentationDrawPump(now: now) else { return }
+        guard shouldUseHostScrollPresentationContinuation(now: now) else { return }
 
         scrollPresentationDrawPumpScheduled = true
         let generation = scrollPresentationDrawPumpGeneration
@@ -1129,7 +1166,7 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     @MainActor
     private func scheduleScrollPresentationRecoveryProbeIfNeeded(forDrawAt drawUptime: TimeInterval) {
         guard scrollPresentationRecoveryProbeScheduled == false else { return }
-        guard shouldContinueScrollPresentationDrawPump(now: drawUptime) else { return }
+        guard shouldUseHostScrollPresentationContinuation(now: drawUptime) else { return }
 
         scrollPresentationRecoveryProbeScheduled = true
         let generation = scrollPresentationRecoveryProbeGeneration
@@ -1181,7 +1218,7 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         now: TimeInterval,
         reschedule: Bool = true
     ) -> Bool {
-        guard shouldContinueScrollPresentationDrawPump(now: now) else {
+        guard shouldUseHostScrollPresentationContinuation(now: now) else {
             scrollPresentationDrawPumpScheduled = false
             return false
         }
@@ -1215,7 +1252,9 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         lastScrollPresentationDrawUptime = now
         performScrollPresentationDraw()
         scheduleScrollPresentationRecoveryProbeIfNeeded(forDrawAt: now)
-        scheduleNextScrollPresentationDrawPumpIfNeeded()
+        if shouldUseHostScrollPresentationContinuation(now: now) {
+            scheduleNextScrollPresentationDrawPumpIfNeeded()
+        }
         return true
     }
 
@@ -1227,7 +1266,14 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     }
 
     @MainActor
+    private func shouldUseHostScrollPresentationContinuation(now: TimeInterval) -> Bool {
+        guard shouldContinueScrollPresentationDrawPump(now: now) else { return false }
+        return isDirectScrollPresentationGestureActive(now: now) == false
+    }
+
+    @MainActor
     private func shouldThrottleImmediateScrollPresentationDraw(now: TimeInterval) -> Bool {
+        guard isDirectScrollPresentationGestureActive(now: now) == false else { return false }
         guard shouldContinueScrollPresentationDrawPump(now: now),
               let lastScrollPresentationDrawUptime else { return false }
         guard now - lastScrollPresentationDrawUptime < Self.scrollPresentationDrawPumpIntervalSeconds,
@@ -1253,9 +1299,89 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         lastScrollInputUptime = nil
         lastScrollPresentationDrawUptime = nil
         lastPaneRetargetPresentationDrawUptime = nil
+        scrollPresentationDirectGestureActive = false
+        lastPreciseScrollVerticalDirection = nil
         scrollPresentationDrawPumpGeneration &+= 1
         scrollPresentationRecoveryProbeGeneration &+= 1
         paneRetargetPresentationRecoveryProbeGeneration &+= 1
+    }
+
+    @MainActor
+    private func updateScrollPresentationGestureState(
+        precision: Bool,
+        phase: NSEvent.Phase,
+        momentumPhase: NSEvent.Phase,
+        verticalDelta: Double
+    ) {
+        if precision == false {
+            scrollPresentationDirectGestureActive = false
+            lastPreciseScrollVerticalDirection = nil
+            return
+        }
+
+        let wasDirectGestureActive = scrollPresentationDirectGestureActive
+        if Self.isTerminalScrollPhase(phase) {
+            scrollPresentationDirectGestureActive = false
+        } else if Self.isActiveDirectScrollPhase(phase) {
+            scrollPresentationDirectGestureActive = true
+        }
+
+        let currentDirection = Self.verticalScrollDirection(for: verticalDelta)
+        let directionFlipped = currentDirection.map { direction in
+            guard let lastPreciseScrollVerticalDirection else { return false }
+            guard lastPreciseScrollVerticalDirection != direction else { return false }
+            return wasDirectGestureActive
+                || Self.isActiveDirectScrollPhase(phase)
+                || Self.isActiveMomentumScrollPhase(momentumPhase)
+        } ?? false
+
+        if (scrollPresentationDirectGestureActive && wasDirectGestureActive == false) || directionFlipped {
+            invalidateScheduledScrollPresentationWakeupsForGestureBoundary()
+        }
+
+        if let currentDirection {
+            lastPreciseScrollVerticalDirection = currentDirection
+        } else if Self.isTerminalScrollPhase(phase), Self.isTerminalScrollPhase(momentumPhase) {
+            lastPreciseScrollVerticalDirection = nil
+        }
+    }
+
+    @MainActor
+    private func isDirectScrollPresentationGestureActive(now: TimeInterval) -> Bool {
+        guard scrollPresentationDirectGestureActive,
+              let lastScrollInputUptime else { return false }
+        return now - lastScrollInputUptime <= Self.scrollPresentationDrawPumpTailSeconds
+    }
+
+    @MainActor
+    private func invalidateScheduledScrollPresentationWakeupsForGestureBoundary() {
+        scrollPresentationDrawPumpScheduled = false
+        scrollPresentationRecoveryProbeScheduled = false
+        lastScrollPresentationDrawUptime = nil
+        scrollPresentationDrawPumpGeneration &+= 1
+        scrollPresentationRecoveryProbeGeneration &+= 1
+    }
+
+    private static func verticalScrollDirection(for deltaY: Double) -> ScrollVerticalDirection? {
+        if deltaY > Self.scrollDirectionFlipEpsilon {
+            return .up
+        }
+        if deltaY < -Self.scrollDirectionFlipEpsilon {
+            return .down
+        }
+        return nil
+    }
+
+    private static func isActiveDirectScrollPhase(_ phase: NSEvent.Phase) -> Bool {
+        phase.contains(.began) || phase.contains(.changed) || phase.contains(.stationary)
+    }
+
+    private static func isActiveMomentumScrollPhase(_ phase: NSEvent.Phase) -> Bool {
+        phase.contains(.began) || phase.contains(.changed) || phase.contains(.stationary)
+    }
+
+    private static func isTerminalScrollPhase(_ phase: NSEvent.Phase) -> Bool {
+        phase.contains(.ended) || phase.contains(.cancelled)
     }
 
     private func updateWindowObservers() {
