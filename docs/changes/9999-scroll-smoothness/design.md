@@ -86,9 +86,9 @@ sparse path stays active.
 
 The latest accepted host-side follow-up then narrows that later-`up` seam
 without changing cadence ownership broadly: the draw pump and recovery probe no
-longer schedule independent main-queue wakeups. Instead, `GhosttyTerminalView`
-keeps one earliest-due continuation wake and drains whichever of the pump or
-recovery work is due from that single callback. On the measured release sample
+longer schedule independent wakeups. Instead, `GhosttyTerminalView` keeps one
+earliest-due continuation callback and drains whichever of the pump or recovery
+work is due from that single wake. On the measured release sample
 that change traded a small `p95` increase for a much larger reduction in worst
 hitch size, which matches the user-facing goal better than continuing to
 optimize median latency. The remaining boundary is therefore no longer

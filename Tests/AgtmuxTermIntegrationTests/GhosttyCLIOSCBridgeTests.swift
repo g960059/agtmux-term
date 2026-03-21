@@ -1451,6 +1451,52 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
     }
 
     @MainActor
+    func testScheduledScrollContinuationWakeReschedulesPumpAndRecoveryFromFreshDraw() {
+        let view = GhosttyTerminalViewDrawSpy()
+        let base = ProcessInfo.processInfo.systemUptime
+
+        view.noteScrollInputTelemetryForTesting(now: base)
+        view.configureScrollPresentationContinuationForTesting(
+            pumpDue: base + 0.010,
+            recoveryDue: nil,
+            recoveryDrawUptime: nil
+        )
+
+        view.runScheduledScrollPresentationContinuationWakeForTesting(now: base + 0.010)
+
+        XCTAssertEqual(view.scrollPresentationDrawCallCount, 1)
+        let state = view.scrollPresentationContinuationStateForTesting()
+        XCTAssertEqual(state.lastDrawUptime, base + 0.010)
+        XCTAssertNotNil(state.pumpDueUptime)
+        XCTAssertNotNil(state.recoveryDueUptime)
+        XCTAssertEqual(state.recoveryDrawUptime, base + 0.010)
+        XCTAssertGreaterThan(state.recoveryDueUptime ?? 0, base + 0.010)
+    }
+
+    @MainActor
+    func testScheduledScrollContinuationWakeDropsStaleRecoveryWhenPumpSupersedesIt() {
+        let view = GhosttyTerminalViewDrawSpy()
+        let base = ProcessInfo.processInfo.systemUptime
+
+        view.noteScrollInputTelemetryForTesting(now: base)
+        view.noteScrollPresentationDrawForTesting(now: base)
+        view.configureScrollPresentationContinuationForTesting(
+            pumpDue: base + 0.010,
+            recoveryDue: base + 0.010,
+            recoveryDrawUptime: base
+        )
+
+        view.runScheduledScrollPresentationContinuationWakeForTesting(now: base + 0.010)
+
+        XCTAssertEqual(view.scrollPresentationDrawCallCount, 1)
+        let state = view.scrollPresentationContinuationStateForTesting()
+        XCTAssertEqual(state.lastDrawUptime, base + 0.010)
+        XCTAssertEqual(state.recoveryDrawUptime, base + 0.010)
+        XCTAssertNotNil(state.recoveryDueUptime)
+        XCTAssertGreaterThan(state.recoveryDueUptime ?? 0, base + 0.010)
+    }
+
+    @MainActor
     func testScrollPresentationDrawPumpContinuesBrieflyAfterRecentInput() {
         let view = GhosttyTerminalViewDrawSpy()
 

@@ -925,9 +925,9 @@
     and the attempted host-side pending-draw invalidation was not the right
     way to remove them
 - Accepted follow-up: coalesced host continuation wake
-  - replaced the separate scroll pump / recovery `DispatchQueue.main.asyncAfter`
-    callbacks with one earliest-due continuation wake that drains whichever
-    continuation work is actually due
+  - replaced the separate scroll pump / recovery wakeups with one earliest-due
+    continuation callback that drains whichever continuation work is actually
+    due
   - added focused scheduler test coverage in
     `GhosttyCLIOSCBridgeTests.testScrollPresentationContinuationSchedulerUsesEarliestDueWake`
   - validation:

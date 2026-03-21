@@ -2017,12 +2017,12 @@ baseline and targeted only the host continuation seam that still existed after
 each immediate draw:
 
 - the scroll draw pump and the delayed recovery probe no longer schedule two
-  independent `DispatchQueue.main.asyncAfter` callbacks
-- instead, `GhosttyTerminalView` tracks one earliest-due continuation wake and
-  drains whichever of pump or recovery work is actually due from that single
-  callback
+  independent wakeups
+- instead, `GhosttyTerminalView` tracks one earliest-due continuation callback
+  and drains whichever of pump or recovery work is actually due from that
+  single wake
 - the goal was not to lower median latency further; it was to stop long bursts
-  from accumulating duplicate late callbacks that turned into visible hitchs
+  from accumulating duplicate late callbacks that turned into visible hitches
 
 Validation:
 

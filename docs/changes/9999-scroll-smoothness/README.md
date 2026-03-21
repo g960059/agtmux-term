@@ -403,10 +403,9 @@ Current state:
     pass before it becomes the new installed baseline
 - the latest accepted follow-up keeps that renderer win and narrows the host
   continuation seam itself:
-  - scroll pump and recovery no longer arm two independent
-    `DispatchQueue.main.asyncAfter` callbacks; the host now keeps a single
-    coalesced continuation wake at the earliest due time and drains whichever
-    continuation work is actually due from that one callback
+  - scroll pump and recovery no longer arm independent wakeups; the host now
+    keeps a single earliest-due continuation callback and drains whichever
+    continuation work is actually due from that one wake
   - latest release sample from that branch:
     `4-burst p50 5.306 / p95 14.769 / max 21.814`,
     `8-burst p50 4.264 / p95 14.954 / max 19.723`
