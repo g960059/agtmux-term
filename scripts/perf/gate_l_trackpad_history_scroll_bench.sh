@@ -15,12 +15,13 @@ scroll_pixels_per_event="${AGTMUX_PERF_TRACKPAD_PIXELS_PER_EVENT:-10}"
 scroll_interval_ms="${AGTMUX_PERF_TRACKPAD_INTERVAL_MS:-8}"
 burst_pause_ms="${AGTMUX_PERF_TRACKPAD_BURST_PAUSE_MS:-120}"
 burst_metrics_path=""
+scroll_phase_mode="${AGTMUX_PERF_TRACKPAD_PHASE_MODE:-trackpad-burst-momentum}"
 
 function first_visible_line_number() {
   local socket_name="$1"
   local target="$2"
   local captured
-  captured="$(tmux -f /dev/null -L "$socket_name" capture-pane -p -t "$target" -S -200 2>/dev/null || true)"
+  captured="$(gate_l_tmux capture-pane -p -t "$target" -S -200 2>/dev/null || true)"
   awk '
     /^[[:space:]]*[0-9]+[[:space:]]/ {
       line = $0
@@ -54,6 +55,15 @@ function wait_for_first_visible_line_number() {
   return 1
 }
 
+function gate_l_app_is_running() {
+  [[ -n "${gate_l_app_pid:-}" ]] && kill -0 "$gate_l_app_pid" >/dev/null 2>&1
+}
+
+function gate_l_tmux_target_exists() {
+  local target="$1"
+  gate_l_tmux display-message -p -t "$target" '#{pane_id}' >/dev/null 2>&1
+}
+
 function wait_for_first_visible_line_change() {
   local socket_name="$1"
   local target="$2"
@@ -75,6 +85,9 @@ function wait_for_first_visible_line_change() {
         typeset -g "$output_var_name=$latest"
         return 0
       fi
+    elif ! gate_l_tmux_target_exists "$target"; then
+      typeset -g "$output_var_name=$latest"
+      return 2
     fi
     sleep 0.01
   done
@@ -117,8 +130,9 @@ socket_name="agtmux-gate-l-trackpad-${token}"
 if [[ -z "$session_name" ]]; then
   session_name="agtmux-gate-l-trackpad-${token}"
 fi
-target="${session_name}:main"
+target=""
 
+gate_l_cleanup_stale_perf_processes
 gate_l_setup_paths "$token"
 export AGTMUX_PERF_UITEST_INVENTORY_ONLY=0
 burst_metrics_path="$gate_l_tmpdir/trackpad-burst-metrics.jsonl"
@@ -178,22 +192,24 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 gate_l_launch_app "$socket_name" "$session_name" 1 "$shell_command"
-gate_l_activate_app
 
 bootstrap_json="$(gate_l_wait_for_bootstrap "$settle_timeout")"
 if [[ "$(jq -r '.ok' <<<"$bootstrap_json")" != "true" ]]; then
   echo "App-side bootstrap failed: $(jq -r '.error // "unknown error"' <<<"$bootstrap_json")" >&2
   exit 1
 fi
+gate_l_record_bootstrap_tmux_socket_path "$bootstrap_json"
 
+pane_id="$(jq -r '.paneIDs[0]' <<<"$bootstrap_json")"
+target="$pane_id"
 ready_line=""
 if ! wait_for_first_visible_line_number "$socket_name" "$target" 1 "$settle_timeout" ready_line; then
   echo "Timed out waiting for transcript fixture to render the first page" >&2
   exit 1
 fi
-ready_capture="$(tmux -f /dev/null -L "$socket_name" capture-pane -p -t "$target" -S -200 2>/dev/null || true)"
+ready_capture="$(gate_l_tmux capture-pane -p -t "$target" -S -200 2>/dev/null || true)"
 
-pane_id="$(jq -r '.paneIDs[0]' <<<"$bootstrap_json")"
+gate_l_activate_app
 gate_l_send_bridge_command false 10 "__agtmux_open_terminal_for_pane__" "local" "$session_name" "$pane_id" >/dev/null
 gate_l_activate_app
 
@@ -232,7 +248,8 @@ for (( i = 1; i <= warmup_bursts; i++ )); do
     --point-y "$scroll_point_y" \
     --scroll-pixels "$((-scroll_pixels_per_event))" \
     --scroll-repeat "$events_per_burst" \
-    --scroll-interval-ms "$scroll_interval_ms" >/dev/null
+    --scroll-interval-ms "$scroll_interval_ms" \
+    --scroll-phase-mode "$scroll_phase_mode" >/dev/null
   sleep 0.2
 done
 
@@ -240,6 +257,9 @@ gate_l_send_bridge_command false 10 "__agtmux_reset_scroll_telemetry__" "$tile_i
 sleep 0.2
 
 empty_burst_count=0
+completed_iteration_count=0
+terminated_early=false
+termination_reason=""
 last_send_json='null'
 last_visible_line=""
 previous_scroll_to_first_draw_sample_count=0
@@ -250,8 +270,15 @@ previous_scroll_presentation_pump_wake_lateness_sample_count=0
 previous_scroll_presentation_recovery_probe_wake_lateness_sample_count=0
 previous_layer_present_gap_sample_count=0
 bench_start="$(date '+%Y-%m-%d %H:%M:%S%z')"
+last_scroll_telemetry_json="$(gate_l_send_bridge_json_command false 10 "__agtmux_dump_scroll_telemetry__" "$tile_id")"
 
 for (( i = 1; i <= iterations; i++ )); do
+  if ! gate_l_app_is_running; then
+    terminated_early=true
+    termination_reason="app-exited-before-burst-${i}"
+    break
+  fi
+
   scroll_pixels="$((-scroll_pixels_per_event))"
   direction="down"
   if (( i % 2 == 0 )); then
@@ -261,11 +288,22 @@ for (( i = 1; i <= iterations; i++ )); do
 
   baseline_line="$(first_visible_line_number "$socket_name" "$target")"
   if [[ -z "$baseline_line" ]]; then
-    echo "Failed to resolve baseline visible line number before trackpad burst $i" >&2
-    exit 1
+    if ! gate_l_tmux_target_exists "$target"; then
+      terminated_early=true
+      termination_reason="tmux-target-unavailable-before-burst-${i}"
+      break
+    fi
+    echo "Skipping trackpad burst $i because baseline visible line could not be read" >&2
+    empty_burst_count=$((empty_burst_count + 1))
+    sleep "$(awk "BEGIN { printf \"%.3f\", (${burst_pause_ms} / 1000.0) }")"
+    continue
   fi
 
-  gate_l_send_bridge_command false 10 "__agtmux_focus_terminal_host__" "$tile_id" >/dev/null
+  if ! gate_l_send_bridge_command false 10 "__agtmux_focus_terminal_host__" "$tile_id" >/dev/null; then
+    terminated_early=true
+    termination_reason="focus-terminal-host-failed-before-burst-${i}"
+    break
+  fi
   gate_l_activate_app
   burst_started_at="$EPOCHREALTIME"
   last_send_json="$("$SCRIPT_DIR/gate_l_ax_key_sender.sh" \
@@ -275,16 +313,28 @@ for (( i = 1; i <= iterations; i++ )); do
     --point-y "$scroll_point_y" \
     --scroll-pixels "$scroll_pixels" \
     --scroll-repeat "$events_per_burst" \
-    --scroll-interval-ms "$scroll_interval_ms")"
+    --scroll-interval-ms "$scroll_interval_ms" \
+    --scroll-phase-mode "$scroll_phase_mode")"
 
   burst_latency_ms="null"
-  if ! wait_for_first_visible_line_change "$socket_name" "$target" "$baseline_line" "$direction" "$settle_timeout" last_visible_line; then
-    empty_burst_count=$((empty_burst_count + 1))
-  else
+  wait_status=0
+  wait_for_first_visible_line_change "$socket_name" "$target" "$baseline_line" "$direction" "$settle_timeout" last_visible_line || wait_status=$?
+  if (( wait_status == 0 )); then
     burst_latency_ms="$(awk "BEGIN { printf \"%.3f\", ((${EPOCHREALTIME} - ${burst_started_at}) * 1000.0) }")"
+  elif (( wait_status == 2 )); then
+    empty_burst_count=$((empty_burst_count + 1))
+    terminated_early=true
+    termination_reason="tmux-target-unavailable-after-burst-${i}"
+  else
+    empty_burst_count=$((empty_burst_count + 1))
   fi
 
-  burst_scroll_telemetry_json="$(gate_l_send_bridge_json_command false 10 "__agtmux_dump_scroll_telemetry__" "$tile_id")"
+  if ! burst_scroll_telemetry_json="$(gate_l_send_bridge_json_command false 10 "__agtmux_dump_scroll_telemetry__" "$tile_id")"; then
+    terminated_early=true
+    termination_reason="scroll-telemetry-bridge-failed-after-burst-${i}"
+    break
+  fi
+  last_scroll_telemetry_json="$burst_scroll_telemetry_json"
   current_scroll_to_first_draw_sample_count="$(jq '(.scroll.scrollToFirstDrawSamplesMs // []) | length' <<<"$burst_scroll_telemetry_json")"
   current_scroll_to_layer_present_sample_count="$(jq '(.scroll.scrollToLayerPresentSamplesMs // []) | length' <<<"$burst_scroll_telemetry_json")"
   current_scroll_presentation_draw_gap_sample_count="$(jq '(.scroll.scrollPresentationDrawGapSamplesMs // []) | length' <<<"$burst_scroll_telemetry_json")"
@@ -380,6 +430,7 @@ for (( i = 1; i <= iterations; i++ )); do
           layer_present_gap_samples_ms: $burst_layer_present_gap_samples
         }
     ' >>"$burst_metrics_path"
+  completed_iteration_count=$((completed_iteration_count + 1))
 
   previous_scroll_to_first_draw_sample_count="$current_scroll_to_first_draw_sample_count"
   previous_scroll_to_layer_present_sample_count="$current_scroll_to_layer_present_sample_count"
@@ -389,16 +440,31 @@ for (( i = 1; i <= iterations; i++ )); do
   previous_scroll_presentation_recovery_probe_wake_lateness_sample_count="$current_scroll_presentation_recovery_probe_wake_lateness_sample_count"
   previous_layer_present_gap_sample_count="$current_layer_present_gap_sample_count"
 
+  if [[ "$terminated_early" == "true" ]]; then
+    break
+  fi
+
   sleep "$(awk "BEGIN { printf \"%.3f\", (${burst_pause_ms} / 1000.0) }")"
 done
 
 bench_end="$(date '+%Y-%m-%d %H:%M:%S%z')"
 sleep 1
 
-scroll_telemetry_json="$(gate_l_send_bridge_json_command false 10 "__agtmux_dump_scroll_telemetry__" "$tile_id")"
-completed_burst_count="$(( iterations - empty_burst_count ))"
-if (( completed_burst_count == 0 )); then
-  echo "No visible-line movement was captured during the trackpad bench" >&2
+scroll_telemetry_json="$last_scroll_telemetry_json"
+if gate_l_app_is_running; then
+  if final_scroll_telemetry_json="$(gate_l_send_bridge_json_command false 10 "__agtmux_dump_scroll_telemetry__" "$tile_id")"; then
+    scroll_telemetry_json="$final_scroll_telemetry_json"
+  elif [[ "$terminated_early" == "false" ]]; then
+    terminated_early=true
+    termination_reason="final-scroll-telemetry-bridge-failed"
+  fi
+elif [[ "$terminated_early" == "false" ]]; then
+  terminated_early=true
+  termination_reason="app-exited-before-final-scroll-telemetry"
+fi
+
+if (( completed_iteration_count == 0 )); then
+  echo "No burst telemetry was captured during the trackpad bench" >&2
   exit 1
 fi
 
@@ -420,7 +486,11 @@ jq -n \
   --argjson scroll_pixels_per_event "$scroll_pixels_per_event" \
   --argjson scroll_interval_ms "$scroll_interval_ms" \
   --argjson burst_pause_ms "$burst_pause_ms" \
+  --arg scroll_phase_mode "$scroll_phase_mode" \
   --argjson empty_burst_count "$empty_burst_count" \
+  --argjson completed_iteration_count "$completed_iteration_count" \
+  --argjson terminated_early "$terminated_early" \
+  --arg termination_reason "$termination_reason" \
   --slurpfile burst_metrics "$burst_metrics_path" \
   --argjson scroll_telemetry "$scroll_telemetry_json" \
   --argjson signposts "$signpost_json" \
@@ -481,7 +551,11 @@ jq -n \
     scroll_pixels_per_event: $scroll_pixels_per_event,
     scroll_interval_ms: $scroll_interval_ms,
     burst_pause_ms: $burst_pause_ms,
+    scroll_phase_mode: $scroll_phase_mode,
     empty_burst_count: $empty_burst_count,
+    completed_iteration_count: $completed_iteration_count,
+    terminated_early: $terminated_early,
+    termination_reason: (if $termination_reason == "" then null else $termination_reason end),
     helper: $helper,
     focus_snapshot: $focus_snapshot,
     last_send: $last_send,
@@ -547,7 +621,8 @@ jq -n \
       layer_present_gap_max_ms: $scroll_telemetry.scroll.layerPresentGap.maxMs,
       layer_present_count: $scroll_telemetry.scroll.layerPresentCount,
       empty_burst_count: $empty_burst_count,
-      completed_burst_count: ($burst_latency_samples | length),
+      completed_burst_count: ($burst_metrics | length),
+      tmux_proxy_completed_burst_count: ($burst_latency_samples | length),
       pending_scroll_to_render_count: $scroll_telemetry.scroll.pendingScrollToRenderCount,
       pending_scroll_to_draw_count: $scroll_telemetry.scroll.pendingScrollToDrawCount,
       pending_scroll_to_layer_present_count: $scroll_telemetry.scroll.pendingScrollToLayerPresentCount,

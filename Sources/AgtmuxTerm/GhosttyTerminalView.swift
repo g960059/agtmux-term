@@ -1455,6 +1455,8 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
             scrollPresentationDirectGestureActive = true
         }
 
+        let momentumBoundaryStarted = momentumPhase.contains(.began)
+
         let currentDirection = Self.verticalScrollDirection(for: verticalDelta)
         let directionFlipped = currentDirection.map { direction in
             guard let lastPreciseScrollVerticalDirection else { return false }
@@ -1464,7 +1466,10 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
                 || Self.isActiveMomentumScrollPhase(momentumPhase)
         } ?? false
 
-        if (scrollPresentationDirectGestureActive && wasDirectGestureActive == false) || directionFlipped {
+        if (scrollPresentationDirectGestureActive && wasDirectGestureActive == false)
+            || momentumBoundaryStarted
+            || directionFlipped
+        {
             invalidateScheduledScrollPresentationWakeupsForGestureBoundary()
         }
 

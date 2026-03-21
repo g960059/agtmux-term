@@ -36,11 +36,10 @@ function send_tmux_next_pane_keys() {
 function switch_rendered_client_to_pane() {
   local client_tty="$1"
   local target_pane_id="$2"
-  env -u TMUX -u TMUX_PANE tmux \
-    -f /dev/null \
-    -L "$socket_name" \
-    select-pane \
-    -t "$target_pane_id"
+  (
+    unset TMUX TMUX_PANE
+    gate_l_tmux select-pane -t "$target_pane_id"
+  )
 }
 
 function focus_front_window_terminal() {
@@ -125,6 +124,7 @@ if [[ "$(jq -r '.ok' <<<"$bootstrap_json")" != "true" ]]; then
   echo "App-side bootstrap failed: $(jq -r '.error // "unknown error"' <<<"$bootstrap_json")" >&2
   exit 1
 fi
+gate_l_record_bootstrap_tmux_socket_path "$bootstrap_json"
 
 if [[ "$mode" == "key" ]]; then
   gate_l_send_bridge_command true 10 set-option -g prefix C-a >/dev/null

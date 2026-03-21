@@ -56,6 +56,11 @@ scripts/perf/gate_l_ax_key_sender.sh --dry-run
   presentation path. `scroll_to_render_request_ms`, `scroll_to_first_draw_ms`,
   and `draw_gap_*` remain diagnostic for the `GHOSTTY_ACTION_RENDER` host path
   and may legitimately stay empty when the scroll path bypasses that callback.
+  The default injector mode is now
+  `AGTMUX_PERF_TRACKPAD_PHASE_MODE=trackpad-burst-momentum`, which keeps the
+  same burst size but splits it into direct-touch and inertial momentum phases.
+  Override it with `AGTMUX_PERF_TRACKPAD_PHASE_MODE=trackpad-burst` when you
+  need the older direct-touch-only sender for A/B comparison.
 - `gate_l_native_ghostty_trackpad_history_scroll_bench.sh` is the native
   companion for the same transcript fixture and pixel-burst input path. Use it
   when you need the exact same `tmux_visible_line_change_ms` proxy against

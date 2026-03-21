@@ -67,6 +67,7 @@ struct GateLAXKeySenderResult: Encodable {
     let scrollPixels: Int?
     let scrollRepeat: Int?
     let scrollIntervalMs: Int?
+    let scrollPhaseMode: String?
     let modifiers: [String]
     let targetIdentifier: String?
     let clickPoint: ClickPoint?
@@ -112,6 +113,7 @@ struct GateLAXKeySenderOptions {
     var scrollPixels: Int?
     var scrollRepeat = 1
     var scrollIntervalMs = 0
+    var scrollPhaseMode: TrackpadScrollPhaseMode = .none
     var pointX: Double?
     var pointY: Double?
 
@@ -243,6 +245,15 @@ func parseOptions(arguments: [String]) throws -> GateLAXKeySenderOptions {
                 throw GateLAXKeySenderError.invalidArgument(argument)
             }
             options.scrollIntervalMs = scrollIntervalMs
+            index += 2
+        case "--scroll-phase-mode":
+            let nextIndex = index + 1
+            guard nextIndex < arguments.count,
+                  let mode = TrackpadScrollPhaseMode(rawValue: arguments[nextIndex])
+            else {
+                throw GateLAXKeySenderError.invalidArgument(argument)
+            }
+            options.scrollPhaseMode = mode
             index += 2
         case "--point-x":
             let nextIndex = index + 1
@@ -571,7 +582,8 @@ func postScroll(
     amount: Int,
     unit: GateLAXKeySenderOptions.ScrollUnit,
     repeatCount: Int,
-    intervalMs: Int
+    intervalMs: Int,
+    phaseMode: TrackpadScrollPhaseMode
 ) throws {
     let cgUnit: CGScrollEventUnit = unit == .pixel ? .pixel : .line
     let intervalMicros = useconds_t(max(0, intervalMs) * 1_000)
@@ -595,6 +607,21 @@ func postScroll(
                 .scrollWheelEventFixedPtDeltaAxis1,
                 value: Int64(amount * 65_536)
             )
+            if phaseMode != .none {
+                let phaseEvent = TrackpadScrollPhaseProfile.event(
+                    forIteration: iteration,
+                    repeatCount: repeatCount,
+                    mode: phaseMode
+                )
+                event.setIntegerValueField(
+                    .scrollWheelEventScrollPhase,
+                    value: Int64(phaseEvent.phase.rawValue)
+                )
+                event.setIntegerValueField(
+                    .scrollWheelEventMomentumPhase,
+                    value: Int64(phaseEvent.momentumPhase.rawValue)
+                )
+            }
         }
 
         event.location = point
@@ -828,281 +855,294 @@ func emit(_ result: GateLAXKeySenderResult, exitCode: Int32) -> Never {
     Foundation.exit(exitCode)
 }
 
-let binaryPath = CommandLine.arguments[0]
-let bundlePath = Bundle.main.bundlePath
-let pid = getpid()
-var parsedOptions: GateLAXKeySenderOptions?
+@main
+enum GateLAXKeySenderMain {
+    static func main() {
+        let binaryPath = CommandLine.arguments[0]
+        let bundlePath = Bundle.main.bundlePath
+        let pid = getpid()
+        var parsedOptions: GateLAXKeySenderOptions?
 
-do {
-    let options = try parseOptions(arguments: CommandLine.arguments)
-    parsedOptions = options
-    let trustOptions = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: options.prompt] as CFDictionary
-    let trusted = AXIsProcessTrustedWithOptions(trustOptions)
+        do {
+            let options = try parseOptions(arguments: CommandLine.arguments)
+            parsedOptions = options
+            let trustOptions = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: options.prompt] as CFDictionary
+            let trusted = AXIsProcessTrustedWithOptions(trustOptions)
 
-    guard trusted else {
-        emit(
-            GateLAXKeySenderResult(
-                binaryPath: binaryPath,
-                bundlePath: bundlePath,
-                pid: pid,
-                trusted: false,
-                prompted: options.prompt,
-                sent: false,
-                dryRun: options.dryRun,
-                action: actionName(for: options),
-                keyCode: options.keyCode,
-                scrollUnit: options.resolvedScrollAmount == 0 ? nil : options.resolvedScrollUnit.rawValue,
-                scrollLines: options.scrollLines == 0 ? nil : options.scrollLines,
-                scrollPixels: options.scrollPixels,
-                scrollRepeat: options.resolvedScrollAmount == 0 ? nil : options.scrollRepeat,
-                scrollIntervalMs: options.resolvedScrollAmount == 0 ? nil : options.scrollIntervalMs,
-                modifiers: options.modifiers,
-                targetIdentifier: options.targetIdentifier,
-                clickPoint: nil,
-                error: "accessibility permission not granted"
-            ),
-            exitCode: 2
-        )
-    }
+            guard trusted else {
+                emit(
+                    GateLAXKeySenderResult(
+                        binaryPath: binaryPath,
+                        bundlePath: bundlePath,
+                        pid: pid,
+                        trusted: false,
+                        prompted: options.prompt,
+                        sent: false,
+                        dryRun: options.dryRun,
+                        action: actionName(for: options),
+                        keyCode: options.keyCode,
+                        scrollUnit: options.resolvedScrollAmount == 0 ? nil : options.resolvedScrollUnit.rawValue,
+                        scrollLines: options.scrollLines == 0 ? nil : options.scrollLines,
+                        scrollPixels: options.scrollPixels,
+                        scrollRepeat: options.resolvedScrollAmount == 0 ? nil : options.scrollRepeat,
+                        scrollIntervalMs: options.resolvedScrollAmount == 0 ? nil : options.scrollIntervalMs,
+                        scrollPhaseMode: options.resolvedScrollAmount == 0 ? nil : options.scrollPhaseMode.rawValue,
+                        modifiers: options.modifiers,
+                        targetIdentifier: options.targetIdentifier,
+                        clickPoint: nil,
+                        error: "accessibility permission not granted"
+                    ),
+                    exitCode: 2
+                )
+            }
 
-    if options.dryRun {
-        emit(
-            GateLAXKeySenderResult(
-                binaryPath: binaryPath,
-                bundlePath: bundlePath,
-                pid: pid,
-                trusted: true,
-                prompted: options.prompt,
-                sent: false,
-                dryRun: true,
-                action: actionName(for: options),
-                keyCode: options.keyCode,
-                scrollUnit: options.resolvedScrollAmount == 0 ? nil : options.resolvedScrollUnit.rawValue,
-                scrollLines: options.scrollLines == 0 ? nil : options.scrollLines,
-                scrollPixels: options.scrollPixels,
-                scrollRepeat: options.resolvedScrollAmount == 0 ? nil : options.scrollRepeat,
-                scrollIntervalMs: options.resolvedScrollAmount == 0 ? nil : options.scrollIntervalMs,
-                modifiers: options.modifiers,
-                targetIdentifier: options.targetIdentifier,
-                clickPoint: nil,
-                error: nil
-            ),
-            exitCode: 0
-        )
-    }
+            if options.dryRun {
+                emit(
+                    GateLAXKeySenderResult(
+                        binaryPath: binaryPath,
+                        bundlePath: bundlePath,
+                        pid: pid,
+                        trusted: true,
+                        prompted: options.prompt,
+                        sent: false,
+                        dryRun: true,
+                        action: actionName(for: options),
+                        keyCode: options.keyCode,
+                        scrollUnit: options.resolvedScrollAmount == 0 ? nil : options.resolvedScrollUnit.rawValue,
+                        scrollLines: options.scrollLines == 0 ? nil : options.scrollLines,
+                        scrollPixels: options.scrollPixels,
+                        scrollRepeat: options.resolvedScrollAmount == 0 ? nil : options.scrollRepeat,
+                        scrollIntervalMs: options.resolvedScrollAmount == 0 ? nil : options.scrollIntervalMs,
+                        scrollPhaseMode: options.resolvedScrollAmount == 0 ? nil : options.scrollPhaseMode.rawValue,
+                        modifiers: options.modifiers,
+                        targetIdentifier: options.targetIdentifier,
+                        clickPoint: nil,
+                        error: nil
+                    ),
+                    exitCode: 0
+                )
+            }
 
-    guard let source = CGEventSource(stateID: .hidSystemState) else {
-        throw GateLAXKeySenderError.eventSourceUnavailable
-    }
+            guard let source = CGEventSource(stateID: .hidSystemState) else {
+                throw GateLAXKeySenderError.eventSourceUnavailable
+            }
 
-    try activateRequestedApplication(
-        appPID: options.appPID,
-        bundleIdentifier: options.bundleIdentifier
-    )
+            try activateRequestedApplication(
+                appPID: options.appPID,
+                bundleIdentifier: options.bundleIdentifier
+            )
 
-    let clickPoint: ClickPoint?
+            let clickPoint: ClickPoint?
 
-    switch options.action {
-    case .key:
-        try postKeyStroke(
-            source: source,
-            keyCode: options.keyCode,
-            modifiers: options.modifiers
-        )
-        clickPoint = nil
-    case .clickFrontWindow:
-        let point = try frontWindowClickPoint(
-            xFraction: options.xFraction,
-            yFraction: options.yFraction,
-            targetIdentifier: options.targetIdentifier,
-            appPID: options.appPID,
-            bundleIdentifier: options.bundleIdentifier
-        )
-        try postClick(source: source, point: point)
-        clickPoint = ClickPoint(x: point.x, y: point.y)
-    case .activateApp:
-        guard options.appPID != nil || options.bundleIdentifier != nil else {
-            throw GateLAXKeySenderError.targetApplicationUnavailable("missing --app-pid or --bundle-id")
+            switch options.action {
+            case .key:
+                try postKeyStroke(
+                    source: source,
+                    keyCode: options.keyCode,
+                    modifiers: options.modifiers
+                )
+                clickPoint = nil
+            case .clickFrontWindow:
+                let point = try frontWindowClickPoint(
+                    xFraction: options.xFraction,
+                    yFraction: options.yFraction,
+                    targetIdentifier: options.targetIdentifier,
+                    appPID: options.appPID,
+                    bundleIdentifier: options.bundleIdentifier
+                )
+                try postClick(source: source, point: point)
+                clickPoint = ClickPoint(x: point.x, y: point.y)
+            case .activateApp:
+                guard options.appPID != nil || options.bundleIdentifier != nil else {
+                    throw GateLAXKeySenderError.targetApplicationUnavailable("missing --app-pid or --bundle-id")
+                }
+                clickPoint = nil
+            case .sequence:
+                guard let sequenceName = options.sequenceName else {
+                    throw GateLAXKeySenderError.invalidArgument("--sequence")
+                }
+                try postSequence(named: sequenceName, source: source)
+                clickPoint = nil
+            case .focusKeyPoint:
+                let point = try requiredExplicitPoint(for: options)
+                try postClick(source: source, point: point)
+                usleep(120_000)
+                try postKeyStroke(
+                    source: source,
+                    keyCode: options.keyCode,
+                    modifiers: options.modifiers
+                )
+                clickPoint = ClickPoint(x: point.x, y: point.y)
+            case .focusKeyFrontWindow:
+                let point = try frontWindowClickPoint(
+                    xFraction: options.xFraction,
+                    yFraction: options.yFraction,
+                    targetIdentifier: nil,
+                    appPID: options.appPID,
+                    bundleIdentifier: options.bundleIdentifier
+                )
+                try postClick(source: source, point: point)
+                usleep(120_000)
+                try postKeyStroke(
+                    source: source,
+                    keyCode: options.keyCode,
+                    modifiers: options.modifiers
+                )
+                clickPoint = ClickPoint(x: point.x, y: point.y)
+            case .focusKeyIdentifier:
+                guard let targetIdentifier = options.targetIdentifier, !targetIdentifier.isEmpty else {
+                    throw GateLAXKeySenderError.elementIdentifierMissing
+                }
+                let point = try frontWindowClickPoint(
+                    xFraction: options.xFraction,
+                    yFraction: options.yFraction,
+                    targetIdentifier: targetIdentifier,
+                    appPID: options.appPID,
+                    bundleIdentifier: options.bundleIdentifier
+                )
+                try postClick(source: source, point: point)
+                usleep(120_000)
+                try postKeyStroke(
+                    source: source,
+                    keyCode: options.keyCode,
+                    modifiers: options.modifiers
+                )
+                clickPoint = ClickPoint(x: point.x, y: point.y)
+            case .focusScrollPoint:
+                let point = try requiredExplicitPoint(for: options)
+                try postClick(source: source, point: point)
+                usleep(120_000)
+                try postScroll(
+                    source: source,
+                    point: point,
+                    amount: options.resolvedScrollAmount,
+                    unit: options.resolvedScrollUnit,
+                    repeatCount: options.scrollRepeat,
+                    intervalMs: options.scrollIntervalMs,
+                    phaseMode: options.scrollPhaseMode
+                )
+                clickPoint = ClickPoint(x: point.x, y: point.y)
+            case .focusScrollFrontWindow:
+                let point = try frontWindowClickPoint(
+                    xFraction: options.xFraction,
+                    yFraction: options.yFraction,
+                    targetIdentifier: nil,
+                    appPID: options.appPID,
+                    bundleIdentifier: options.bundleIdentifier
+                )
+                try postClick(source: source, point: point)
+                usleep(120_000)
+                try postScroll(
+                    source: source,
+                    point: point,
+                    amount: options.resolvedScrollAmount,
+                    unit: options.resolvedScrollUnit,
+                    repeatCount: options.scrollRepeat,
+                    intervalMs: options.scrollIntervalMs,
+                    phaseMode: options.scrollPhaseMode
+                )
+                clickPoint = ClickPoint(x: point.x, y: point.y)
+            case .focusScrollIdentifier:
+                guard let targetIdentifier = options.targetIdentifier, !targetIdentifier.isEmpty else {
+                    throw GateLAXKeySenderError.elementIdentifierMissing
+                }
+                let point = try frontWindowClickPoint(
+                    xFraction: options.xFraction,
+                    yFraction: options.yFraction,
+                    targetIdentifier: targetIdentifier,
+                    appPID: options.appPID,
+                    bundleIdentifier: options.bundleIdentifier
+                )
+                try postClick(source: source, point: point)
+                usleep(120_000)
+                try postScroll(
+                    source: source,
+                    point: point,
+                    amount: options.resolvedScrollAmount,
+                    unit: options.resolvedScrollUnit,
+                    repeatCount: options.scrollRepeat,
+                    intervalMs: options.scrollIntervalMs,
+                    phaseMode: options.scrollPhaseMode
+                )
+                clickPoint = ClickPoint(x: point.x, y: point.y)
+            }
+
+            emit(
+                GateLAXKeySenderResult(
+                    binaryPath: binaryPath,
+                    bundlePath: bundlePath,
+                    pid: pid,
+                    trusted: true,
+                    prompted: options.prompt,
+                    sent: true,
+                    dryRun: false,
+                    action: actionName(for: options),
+                    keyCode: options.keyCode,
+                    scrollUnit: options.resolvedScrollAmount == 0 ? nil : options.resolvedScrollUnit.rawValue,
+                    scrollLines: options.scrollLines == 0 ? nil : options.scrollLines,
+                    scrollPixels: options.scrollPixels,
+                    scrollRepeat: options.resolvedScrollAmount == 0 ? nil : options.scrollRepeat,
+                    scrollIntervalMs: options.resolvedScrollAmount == 0 ? nil : options.scrollIntervalMs,
+                    scrollPhaseMode: options.resolvedScrollAmount == 0 ? nil : options.scrollPhaseMode.rawValue,
+                    modifiers: options.modifiers,
+                    targetIdentifier: options.targetIdentifier,
+                    clickPoint: clickPoint,
+                    error: nil
+                ),
+                exitCode: 0
+            )
+        } catch let error as GateLAXKeySenderError {
+            emit(
+                GateLAXKeySenderResult(
+                    binaryPath: binaryPath,
+                    bundlePath: bundlePath,
+                    pid: pid,
+                    trusted: AXIsProcessTrusted(),
+                    prompted: false,
+                    sent: false,
+                    dryRun: false,
+                    action: parsedOptions.map(actionName(for:)) ?? "key",
+                    keyCode: parsedOptions?.keyCode ?? 125,
+                    scrollUnit: parsedOptions?.resolvedScrollAmount == 0 ? nil : parsedOptions?.resolvedScrollUnit.rawValue,
+                    scrollLines: (parsedOptions?.scrollLines == 0 ? nil : parsedOptions?.scrollLines),
+                    scrollPixels: parsedOptions?.scrollPixels,
+                    scrollRepeat: parsedOptions?.resolvedScrollAmount == 0 ? nil : parsedOptions?.scrollRepeat,
+                    scrollIntervalMs: parsedOptions?.resolvedScrollAmount == 0 ? nil : parsedOptions?.scrollIntervalMs,
+                    scrollPhaseMode: parsedOptions?.resolvedScrollAmount == 0 ? nil : parsedOptions?.scrollPhaseMode.rawValue,
+                    modifiers: parsedOptions?.modifiers ?? [],
+                    targetIdentifier: parsedOptions?.targetIdentifier,
+                    clickPoint: nil,
+                    error: error.description
+                ),
+                exitCode: 1
+            )
+        } catch {
+            emit(
+                GateLAXKeySenderResult(
+                    binaryPath: binaryPath,
+                    bundlePath: bundlePath,
+                    pid: pid,
+                    trusted: AXIsProcessTrusted(),
+                    prompted: false,
+                    sent: false,
+                    dryRun: false,
+                    action: parsedOptions.map(actionName(for:)) ?? "key",
+                    keyCode: parsedOptions?.keyCode ?? 125,
+                    scrollUnit: parsedOptions?.resolvedScrollAmount == 0 ? nil : parsedOptions?.resolvedScrollUnit.rawValue,
+                    scrollLines: (parsedOptions?.scrollLines == 0 ? nil : parsedOptions?.scrollLines),
+                    scrollPixels: parsedOptions?.scrollPixels,
+                    scrollRepeat: parsedOptions?.resolvedScrollAmount == 0 ? nil : parsedOptions?.scrollRepeat,
+                    scrollIntervalMs: parsedOptions?.resolvedScrollAmount == 0 ? nil : parsedOptions?.scrollIntervalMs,
+                    scrollPhaseMode: parsedOptions?.resolvedScrollAmount == 0 ? nil : parsedOptions?.scrollPhaseMode.rawValue,
+                    modifiers: parsedOptions?.modifiers ?? [],
+                    targetIdentifier: parsedOptions?.targetIdentifier,
+                    clickPoint: nil,
+                    error: String(describing: error)
+                ),
+                exitCode: 1
+            )
         }
-        clickPoint = nil
-    case .sequence:
-        guard let sequenceName = options.sequenceName else {
-            throw GateLAXKeySenderError.invalidArgument("--sequence")
-        }
-        try postSequence(named: sequenceName, source: source)
-        clickPoint = nil
-    case .focusKeyPoint:
-        let point = try requiredExplicitPoint(for: options)
-        try postClick(source: source, point: point)
-        usleep(120_000)
-        try postKeyStroke(
-            source: source,
-            keyCode: options.keyCode,
-            modifiers: options.modifiers
-        )
-        clickPoint = ClickPoint(x: point.x, y: point.y)
-    case .focusKeyFrontWindow:
-        let point = try frontWindowClickPoint(
-            xFraction: options.xFraction,
-            yFraction: options.yFraction,
-            targetIdentifier: nil,
-            appPID: options.appPID,
-            bundleIdentifier: options.bundleIdentifier
-        )
-        try postClick(source: source, point: point)
-        usleep(120_000)
-        try postKeyStroke(
-            source: source,
-            keyCode: options.keyCode,
-            modifiers: options.modifiers
-        )
-        clickPoint = ClickPoint(x: point.x, y: point.y)
-    case .focusKeyIdentifier:
-        guard let targetIdentifier = options.targetIdentifier, !targetIdentifier.isEmpty else {
-            throw GateLAXKeySenderError.elementIdentifierMissing
-        }
-        let point = try frontWindowClickPoint(
-            xFraction: options.xFraction,
-            yFraction: options.yFraction,
-            targetIdentifier: targetIdentifier,
-            appPID: options.appPID,
-            bundleIdentifier: options.bundleIdentifier
-        )
-        try postClick(source: source, point: point)
-        usleep(120_000)
-        try postKeyStroke(
-            source: source,
-            keyCode: options.keyCode,
-            modifiers: options.modifiers
-        )
-        clickPoint = ClickPoint(x: point.x, y: point.y)
-    case .focusScrollPoint:
-        let point = try requiredExplicitPoint(for: options)
-        try postClick(source: source, point: point)
-        usleep(120_000)
-        try postScroll(
-            source: source,
-            point: point,
-            amount: options.resolvedScrollAmount,
-            unit: options.resolvedScrollUnit,
-            repeatCount: options.scrollRepeat,
-            intervalMs: options.scrollIntervalMs
-        )
-        clickPoint = ClickPoint(x: point.x, y: point.y)
-    case .focusScrollFrontWindow:
-        let point = try frontWindowClickPoint(
-            xFraction: options.xFraction,
-            yFraction: options.yFraction,
-            targetIdentifier: nil,
-            appPID: options.appPID,
-            bundleIdentifier: options.bundleIdentifier
-        )
-        try postClick(source: source, point: point)
-        usleep(120_000)
-        try postScroll(
-            source: source,
-            point: point,
-            amount: options.resolvedScrollAmount,
-            unit: options.resolvedScrollUnit,
-            repeatCount: options.scrollRepeat,
-            intervalMs: options.scrollIntervalMs
-        )
-        clickPoint = ClickPoint(x: point.x, y: point.y)
-    case .focusScrollIdentifier:
-        guard let targetIdentifier = options.targetIdentifier, !targetIdentifier.isEmpty else {
-            throw GateLAXKeySenderError.elementIdentifierMissing
-        }
-        let point = try frontWindowClickPoint(
-            xFraction: options.xFraction,
-            yFraction: options.yFraction,
-            targetIdentifier: targetIdentifier,
-            appPID: options.appPID,
-            bundleIdentifier: options.bundleIdentifier
-        )
-        try postClick(source: source, point: point)
-        usleep(120_000)
-        try postScroll(
-            source: source,
-            point: point,
-            amount: options.resolvedScrollAmount,
-            unit: options.resolvedScrollUnit,
-            repeatCount: options.scrollRepeat,
-            intervalMs: options.scrollIntervalMs
-        )
-        clickPoint = ClickPoint(x: point.x, y: point.y)
     }
-
-    emit(
-        GateLAXKeySenderResult(
-            binaryPath: binaryPath,
-            bundlePath: bundlePath,
-            pid: pid,
-            trusted: true,
-            prompted: options.prompt,
-            sent: true,
-            dryRun: false,
-            action: actionName(for: options),
-            keyCode: options.keyCode,
-            scrollUnit: options.resolvedScrollAmount == 0 ? nil : options.resolvedScrollUnit.rawValue,
-            scrollLines: options.scrollLines == 0 ? nil : options.scrollLines,
-            scrollPixels: options.scrollPixels,
-            scrollRepeat: options.resolvedScrollAmount == 0 ? nil : options.scrollRepeat,
-            scrollIntervalMs: options.resolvedScrollAmount == 0 ? nil : options.scrollIntervalMs,
-            modifiers: options.modifiers,
-            targetIdentifier: options.targetIdentifier,
-            clickPoint: clickPoint,
-            error: nil
-        ),
-        exitCode: 0
-    )
-} catch let error as GateLAXKeySenderError {
-        emit(
-            GateLAXKeySenderResult(
-                binaryPath: binaryPath,
-                bundlePath: bundlePath,
-                pid: pid,
-                trusted: AXIsProcessTrusted(),
-                prompted: false,
-                sent: false,
-                dryRun: false,
-                action: parsedOptions.map(actionName(for:)) ?? "key",
-                keyCode: parsedOptions?.keyCode ?? 125,
-                scrollUnit: parsedOptions?.resolvedScrollAmount == 0 ? nil : parsedOptions?.resolvedScrollUnit.rawValue,
-                scrollLines: (parsedOptions?.scrollLines == 0 ? nil : parsedOptions?.scrollLines),
-                scrollPixels: parsedOptions?.scrollPixels,
-                scrollRepeat: parsedOptions?.resolvedScrollAmount == 0 ? nil : parsedOptions?.scrollRepeat,
-                scrollIntervalMs: parsedOptions?.resolvedScrollAmount == 0 ? nil : parsedOptions?.scrollIntervalMs,
-                modifiers: parsedOptions?.modifiers ?? [],
-                targetIdentifier: parsedOptions?.targetIdentifier,
-                clickPoint: nil,
-                error: error.description
-            ),
-            exitCode: 1
-    )
-} catch {
-        emit(
-            GateLAXKeySenderResult(
-                binaryPath: binaryPath,
-                bundlePath: bundlePath,
-                pid: pid,
-                trusted: AXIsProcessTrusted(),
-                prompted: false,
-                sent: false,
-                dryRun: false,
-                action: parsedOptions.map(actionName(for:)) ?? "key",
-                keyCode: parsedOptions?.keyCode ?? 125,
-                scrollUnit: parsedOptions?.resolvedScrollAmount == 0 ? nil : parsedOptions?.resolvedScrollUnit.rawValue,
-                scrollLines: (parsedOptions?.scrollLines == 0 ? nil : parsedOptions?.scrollLines),
-                scrollPixels: parsedOptions?.scrollPixels,
-                scrollRepeat: parsedOptions?.resolvedScrollAmount == 0 ? nil : parsedOptions?.scrollRepeat,
-                scrollIntervalMs: parsedOptions?.resolvedScrollAmount == 0 ? nil : parsedOptions?.scrollIntervalMs,
-                modifiers: parsedOptions?.modifiers ?? [],
-                targetIdentifier: parsedOptions?.targetIdentifier,
-                clickPoint: nil,
-                error: String(describing: error)
-            ),
-            exitCode: 1
-    )
 }
 
 private extension Array where Element == String {

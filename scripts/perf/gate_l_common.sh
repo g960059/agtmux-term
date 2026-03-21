@@ -55,6 +55,9 @@ function gate_l_setup_paths() {
 
   gate_l_tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/agtmux-gate-l-${token}.XXXXXX")"
   mkdir -p "$HOME/.agt"
+  gate_l_tmux_socket_path=""
+  gate_l_socket_name=""
+  gate_l_session_name=""
 
   gate_l_command_path="$gate_l_tmpdir/tmux-command.json"
   gate_l_command_result_path="$gate_l_tmpdir/tmux-command-result.json"
@@ -63,6 +66,27 @@ function gate_l_setup_paths() {
   gate_l_app_stdout_path="$gate_l_tmpdir/app.stdout.log"
   gate_l_app_stderr_path="$gate_l_tmpdir/app.stderr.log"
   gate_l_daemon_socket_path="$HOME/.agt/perf-${token}.sock"
+}
+
+function gate_l_cleanup_stale_perf_processes() {
+  local stale_sockets=()
+  local discovered_socket_name=""
+  while IFS= read -r discovered_socket_name; do
+    [[ -n "$discovered_socket_name" ]] || continue
+    stale_sockets+=("$discovered_socket_name")
+  done < <(
+    ps -ax -o command= | sed -n 's#.*tmux -f /dev/null -L \(agtmux-gate-l-[^ ]*\) new-session.*#\1#p' | sort -u
+  )
+
+  local stale_socket_name=""
+  for stale_socket_name in "${stale_sockets[@]:-}"; do
+    tmux -f /dev/null -L "$stale_socket_name" kill-server >/dev/null 2>&1 || true
+  done
+
+  pkill -f 'tmux -f /dev/null -L agtmux-gate-l-[^ ]* new-session -d -s agtmux-gate-l-' >/dev/null 2>&1 || true
+  pkill -f 'tmux -f /dev/null -C attach-session -t agtmux-gate-l-' >/dev/null 2>&1 || true
+  pkill -f 'less -R -N /var/folders/.*/agtmux-gate-l-' >/dev/null 2>&1 || true
+  pkill -f 'AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm -ApplePersistenceIgnoreState YES -NSQuitAlwaysKeepsWindows NO' >/dev/null 2>&1 || true
 }
 
 function gate_l_launch_app() {
@@ -74,6 +98,7 @@ function gate_l_launch_app() {
   local scenario_json
 
   gate_l_socket_name="$socket_name"
+  gate_l_session_name="$session_name"
   scenario_json="$(jq -cn \
     --arg sessionName "$session_name" \
     --arg windowName "main" \
@@ -93,7 +118,7 @@ function gate_l_launch_app() {
     AGTMUX_UITEST_TMUX_COMMAND_RESULT_PATH="$gate_l_command_result_path" \
     AGTMUX_UITEST_TMUX_RESULT_PATH="$gate_l_bootstrap_result_path" \
     AGTMUX_UITEST_TMUX_AUTO_CLEANUP=1 \
-    AGTMUX_UITEST_TMUX_KILL_SERVER=1 \
+    AGTMUX_UITEST_TMUX_KILL_SERVER=0 \
     AGTMUX_UITEST_TMUX_SCENARIO="$scenario_json" \
     TMUX= \
     TMUX_PANE= \
@@ -129,6 +154,33 @@ function gate_l_wait_for_bootstrap() {
 
   echo "Timed out waiting for app-side tmux bootstrap result" >&2
   return 1
+}
+
+function gate_l_record_bootstrap_tmux_socket_path() {
+  local bootstrap_json="$1"
+  local socket_path=""
+  socket_path="$(jq -r '.socketPath // empty' <<<"$bootstrap_json")"
+  if [[ -n "$socket_path" && "$socket_path" != "null" ]]; then
+    gate_l_tmux_socket_path="$socket_path"
+  fi
+}
+
+function gate_l_expected_named_socket_path() {
+  print -r -- "/private/tmp/tmux-$(id -u)/${gate_l_socket_name}"
+}
+
+function gate_l_has_isolated_tmux_socket() {
+  [[ -n "${gate_l_tmux_socket_path:-}" && "$gate_l_tmux_socket_path" == "$(gate_l_expected_named_socket_path)" ]]
+}
+
+function gate_l_tmux() {
+  if [[ -n "${gate_l_tmux_socket_path:-}" ]]; then
+    tmux -f /dev/null -S "$gate_l_tmux_socket_path" "$@"
+  elif [[ -n "${gate_l_socket_name:-}" ]]; then
+    tmux -f /dev/null -L "$gate_l_socket_name" "$@"
+  else
+    tmux -f /dev/null "$@"
+  fi
 }
 
 function gate_l_send_bridge_command() {
@@ -339,7 +391,11 @@ function gate_l_terminate_app() {
 }
 
 function gate_l_cleanup_tmux() {
-  if [[ -n "${gate_l_socket_name:-}" ]]; then
-    tmux -L "$gate_l_socket_name" kill-server >/dev/null 2>&1 || true
+  if [[ -n "${gate_l_session_name:-}" ]] && gate_l_has_isolated_tmux_socket; then
+    gate_l_tmux kill-session -t "$gate_l_session_name" >/dev/null 2>&1 || true
+  elif [[ -n "${gate_l_tmux_socket_path:-}" ]]; then
+    echo "Skipping tmux cleanup because benchmark resolved non-isolated socket: $gate_l_tmux_socket_path" >&2
+  elif [[ -n "${gate_l_socket_name:-}" ]]; then
+    tmux -f /dev/null -L "$gate_l_socket_name" kill-server >/dev/null 2>&1 || true
   fi
 }

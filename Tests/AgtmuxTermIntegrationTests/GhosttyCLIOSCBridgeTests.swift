@@ -1597,6 +1597,42 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
     }
 
     @MainActor
+    func testMomentumBoundaryInvalidatesScheduledContinuationWakeups() {
+        let view = GhosttyTerminalViewDrawSpy()
+
+        view.noteScrollInputTelemetryForTesting(now: 10.0)
+        view.updateScrollPresentationGestureStateForTesting(
+            precision: true,
+            phase: .began,
+            momentumPhase: [],
+            verticalDelta: -3.0,
+            now: 10.0
+        )
+        view.noteScrollPresentationDrawForTesting(now: 10.0)
+        view.noteLayerPresentationForTesting(now: 10.001)
+        view.configureScrollPresentationContinuationForTesting(
+            pumpDue: 10.02,
+            recoveryDue: 10.03,
+            recoveryDrawUptime: 10.0
+        )
+
+        view.updateScrollPresentationGestureStateForTesting(
+            precision: true,
+            phase: .ended,
+            momentumPhase: .began,
+            verticalDelta: -2.0,
+            now: 10.03
+        )
+
+        let state = view.scrollPresentationContinuationStateForTesting()
+        XCTAssertNil(state.pumpDueUptime)
+        XCTAssertNil(state.recoveryDueUptime)
+        XCTAssertNil(state.lastDrawUptime)
+        XCTAssertFalse(view.shouldThrottleImmediateScrollPresentationDrawForTesting(now: 10.031))
+        XCTAssertTrue(view.shouldUseHostScrollPresentationContinuationForTesting(now: 10.031))
+    }
+
+    @MainActor
     func testScrollPresentationRecoveryProbeRedrawsWhenLayerPresentLags() {
         let view = GhosttyTerminalViewDrawSpy()
 

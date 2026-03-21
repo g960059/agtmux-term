@@ -249,3 +249,34 @@ enum TmuxCommandError: Error, Sendable {
     case failed(args: [String], code: Int32, stderr: String)
     case timeout(args: [String])
 }
+
+extension TmuxCommandError: LocalizedError {
+    var errorDescription: String? {
+        switch self {
+        case let .tmuxNotFound(source):
+            return "tmux executable not found for source \(source)"
+        case let .permissionDenied(source, detail):
+            return "tmux permission denied for source \(source): \(detail)"
+        case let .sshFailed(host, code, stderr):
+            return formatted(
+                prefix: "ssh tmux failed for \(host)",
+                code: code,
+                stderr: stderr
+            )
+        case let .failed(args, code, stderr):
+            let command = (["tmux"] + args).joined(separator: " ")
+            return formatted(prefix: command, code: code, stderr: stderr)
+        case let .timeout(args):
+            let command = (["tmux"] + args).joined(separator: " ")
+            return "\(command) timed out"
+        }
+    }
+
+    private func formatted(prefix: String, code: Int32, stderr: String) -> String {
+        let trimmed = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            return "\(prefix) failed with exit code \(code)"
+        }
+        return "\(prefix) failed with exit code \(code): \(trimmed)"
+    }
+}

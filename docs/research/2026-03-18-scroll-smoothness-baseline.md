@@ -2052,3 +2052,103 @@ Interpretation:
 - the next host seam is no longer duplicate continuation timers; it is the
   residual single-wake/presentation variance that still survives in some
   later-`up` bursts
+
+### 2026-03-21 momentum-phase trackpad bench refresh
+
+The next blocker was bench fidelity rather than runtime behavior. The old
+synthetic injector only stamped direct gesture phases
+(`--scroll-phase-mode trackpad-burst`) and never emitted inertial momentum.
+
+Implementation:
+
+- extracted the trackpad phase profile into shared Swift code so the helper app
+  and package tests use the same direct-touch / momentum split
+- added `trackpad-burst-momentum`, which keeps the same burst size but emits a
+  direct-touch prefix followed by momentum-only events
+- switched both transcript-style trackpad benches to default to
+  `AGTMUX_PERF_TRACKPAD_PHASE_MODE=trackpad-burst-momentum`
+- kept `AGTMUX_PERF_TRACKPAD_PHASE_MODE=trackpad-burst` as an A/B override
+
+Validation:
+
+- `swift test --build-path .build-codex --filter 'TrackpadScrollPhaseProfileTests|GhosttyInputTests|GhosttyCLIOSCBridgeTests|GhosttyTerminalSurfaceRegistryTests|TmuxCommandRunnerTests'`
+- `zsh -n scripts/perf/gate_l_ax_key_sender.sh scripts/perf/gate_l_trackpad_history_scroll_bench.sh scripts/perf/gate_l_native_ghostty_trackpad_history_scroll_bench.sh`
+- `scripts/perf/gate_l_ax_key_sender.sh --dry-run --focus-scroll-front-window --scroll-pixels 10 --scroll-repeat 24 --scroll-phase-mode trackpad-burst-momentum`
+- installed app, momentum-aware:
+  - `AGTMUX_PERF_APP_BIN=/Applications/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4`
+  - `AGTMUX_PERF_APP_BIN=/Applications/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 8`
+- installed app, legacy direct-touch-only:
+  - `AGTMUX_PERF_APP_BIN=/Applications/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm AGTMUX_PERF_TRACKPAD_PHASE_MODE=trackpad-burst scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4`
+  - `AGTMUX_PERF_APP_BIN=/Applications/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm AGTMUX_PERF_TRACKPAD_PHASE_MODE=trackpad-burst scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 8`
+- native Ghostty proxy companion:
+  - `scripts/perf/gate_l_native_ghostty_trackpad_history_scroll_bench.sh --iterations 4`
+  - `scripts/perf/gate_l_native_ghostty_trackpad_history_scroll_bench.sh --iterations 8`
+
+Results:
+
+- embedded installed app, momentum-aware:
+  - `4-burst scroll_to_layer_present_ms p50 5.201 / p95 27.810 / max 47.166`
+  - `8-burst scroll_to_layer_present_ms p50 4.001 / p95 56.304 / max 85.077`
+- embedded installed app, legacy direct-touch-only:
+  - `4-burst scroll_to_layer_present_ms p50 8.687 / p95 20.778 / max 66.478`
+  - `8-burst scroll_to_layer_present_ms p50 5.973 / p95 62.921 / max 138.443`
+- native Ghostty same-input proxy with momentum-aware mode:
+  - `4-burst tmux_visible_line_change_ms p95 577.632`
+  - `8-burst tmux_visible_line_change_ms p95 599.097`
+
+Interpretation:
+
+- the momentum-aware bench is not a pure numeric win on short bursts; it raises
+  `4-burst p95` on this host
+- it is still the better default because it reduces the longer-train `max`
+  materially (`138.443 -> 85.077`) while exercising the inertial tail that the
+  user actually reports as jank
+- the remaining work should now target the runtime/vendor path under this new
+  default instead of tuning against the older direct-touch-only sender
+
+### 2026-03-21 accepted momentum-boundary continuation reset
+
+With the momentum-aware bench in place, the next runtime seam was the hand-off
+from direct-touch input to inertial scrolling:
+
+- `GhosttyTerminalView` already treated `event.phase == .began` as a gesture
+  boundary
+- it did not treat `event.momentumPhase == .began` the same way, so the first
+  momentum events could inherit stale pump / recovery deadlines from the direct
+  touch portion of the burst
+
+Change:
+
+- invalidate scheduled scroll-presentation continuation wakeups when
+  `momentumPhase` enters `.began`
+- keep the rest of the hybrid runtime unchanged
+
+Validation:
+
+- `swift test --build-path .build-codex --filter 'TrackpadScrollPhaseProfileTests|GhosttyInputTests|GhosttyCLIOSCBridgeTests|GhosttyTerminalSurfaceRegistryTests|TmuxCommandRunnerTests'`
+- `xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -configuration Release -derivedDataPath build-scroll-momentum-boundary CONFIGURATION_BUILD_DIR="$PWD/build-scroll-momentum-boundary/Release" ONLY_ACTIVE_ARCH=NO CODE_SIGN_IDENTITY='-' CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES ENABLE_HARDENED_RUNTIME=NO AGTMUX_BIN="$PWD/../agtmux/target/release/agtmux" build`
+- `AGTMUX_PERF_APP_BIN="$PWD/build-scroll-momentum-boundary/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4`
+- `AGTMUX_PERF_APP_BIN="$PWD/build-scroll-momentum-boundary/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 8`
+
+Results:
+
+- local release with momentum-boundary reset:
+  - `4-burst scroll_to_layer_present_ms p50 7.079 / p95 24.293 / max 41.260`
+  - `8-burst scroll_to_layer_present_ms p50 6.072 / p95 28.308 / max 82.696`
+- installed-app momentum-aware baseline before the runtime change:
+  - `4-burst scroll_to_layer_present_ms p50 5.201 / p95 27.810 / max 47.166`
+  - `8-burst scroll_to_layer_present_ms p50 4.001 / p95 56.304 / max 85.077`
+
+Interpretation:
+
+- the fresh local release build is noisier on median than the installed app,
+  so the median cannot be treated as a clean A/B
+- the tail moved the right way on both burst lengths anyway:
+  - `4-burst max 47.166 -> 41.260`
+  - `8-burst p95 56.304 -> 28.308`
+- scheduler telemetry also improved on the local build:
+  - `scroll_presentation_pump_wake_lateness_ms p95 19.435 -> 14.339`
+  - `scroll_presentation_recovery_probe_wake_lateness_ms p95 25.222 -> 11.866`
+- this is a keepable runtime change because it directly matches the stronger
+  bench model and improves the later-`up` / inertial tail without reintroducing
+  extra timers

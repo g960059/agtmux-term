@@ -3042,6 +3042,7 @@ final class AgtmuxTermUITests: XCTestCase {
         let sessionName: String?
         let windowID: String?
         let paneIDs: [String]
+        let socketPath: String?
         let error: String?
     }
 
@@ -3241,7 +3242,7 @@ final class AgtmuxTermUITests: XCTestCase {
         app.launchEnvironment["AGTMUX_UITEST_TMUX_COMMAND_RESULT_PATH"] = control.commandResultPath
         app.launchEnvironment["AGTMUX_UITEST_TMUX_RESULT_PATH"] = control.bootstrapResultPath
         app.launchEnvironment["AGTMUX_UITEST_TMUX_AUTO_CLEANUP"] = "1"
-        app.launchEnvironment["AGTMUX_UITEST_TMUX_KILL_SERVER"] = "1"
+        app.launchEnvironment["AGTMUX_UITEST_TMUX_KILL_SERVER"] = "0"
 
         if let scenario {
             if let data = try? JSONEncoder().encode(scenario),

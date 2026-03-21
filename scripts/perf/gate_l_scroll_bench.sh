@@ -18,7 +18,7 @@ function first_visible_line_number() {
   local socket_name="$1"
   local target="$2"
   local captured
-  captured="$(tmux -f /dev/null -L "$socket_name" capture-pane -p -t "$target" -S -200 2>/dev/null || true)"
+  captured="$(gate_l_tmux capture-pane -p -t "$target" -S -200 2>/dev/null || true)"
   awk '
     /^[[:space:]]*[0-9]+[[:space:]]/ {
       line = $0
@@ -148,15 +148,17 @@ if [[ "$(jq -r '.ok' <<<"$bootstrap_json")" != "true" ]]; then
   echo "App-side bootstrap failed: $(jq -r '.error // "unknown error"' <<<"$bootstrap_json")" >&2
   exit 1
 fi
+gate_l_record_bootstrap_tmux_socket_path "$bootstrap_json"
+
+pane_id="$(jq -r '.paneIDs[0]' <<<"$bootstrap_json")"
+target="$pane_id"
 
 ready_line=""
 if ! wait_for_first_visible_line_number "$socket_name" "$target" 1 "$settle_timeout" ready_line; then
   echo "Timed out waiting for less fixture to render the first page" >&2
   exit 1
 fi
-ready_capture="$(tmux -f /dev/null -L "$socket_name" capture-pane -p -t "$target" -S -200 2>/dev/null || true)"
-
-pane_id="$(jq -r '.paneIDs[0]' <<<"$bootstrap_json")"
+ready_capture="$(gate_l_tmux capture-pane -p -t "$target" -S -200 2>/dev/null || true)"
 gate_l_send_bridge_command false 10 "__agtmux_open_terminal_for_pane__" "local" "$session_name" "$pane_id" >/dev/null
 gate_l_activate_app
 

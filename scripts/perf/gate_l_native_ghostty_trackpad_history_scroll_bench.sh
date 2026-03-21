@@ -16,6 +16,7 @@ events_per_burst="${AGTMUX_PERF_TRACKPAD_EVENTS_PER_BURST:-24}"
 scroll_pixels_per_event="${AGTMUX_PERF_TRACKPAD_PIXELS_PER_EVENT:-10}"
 scroll_interval_ms="${AGTMUX_PERF_TRACKPAD_INTERVAL_MS:-8}"
 burst_pause_ms="${AGTMUX_PERF_TRACKPAD_BURST_PAUSE_MS:-120}"
+scroll_phase_mode="${AGTMUX_PERF_TRACKPAD_PHASE_MODE:-trackpad-burst-momentum}"
 
 function join_json_array() {
   local values=("$@")
@@ -283,7 +284,8 @@ for (( i = 1; i <= warmup_bursts; i++ )); do
     --point-y "$scroll_point_y" \
     --scroll-pixels "$((-scroll_pixels_per_event))" \
     --scroll-repeat "$events_per_burst" \
-    --scroll-interval-ms "$scroll_interval_ms" >/dev/null
+    --scroll-interval-ms "$scroll_interval_ms" \
+    --scroll-phase-mode "$scroll_phase_mode" >/dev/null
   sleep 0.2
 done
 
@@ -314,7 +316,8 @@ for (( i = 1; i <= iterations; i++ )); do
     --point-y "$scroll_point_y" \
     --scroll-pixels "$scroll_pixels" \
     --scroll-repeat "$events_per_burst" \
-    --scroll-interval-ms "$scroll_interval_ms")"
+    --scroll-interval-ms "$scroll_interval_ms" \
+    --scroll-phase-mode "$scroll_phase_mode")"
 
   burst_latency_ms="null"
   if ! wait_for_first_visible_line_change "$socket_name" "$target" "$baseline_line" "$direction" "$settle_timeout" last_visible_line; then
@@ -368,6 +371,7 @@ jq -n \
   --argjson scroll_pixels_per_event "$scroll_pixels_per_event" \
   --argjson scroll_interval_ms "$scroll_interval_ms" \
   --argjson burst_pause_ms "$burst_pause_ms" \
+  --arg scroll_phase_mode "$scroll_phase_mode" \
   --argjson empty_burst_count "$empty_burst_count" \
   --slurpfile burst_metrics "$burst_metrics_path" '
   def percentile($samples; $p):
@@ -423,6 +427,7 @@ jq -n \
       scroll_pixels_per_event: $scroll_pixels_per_event,
       scroll_interval_ms: $scroll_interval_ms,
       burst_pause_ms: $burst_pause_ms,
+      scroll_phase_mode: $scroll_phase_mode,
       benchmark_start: $benchmark_start,
       benchmark_end: $benchmark_end,
       iterations: $iterations,

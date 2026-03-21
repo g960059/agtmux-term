@@ -22,7 +22,7 @@ function wait_for_pane_text() {
   local captured=""
 
   while (( EPOCHREALTIME < deadline )); do
-    captured="$(tmux -f /dev/null -L "$socket_name" capture-pane -p -t "$target" -S -120 2>/dev/null || true)"
+    captured="$(gate_l_tmux capture-pane -p -t "$target" -S -120 2>/dev/null || true)"
     if [[ "$captured" == *"$expected"* ]]; then
       typeset -g "$output_var_name=$captured"
       return 0
@@ -38,7 +38,7 @@ function latest_key_sequence() {
   local socket_name="$1"
   local target="$2"
   local captured
-  captured="$(tmux -f /dev/null -L "$socket_name" capture-pane -p -t "$target" -S -120 2>/dev/null || true)"
+  captured="$(gate_l_tmux capture-pane -p -t "$target" -S -120 2>/dev/null || true)"
   perl -ne 'while (/__GATE_L_KEY__:(\d+):/g) { $last = $1 } END { print($last || 0) }' <<<"$captured"
 }
 
@@ -127,8 +127,10 @@ if [[ "$(jq -r '.ok' <<<"$bootstrap_json")" != "true" ]]; then
   echo "App-side bootstrap failed: $(jq -r '.error // "unknown error"' <<<"$bootstrap_json")" >&2
   exit 1
 fi
+gate_l_record_bootstrap_tmux_socket_path "$bootstrap_json"
 
 pane_id="$(jq -r '.paneIDs[0]' <<<"$bootstrap_json")"
+target="$pane_id"
 ready_capture=""
 if ! wait_for_pane_text "$socket_name" "$target" "__GATE_L_READY__" "$settle_timeout" ready_capture; then
   echo "Timed out waiting for keypress driver readiness banner" >&2

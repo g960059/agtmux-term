@@ -23,6 +23,39 @@ Current state:
 - the latest accepted bench/runtime follow-up makes the synthetic trackpad
   sender phase-aware (`trackpad-burst`) and uses `event.phase == .began` to
   invalidate stale scroll pump / recovery timers at real gesture boundaries
+- the latest accepted bench-fidelity follow-up keeps the same runtime but
+  upgrades the injector/bench default to
+  `AGTMUX_PERF_TRACKPAD_PHASE_MODE=trackpad-burst-momentum`, which splits each
+  pixel burst into direct-touch and momentum phases without changing the total
+  event count
+- on the 2026-03-21 installed-app reruns, that momentum-aware mode was mixed
+  on short bursts but clearly stronger on long trains:
+  - `4-burst`: `scroll_to_layer_present_ms p50 5.201 / p95 27.810 / max 47.166`
+  - `8-burst`: `scroll_to_layer_present_ms p50 4.001 / p95 56.304 / max 85.077`
+  - compared with the legacy direct-touch-only sender on the same app:
+    `4-burst p50 8.687 / p95 20.778 / max 66.478`,
+    `8-burst p50 5.973 / p95 62.921 / max 138.443`
+- interpretation:
+  the new injector exposes more of the later-`up` / inertial tail that the user
+  actually feels, while also cutting the worst long-burst max enough to make
+  follow-up scheduler/runtime work easier to attribute
+- the next accepted runtime follow-up uses that stronger bench and treats
+  `momentumPhase == .began` as a real gesture boundary: stale pump / recovery
+  continuation wakeups are invalidated before the momentum tail starts
+- on the local release build from 2026-03-21, that boundary reset improved both
+  the short-path tail and the long-burst `p95` relative to the installed-app
+  momentum-aware baseline:
+  - local release `4-burst`:
+    `scroll_to_layer_present_ms p50 7.079 / p95 24.293 / max 41.260`
+  - local release `8-burst`:
+    `scroll_to_layer_present_ms p50 6.072 / p95 28.308 / max 82.696`
+  - installed momentum-aware baseline before the runtime change:
+    `4-burst p50 5.201 / p95 27.810 / max 47.166`,
+    `8-burst p50 4.001 / p95 56.304 / max 85.077`
+- interpretation:
+  the median is a bit noisier on the fresh local release build, but the visible
+  target seam moved the right way where the user still feels hitching:
+  `8-burst p95` was roughly halved and the short-path `max` also fell
 - the latest accepted telemetry follow-up adds per-burst raw sample slices for
   `scroll_to_first_draw`, `scroll_to_layer_present`, and draw-gap metrics so
   long-burst tails can be attributed to specific bursts instead of only to the
@@ -417,6 +450,47 @@ Current state:
     bootstrap path instead of regressing the presentation metric, so the next
     seam remains later-`up` single-wake/presentation variance rather than
     duplicate host continuation timers
+- the bench harness itself is now tmux-safe again:
+  - zsh variable clobbering in `gate_l_common.sh` could erase the intended
+    isolated `socket_name`, which made app-driven bootstrap fall back to the
+    default tmux socket and risked tearing down the user's live session
+  - the harness now records the resolved bootstrap `socketPath`, never requests
+    `kill-server`, and skips tmux cleanup entirely if the resolved socket is
+    not the expected isolated named socket
+- two follow-up runtime ideas were measured after the harness repair and both
+  were rejected:
+  - a run-loop observer rescue for overdue continuation wakes regressed the
+    short path to `4-burst p50 5.924 / p95 32.481 / max 34.906`
+  - a broader momentum-owned input path, where active momentum also bypassed
+    host throttling, produced one strong clean rerun but remained unstable on
+    the long train:
+    `8-burst p50 7.535 / p95 24.203 / max 140.094`,
+    `p50 7.612 / p95 12.992 / max 19.458`,
+    `p50 6.848 / p95 12.159 / max 90.536`
+- that leaves the accepted coalesced continuation wake as the current runtime
+  baseline; the next real seam is still later-`up` single-wake/presentation
+  variance, not duplicate timers or tmux bootstrap safety
+- another boundary-only runtime bundle was measured after that and rejected:
+  - on direction flips or momentum start, it cleared only the scheduled
+    recovery probe and opened a one-frame immediate-draw throttle bypass while
+    keeping the pending immediate draw and pump intact
+  - release results on this host regressed against the accepted runtime
+    baseline:
+    `4-burst p50 5.269 / p95 26.469 / max 33.407`,
+    `8-burst p50 7.708 / p95 26.282 / max 98.447`
+  - verdict: reject; this helps burst-boundary first-`up` samples but does
+    not remove later-`up` wake variance, and it makes the short path noisier
+    again
+- a second combination retry also failed:
+  - the current accepted coalesced continuation scheduler was re-measured with
+    its single continuation wake moved from `DispatchQueue.main.asyncAfter`
+    onto a one-shot `CFRunLoopTimer` in `.commonModes`
+  - even with the renderer-side wins already in place, the release short path
+    regressed badly on this host:
+    `4-burst p50 9.618 / p95 40.103 / max 49.290`
+  - verdict: reject; changing the wake source alone does not help when the
+    current bottleneck is later-`up` presentation variance, and this path is
+    materially worse than the accepted baseline
 - repo-local validation is green for `validate-macos-ci.sh` and
   `swift test --build-path .build-codex --skip AppViewModelLiveManagedAgentTests`
 - the only broad SwiftPM failure on this host is the live Claude probe in

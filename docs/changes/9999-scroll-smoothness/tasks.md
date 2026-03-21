@@ -5,6 +5,46 @@
 - [x] durable-knowledge promotion
 - [ ] remove `docs/changes/9999-scroll-smoothness/` before merge
 
+## 2026-03-21 verification
+
+- `swift test --build-path .build-codex --filter 'TrackpadScrollPhaseProfileTests|GhosttyInputTests|GhosttyCLIOSCBridgeTests|GhosttyTerminalSurfaceRegistryTests|TmuxCommandRunnerTests'`
+- `zsh -n scripts/perf/gate_l_ax_key_sender.sh scripts/perf/gate_l_trackpad_history_scroll_bench.sh scripts/perf/gate_l_native_ghostty_trackpad_history_scroll_bench.sh`
+- `scripts/perf/gate_l_ax_key_sender.sh --dry-run --focus-scroll-front-window --scroll-pixels 10 --scroll-repeat 24 --scroll-phase-mode trackpad-burst-momentum`
+- `AGTMUX_PERF_APP_BIN=/Applications/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4`
+- `AGTMUX_PERF_APP_BIN=/Applications/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 8`
+- `scripts/perf/gate_l_native_ghostty_trackpad_history_scroll_bench.sh --iterations 4`
+- `scripts/perf/gate_l_native_ghostty_trackpad_history_scroll_bench.sh --iterations 8`
+- `AGTMUX_PERF_APP_BIN=/Applications/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm AGTMUX_PERF_TRACKPAD_PHASE_MODE=trackpad-burst scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4`
+- `AGTMUX_PERF_APP_BIN=/Applications/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm AGTMUX_PERF_TRACKPAD_PHASE_MODE=trackpad-burst scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 8`
+- `xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -configuration Release -derivedDataPath build-scroll-momentum-boundary CONFIGURATION_BUILD_DIR="$PWD/build-scroll-momentum-boundary/Release" ONLY_ACTIVE_ARCH=NO CODE_SIGN_IDENTITY='-' CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES ENABLE_HARDENED_RUNTIME=NO AGTMUX_BIN="$PWD/../agtmux/target/release/agtmux" build`
+- `AGTMUX_PERF_APP_BIN="$PWD/build-scroll-momentum-boundary/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4`
+- `AGTMUX_PERF_APP_BIN="$PWD/build-scroll-momentum-boundary/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 8`
+
+- Momentum-aware injector results on the installed app:
+  - `4-burst`: `scroll_to_layer_present_ms p50 5.201 / p95 27.810 / max 47.166`
+  - `8-burst`: `scroll_to_layer_present_ms p50 4.001 / p95 56.304 / max 85.077`
+- Legacy direct-touch-only injector on the same installed app:
+  - `4-burst`: `scroll_to_layer_present_ms p50 8.687 / p95 20.778 / max 66.478`
+  - `8-burst`: `scroll_to_layer_present_ms p50 5.973 / p95 62.921 / max 138.443`
+- Same-input native Ghostty proxy reruns with the new default injector:
+  - `4-burst tmux_visible_line_change_ms p95 577.632`
+  - `8-burst tmux_visible_line_change_ms p95 599.097`
+- Interpretation:
+  - the momentum-aware bench is not a pure numeric win on short bursts, but it
+    materially reduces the long-burst `max` while keeping the same total burst
+    size
+  - that makes it a better default for reproducing the user's actual inertial
+    scroll complaint before the next runtime/vendor pass
+- Accepted follow-up after switching the runtime to invalidate stale
+  continuation wakeups at `momentumPhase == .began`:
+  - local release `4-burst`:
+    `scroll_to_layer_present_ms p50 7.079 / p95 24.293 / max 41.260`
+  - local release `8-burst`:
+    `scroll_to_layer_present_ms p50 6.072 / p95 28.308 / max 82.696`
+  - compared with the installed momentum-aware baseline, the median moved up
+    but the visible target seam improved where the user still complains:
+    `4-burst max 47.166 -> 41.260`, `8-burst p95 56.304 -> 28.308`
+
 ## 2026-03-18 verification
 
 - `swift build -c debug --build-path .build-codex`
@@ -946,3 +986,96 @@
       the clean release sample
     - the next seam is no longer duplicate continuation timers; it is residual
       later-`up` single-wake/presentation variance
+
+## 2026-03-20 tmux-safe harness repair and rejected momentum follow-up
+
+- Fixed the bench harness so it no longer risks killing the user's live tmux
+  server:
+  - `gate_l_cleanup_stale_perf_processes()` in `scripts/perf/gate_l_common.sh`
+    was clobbering the caller's `socket_name` under zsh, which caused the
+    app-driven bootstrap to fall back to the default tmux socket
+  - perf and UI-test launch paths now set `AGTMUX_UITEST_TMUX_KILL_SERVER=0`
+    and cleanup only the isolated bench session, never an arbitrary server
+  - app bootstrap now returns the resolved `socketPath`, and cleanup skips
+    tmux teardown entirely when the resolved socket is not the expected
+    isolated named socket
+- Validation for the harness repair:
+  - `swift test --build-path .build-codex --filter 'GhosttyCLIOSCBridgeTests|GhosttyInputTests|GhosttyTerminalSurfaceRegistryTests|TmuxCommandRunnerTests'`
+  - `zsh -n scripts/perf/gate_l_common.sh scripts/perf/gate_l_keypress_bench.sh scripts/perf/gate_l_pane_switch_bench.sh scripts/perf/gate_l_scroll_bench.sh scripts/perf/gate_l_trackpad_history_scroll_bench.sh`
+  - `xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -configuration Release -derivedDataPath build-scroll-runloop-observer AGTMUX_BIN=/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/release/agtmux build`
+  - `AGTMUX_PERF_KEEP_TMP=1 AGTMUX_PERF_LINES=2000 AGTMUX_PERF_TRACKPAD_WARMUP_BURSTS=0 AGTMUX_PERF_TRACKPAD_EVENTS_PER_BURST=12 AGTMUX_PERF_TRACKPAD_INTERVAL_MS=8 AGTMUX_PERF_TRACKPAD_BURST_PAUSE_MS=120 AGTMUX_PERF_APP_BIN="$PWD/build-scroll-runloop-observer/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 1 --timeout 30`
+- Safe-smoke results after the fix:
+  - first clean rerun: `scroll_to_layer_present_ms p50 4.304 / p95 9.596 / max 9.596`
+  - the isolated socket from bootstrap was
+    `/private/tmp/tmux-501/agtmux-gate-l-trackpad-<token>`
+  - the user's default tmux server was no longer touched during cleanup
+- Rejected runtime follow-ups on top of the accepted coalesced continuation
+  baseline:
+  - run-loop observer rescue:
+    - `4-burst p50 5.924 / p95 32.481 / max 34.906`
+    - verdict: reject; it regressed the short path and still left late-`up`
+      wake spikes
+  - broad momentum-owned input path:
+    - `4-burst p50 6.549 / p95 28.541 / max 36.088`
+    - `8-burst` runs were mixed:
+      `p50 7.535 / p95 24.203 / max 140.094`,
+      `p50 7.612 / p95 12.992 / max 19.458`,
+      `p50 6.848 / p95 12.159 / max 90.536`
+    - verdict: reject; letting active momentum suppress host continuation as if
+      it were direct finger contact improved some warm reruns but reintroduced
+      large late-`up` outliers
+- Current status after those measurements:
+  - keep the tmux-safe harness repair
+  - keep the accepted coalesced host continuation runtime as the baseline
+  - the next seam remains later-`up` single-wake / presentation variance,
+    not socket/bootstrap safety or duplicate continuation timers
+
+## 2026-03-21 rejected boundary-immediate burst-transition bundle
+
+- Tried a narrower runtime follow-up on top of the accepted coalesced
+  continuation baseline:
+  - when a precise trackpad burst flipped direction or a momentum segment
+    began, keep the pending immediate draw and pump intact
+  - clear only the scheduled recovery probe
+  - allow one pump-interval immediate-draw throttle bypass at that boundary
+- Added focused state-transition coverage first, then measured the full
+  release bench:
+  - `swift test --build-path .build-codex --filter 'GhosttyCLIOSCBridgeTests|GhosttyInputTests|GhosttyTerminalSurfaceRegistryTests|TmuxCommandRunnerTests'`
+  - `xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -configuration Release -derivedDataPath build-scroll-boundary-immediate AGTMUX_BIN=/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/release/agtmux build`
+  - `AGTMUX_PERF_KEEP_TMP=1 AGTMUX_PERF_APP_BIN="$PWD/build-scroll-boundary-immediate/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4`
+  - `AGTMUX_PERF_KEEP_TMP=1 AGTMUX_PERF_APP_BIN="$PWD/build-scroll-boundary-immediate/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 8`
+- Candidate results:
+  - `4-burst`: `p50 5.269 / p95 26.469 / max 33.407`
+  - `8-burst`: `p50 7.708 / p95 26.282 / max 98.447`
+- Verdict:
+  - reject
+  - this bundle mainly touches burst-boundary first-`up` behavior and does not
+    fix the later-`up` wake/presentation tail
+  - relative to the accepted runtime baseline, it regresses the short path and
+    reintroduces larger long-train spikes
+- Reverted the runtime/test changes after measuring. Current repo state keeps:
+  - the tmux-safe harness repair
+  - the accepted coalesced continuation wake runtime
+  - the existing later-`up` variance as the next seam to attack
+
+## 2026-03-21 rejected coalesced-continuation run-loop timer combo
+
+- Re-tried one of the earlier timer ideas only after the accepted renderer
+  reductions and the accepted coalesced host continuation wake were already in
+  place:
+  - keep the current single pump/recovery continuation scheduler
+  - change only the wake source from `DispatchQueue.main.asyncAfter` to a
+    one-shot `CFRunLoopTimer` in `.commonModes`
+- Validation:
+  - `swift test --build-path .build-codex --filter 'GhosttyCLIOSCBridgeTests|GhosttyInputTests|GhosttyTerminalSurfaceRegistryTests|TmuxCommandRunnerTests'`
+  - `xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -configuration Release -derivedDataPath build-scroll-runloop-timer-combo AGTMUX_BIN=/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/release/agtmux build`
+  - `AGTMUX_PERF_KEEP_TMP=1 AGTMUX_PERF_APP_BIN="$PWD/build-scroll-runloop-timer-combo/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4`
+- Results:
+  - `4-burst`: `p50 9.618 / p95 40.103 / max 49.290`
+- Verdict:
+  - reject immediately
+  - even as an A+B retry on top of the accepted coalesced continuation
+    baseline, moving that single wake onto a run-loop timer makes the short
+    path materially worse
+  - this confirms that the remaining seam is not “asyncAfter versus timer” in
+    the abstract; it is the later-`up` presentation path itself

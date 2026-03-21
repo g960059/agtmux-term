@@ -29,6 +29,7 @@ final class UITestTmuxBridge {
         let sessionName: String?
         let windowID: String?
         let paneIDs: [String]
+        let socketPath: String?
         let error: String?
     }
 
@@ -175,6 +176,7 @@ final class UITestTmuxBridge {
         guard let data = json.data(using: .utf8) else {
             writeBootstrapResult(
                 BootstrapResult(ok: false, sessionName: nil, windowID: nil, paneIDs: [],
+                                socketPath: nil,
                                 error: "AGTMUX_UITEST_TMUX_SCENARIO is not valid UTF-8")
             )
             return
@@ -187,6 +189,7 @@ final class UITestTmuxBridge {
         } catch {
             writeBootstrapResult(
                 BootstrapResult(ok: false, sessionName: nil, windowID: nil, paneIDs: [],
+                                socketPath: nil,
                                 error: "scenario decode failed: \(error.localizedDescription)")
             )
             return
@@ -196,6 +199,9 @@ final class UITestTmuxBridge {
             let windowName = scenario.windowName ?? "main"
             let paneCount = max(1, scenario.paneCount ?? 1)
             let shellCommand = scenario.shellCommand ?? "/bin/sleep 600"
+            uiTestBridgeDebugLog(
+                "bootstrap start session=\(scenario.sessionName) window=\(windowName) paneCount=\(paneCount)"
+            )
 
             // Ensure idempotency for repeated launches.
             _ = try? await TmuxCommandRunner.shared.run(
@@ -203,32 +209,32 @@ final class UITestTmuxBridge {
                 source: "local"
             )
 
-            _ = try await TmuxCommandRunner.shared.run(
+            _ = try await runBootstrapTmuxCommand(
                 ["new-session", "-d", "-s", scenario.sessionName, "-n", windowName, shellCommand],
-                source: "local"
+                step: "new-session"
             )
             createdSessions.insert(scenario.sessionName)
 
             if paneCount > 1 {
                 for _ in 1..<paneCount {
-                    _ = try await TmuxCommandRunner.shared.run(
+                    _ = try await runBootstrapTmuxCommand(
                         ["split-window", "-t", "\(scenario.sessionName):\(windowName)", "-h", shellCommand],
-                        source: "local"
+                        step: "split-window"
                     )
                 }
             }
 
-            let windowOutput = try await TmuxCommandRunner.shared.run(
+            let windowOutput = try await runBootstrapTmuxCommand(
                 ["list-windows", "-t", scenario.sessionName, "-F", "#{window_id}"],
-                source: "local"
+                step: "list-windows"
             )
             let windowID = windowOutput
                 .components(separatedBy: "\n")
                 .first(where: { !$0.isEmpty }) ?? "@0"
 
-            let panesOutput = try await TmuxCommandRunner.shared.run(
+            let panesOutput = try await runBootstrapTmuxCommand(
                 ["list-panes", "-t", scenario.sessionName, "-F", "#{pane_id}"],
-                source: "local"
+                step: "list-panes"
             )
             let paneIDs = panesOutput
                 .components(separatedBy: "\n")
@@ -245,12 +251,14 @@ final class UITestTmuxBridge {
                     sessionName: scenario.sessionName,
                     windowID: windowID,
                     paneIDs: paneIDs,
+                    socketPath: resolvedTmuxSocketPath,
                     error: nil
                 )
             )
         } catch {
             writeBootstrapResult(
                 BootstrapResult(ok: false, sessionName: scenario.sessionName, windowID: nil, paneIDs: [],
+                                socketPath: nil,
                                 error: error.localizedDescription)
             )
         }
@@ -866,10 +874,63 @@ final class UITestTmuxBridge {
         return args[idx + 1]
     }
 
+    private func runBootstrapTmuxCommand(
+        _ args: [String],
+        step: String
+    ) async throws -> String {
+        do {
+            let output = try await TmuxCommandRunner.shared.run(args, source: "local")
+            uiTestBridgeDebugLog("bootstrap \(step) ok args=\(args)")
+            return output
+        } catch let error as TmuxCommandError {
+            let message = bootstrapTmuxErrorDescription(step: step, error: error, fallbackArgs: args)
+            uiTestBridgeDebugLog("bootstrap \(step) failed: \(message)")
+            throw NSError(
+                domain: "UITestTmuxBridge",
+                code: 14,
+                userInfo: [NSLocalizedDescriptionKey: message]
+            )
+        } catch {
+            let message = "bootstrap \(step) failed: \(error.localizedDescription)"
+            uiTestBridgeDebugLog(message)
+            throw NSError(
+                domain: "UITestTmuxBridge",
+                code: 15,
+                userInfo: [NSLocalizedDescriptionKey: message]
+            )
+        }
+    }
+
+    private func bootstrapTmuxErrorDescription(
+        step: String,
+        error: TmuxCommandError,
+        fallbackArgs: [String]
+    ) -> String {
+        let socketArgs = LocalTmuxTarget.socketArguments(from: env).joined(separator: " ")
+        let configArgs = LocalTmuxTarget.configArguments(from: env).joined(separator: " ")
+
+        switch error {
+        case .failed(let args, let code, let stderr):
+            let detail = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            let command = (args.isEmpty ? fallbackArgs : args).joined(separator: " ")
+            let suffix = detail.isEmpty ? "" : ": \(detail)"
+            return "bootstrap \(step) failed (\(command), exit \(code), socketArgs=[\(socketArgs)], configArgs=[\(configArgs)])\(suffix)"
+        case .timeout(let args):
+            let command = (args.isEmpty ? fallbackArgs : args).joined(separator: " ")
+            return "bootstrap \(step) timed out (\(command), socketArgs=[\(socketArgs)], configArgs=[\(configArgs)])"
+        case .tmuxNotFound(let source):
+            return "bootstrap \(step) could not find tmux for source \(source)"
+        case .permissionDenied(let source, let detail):
+            return "bootstrap \(step) permission denied for source \(source): \(detail)"
+        case .sshFailed(let host, let code, let stderr):
+            return "bootstrap \(step) unexpected ssh failure host=\(host) exit=\(code): \(stderr)"
+        }
+    }
+
     private func resolveBootstrapTmuxSocketPath() async throws -> String {
-        let output = try await TmuxCommandRunner.shared.run(
+        let output = try await runBootstrapTmuxCommand(
             ["display-message", "-p", "#{socket_path}"],
-            source: "local"
+            step: "display-message"
         )
         let socketPath = output
             .components(separatedBy: "\n")
