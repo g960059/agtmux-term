@@ -1760,6 +1760,7 @@ private final class GhosttyTerminalViewDrawSpy: GhosttyTerminalView {
 
     override func performScrollPresentationDraw() {
         scrollPresentationDrawCallCount += 1
+        super.performScrollPresentationDraw()
     }
 
     func resetDrawTracking() {

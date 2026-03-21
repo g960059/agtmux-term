@@ -197,11 +197,13 @@ pane_id="$(jq -r '.paneIDs[0]' <<<"$bootstrap_json")"
 gate_l_send_bridge_command false 10 "__agtmux_open_terminal_for_pane__" "local" "$session_name" "$pane_id" >/dev/null
 gate_l_activate_app
 
-active_snapshot="$(gate_l_wait_for_active_snapshot "$session_name" "$settle_timeout")"
-tile_id="$(jq -r '.tileID' <<<"$active_snapshot")"
+gate_l_wait_for_active_snapshot "$session_name" "$settle_timeout" >/dev/null
+# Read the successful bridge response directly from the result file so the bench
+# does not depend on a large JSON snapshot surviving a shell round-trip.
+tile_id="$(jq -r '.stdout | fromjson | .tileID' "$gate_l_command_result_path")"
 gate_l_send_bridge_command false 10 "__agtmux_focus_terminal_host__" "$tile_id" >/dev/null
 gate_l_activate_app
-focus_snapshot="$(gate_l_send_bridge_command false 10 "__agtmux_dump_focus_state__" "$tile_id")"
+focus_snapshot="$(gate_l_send_bridge_json_command false 10 "__agtmux_dump_focus_state__" "$tile_id")"
 terminal_ax_identifier="$(jq -r '.terminalAccessibilityIdentifier // empty' <<<"$focus_snapshot")"
 terminal_ax_fallback_identifier="workspace.terminalHost.${tile_id}"
 resolved_terminal_ax_identifier="$terminal_ax_identifier"
@@ -282,7 +284,7 @@ for (( i = 1; i <= iterations; i++ )); do
     burst_latency_ms="$(awk "BEGIN { printf \"%.3f\", ((${EPOCHREALTIME} - ${burst_started_at}) * 1000.0) }")"
   fi
 
-  burst_scroll_telemetry_json="$(gate_l_send_bridge_command false 10 "__agtmux_dump_scroll_telemetry__" "$tile_id")"
+  burst_scroll_telemetry_json="$(gate_l_send_bridge_json_command false 10 "__agtmux_dump_scroll_telemetry__" "$tile_id")"
   current_scroll_to_first_draw_sample_count="$(jq '(.scroll.scrollToFirstDrawSamplesMs // []) | length' <<<"$burst_scroll_telemetry_json")"
   current_scroll_to_layer_present_sample_count="$(jq '(.scroll.scrollToLayerPresentSamplesMs // []) | length' <<<"$burst_scroll_telemetry_json")"
   current_scroll_presentation_draw_gap_sample_count="$(jq '(.scroll.scrollPresentationDrawGapSamplesMs // []) | length' <<<"$burst_scroll_telemetry_json")"
@@ -393,7 +395,7 @@ done
 bench_end="$(date '+%Y-%m-%d %H:%M:%S%z')"
 sleep 1
 
-scroll_telemetry_json="$(gate_l_send_bridge_command false 10 "__agtmux_dump_scroll_telemetry__" "$tile_id")"
+scroll_telemetry_json="$(gate_l_send_bridge_json_command false 10 "__agtmux_dump_scroll_telemetry__" "$tile_id")"
 completed_burst_count="$(( iterations - empty_burst_count ))"
 if (( completed_burst_count == 0 )); then
   echo "No visible-line movement was captured during the trackpad bench" >&2

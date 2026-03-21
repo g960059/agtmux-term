@@ -1591,3 +1591,421 @@ Interpretation:
   which means first-`up` fixed renderer work is no longer the dominant gap
 - the next remaining seam is later-`up` wake/presentation variance, not
   unconditional old-cursor-row or redundant edge-padding rebuild work
+
+### 2026-03-20 rejected run-loop observer wake rescue
+
+The next host-side follow-up tried to rescue overdue wakeups without changing
+cadence ownership:
+
+- keep the existing `DispatchQueue.main.asyncAfter` pump/recovery wakeups
+- add a scheduled-only `CFRunLoopObserver` on
+  `beforeWaiting | afterWaiting`
+- when the run loop turns after a wakeup is already overdue, run the existing
+  pump/recovery pass immediately instead of waiting for the GCD timer callback
+
+Why this looked plausible:
+
+- telemetry had already shown the immediate queue delay was small, while
+  `pump/recovery wake lateness` was still the dominant later-`up` suspect
+- unlike rejected `RunLoop.main` timer or display-link experiments, this did
+  not add a new pacing source; it only tried to piggyback on already-occurring
+  main run loop turns
+
+Validation:
+
+- tests:
+  `swift test --build-path .build-codex --filter 'GhosttyInputTests|GhosttyCLIOSCBridgeTests|GhosttyTerminalSurfaceRegistryTests'`
+- release build:
+  `xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -configuration Release -derivedDataPath build-scroll-runloop-observer AGTMUX_BIN=/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/release/agtmux build`
+- perf:
+  `GATE_L_APP_BIN="$PWD/build-scroll-runloop-observer/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4`
+  `GATE_L_APP_BIN="$PWD/build-scroll-runloop-observer/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 8`
+
+Results:
+
+- `4-burst`: `scroll_to_layer_present_ms p50 7.030 / p95 29.018 / max 35.280`
+- `8-burst`: `scroll_to_layer_present_ms p50 5.428 / p95 29.632 / max 55.147`
+
+Accepted sparse first-`up` baseline for comparison:
+
+- `4-burst`: `scroll_to_layer_present_ms p50 6.124 / p95 13.778 / max 21.418`
+- `8-burst`: `scroll_to_layer_present_ms p50 3.849 / p95 29.281 / max 53.626`
+- `8-burst rerun`: `scroll_to_layer_present_ms p50 4.585 / p95 29.430 / max 38.933`
+
+Additional wake telemetry:
+
+- `4-burst pump_wake_lateness max 72.750ms`,
+  `recovery_probe_wake_lateness max 78.658ms`
+- `8-burst pump_wake_lateness max 196.439ms`,
+  `recovery_probe_wake_lateness max 202.495ms`
+
+Interpretation:
+
+- the observer rescue regressed the short path badly while leaving the
+  persistent later-`up` `p95` essentially unchanged
+- it also widened the wake-lateness tail instead of shrinking it
+- this means the remaining gap is not explained by “GCD timer delivered a bit
+  too late” alone
+- current boundary: later-`up` variance now looks more like presentation/render
+  work below the host wake scheduler than a missing run-loop wake rescue
+
+### 2026-03-20 rejected sparse-row logical-line link scan
+
+The next renderer follow-up stayed entirely below the host scheduler and tried
+to remove one more viewport-wide cost from the sparse viewport-shift path:
+
+- keep the accepted sparse viewport-shift row-set rebuild and first-`up`
+  reductions
+- in `renderer/link.zig`, add a helper that scans regex links only for the
+  logical lines intersecting the sparse row set instead of scanning the whole
+  visible viewport
+- in `renderer/generic.zig`, build the sparse row set first and use that helper
+  only on the reusable viewport-shift branch
+
+Why this looked plausible:
+
+- reusable viewport shifts already rebuild only a small row set, but
+  `link_match_set` creation still walks all visible logical lines before any
+  per-row `contains(...)` checks
+- if that viewport-wide regex scan were still material on later `up` bursts,
+  shrinking it to the sparse row set would have been a clean renderer-owned win
+
+Validation:
+
+- `PATH="/opt/homebrew/opt/zig@0.14/bin:$PATH" AGTMUX_VENDOR_GHOSTTY_DIR="$PWD/vendor/ghostty" AGTMUX_GHOSTTYKIT_DIR="$PWD/GhosttyKit/GhosttyKit.xcframework" ./scripts/build-ghosttykit.sh`
+- `swift test --build-path .build-codex --filter 'GhosttyInputTests|GhosttyCLIOSCBridgeTests|GhosttyTerminalSurfaceRegistryTests'`
+- `xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -configuration Release -derivedDataPath build-scroll-link-sparse-lines AGTMUX_BIN=/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/release/agtmux build`
+- `GATE_L_APP_BIN="$PWD/build-scroll-link-sparse-lines/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4`
+- `GATE_L_APP_BIN="$PWD/build-scroll-link-sparse-lines/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 8`
+
+Results:
+
+- `4-burst`: `scroll_to_layer_present_ms p50 7.213 / p95 28.307 / max 63.923`
+- attempted `8-burst`: bench aborted with `jq: parse error: Invalid numeric literal`
+  before producing a trustworthy telemetry JSON sample
+
+Accepted sparse first-`up` baseline for comparison:
+
+- `4-burst`: `scroll_to_layer_present_ms p50 6.124 / p95 13.778 / max 21.418`
+- `8-burst`: `scroll_to_layer_present_ms p50 3.849 / p95 29.281 / max 53.626`
+- `8-burst rerun`: `scroll_to_layer_present_ms p50 4.585 / p95 29.430 / max 38.933`
+
+Interpretation:
+
+- the candidate was rejectable on the short path alone: `p95` roughly doubled
+  and `max` tripled relative to the accepted first-`up` baseline
+- because the same build already regressed `4-burst`, the failed `8-burst`
+  harness run was not worth debugging as a candidate save
+- this makes the boundary tighter again: later-`up` cost is not being driven by
+  viewport-wide regex link scanning on the sparse shift path
+
+### 2026-03-20 accepted background sparse GPU upload plus bench hardening
+
+After the logical-line link-scan branch was rejected, the next pass stayed below
+the host scheduler but moved one layer deeper than CPU row rebuilding:
+
+- keep the accepted sparse viewport row-set rebuilds and first-`up` renderer
+  reductions
+- in `renderer/generic.zig`, track per-frame upload provenance
+  (`cells_revision`, `cells_upload_chain`, last background viewport metadata)
+- in `renderer/metal/buffer.zig`, add in-place range shift and range-only sync
+  helpers
+- on compatible pure viewport shifts, shift the already-uploaded Metal
+  background cell buffer in place and upload only the newly exposed fringe rows
+  plus current/previous mouse rows
+- leave foreground uploads full-width for now because foreground rows are still
+  variable-length packed instance lists
+
+Why this looked plausible:
+
+- the accepted sparse row-set work had already reduced CPU `rebuildCells(...)`
+  cost, but `drawFrame()` still re-uploaded the entire background grid on every
+  redraw
+- unlike foreground rows, background cells are fixed row-major storage, so a
+  viewport shift can be represented as a safe in-buffer move plus a small fringe
+  upload as long as the acquired frame is still on the same upload chain
+- this let the experiment attack real renderer-owned cost without returning to
+  host cadence tuning
+
+The bench itself also needed hardening before that comparison was trustworthy:
+
+- JSON-returning bridge commands are now validated before any downstream `jq`
+  parsing
+- the trackpad bench no longer round-trips the large active-target snapshot
+  through a shell variable just to recover `tileID`; after
+  `gate_l_wait_for_active_snapshot` succeeds, it reads `tileID` directly from
+  the successful `tmux-command-result.json`
+
+Validation:
+
+- `PATH="/opt/homebrew/opt/zig@0.14/bin:$PATH" AGTMUX_VENDOR_GHOSTTY_DIR="$PWD/vendor/ghostty" AGTMUX_GHOSTTYKIT_DIR="$PWD/GhosttyKit/GhosttyKit.xcframework" ./scripts/build-ghosttykit.sh`
+- `swift test --build-path .build-codex --filter 'GhosttyInputTests|GhosttyCLIOSCBridgeTests|GhosttyTerminalSurfaceRegistryTests'`
+- `zsh -n scripts/perf/gate_l_common.sh`
+- `zsh -n scripts/perf/gate_l_trackpad_history_scroll_bench.sh`
+- `xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -configuration Release -derivedDataPath build-scroll-bg-upload-chain AGTMUX_BIN=/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/release/agtmux build`
+- `GATE_L_APP_BIN="$PWD/build-scroll-bg-upload-chain/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 1`
+- `GATE_L_APP_BIN="$PWD/build-scroll-bg-upload-chain/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4`
+- `GATE_L_APP_BIN="$PWD/build-scroll-bg-upload-chain/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4` (rerun)
+- `GATE_L_APP_BIN="$PWD/build-scroll-bg-upload-chain/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 8` (three runs)
+- same-harness baseline comparison:
+  `GATE_L_APP_BIN="$PWD/build-shift-extra-skip/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4`
+  `GATE_L_APP_BIN="$PWD/build-shift-extra-skip/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 8`
+
+Results:
+
+- same-harness accepted baseline (`build-shift-extra-skip`):
+  - `4-burst`: `p50 5.241 / p95 24.186 / max 41.330`
+  - `8-burst`: `p50 5.511 / p95 38.250 / max 72.360`
+- new background-sparse upload branch:
+  - `4-burst`: `p50 7.222 / p95 15.931 / max 22.152`
+  - `4-burst rerun`: `p50 6.450 / p95 19.831 / max 27.597`
+  - `8-burst`: `p50 6.889 / p95 24.688 / max 81.917`
+  - `8-burst rerun-a`: `p50 5.562 / p95 19.051 / max 24.697`
+  - `8-burst rerun-b`: `p50 6.849 / p95 18.597 / max 43.912`
+
+Interpretation:
+
+- on the same hardened bench and same host, the branch clearly improves long
+  burst `p95` (`38.250ms -> 18.597-24.688ms`)
+- it also improves short burst `p95` and `max` against that same-harness
+  baseline even though `p50` moves a little higher on this host
+- the worst remaining tail is no longer background grid upload itself; one
+  `8-burst` sample still hit `81.917ms`, which points the next pass at
+  foreground full-upload cost and remaining later-`up` host
+  wake/presentation variance
+
+### 2026-03-20 accepted sparse foreground viewport-shift upload
+
+The next structural pass took the same viewport-shift reuse idea into the
+foreground instance buffer instead of stopping at background cells:
+
+- keep the accepted sparse viewport row-set rebuilds and background sparse GPU
+  upload reuse
+- store moved foreground rows in viewport-shift-relative coordinates and carry
+  a renderer uniform delta (`text_grid_pos_y_delta`) into the shader
+- on compatible Metal viewport shifts, shift the already-uploaded packed
+  foreground instance block in place and re-upload only the rebuilt row set
+- keep conservative fallbacks whenever row-only offsets are not trustworthy:
+  previous-frame cursor overlay lists still in the buffer, or rebuilt rows
+  inside the moved block whose item count changed
+
+Why this looked plausible:
+
+- background upload reuse had already shown that renderer-owned GPU traffic
+  still mattered after CPU row rebuilding was reduced
+- foreground full upload was the next obvious fixed cost in the same draw path
+- viewport-shifted moved rows do not need new glyph bytes as long as the shader
+  can apply the accumulated Y delta at draw time
+
+Validation:
+
+- `PATH="/opt/homebrew/opt/zig@0.14/bin:$PATH" AGTMUX_VENDOR_GHOSTTY_DIR="$PWD/vendor/ghostty" AGTMUX_GHOSTTYKIT_DIR="$PWD/GhosttyKit/GhosttyKit.xcframework" ./scripts/build-ghosttykit.sh`
+- `swift test --build-path .build-codex --filter 'GhosttyInputTests|GhosttyCLIOSCBridgeTests|GhosttyTerminalSurfaceRegistryTests'`
+- `xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -configuration Release -derivedDataPath build-scroll-fg-sparse AGTMUX_BIN=/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/release/agtmux build`
+- exploratory perf runs before the final correctness guard:
+  - `AGTMUX_PERF_APP_BIN="$PWD/build-scroll-fg-sparse/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4`
+  - `AGTMUX_PERF_APP_BIN="$PWD/build-scroll-fg-sparse/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 8` (three runs)
+- final guarded validation:
+  - `AGTMUX_PERF_APP_BIN="$PWD/build-scroll-fg-sparse/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 8`
+  - `AGTMUX_PERF_APP_BIN="$PWD/build-scroll-fg-sparse/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4`
+
+Results:
+
+- same-harness hardened baseline (`build-shift-extra-skip`):
+  - `4-burst`: `p50 5.241 / p95 24.186 / max 41.330`
+  - `8-burst`: `p50 5.511 / p95 38.250 / max 72.360`
+- exploratory branch runs before the final safety guard:
+  - `4-burst`: `p50 7.155 / p95 20.261 / max 28.901`
+  - `8-burst`: `p50 7.236 / p95 33.823 / max 84.022`
+  - `8-burst rerun-a`: `p50 6.778 / p95 29.894 / max 84.330`
+  - `8-burst rerun-b`: `p50 5.872 / p95 34.061 / max 94.072`
+- one later `4-burst` attempt was discarded as harness flake:
+  - `Timed out waiting for transcript fixture to render the first page`
+- accepted final guarded branch:
+  - `4-burst`: `p50 6.305 / p95 21.298 / max 40.958`
+  - `8-burst`: `p50 6.816 / p95 24.094 / max 38.295`
+
+Interpretation:
+
+- the foreground sparse-upload idea survives correctness hardening; the final
+  guarded branch still materially improves long-burst `p95` and `max`
+- the short path remains a tradeoff on this host: `p50` moves higher, but
+  `p95` improves and `max` stays roughly flat
+- with both background and foreground viewport-shift uploads reduced, the next
+  primary seam is no longer bulk GPU upload itself; it is the remaining
+  later-`up` wake/presentation variance and the fallback cases where sparse
+  foreground sync must decline
+
+### 2026-03-20 renderer-owned follow-up and rejected row-slot reuse
+
+The broader renderer-owned branch was measured, but not kept:
+
+- `GhosttyTerminalView.scrollWheel(with:)` now only records telemetry and
+  forwards the scroll input to `ghostty_surface_mouse_scroll(...)`; it no longer
+  schedules the host-side scroll-presentation pump directly.
+- embedded `Surface.scrollCallback(...)` routes viewport scrollback through
+  `queueRenderAndDraw()` so the renderer thread owns both the frame refresh and
+  the follow-on draw.
+
+Focused validation:
+
+- `PATH="/opt/homebrew/opt/zig@0.14/bin:$PATH" AGTMUX_VENDOR_GHOSTTY_DIR="$PWD/vendor/ghostty" AGTMUX_GHOSTTYKIT_DIR="$PWD/GhosttyKit/GhosttyKit.xcframework" ./scripts/build-ghosttykit.sh`
+- `swift test --build-path .build-codex --filter 'GhosttyInputTests|GhosttyCLIOSCBridgeTests|GhosttyTerminalSurfaceRegistryTests'`
+- `xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -configuration Release -derivedDataPath build-scroll-renderer-owned-complete AGTMUX_BIN=/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/release/agtmux build`
+
+The matching test contract was cleaned up as part of this pass: stale
+`GhosttyCLIOSCBridgeTests` overrides for host continuation/refresh methods that
+no longer exist on `GhosttyTerminalView` were removed so the focused
+renderer-owned scroll tests compile again against current source.
+
+One vendor-side foreground experiment was measured and rejected:
+
+- attempted idea:
+  rotate packed foreground row slots during viewport shifts instead of
+  `shiftRange(...)`-moving the moved foreground block
+- rationale:
+  if packed row order did not matter, this could have removed the largest
+  remaining per-frame foreground memmove from the pure renderer-owned path
+- measured result on `build-scroll-renderer-owned-slotreuse`:
+  - `4-burst signpost_scroll_to_layer_present_ms p50 1.217 / p95 88.019 / max 88.938`
+  - `layer_present_count = 5`
+  - `tmux_visible_line_change_ms p50 798.043 / p95 1435.415 / max 1435.415`
+- verdict:
+  reject and revert; the packed foreground path cannot safely treat row-slot
+  order as interchangeable without further structural work
+
+Current inference after that rejection:
+
+- the renderer-owned direction was still useful as a diagnostic, but the
+  app/runtime returned to the best-known hybrid scheduler after measurement
+- the next accepted win is unlikely to come from more host cadence surgery
+- the remaining productive seam is vendor-side foreground/rebuild cost in the
+  pure renderer-owned path, not dormant host pump/recovery code
+
+### 2026-03-20 sparse foreground fallback follow-up
+
+The next vendor-side pass stayed on the hybrid app/runtime but relaxed two
+remaining sparse foreground fallback cases inside Ghostty's viewport-shift path.
+
+First change:
+
+- if a rebuilt row inside the moved block changes packed item count, do not
+  immediately fall back to a full visible upload
+- instead, shift the unchanged moved prefix in place and re-sync the suffix
+  from the first count-change row onward as one contiguous foreground block
+
+Validation:
+
+- `PATH="/opt/homebrew/opt/zig@0.14/bin:$PATH" AGTMUX_VENDOR_GHOSTTY_DIR="$PWD/vendor/ghostty" AGTMUX_GHOSTTYKIT_DIR="$PWD/GhosttyKit/GhosttyKit.xcframework" ./scripts/build-ghosttykit.sh`
+- `swift test --build-path .build-codex --filter 'GhosttyInputTests|GhosttyCLIOSCBridgeTests|GhosttyTerminalSurfaceRegistryTests'`
+- `xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -configuration Release -derivedDataPath build-scroll-fg-prefix-suffix AGTMUX_BIN=/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/release/agtmux build`
+- `AGTMUX_PERF_APP_BIN="$PWD/build-scroll-fg-prefix-suffix/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4`
+- `AGTMUX_PERF_APP_BIN="$PWD/build-scroll-fg-prefix-suffix/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 8`
+
+Initial results:
+
+- `4-burst`: `p50 5.270 / p95 30.327 / max 35.636`
+- `8-burst`: `p50 5.451 / p95 14.080 / max 64.764`
+
+Interpretation:
+
+- the long-burst path improved sharply, which means count-change rows inside
+  the moved block were a real remaining sparse-sync blocker
+- the short path still regressed on the first run, so the change was not
+  enough on its own
+
+Second change:
+
+- previous-frame cursor overlay lists no longer force a full visible upload
+- `FrameState` now tracks foreground prefix/suffix cursor counts so the sparse
+  path can shift only the visible-row block even when the previous bottom frame
+  carried a cursor overlay
+
+Validation:
+
+- `PATH="/opt/homebrew/opt/zig@0.14/bin:$PATH" AGTMUX_VENDOR_GHOSTTY_DIR="$PWD/vendor/ghostty" AGTMUX_GHOSTTYKIT_DIR="$PWD/GhosttyKit/GhosttyKit.xcframework" ./scripts/build-ghosttykit.sh`
+- `swift test --build-path .build-codex --filter 'GhosttyInputTests|GhosttyCLIOSCBridgeTests|GhosttyTerminalSurfaceRegistryTests'`
+- `xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -configuration Release -derivedDataPath build-scroll-fg-prefix-suffix AGTMUX_BIN=/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/release/agtmux build`
+- `AGTMUX_PERF_APP_BIN="$PWD/build-scroll-fg-prefix-suffix/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4`
+- `AGTMUX_PERF_APP_BIN="$PWD/build-scroll-fg-prefix-suffix/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 8`
+- `AGTMUX_PERF_APP_BIN="$PWD/build-scroll-fg-prefix-suffix/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4` (rerun)
+
+Results:
+
+- first `4-burst`: `p50 5.635 / p95 23.300 / max 231.263`
+- `8-burst`: `p50 5.515 / p95 13.866 / max 27.667`
+- `4-burst` rerun: `p50 6.031 / p95 25.496 / max 60.762`
+
+Interpretation:
+
+- this branch clearly improves the long-burst path; the best `8-burst` sample
+  is much tighter than the prior accepted sparse-foreground baseline
+- the first alternating `up` after bottom is no longer a guaranteed sparse-sync
+  miss, but the short path is still noisy enough that this branch should remain
+  in-progress rather than accepted
+
+### 2026-03-20 source-row sparse foreground comparison and rejected host pending-draw invalidation
+
+The next pass split the remaining short-path noise into one renderer-side
+candidate and one host-side candidate.
+
+Renderer-side change:
+
+- when a rebuilt row inside the moved block is checked for packed-count
+  compatibility, compare it against the pre-shift source row that actually fed
+  the in-place GPU block shift, not against the same viewport row index
+- this removes a conservative false mismatch on alternating `up` bursts where
+  adjacent rows legitimately have different packed instance counts
+
+Host-side experiment:
+
+- add generation-based invalidation for stale pending immediate draws at
+  gesture boundaries so a new burst can drop an older queued
+  `CFRunLoopPerformBlock` draw instead of waiting behind it
+
+Validation for the combined branch:
+
+- `PATH="/opt/homebrew/opt/zig@0.14/bin:$PATH" AGTMUX_VENDOR_GHOSTTY_DIR="$PWD/vendor/ghostty" AGTMUX_GHOSTTYKIT_DIR="$PWD/GhosttyKit/GhosttyKit.xcframework" ./scripts/build-ghosttykit.sh`
+- `swift test --build-path .build-codex --filter 'GhosttyInputTests|GhosttyCLIOSCBridgeTests|GhosttyTerminalSurfaceRegistryTests'`
+- `xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -configuration Release -derivedDataPath build-scroll-source-row-gen AGTMUX_BIN=/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/release/agtmux build`
+- `AGTMUX_PERF_APP_BIN="$PWD/build-scroll-source-row-gen/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4`
+- `AGTMUX_PERF_APP_BIN="$PWD/build-scroll-source-row-gen/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 8`
+- `AGTMUX_PERF_APP_BIN="$PWD/build-scroll-source-row-gen/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4` (rerun)
+- `AGTMUX_PERF_APP_BIN="$PWD/build-scroll-source-row-gen/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 8` (rerun)
+
+Combined-branch results:
+
+- `4-burst`: `p50 6.117 / p95 18.512 / max 42.085`
+- `8-burst`: `p50 5.823 / p95 16.428 / max 77.391`
+- `4-burst` rerun: `p50 6.534 / p95 18.763 / max 45.058`
+- `8-burst` rerun: `p50 5.255 / p95 29.889 / max 63.844`
+
+Interpretation:
+
+- the renderer-side source-row comparison looks directionally right
+- the host-side pending-draw invalidation is not stable; it improves some
+  short-path runs but makes the long train much noisier again
+- therefore the host experiment was rejected before promoting this wave
+
+After reverting the host invalidation and keeping only the renderer-side
+source-row comparison:
+
+- `swift test --build-path .build-codex --filter 'GhosttyInputTests|GhosttyCLIOSCBridgeTests|GhosttyTerminalSurfaceRegistryTests'`
+- `xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -configuration Release -derivedDataPath build-scroll-source-row-only AGTMUX_BIN=/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/release/agtmux build`
+- `AGTMUX_PERF_APP_BIN="$PWD/build-scroll-source-row-only/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4`
+- `AGTMUX_PERF_APP_BIN="$PWD/build-scroll-source-row-only/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 8`
+- `AGTMUX_PERF_APP_BIN="$PWD/build-scroll-source-row-only/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 8` (rerun attempt; harness bootstrap flaked)
+
+Source-row-only results:
+
+- `4-burst`: `p50 6.827 / p95 12.558 / max 45.516`
+- `8-burst`: `p50 5.059 / p95 12.501 / max 62.050`
+
+Interpretation:
+
+- this is the first version of the sparse-foreground follow-up that improves
+  `p95` materially on both short and long bursts without leaning again on a
+  host cadence change
+- the remaining tail is no longer the conservative source/destination count
+  mismatch; it is isolated `40-60ms` outliers that survive even after the
+  sparse path stays active

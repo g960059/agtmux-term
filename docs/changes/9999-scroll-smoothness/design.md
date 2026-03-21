@@ -58,6 +58,31 @@ itself by switching those single-row shifts from swap loops to block moves with
 recycled row lists. That reduces the first `up` transition further and shifts
 the remaining boundary toward later-`up` wake/presentation variance plus any
 fixed per-frame work that still survives after the row copy.
+The newest accepted refinement carries that same strategy into the foreground
+GPU upload. On compatible Metal viewport shifts, the renderer now keeps moved
+foreground rows in viewport-shift-relative coordinates, shifts the packed GPU
+instance block in place, and re-uploads only the rebuilt row set. The current
+in-progress refinement relaxes the two biggest conservative guards around that
+path:
+
+1. previous-frame cursor overlay lists are now tracked separately as
+   prefix/suffix counts, so sparse sync can shift only the visible-row block
+   instead of declining immediately after a bottom frame
+2. rebuilt rows inside the moved block no longer force an immediate full
+   visible upload when their packed item count changes; the unchanged prefix
+   still shifts in place and the suffix from the first count-change row onward
+   is re-synced contiguously
+
+The latest in-worktree follow-up narrows that second guard again: rebuilt moved
+rows are now compared against their pre-shift source row, not against the same
+viewport row index, before the sparse path decides it must fall back. That
+keeps sparse foreground sync active across alternating `up` bursts where
+adjacent rows legitimately have different packed counts. A parallel host-side
+attempt to invalidate stale pending immediate draws at gesture boundaries was
+measured and rejected because it made the long-burst path unstable again. The
+remaining seam is therefore no longer broad sparse-foreground fallback; it is
+the residual isolated `40-60ms` later-`up` outlier that survives even when the
+sparse path stays active.
 
 ## Boundaries
 
@@ -74,6 +99,14 @@ fixed per-frame work that still survives after the row copy.
   - perf harness support for pixel/trackpad bursts and transcript-history bench
   - `scripts/dev/prepare-ghosttykit.sh` pin/patch provenance
   - `scripts/patches/ghostty-agtmux.patch`
+  - Ghostty renderer background upload policy on compatible viewport shifts:
+    Metal frames now reuse and shift the already-uploaded background grid and
+    upload only exposed/mouse rows when the upload chain and viewport metadata
+    still match
+  - Ghostty renderer foreground upload policy on compatible viewport shifts:
+    Metal frames now reuse and shift the already-uploaded packed foreground
+    instance block and upload only rebuilt rows when the cursor/fallback guards
+    allow it
   - the next wave will likely change `GhosttyTerminalView` scroll ownership
     boundaries more substantially than the earlier tuning-only passes
 - unchanged:

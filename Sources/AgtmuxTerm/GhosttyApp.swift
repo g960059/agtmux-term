@@ -123,9 +123,9 @@ final class GhosttyApp {
         }
         // Clipboard callbacks: non-optional in Zig (*const fn), so nil → crash
         // if clipboard is ever accessed. Provide no-op stubs for MVP.
-        let readClipboard: ghostty_runtime_read_clipboard_cb = { _, _, _ in false }
+        let readClipboard: ghostty_runtime_read_clipboard_cb = { _, _, _ in }
         let confirmReadClipboard: ghostty_runtime_confirm_read_clipboard_cb = { _, _, _, _ in }
-        let writeClipboard: ghostty_runtime_write_clipboard_cb = { _, _, _, _, _ in }
+        let writeClipboard: ghostty_runtime_write_clipboard_cb = { _, _, _, _ in }
         let closeSurface: ghostty_runtime_close_surface_cb = { _, _ in }
         runtimeConfig.read_clipboard_cb = readClipboard
         runtimeConfig.confirm_read_clipboard_cb = confirmReadClipboard

@@ -173,6 +173,23 @@ function gate_l_send_bridge_command() {
   return 1
 }
 
+function gate_l_send_bridge_json_command() {
+  local output=""
+  output="$(gate_l_send_bridge_command "$@")" || return 1
+
+  if ! jq -e . >/dev/null 2>&1 <<<"$output"; then
+    echo "App-side tmux command returned non-JSON stdout: $*" >&2
+    if [[ -n "$output" ]]; then
+      print -r -- "$output" >&2
+    else
+      echo "<empty stdout>" >&2
+    fi
+    return 1
+  fi
+
+  print -r -- "$output"
+}
+
 function gate_l_wait_for_active_target() {
   local session_name="$1"
   local window_id="$2"
@@ -184,7 +201,7 @@ function gate_l_wait_for_active_target() {
 
   while (( EPOCHREALTIME < deadline )); do
     local output
-    if output="$(gate_l_send_bridge_command false 2 "__agtmux_dump_active_terminal_target__" 2>"$gate_l_tmpdir/active-target.last-error.log")"; then
+    if output="$(gate_l_send_bridge_json_command false 2 "__agtmux_dump_active_terminal_target__" 2>"$gate_l_tmpdir/active-target.last-error.log")"; then
       last_output="$output"
       local got_session got_window got_pane selected_window selected_pane
       got_session="$(jq -r '.sessionName' <<<"$output")"
@@ -227,7 +244,7 @@ function gate_l_wait_for_active_target() {
 
     if [[ -n "$tile_id" ]]; then
       local focus_output
-      if focus_output="$(gate_l_send_bridge_command false 2 "__agtmux_dump_focus_state__" "$tile_id" 2>/dev/null)"; then
+      if focus_output="$(gate_l_send_bridge_json_command false 2 "__agtmux_dump_focus_state__" "$tile_id" 2>/dev/null)"; then
         echo "Terminal focus snapshot: $focus_output" >&2
       fi
     fi
@@ -243,7 +260,7 @@ function gate_l_wait_for_active_snapshot() {
 
   while (( EPOCHREALTIME < deadline )); do
     local output
-    if output="$(gate_l_send_bridge_command false 2 "__agtmux_dump_active_terminal_target__" 2>"$gate_l_tmpdir/active-target.last-error.log")"; then
+    if output="$(gate_l_send_bridge_json_command false 2 "__agtmux_dump_active_terminal_target__" 2>"$gate_l_tmpdir/active-target.last-error.log")"; then
       local got_session rendered_pane
       got_session="$(jq -r '.sessionName' <<<"$output")"
       rendered_pane="$(jq -r '.renderedClientPaneID // empty' <<<"$output")"
@@ -276,7 +293,7 @@ function gate_l_wait_for_rendered_target() {
 
   while (( EPOCHREALTIME < deadline )); do
     local output
-    if output="$(gate_l_send_bridge_command false 2 "__agtmux_dump_active_terminal_target__" 2>"$gate_l_tmpdir/rendered-target.last-error.log")"; then
+    if output="$(gate_l_send_bridge_json_command false 2 "__agtmux_dump_active_terminal_target__" 2>"$gate_l_tmpdir/rendered-target.last-error.log")"; then
       last_output="$output"
       local got_session got_window got_pane
       got_session="$(jq -r '.sessionName' <<<"$output")"

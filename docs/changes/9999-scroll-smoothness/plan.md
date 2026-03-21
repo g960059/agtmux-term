@@ -20,9 +20,13 @@
    keep targeting reusable viewport-shift and `up`-scrollback rebuild cost
    inside embedded Ghostty rather than returning to host cadence policy tweaks.
    The current accepted state now includes a `Contents.shiftRows(...)`
-   `abs_shift == 1` fast path, so the next renderer pass should focus only on
-   fixed per-frame work that still remains after row shifting itself.
-7. With row-shift copy cost reduced, treat later-`up` wake/presentation
-   variance as the next primary seam. Only after that seam is understood,
-   revisit secondary contributors such as runtime-store churn or pane/sidebar
-   work that still overlaps the main thread during long bursts.
+   `abs_shift == 1` fast path plus background/foreground sparse upload reuse on
+   compatible viewport shifts, so the next renderer pass should focus on the
+   fixed per-frame work and fallback cases that still remain after row shifting
+   and GPU reuse itself.
+7. With both background and foreground viewport-shift uploads reduced, treat
+   later-`up` wake/presentation variance and the conservative fallback cases
+   (cursor overlays, row-count-changing rebuilt rows) as the next primary
+   seams. Only after those seams are understood, revisit secondary contributors
+   such as runtime-store churn or pane/sidebar work that still overlaps the
+   main thread during long bursts.

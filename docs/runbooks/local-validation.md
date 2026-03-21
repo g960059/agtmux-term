@@ -36,7 +36,7 @@ The macOS CI parity script expects:
 - `../agtmux/fixtures/sync-v3` present, or `AGTMUX_SYNC_V3_FIXTURES_ROOT` set
 
 If `GhosttyKit/GhosttyKit.xcframework` is missing or only present as Git LFS
-pointers, the parity script will try to rebuild it from `ghostty v1.3.1`. For
+pointers, the parity script will try to rebuild it from `ghostty v1.2.3`. For
 that path you also need:
 
 - `zig 0.15.2` installed
@@ -54,8 +54,10 @@ Prepare or rebuild `GhosttyKit` explicitly with:
 ./scripts/dev/prepare-ghosttykit.sh
 ```
 
-That helper also applies the repo's custom Ghostty OSC bridge patch before the
-xcframework is rebuilt.
+That helper also applies the repo's aggregate Ghostty patch before the
+xcframework is rebuilt. The aggregate patch carries the custom OSC bridge, the
+current embedded-scroll renderer optimizations, and the `build.zig.zon`
+dependency refresh needed to keep `v1.2.3` rebuildable.
 
 ## Manual Commands
 

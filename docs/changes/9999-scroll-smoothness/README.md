@@ -299,6 +299,108 @@ Current state:
   first-`up` fixed renderer work is lower again, and the next likely seam is
   now later-`up` wake/presentation variance rather than unconditional
   old-cursor-row or edge-padding rebuild work
+- one follow-up run-loop observer rescue was measured and rejected:
+  adding a scheduled-only `CFRunLoopObserver` to opportunistically fire overdue
+  pump/recovery wakeups regressed the short path to
+  `4-burst p50 7.030 / p95 29.018 / max 35.280` and did not improve the long
+  path enough to justify it (`8-burst p50 5.428 / p95 29.632 / max 55.147`)
+- this narrows the remaining root cause further:
+  later-`up` variance is not recoverable by more host wake rescue, so the next
+  work should stay below this layer in the presentation/render seam
+- one deeper renderer follow-up was then measured and rejected:
+  shrinking regex link scanning to only the logical lines intersecting the
+  sparse viewport-shift row set regressed the short path to
+  `4-burst p50 7.213 / p95 28.307 / max 63.923`
+- that candidate was dropped even before a useful long-burst comparison:
+  it clearly made short bursts worse, and the attempted `8-burst` harness run
+  on the same build aborted with a bench-side `jq` parse error instead of a
+  valid telemetry sample
+- this further tightens the boundary:
+  later-`up` cost is not coming from viewport-wide regex link scanning on the
+  sparse shift path, so the next renderer target remains fixed rebuild work in
+  the reusable viewport-shift upload/presentation seam
+- the trackpad bench itself is now hardened against that intermittent failure:
+  JSON-returning bridge commands are validated before downstream `jq`, and the
+  startup `tileID` is read directly from the last successful bridge result file
+  instead of round-tripping a large active-target snapshot through the shell
+- the latest accepted vendor-side follow-up keeps the accepted sparse-row and
+  first-`up` reductions, but removes one more reusable viewport-shift cost from
+  the renderer/upload seam:
+  - when the renderer is on the same upload chain and only the viewport moved,
+    Metal background cells now shift the already-uploaded frame buffer in place
+    and upload only the exposed fringe rows plus current/previous mouse rows
+  - foreground uploads remain full-width for now; the win is intentionally
+    background-only because foreground rows are still variable-length packed
+    instance lists
+- on the latest same-harness comparison on this host:
+  - accepted pre-change baseline (`build-shift-extra-skip`): `4-burst p50 5.241 / p95 24.186 / max 41.330`, `8-burst p50 5.511 / p95 38.250 / max 72.360`
+  - new background-sparse upload branch: `4-burst p50 7.222 / p95 15.931 / max 22.152`
+  - `4-burst` rerun on the same branch: `p50 6.450 / p95 19.831 / max 27.597`
+  - `8-burst` samples on the same branch:
+    `p50 6.889 / p95 24.688 / max 81.917`,
+    `p50 5.562 / p95 19.051 / max 24.697`,
+    `p50 6.849 / p95 18.597 / max 43.912`
+- compared to the same-harness accepted baseline above:
+  - the short path improved materially on `p95` and `max` even though `p50`
+    moved a little higher on this host
+  - the long train improved clearly on `p95`; `max` also improved on two of
+    three reruns, while one rerun still showed an `81.917ms` late-`up` spike
+- this moves the boundary again:
+  renderer-side background upload reuse is now cheaper on pure viewport shifts,
+  so the next remaining seams are foreground full uploads and later-`up`
+  host wake/presentation variance rather than background grid sync itself
+  the scrollback-transition / presentation seam itself
+- the latest accepted vendor-side follow-up keeps the same reusable
+  viewport-shift renderer path but removes the remaining full foreground upload
+  on compatible Metal shifts:
+  - moved foreground rows now carry a viewport-shift-relative `grid_pos.y`
+    basis plus a renderer `text_grid_pos_y_delta` uniform, so the already
+    uploaded packed instance block can shift in place
+  - only the rebuilt fringe / mouse / dirty rows are re-uploaded
+  - the original guarded version still stayed conservative around previous
+    cursor overlays and moved-block row-count changes; the current in-worktree
+    follow-up relaxes both of those fallback points
+- on the final guarded release sample from that branch on this host:
+  - `4-burst scroll_to_layer_present_ms p50 6.305 / p95 21.298 / max 40.958`
+  - `8-burst scroll_to_layer_present_ms p50 6.816 / p95 24.094 / max 38.295`
+- compared to the same-harness accepted baseline above:
+  - `4-burst` keeps `max` roughly flat and improves `p95`
+  - `8-burst` materially improves both `p95` and `max`
+- this moves the remaining boundary again:
+  viewport-shift GPU upload itself is now substantially cheaper for both
+  background and foreground rows, so the next seam is later-`up`
+  wake/presentation variance plus the conservative fallback cases where sparse
+  foreground sync still declines
+- the broad renderer-owned cadence branch was measured after that and rejected;
+  runtime is back on the best-known hybrid scheduler, while vendor-side
+  viewport-shift work remains the productive path
+- the current in-worktree follow-up relaxes those remaining conservative sparse
+  foreground fallbacks:
+  - previous-frame cursor overlay lists now shift only the visible-row block
+    instead of forcing a full visible upload
+  - rebuilt moved rows that change packed item count now keep the unchanged
+    prefix on the sparse path and re-sync only the suffix from the first count
+    change onward
+  - latest release samples from that branch:
+    `4-burst p50 5.635-6.031 / p95 23.300-25.496 / max 60.762-231.263`,
+    `8-burst p50 5.515 / p95 13.866 / max 27.667`
+  - verdict so far: long-burst behavior is materially better, but short-path
+    variance is still too noisy to accept this follow-up as the new baseline
+- the newest in-worktree refinement keeps the host scheduler unchanged and
+  narrows the renderer fallback again:
+  - rebuilt moved rows now compare their packed count against the pre-shift
+    source row instead of the same viewport row index before sparse foreground
+    sync declines
+  - a parallel host-side experiment that invalidated stale pending immediate
+    draws at gesture boundaries was measured and rejected because it made the
+    long burst train unstable again
+  - current source-row-only release samples on this host:
+    `4-burst p50 6.827 / p95 12.558 / max 45.516`,
+    `8-burst p50 5.059 / p95 12.501 / max 62.050`
+  - current verdict: this is the strongest in-worktree candidate so far for
+    lowering both short- and long-burst `p95` without reintroducing host-owned
+    cadence changes, but the remaining `40-60ms` outliers still need another
+    pass before it becomes the new installed baseline
 - repo-local validation is green for `validate-macos-ci.sh` and
   `swift test --build-path .build-codex --skip AppViewModelLiveManagedAgentTests`
 - the only broad SwiftPM failure on this host is the live Claude probe in
