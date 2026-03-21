@@ -401,6 +401,23 @@ Current state:
     lowering both short- and long-burst `p95` without reintroducing host-owned
     cadence changes, but the remaining `40-60ms` outliers still need another
     pass before it becomes the new installed baseline
+- the latest accepted follow-up keeps that renderer win and narrows the host
+  continuation seam itself:
+  - scroll pump and recovery no longer arm two independent
+    `DispatchQueue.main.asyncAfter` callbacks; the host now keeps a single
+    coalesced continuation wake at the earliest due time and drains whichever
+    continuation work is actually due from that one callback
+  - latest release sample from that branch:
+    `4-burst p50 5.306 / p95 14.769 / max 21.814`,
+    `8-burst p50 4.264 / p95 14.954 / max 19.723`
+  - versus the source-row-only baseline, `p95` moved up slightly but the
+    user-visible worst hitch collapsed from `45-62ms` into the sub-`22ms`
+    range on the clean sample, which is the better trade for actual scroll
+    feel
+  - one follow-up `8-burst` rerun flaked in the app-side active-snapshot
+    bootstrap path instead of regressing the presentation metric, so the next
+    seam remains later-`up` single-wake/presentation variance rather than
+    duplicate host continuation timers
 - repo-local validation is green for `validate-macos-ci.sh` and
   `swift test --build-path .build-codex --skip AppViewModelLiveManagedAgentTests`
 - the only broad SwiftPM failure on this host is the live Claude probe in

@@ -1432,6 +1432,25 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
     }
 
     @MainActor
+    func testScrollPresentationContinuationSchedulerUsesEarliestDueWake() {
+        let view = GhosttyTerminalViewDrawSpy()
+
+        view.configureScrollPresentationContinuationForTesting(
+            pumpDue: 10.020,
+            recoveryDue: 10.006,
+            recoveryDrawUptime: 10.0
+        )
+        XCTAssertEqual(view.nextScrollPresentationContinuationDueForTesting(), 10.006)
+
+        view.configureScrollPresentationContinuationForTesting(
+            pumpDue: 10.020,
+            recoveryDue: nil,
+            recoveryDrawUptime: nil
+        )
+        XCTAssertEqual(view.nextScrollPresentationContinuationDueForTesting(), 10.020)
+    }
+
+    @MainActor
     func testScrollPresentationDrawPumpContinuesBrieflyAfterRecentInput() {
         let view = GhosttyTerminalViewDrawSpy()
 

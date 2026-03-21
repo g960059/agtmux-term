@@ -918,9 +918,31 @@
   - `4-burst`: `p50 6.827 / p95 12.558 / max 45.516`
   - `8-burst`: `p50 5.059 / p95 12.501 / max 62.050`
 - Current status:
-  - keep in worktree, candidate for acceptance
+  - accepted as the renderer baseline; committed as `3bd7c4b`
   - the vendor source-row comparison materially improves `p95` on both short
     and long bursts versus the prior in-progress cursor-overlay branch
   - the remaining issue is no longer `p95`; it is isolated `40-60ms` outliers,
     and the attempted host-side pending-draw invalidation was not the right
     way to remove them
+- Accepted follow-up: coalesced host continuation wake
+  - replaced the separate scroll pump / recovery `DispatchQueue.main.asyncAfter`
+    callbacks with one earliest-due continuation wake that drains whichever
+    continuation work is actually due
+  - added focused scheduler test coverage in
+    `GhosttyCLIOSCBridgeTests.testScrollPresentationContinuationSchedulerUsesEarliestDueWake`
+  - validation:
+    - `swift test --build-path .build-codex --filter 'GhosttyInputTests|GhosttyCLIOSCBridgeTests|GhosttyTerminalSurfaceRegistryTests'`
+    - `xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -configuration Release -derivedDataPath build-scroll-coalesced-continuation AGTMUX_BIN=/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/release/agtmux build`
+    - `AGTMUX_PERF_APP_BIN="$PWD/build-scroll-coalesced-continuation/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4`
+    - `AGTMUX_PERF_APP_BIN="$PWD/build-scroll-coalesced-continuation/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 8`
+    - `AGTMUX_PERF_APP_BIN="$PWD/build-scroll-coalesced-continuation/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 8` (rerun; app-side active-snapshot bootstrap flaked)
+  - results:
+    - `4-burst`: `p50 5.306 / p95 14.769 / max 21.814`
+    - `8-burst`: `p50 4.264 / p95 14.954 / max 19.723`
+  - verdict:
+    - accept
+    - this keeps the source-row renderer win, gives back a small amount of
+      `p95`, and removes the much more user-visible `45-62ms` worst hitches on
+      the clean release sample
+    - the next seam is no longer duplicate continuation timers; it is residual
+      later-`up` single-wake/presentation variance

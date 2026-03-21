@@ -2009,3 +2009,46 @@ Interpretation:
 - the remaining tail is no longer the conservative source/destination count
   mismatch; it is isolated `40-60ms` outliers that survive even after the
   sparse path stays active
+
+### 2026-03-20 accepted coalesced continuation wake
+
+After the source-row comparison, the next pass stayed on the same renderer
+baseline and targeted only the host continuation seam that still existed after
+each immediate draw:
+
+- the scroll draw pump and the delayed recovery probe no longer schedule two
+  independent `DispatchQueue.main.asyncAfter` callbacks
+- instead, `GhosttyTerminalView` tracks one earliest-due continuation wake and
+  drains whichever of pump or recovery work is actually due from that single
+  callback
+- the goal was not to lower median latency further; it was to stop long bursts
+  from accumulating duplicate late callbacks that turned into visible hitchs
+
+Validation:
+
+- `swift test --build-path .build-codex --filter 'GhosttyInputTests|GhosttyCLIOSCBridgeTests|GhosttyTerminalSurfaceRegistryTests'`
+- `xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -configuration Release -derivedDataPath build-scroll-coalesced-continuation AGTMUX_BIN=/Users/virtualmachine/ghq/github.com/g960059/agtmux/target/release/agtmux build`
+- `AGTMUX_PERF_APP_BIN="$PWD/build-scroll-coalesced-continuation/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 4`
+- `AGTMUX_PERF_APP_BIN="$PWD/build-scroll-coalesced-continuation/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 8`
+- `AGTMUX_PERF_APP_BIN="$PWD/build-scroll-coalesced-continuation/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" scripts/perf/gate_l_trackpad_history_scroll_bench.sh --iterations 8` (rerun; app-side active-snapshot bootstrap timed out before the measurement completed)
+
+Results:
+
+- `4-burst`: `scroll_to_layer_present_ms p50 5.306 / p95 14.769 / max 21.814`
+- `8-burst`: `scroll_to_layer_present_ms p50 4.264 / p95 14.954 / max 19.723`
+- scheduler telemetry on that clean `8-burst` run:
+  - `scroll_presentation_immediate_queue_delay_ms max 2.180`
+  - `scroll_presentation_pump_wake_lateness_ms max 12.199`
+  - `scroll_presentation_recovery_probe_wake_lateness_ms max 21.016`
+
+Interpretation:
+
+- compared to the source-row-only baseline
+  (`4-burst p50 6.827 / p95 12.558 / max 45.516`,
+  `8-burst p50 5.059 / p95 12.501 / max 62.050`), this follow-up trades a
+  small `p95` increase for a much larger reduction in worst hitch size
+- that trade is acceptable because the remaining user complaint is not the
+  median; it is the visible `40-60ms` hitch
+- the next host seam is no longer duplicate continuation timers; it is the
+  residual single-wake/presentation variance that still survives in some
+  later-`up` bursts

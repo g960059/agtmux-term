@@ -81,10 +81,14 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     private(set) var debugLastSendKeyResult: Bool?
     private(set) var debugRecentInputEvents: [String] = []
     private var scrollPresentationDrawPending = false
+    private var scrollPresentationContinuationScheduled = false
+    private var scrollPresentationContinuationDueUptime: TimeInterval?
+    private var scrollPresentationContinuationTimer: CFRunLoopTimer?
     private var scrollPresentationDrawPumpScheduled = false
-    private var scrollPresentationDrawPumpGeneration: UInt64 = 0
+    private var scrollPresentationDrawPumpDueUptime: TimeInterval?
     private var scrollPresentationRecoveryProbeScheduled = false
-    private var scrollPresentationRecoveryProbeGeneration: UInt64 = 0
+    private var scrollPresentationRecoveryProbeDueUptime: TimeInterval?
+    private var scrollPresentationRecoveryProbeDrawUptime: TimeInterval?
     private var paneRetargetPresentationDrawPending = false
     private var paneRetargetPresentationRecoveryProbeScheduled = false
     private var paneRetargetPresentationRecoveryProbeGeneration: UInt64 = 0
@@ -142,6 +146,7 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     deinit {
         removeWindowObservers()
         renderLayerContentsObservation?.invalidate()
+        invalidateScrollPresentationContinuationTimer()
         // clearSurface() may have already freed the surface (SurfacePool GC path).
         // If surface is still non-nil, free it here.
         if let surface {
@@ -1005,6 +1010,24 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         shouldUseHostScrollPresentationContinuation(now: now)
     }
 
+    @MainActor
+    func configureScrollPresentationContinuationForTesting(
+        pumpDue: TimeInterval?,
+        recoveryDue: TimeInterval?,
+        recoveryDrawUptime: TimeInterval?
+    ) {
+        scrollPresentationDrawPumpScheduled = pumpDue != nil
+        scrollPresentationDrawPumpDueUptime = pumpDue
+        scrollPresentationRecoveryProbeScheduled = recoveryDue != nil
+        scrollPresentationRecoveryProbeDueUptime = recoveryDue
+        scrollPresentationRecoveryProbeDrawUptime = recoveryDrawUptime
+    }
+
+    @MainActor
+    func nextScrollPresentationContinuationDueForTesting() -> TimeInterval? {
+        nextScrollPresentationContinuationDueUptime()
+    }
+
     func scrollTelemetrySnapshotForTesting() -> ScrollTelemetrySnapshot {
         ScrollTelemetrySnapshot(
             scrollToRenderRequest: summary(for: scrollToRenderSamplesMs),
@@ -1144,23 +1167,9 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         guard shouldUseHostScrollPresentationContinuation(now: now) else { return }
 
         scrollPresentationDrawPumpScheduled = true
-        let generation = scrollPresentationDrawPumpGeneration
-        let scheduledFor = now + Self.scrollPresentationDrawPumpIntervalSeconds
-        DispatchQueue.main.asyncAfter(
-            deadline: .now() + Self.scrollPresentationDrawPumpIntervalSeconds
-        ) { [weak self] in
-            guard let self else { return }
-            MainActor.assumeIsolated {
-                guard generation == self.scrollPresentationDrawPumpGeneration else { return }
-                let callbackNow = ProcessInfo.processInfo.systemUptime
-                self.noteScrollPresentationDrawPumpWakeLatenessTelemetry(
-                    scheduledFor: scheduledFor,
-                    now: callbackNow
-                )
-                self.scrollPresentationDrawPumpScheduled = false
-                _ = self.runScrollPresentationDrawPumpPass(now: callbackNow)
-            }
-        }
+        scrollPresentationDrawPumpDueUptime =
+            now + Self.scrollPresentationDrawPumpIntervalSeconds
+        scheduleNextScrollPresentationContinuationWakeIfNeeded(now: now)
     }
 
     @MainActor
@@ -1169,26 +1178,116 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         guard shouldUseHostScrollPresentationContinuation(now: drawUptime) else { return }
 
         scrollPresentationRecoveryProbeScheduled = true
-        let generation = scrollPresentationRecoveryProbeGeneration
-        let scheduledFor = drawUptime + Self.scrollPresentationDrawRecoveryProbeDelaySeconds
-        DispatchQueue.main.asyncAfter(
-            deadline: .now() + Self.scrollPresentationDrawRecoveryProbeDelaySeconds
-        ) { [weak self] in
+        scrollPresentationRecoveryProbeDueUptime =
+            drawUptime + Self.scrollPresentationDrawRecoveryProbeDelaySeconds
+        scrollPresentationRecoveryProbeDrawUptime = drawUptime
+        scheduleNextScrollPresentationContinuationWakeIfNeeded(now: drawUptime)
+    }
+
+    @MainActor
+    private func scheduleNextScrollPresentationContinuationWakeIfNeeded(now: TimeInterval) {
+        let nextDue = nextScrollPresentationContinuationDueUptime()
+        guard let nextDue else {
+            invalidateScrollPresentationContinuationTimer()
+            scrollPresentationContinuationScheduled = false
+            scrollPresentationContinuationDueUptime = nil
+            return
+        }
+
+        if scrollPresentationContinuationScheduled,
+           let scheduledDue = scrollPresentationContinuationDueUptime,
+           scheduledDue <= nextDue
+        {
+            return
+        }
+
+        scrollPresentationContinuationScheduled = true
+        scrollPresentationContinuationDueUptime = nextDue
+        let fireDate = CFAbsoluteTimeGetCurrent() + max(0, nextDue - now)
+        if let timer = scrollPresentationContinuationTimer {
+            CFRunLoopTimerSetNextFireDate(timer, fireDate)
+            return
+        }
+
+        let timer = CFRunLoopTimerCreateWithHandler(
+            kCFAllocatorDefault,
+            fireDate,
+            0,
+            0,
+            0
+        ) { [weak self] _ in
             guard let self else { return }
             MainActor.assumeIsolated {
-                guard generation == self.scrollPresentationRecoveryProbeGeneration else { return }
+                self.invalidateScrollPresentationContinuationTimer()
+                self.scrollPresentationContinuationScheduled = false
+                self.scrollPresentationContinuationDueUptime = nil
                 let callbackNow = ProcessInfo.processInfo.systemUptime
-                self.noteScrollPresentationRecoveryProbeWakeLatenessTelemetry(
-                    scheduledFor: scheduledFor,
-                    now: callbackNow
-                )
-                self.scrollPresentationRecoveryProbeScheduled = false
-                _ = self.runScrollPresentationRecoveryProbePass(
-                    drawUptime: drawUptime,
-                    now: callbackNow
-                )
+                self.runScheduledScrollPresentationContinuationWake(now: callbackNow)
             }
         }
+        scrollPresentationContinuationTimer = timer
+        CFRunLoopAddTimer(
+            CFRunLoopGetMain(),
+            timer,
+            CFRunLoopMode.commonModes
+        )
+    }
+
+    @MainActor
+    private func nextScrollPresentationContinuationDueUptime() -> TimeInterval? {
+        let pumpDue = scrollPresentationDrawPumpScheduled
+            ? scrollPresentationDrawPumpDueUptime
+            : nil
+        let recoveryDue = scrollPresentationRecoveryProbeScheduled
+            ? scrollPresentationRecoveryProbeDueUptime
+            : nil
+
+        switch (pumpDue, recoveryDue) {
+        case let (pump?, recovery?):
+            return min(pump, recovery)
+        case let (pump?, nil):
+            return pump
+        case let (nil, recovery?):
+            return recovery
+        case (nil, nil):
+            return nil
+        }
+    }
+
+    @MainActor
+    private func runScheduledScrollPresentationContinuationWake(now: TimeInterval) {
+        if scrollPresentationDrawPumpScheduled,
+           let scheduledFor = scrollPresentationDrawPumpDueUptime,
+           scheduledFor <= now
+        {
+            noteScrollPresentationDrawPumpWakeLatenessTelemetry(
+                scheduledFor: scheduledFor,
+                now: now
+            )
+            scrollPresentationDrawPumpScheduled = false
+            scrollPresentationDrawPumpDueUptime = nil
+            _ = runScrollPresentationDrawPumpPass(now: now, reschedule: false)
+        }
+
+        if scrollPresentationRecoveryProbeScheduled,
+           let scheduledFor = scrollPresentationRecoveryProbeDueUptime,
+           let drawUptime = scrollPresentationRecoveryProbeDrawUptime,
+           scheduledFor <= now
+        {
+            noteScrollPresentationRecoveryProbeWakeLatenessTelemetry(
+                scheduledFor: scheduledFor,
+                now: now
+            )
+            scrollPresentationRecoveryProbeScheduled = false
+            scrollPresentationRecoveryProbeDueUptime = nil
+            scrollPresentationRecoveryProbeDrawUptime = nil
+            _ = runScrollPresentationRecoveryProbePass(
+                drawUptime: drawUptime,
+                now: now
+            )
+        }
+
+        scheduleNextScrollPresentationContinuationWakeIfNeeded(now: now)
     }
 
     @MainActor
@@ -1220,6 +1319,7 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     ) -> Bool {
         guard shouldUseHostScrollPresentationContinuation(now: now) else {
             scrollPresentationDrawPumpScheduled = false
+            scrollPresentationDrawPumpDueUptime = nil
             return false
         }
 
@@ -1289,11 +1389,23 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         return lastLayerPresentUptime < drawUptime
     }
 
+    private func invalidateScrollPresentationContinuationTimer() {
+        guard let timer = scrollPresentationContinuationTimer else { return }
+        CFRunLoopTimerInvalidate(timer)
+        scrollPresentationContinuationTimer = nil
+    }
+
     @MainActor
     private func invalidateScrollPresentationDrawPump() {
         scrollPresentationDrawPending = false
+        invalidateScrollPresentationContinuationTimer()
+        scrollPresentationContinuationScheduled = false
+        scrollPresentationContinuationDueUptime = nil
         scrollPresentationDrawPumpScheduled = false
+        scrollPresentationDrawPumpDueUptime = nil
         scrollPresentationRecoveryProbeScheduled = false
+        scrollPresentationRecoveryProbeDueUptime = nil
+        scrollPresentationRecoveryProbeDrawUptime = nil
         paneRetargetPresentationDrawPending = false
         paneRetargetPresentationRecoveryProbeScheduled = false
         lastScrollInputUptime = nil
@@ -1301,8 +1413,6 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         lastPaneRetargetPresentationDrawUptime = nil
         scrollPresentationDirectGestureActive = false
         lastPreciseScrollVerticalDirection = nil
-        scrollPresentationDrawPumpGeneration &+= 1
-        scrollPresentationRecoveryProbeGeneration &+= 1
         paneRetargetPresentationRecoveryProbeGeneration &+= 1
     }
 
@@ -1355,11 +1465,15 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
 
     @MainActor
     private func invalidateScheduledScrollPresentationWakeupsForGestureBoundary() {
+        invalidateScrollPresentationContinuationTimer()
+        scrollPresentationContinuationScheduled = false
+        scrollPresentationContinuationDueUptime = nil
         scrollPresentationDrawPumpScheduled = false
+        scrollPresentationDrawPumpDueUptime = nil
         scrollPresentationRecoveryProbeScheduled = false
+        scrollPresentationRecoveryProbeDueUptime = nil
+        scrollPresentationRecoveryProbeDrawUptime = nil
         lastScrollPresentationDrawUptime = nil
-        scrollPresentationDrawPumpGeneration &+= 1
-        scrollPresentationRecoveryProbeGeneration &+= 1
     }
 
     private static func verticalScrollDirection(for deltaY: Double) -> ScrollVerticalDirection? {

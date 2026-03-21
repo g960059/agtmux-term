@@ -27,6 +27,9 @@
 7. With both background and foreground viewport-shift uploads reduced, treat
    later-`up` wake/presentation variance and the conservative fallback cases
    (cursor overlays, row-count-changing rebuilt rows) as the next primary
-   seams. Only after those seams are understood, revisit secondary contributors
-   such as runtime-store churn or pane/sidebar work that still overlaps the
-   main thread during long bursts.
+   seams. The dual pump/recovery wake path is now collapsed into one
+   coalesced continuation wake, so the next host-side pass should measure the
+   residual single-wake lateness / presentation seam itself rather than add
+   more timers. Only after those seams are understood, revisit secondary
+   contributors such as runtime-store churn or pane/sidebar work that still
+   overlaps the main thread during long bursts.
