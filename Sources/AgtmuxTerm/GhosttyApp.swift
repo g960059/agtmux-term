@@ -229,9 +229,15 @@ final class GhosttyApp {
         @MainActor
         func applyRenderCallback() {
             let isDrawable = SurfacePool.shared.markDirtyForDirectDraw(surfaceHandle: surfaceHandle)
-            SurfacePool.shared.view(forSurfaceHandle: surfaceHandle)?.noteRenderRequestTelemetry()
+            let view = SurfacePool.shared.view(forSurfaceHandle: surfaceHandle)
+            view?.noteRenderRequestTelemetry()
             if isDrawable {
-                scheduleDirectDrawPassIfNeeded()
+                let now = ProcessInfo.processInfo.systemUptime
+                if view?.prefersImmediateDirtyDrawForRenderCallback(now: now) == true {
+                    _ = runDirectDrawPassImmediatelyIfPossible()
+                } else {
+                    scheduleDirectDrawPassIfNeeded()
+                }
             }
         }
 
@@ -392,6 +398,15 @@ final class GhosttyApp {
         CFRunLoopWakeUp(mainRunLoop)
     }
 
+    @MainActor
+    @discardableResult
+    private static func runDirectDrawPassImmediatelyIfPossible() -> Bool {
+        guard shouldScheduleTickOnMain() else { return false }
+        guard directDrawPassPending == false else { return false }
+        runDirtyDrawPass()
+        return true
+    }
+
     // MARK: - Surface Management
 
     /// Create a new ghostty surface for the given view and register it.
@@ -474,11 +489,12 @@ final class GhosttyApp {
 
         var drawnSurfaceCount = 0
         for view in dirtyViews {
+            let drawNow = ProcessInfo.processInfo.systemUptime
             view.noteHostDrawTelemetry()
             recordSurfaceDrawGap()
             let drawID = AgtmuxSignpost.surfaceDraw.makeSignpostID()
             let drawState = AgtmuxSignpost.surfaceDraw.beginInterval("draw", id: drawID)
-            view.triggerDraw()
+            view.triggerDirtyDrawForRenderCallback(now: drawNow)
             AgtmuxSignpost.surfaceDraw.endInterval("draw", drawState)
             drawnSurfaceCount += 1
         }

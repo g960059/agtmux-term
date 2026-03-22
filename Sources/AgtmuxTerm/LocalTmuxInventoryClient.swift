@@ -277,8 +277,8 @@ actor LocalTmuxInventoryClient: LocalPaneInventoryClient {
     ///
     /// Some environments sanitize control-character delimiters (e.g. `\t`) to `_`
     /// in `list-panes -F` output. A long alphanumeric token avoids that mutation.
-    private static let fieldSeparator = "AGTMUXFIELDSEP9F6F2D4D"
-    private static let formatString =
+    static let fieldSeparator = "AGTMUXFIELDSEP9F6F2D4D"
+    static let formatString =
         [
             "#{pane_id}",
             "#{session_name}",

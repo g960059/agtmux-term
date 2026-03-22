@@ -16,6 +16,8 @@ scroll_interval_ms="${AGTMUX_PERF_TRACKPAD_INTERVAL_MS:-8}"
 burst_pause_ms="${AGTMUX_PERF_TRACKPAD_BURST_PAUSE_MS:-120}"
 burst_metrics_path=""
 scroll_phase_mode="${AGTMUX_PERF_TRACKPAD_PHASE_MODE:-trackpad-burst-momentum}"
+fixture_mode="${AGTMUX_PERF_TRACKPAD_FIXTURE_MODE:-less}"
+fixture_source_file="${AGTMUX_PERF_TRACKPAD_FIXTURE_FILE:-}"
 
 function first_visible_line_number() {
   local socket_name="$1"
@@ -51,6 +53,31 @@ function wait_for_first_visible_line_number() {
     sleep 0.05
   done
 
+  typeset -g "$output_var_name=$latest"
+  return 1
+}
+
+function wait_for_scrollback_ready() {
+  local socket_name="$1"
+  local target="$2"
+  local ready_marker="$3"
+  local timeout="$4"
+  local output_var_name="$5"
+  local deadline=$(( EPOCHREALTIME + timeout ))
+  local latest=""
+
+  while (( EPOCHREALTIME < deadline )); do
+    local captured
+    captured="$(gate_l_tmux capture-pane -p -t "$target" -S -200 2>/dev/null || true)"
+    if grep -Fq "$ready_marker" <<<"$captured"; then
+      latest="$(first_visible_line_number "$socket_name" "$target")"
+      typeset -g "$output_var_name=$latest"
+      return 0
+    fi
+    sleep 0.05
+  done
+
+  latest="$(first_visible_line_number "$socket_name" "$target")"
   typeset -g "$output_var_name=$latest"
   return 1
 }
@@ -139,6 +166,9 @@ burst_metrics_path="$gate_l_tmpdir/trackpad-burst-metrics.jsonl"
 rm -f "$burst_metrics_path"
 
 fixture_path="$gate_l_tmpdir/trackpad-history-fixture.txt"
+if [[ -n "$fixture_source_file" ]]; then
+  cp "$fixture_source_file" "$fixture_path"
+else
 AGTMUX_PERF_TRACKPAD_FIXTURE_LINES="$line_count" python3 - <<'PY' >"$fixture_path"
 import os
 import itertools
@@ -175,8 +205,21 @@ for index in range(1, line_count + 1):
     for line in code:
         print(f"{index:06d} {line}")
 PY
+fi
 
-shell_command="/bin/sh -lc 'tput civis >/dev/null 2>&1 || true; exec less -R -N \"$fixture_path\"'"
+ready_marker="AGTMUX_SCROLLBACK_READY_${token}"
+case "$fixture_mode" in
+  less)
+    shell_command="/bin/sh -lc 'tput civis >/dev/null 2>&1 || true; exec less -R -N \"$fixture_path\"'"
+    ;;
+  scrollback)
+    shell_command="/bin/sh -lc 'tput civis >/dev/null 2>&1 || true; cat \"$fixture_path\"; printf \"$ready_marker\\n\"; exec sleep 600'"
+    ;;
+  *)
+    echo "Unsupported AGTMUX_PERF_TRACKPAD_FIXTURE_MODE: $fixture_mode" >&2
+    exit 1
+    ;;
+esac
 
 cleanup() {
   local exit_status=$?
@@ -203,7 +246,12 @@ gate_l_record_bootstrap_tmux_socket_path "$bootstrap_json"
 pane_id="$(jq -r '.paneIDs[0]' <<<"$bootstrap_json")"
 target="$pane_id"
 ready_line=""
-if ! wait_for_first_visible_line_number "$socket_name" "$target" 1 "$settle_timeout" ready_line; then
+if [[ "$fixture_mode" == "scrollback" ]]; then
+  if ! wait_for_scrollback_ready "$socket_name" "$target" "$ready_marker" "$settle_timeout" ready_line; then
+    echo "Timed out waiting for scrollback fixture to finish rendering" >&2
+    exit 1
+  fi
+elif ! wait_for_first_visible_line_number "$socket_name" "$target" 1 "$settle_timeout" ready_line; then
   echo "Timed out waiting for transcript fixture to render the first page" >&2
   exit 1
 fi
@@ -232,10 +280,8 @@ initial_focus_json="$("$SCRIPT_DIR/gate_l_ax_key_sender.sh" \
   --click-identifier "$resolved_terminal_ax_identifier" \
   --x-frac 0.5 \
   --y-frac 0.5)"
-scroll_point_x="$(jq -r '.clickPoint.x // empty' <<<"$initial_focus_json")"
-scroll_point_y="$(jq -r '.clickPoint.y // empty' <<<"$initial_focus_json")"
-if [[ -z "$scroll_point_x" || -z "$scroll_point_y" ]]; then
-  echo "Failed to resolve initial scroll target point" >&2
+if [[ "$(jq -r '.sent // false' <<<"$initial_focus_json")" != "true" ]]; then
+  echo "Failed to focus initial scroll target: $initial_focus_json" >&2
   exit 1
 fi
 sleep 0.2
@@ -243,9 +289,9 @@ sleep 0.2
 for (( i = 1; i <= warmup_bursts; i++ )); do
   "$SCRIPT_DIR/gate_l_ax_key_sender.sh" \
     --app-pid "$gate_l_app_pid" \
-    --focus-scroll-point \
-    --point-x "$scroll_point_x" \
-    --point-y "$scroll_point_y" \
+    --focus-scroll-identifier "$resolved_terminal_ax_identifier" \
+    --x-frac 0.5 \
+    --y-frac 0.5 \
     --scroll-pixels "$((-scroll_pixels_per_event))" \
     --scroll-repeat "$events_per_burst" \
     --scroll-interval-ms "$scroll_interval_ms" \
@@ -308,9 +354,9 @@ for (( i = 1; i <= iterations; i++ )); do
   burst_started_at="$EPOCHREALTIME"
   last_send_json="$("$SCRIPT_DIR/gate_l_ax_key_sender.sh" \
     --app-pid "$gate_l_app_pid" \
-    --focus-scroll-point \
-    --point-x "$scroll_point_x" \
-    --point-y "$scroll_point_y" \
+    --focus-scroll-identifier "$resolved_terminal_ax_identifier" \
+    --x-frac 0.5 \
+    --y-frac 0.5 \
     --scroll-pixels "$scroll_pixels" \
     --scroll-repeat "$events_per_burst" \
     --scroll-interval-ms "$scroll_interval_ms" \

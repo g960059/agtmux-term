@@ -199,18 +199,6 @@ let viewModel: AppViewModel = MainActor.assumeIsolated {
     return vm
 }
 
-let uiTestTmuxBridge: UITestTmuxBridge? = MainActor.assumeIsolated {
-    guard isUITest else { return nil }
-    return UITestTmuxBridge(
-        viewModel: viewModel,
-        enableMetadataMode: {
-            viewModel.enableUITestMetadataMode()
-            kickOffManagedDaemonBringUp()
-            viewModel.startPolling()
-        }
-    )
-}
-
 // 4. Create the Workbench V2 store for the normal cockpit path.
 let workbenchStoreV2: WorkbenchStoreV2 = MainActor.assumeIsolated {
     do {
@@ -221,6 +209,19 @@ let workbenchStoreV2: WorkbenchStoreV2 = MainActor.assumeIsolated {
     } catch {
         fatalError("WorkbenchStoreV2 init failed: \(error)")
     }
+}
+
+let uiTestTmuxBridge: UITestTmuxBridge? = MainActor.assumeIsolated {
+    guard isUITest else { return nil }
+    return UITestTmuxBridge(
+        viewModel: viewModel,
+        workbenchStore: workbenchStoreV2,
+        enableMetadataMode: {
+            viewModel.enableUITestMetadataMode()
+            kickOffManagedDaemonBringUp()
+            viewModel.startPolling()
+        }
+    )
 }
 
 let chromeState: CockpitChromeState = MainActor.assumeIsolated {

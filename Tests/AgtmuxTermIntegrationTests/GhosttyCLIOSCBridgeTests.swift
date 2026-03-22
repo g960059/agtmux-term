@@ -900,6 +900,55 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
     }
 
     @MainActor
+    func testHandleActionRenderRunsDirtyDrawImmediatelyForRecentPreciseAlternateScroll() async {
+        SurfacePool.shared.resetForTesting()
+        defer { SurfacePool.shared.resetForTesting() }
+        GhosttyApp.resetSurfaceDrawTelemetryForTesting()
+        defer { GhosttyApp.resetSurfaceDrawTelemetryForTesting() }
+
+        let dirtyView = GhosttyTerminalViewDrawSpy()
+        let cleanView = GhosttyTerminalViewDrawSpy()
+        dirtyView.preferImmediateDirtyDrawForRenderCallback = true
+        let dirtyHandle = GhosttySurfaceHandle(rawValue: 0x625)
+        let cleanHandle = GhosttySurfaceHandle(rawValue: 0x626)
+        var scheduledDirectDraws = 0
+
+        await GhosttyApp.withTestDirectDrawScheduleObserver({
+            scheduledDirectDraws += 1
+        }) {
+            SurfacePool.shared.register(
+                view: dirtyView,
+                leafID: UUID(),
+                tmuxPaneID: "%24",
+                surfaceHandle: dirtyHandle
+            )
+            SurfacePool.shared.register(
+                view: cleanView,
+                leafID: UUID(),
+                tmuxPaneID: "%25",
+                surfaceHandle: cleanHandle
+            )
+
+            GhosttyApp.runDirtyDrawPassForTesting()
+            dirtyView.resetDrawTracking()
+            cleanView.resetDrawTracking()
+            scheduledDirectDraws = 0
+
+            XCTAssertTrue(
+                GhosttyApp.handleAction(
+                    nil,
+                    target: makeSurfaceTarget(dirtyHandle),
+                    action: makeRenderAction()
+                )
+            )
+
+            XCTAssertEqual(dirtyView.triggerDrawCallCount, 1)
+            XCTAssertEqual(cleanView.triggerDrawCallCount, 0)
+            XCTAssertEqual(scheduledDirectDraws, 0)
+        }
+    }
+
+    @MainActor
     func testHandleActionRenderDuringTickDoesNotScheduleFollowUpTick() {
         SurfacePool.shared.resetForTesting()
         defer { SurfacePool.shared.resetForTesting() }
@@ -1324,6 +1373,10 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
         XCTAssertEqual(snapshot.scrollPresentationImmediateQueueDelay.count, 0)
         XCTAssertEqual(snapshot.scrollPresentationPumpWakeLateness.count, 0)
         XCTAssertEqual(snapshot.scrollPresentationRecoveryProbeWakeLateness.count, 0)
+        XCTAssertEqual(snapshot.scrollInputGap.count, 1)
+        XCTAssertEqual(snapshot.scrollInputHandler.count, 0)
+        XCTAssertEqual(snapshot.scrollInputDispatch.count, 0)
+        XCTAssertEqual(snapshot.scrollInputVerticalDeltaAbs.count, 2)
         XCTAssertEqual(snapshot.scrollToFirstDrawSamplesMs.count, 2)
         XCTAssertEqual(snapshot.scrollToLayerPresentSamplesMs.count, 2)
         XCTAssertEqual(snapshot.scrollPresentationDrawGapSamplesMs.count, 0)
@@ -1331,14 +1384,43 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
         XCTAssertEqual(snapshot.scrollPresentationPumpWakeLatenessSamplesMs.count, 0)
         XCTAssertEqual(snapshot.scrollPresentationRecoveryProbeWakeLatenessSamplesMs.count, 0)
         XCTAssertEqual(snapshot.layerPresentGapSamplesMs.count, 1)
+        XCTAssertEqual(snapshot.scrollInputGapSamplesMs.count, 1)
+        XCTAssertEqual(snapshot.scrollInputHandlerSamplesMs, [])
+        XCTAssertEqual(snapshot.scrollInputDispatchSamplesMs, [])
+        XCTAssertEqual(snapshot.scrollInputVerticalDeltaAbsSamples.count, 2)
         XCTAssertEqual(snapshot.drawCount, 2)
         XCTAssertEqual(snapshot.scrollPresentationDrawCount, 0)
         XCTAssertEqual(snapshot.layerPresentGap.count, 1)
         XCTAssertEqual(snapshot.layerPresentCount, 2)
+        XCTAssertEqual(snapshot.scrollInputCount, 2)
+        XCTAssertEqual(snapshot.preciseScrollInputCount, 0)
+        XCTAssertEqual(snapshot.directPhaseScrollInputCount, 0)
+        XCTAssertEqual(snapshot.momentumPhaseScrollInputCount, 0)
         XCTAssertEqual(snapshot.pendingScrollToRenderCount, 0)
         XCTAssertEqual(snapshot.pendingScrollToDrawCount, 0)
         XCTAssertEqual(snapshot.pendingScrollToLayerPresentCount, 0)
         XCTAssertEqual(snapshot.pendingRenderToDrawCount, 0)
+        XCTAssertEqual(snapshot.alternateScroll.preciseEventCount, 0)
+        XCTAssertEqual(snapshot.alternateScroll.preciseStepCount, 0)
+        XCTAssertEqual(snapshot.alternateScroll.preciseMessageQueueCount, 0)
+        XCTAssertEqual(snapshot.alternateScroll.preciseMailboxNotifyCount, 0)
+        XCTAssertEqual(snapshot.alternateScroll.preciseWriteQueueCount, 0)
+        XCTAssertEqual(snapshot.alternateScroll.preciseWriteQueueBytes, 0)
+        XCTAssertEqual(snapshot.alternateScroll.preciseWriteCompletedCount, 0)
+        XCTAssertEqual(snapshot.alternateScroll.preciseWriteCompletedBytes, 0)
+        XCTAssertEqual(snapshot.alternateScroll.preciseDrainTurnCount, 0)
+        XCTAssertEqual(snapshot.alternateScroll.preciseDrainedMessageCount, 0)
+        XCTAssertEqual(snapshot.alternateScroll.preciseDrainRequeueCount, 0)
+        XCTAssertEqual(snapshot.alternateScroll.preciseReadChunkCount, 0)
+        XCTAssertEqual(snapshot.alternateScroll.preciseReadChunkBytes, 0)
+        XCTAssertEqual(snapshot.alternateScroll.preciseReadChunkMaxBytes, 0)
+        XCTAssertEqual(snapshot.alternateScroll.preciseUpSequenceCount, 0)
+        XCTAssertEqual(snapshot.alternateScroll.preciseDownSequenceCount, 0)
+        XCTAssertEqual(snapshot.alternateScroll.preciseApplicationCursorSequenceCount, 0)
+        XCTAssertEqual(snapshot.alternateScroll.preciseNormalCursorSequenceCount, 0)
+        XCTAssertEqual(snapshot.alternateScroll.preciseReadEscapeByteCount, 0)
+        XCTAssertEqual(snapshot.alternateScroll.preciseReadPrintableByteCount, 0)
+        XCTAssertEqual(snapshot.alternateScroll.preciseReadNewlineByteCount, 0)
         XCTAssertNotNil(snapshot.scrollToRenderRequest.p95Ms)
         XCTAssertNotNil(snapshot.scrollToFirstDraw.maxMs)
         XCTAssertNotNil(snapshot.scrollToLayerPresent.maxMs)
@@ -1357,6 +1439,10 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
         XCTAssertEqual(resetSnapshot.scrollPresentationImmediateQueueDelay.count, 0)
         XCTAssertEqual(resetSnapshot.scrollPresentationPumpWakeLateness.count, 0)
         XCTAssertEqual(resetSnapshot.scrollPresentationRecoveryProbeWakeLateness.count, 0)
+        XCTAssertEqual(resetSnapshot.scrollInputGap.count, 0)
+        XCTAssertEqual(resetSnapshot.scrollInputHandler.count, 0)
+        XCTAssertEqual(resetSnapshot.scrollInputDispatch.count, 0)
+        XCTAssertEqual(resetSnapshot.scrollInputVerticalDeltaAbs.count, 0)
         XCTAssertEqual(resetSnapshot.scrollToFirstDrawSamplesMs, [])
         XCTAssertEqual(resetSnapshot.scrollToLayerPresentSamplesMs, [])
         XCTAssertEqual(resetSnapshot.scrollPresentationDrawGapSamplesMs, [])
@@ -1364,10 +1450,39 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
         XCTAssertEqual(resetSnapshot.scrollPresentationPumpWakeLatenessSamplesMs, [])
         XCTAssertEqual(resetSnapshot.scrollPresentationRecoveryProbeWakeLatenessSamplesMs, [])
         XCTAssertEqual(resetSnapshot.layerPresentGapSamplesMs, [])
+        XCTAssertEqual(resetSnapshot.scrollInputGapSamplesMs, [])
+        XCTAssertEqual(resetSnapshot.scrollInputHandlerSamplesMs, [])
+        XCTAssertEqual(resetSnapshot.scrollInputDispatchSamplesMs, [])
+        XCTAssertEqual(resetSnapshot.scrollInputVerticalDeltaAbsSamples, [])
         XCTAssertEqual(resetSnapshot.drawCount, 0)
         XCTAssertEqual(resetSnapshot.scrollPresentationDrawCount, 0)
         XCTAssertEqual(resetSnapshot.layerPresentGap.count, 0)
         XCTAssertEqual(resetSnapshot.layerPresentCount, 0)
+        XCTAssertEqual(resetSnapshot.scrollInputCount, 0)
+        XCTAssertEqual(resetSnapshot.preciseScrollInputCount, 0)
+        XCTAssertEqual(resetSnapshot.directPhaseScrollInputCount, 0)
+        XCTAssertEqual(resetSnapshot.momentumPhaseScrollInputCount, 0)
+        XCTAssertEqual(resetSnapshot.alternateScroll.preciseEventCount, 0)
+        XCTAssertEqual(resetSnapshot.alternateScroll.preciseStepCount, 0)
+        XCTAssertEqual(resetSnapshot.alternateScroll.preciseMessageQueueCount, 0)
+        XCTAssertEqual(resetSnapshot.alternateScroll.preciseMailboxNotifyCount, 0)
+        XCTAssertEqual(resetSnapshot.alternateScroll.preciseWriteQueueCount, 0)
+        XCTAssertEqual(resetSnapshot.alternateScroll.preciseWriteQueueBytes, 0)
+        XCTAssertEqual(resetSnapshot.alternateScroll.preciseWriteCompletedCount, 0)
+        XCTAssertEqual(resetSnapshot.alternateScroll.preciseWriteCompletedBytes, 0)
+        XCTAssertEqual(resetSnapshot.alternateScroll.preciseDrainTurnCount, 0)
+        XCTAssertEqual(resetSnapshot.alternateScroll.preciseDrainedMessageCount, 0)
+        XCTAssertEqual(resetSnapshot.alternateScroll.preciseDrainRequeueCount, 0)
+        XCTAssertEqual(resetSnapshot.alternateScroll.preciseReadChunkCount, 0)
+        XCTAssertEqual(resetSnapshot.alternateScroll.preciseReadChunkBytes, 0)
+        XCTAssertEqual(resetSnapshot.alternateScroll.preciseReadChunkMaxBytes, 0)
+        XCTAssertEqual(resetSnapshot.alternateScroll.preciseUpSequenceCount, 0)
+        XCTAssertEqual(resetSnapshot.alternateScroll.preciseDownSequenceCount, 0)
+        XCTAssertEqual(resetSnapshot.alternateScroll.preciseApplicationCursorSequenceCount, 0)
+        XCTAssertEqual(resetSnapshot.alternateScroll.preciseNormalCursorSequenceCount, 0)
+        XCTAssertEqual(resetSnapshot.alternateScroll.preciseReadEscapeByteCount, 0)
+        XCTAssertEqual(resetSnapshot.alternateScroll.preciseReadPrintableByteCount, 0)
+        XCTAssertEqual(resetSnapshot.alternateScroll.preciseReadNewlineByteCount, 0)
     }
 
     @MainActor
@@ -1387,6 +1502,81 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
         XCTAssertEqual(snapshot.scrollPresentationDrawCount, 2)
         XCTAssertEqual(snapshot.pendingScrollToDrawCount, 0)
         XCTAssertNotNil(snapshot.scrollPresentationDrawGap.maxMs)
+    }
+
+    @MainActor
+    func testScrollInputTelemetryTracksPrecisionAndPhaseCounts() {
+        let view = GhosttyTerminalViewDrawSpy()
+
+        view.noteScrollInputTelemetryForTesting(
+            now: 10.0,
+            precision: true,
+            phase: .changed,
+            momentumPhase: [],
+            verticalDelta: 4.0
+        )
+        view.noteScrollInputTelemetryForTesting(
+            now: 10.01,
+            precision: true,
+            phase: .ended,
+            momentumPhase: .changed,
+            verticalDelta: 2.0
+        )
+
+        let snapshot = view.scrollTelemetrySnapshotForTesting()
+        XCTAssertEqual(snapshot.scrollInputCount, 2)
+        XCTAssertEqual(snapshot.preciseScrollInputCount, 2)
+        XCTAssertEqual(snapshot.directPhaseScrollInputCount, 1)
+        XCTAssertEqual(snapshot.momentumPhaseScrollInputCount, 1)
+        XCTAssertEqual(snapshot.scrollInputGap.count, 1)
+        XCTAssertEqual(snapshot.scrollInputHandler.count, 0)
+        XCTAssertEqual(snapshot.scrollInputDispatch.count, 0)
+        XCTAssertEqual(snapshot.scrollInputVerticalDeltaAbs.count, 2)
+        XCTAssertEqual(snapshot.scrollInputVerticalDeltaAbsSamples, [4.0, 2.0])
+    }
+
+    @MainActor
+    func testScrollInputExecutionTelemetryTracksHandlerAndDispatchDurations() {
+        let view = GhosttyTerminalViewDrawSpy()
+
+        view.noteScrollInputExecutionTelemetryForTesting(
+            handlerDurationMs: 1.5,
+            dispatchDurationMs: 0.75
+        )
+        view.noteScrollInputExecutionTelemetryForTesting(
+            handlerDurationMs: 2.5,
+            dispatchDurationMs: 1.25
+        )
+
+        let snapshot = view.scrollTelemetrySnapshotForTesting()
+        XCTAssertEqual(snapshot.scrollInputHandler.count, 2)
+        XCTAssertEqual(snapshot.scrollInputDispatch.count, 2)
+        XCTAssertEqual(snapshot.scrollInputHandlerSamplesMs, [1.5, 2.5])
+        XCTAssertEqual(snapshot.scrollInputDispatchSamplesMs, [0.75, 1.25])
+    }
+
+    @MainActor
+    func testAlternateScrollUsesNativeBasePrecisionMultiplier() {
+        let view = GhosttyTerminalViewDrawSpy()
+
+        XCTAssertEqual(
+            view.precisionScrollMultiplierForTesting(usesAlternateScroll: false),
+            2.0
+        )
+        XCTAssertEqual(
+            view.precisionScrollMultiplierForTesting(
+                usesAlternateScroll: true,
+                phase: .changed
+            ),
+            2.0
+        )
+        XCTAssertEqual(
+            view.precisionScrollMultiplierForTesting(
+                usesAlternateScroll: true,
+                momentumPhase: .changed
+            ),
+            2.0
+        )
     }
 
     @MainActor
@@ -1710,6 +1900,181 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
         }
     }
 
+    @MainActor
+    func testUITestTmuxBridgeTerminalViewportTextSnapshotUsesRegisteredView() throws {
+        SurfacePool.shared.resetForTesting()
+        defer { SurfacePool.shared.resetForTesting() }
+
+        let tileID = UUID()
+        let view = GhosttyTerminalViewViewportTextSpy()
+        let expected = GhosttyTerminalView.ViewportTextSnapshot(
+            text: "alpha\nbeta",
+            lineCount: 2,
+            characterCount: 10,
+            usesAlternateScroll: false
+        )
+        view.snapshots = [expected]
+
+        SurfacePool.shared.register(
+            view: view,
+            leafID: tileID,
+            tmuxPaneID: "%31",
+            surfaceHandle: GhosttySurfaceHandle(rawValue: 0x631)
+        )
+
+        let bridge = UITestTmuxBridge(
+            viewModel: AppViewModel(
+                hostsConfig: HostsConfig(hosts: [])
+            ),
+            env: [:]
+        )
+
+        let snapshot = try bridge.terminalViewportTextSnapshotForTesting(tileID: tileID)
+        XCTAssertEqual(snapshot, expected)
+    }
+
+    @MainActor
+    func testUITestTmuxBridgeSamplesTerminalViewportTextRepeatedly() async throws {
+        SurfacePool.shared.resetForTesting()
+        defer { SurfacePool.shared.resetForTesting() }
+
+        let tileID = UUID()
+        let view = GhosttyTerminalViewViewportTextSpy()
+        view.snapshots = [
+            .init(text: "row-1", lineCount: 1, characterCount: 5, usesAlternateScroll: false),
+            .init(text: "row-2", lineCount: 1, characterCount: 5, usesAlternateScroll: false),
+            .init(text: "row-3", lineCount: 1, characterCount: 5, usesAlternateScroll: false)
+        ]
+
+        SurfacePool.shared.register(
+            view: view,
+            leafID: tileID,
+            tmuxPaneID: "%32",
+            surfaceHandle: GhosttySurfaceHandle(rawValue: 0x632)
+        )
+
+        let bridge = UITestTmuxBridge(
+            viewModel: AppViewModel(
+                hostsConfig: HostsConfig(hosts: [])
+            ),
+            env: [:]
+        )
+
+        let sampling = try await bridge.sampleTerminalViewportTextForTesting(
+            tileID: tileID,
+            sampleCount: 3,
+            intervalMilliseconds: 0
+        )
+
+        XCTAssertEqual(sampling.samples.map(\.sampleIndex), [0, 1, 2])
+        XCTAssertEqual(
+            sampling.samples.map(\.snapshot.text),
+            ["row-1", "row-2", "row-3"]
+        )
+        XCTAssertTrue(sampling.samples.allSatisfy { $0.elapsedMs >= 0 })
+    }
+
+    @MainActor
+    func testUITestTmuxBridgeOpenTerminalForPaneReturnsOpenedThenRevealedExisting() async throws {
+        let pane = AgtmuxPane(
+            source: "local",
+            paneId: "%901",
+            sessionName: "bridge-open-terminal-\(UUID().uuidString)",
+            windowId: "@901",
+            windowIndex: 1,
+            windowName: "main",
+            currentPath: "/tmp"
+        )
+        let viewModel = AppViewModel(
+            hostsConfig: HostsConfig(hosts: [])
+        )
+        viewModel.panes = [pane]
+
+        let workbenchStore = WorkbenchStoreV2(
+            workbenches: [.empty()],
+            activeWorkbenchIndex: 0,
+            persistence: nil
+        )
+        let bridge = UITestTmuxBridge(
+            viewModel: viewModel,
+            workbenchStore: workbenchStore,
+            env: [:]
+        )
+
+        let opened = try await bridge.openTerminalForPaneForTesting(
+            source: "local",
+            sessionName: pane.sessionName,
+            paneID: pane.paneId
+        )
+        XCTAssertEqual(opened.disposition, "opened")
+        XCTAssertEqual(opened.source, "local")
+        XCTAssertEqual(opened.sessionName, pane.sessionName)
+        XCTAssertEqual(opened.paneID, pane.paneId)
+        XCTAssertFalse(opened.tileID.isEmpty)
+        XCTAssertFalse(opened.workbenchID.isEmpty)
+
+        let revealed = try await bridge.openTerminalForPaneForTesting(
+            source: "local",
+            sessionName: pane.sessionName,
+            paneID: pane.paneId
+        )
+        XCTAssertEqual(revealed.disposition, "revealedExisting")
+        XCTAssertEqual(revealed.tileID, opened.tileID)
+        XCTAssertEqual(revealed.workbenchID, opened.workbenchID)
+    }
+
+    @MainActor
+    func testUITestTmuxBridgeOpenTerminalForPaneFallsBackToDefaultLocalPaneResolver() async throws {
+        let pane = AgtmuxPane(
+            source: "local",
+            paneId: "%662",
+            sessionName: "vm agtmux-term",
+            windowId: "@1",
+            windowIndex: 1,
+            windowName: "main",
+            currentPath: "/tmp/live-pane"
+        )
+        let viewModel = AppViewModel(
+            hostsConfig: HostsConfig(hosts: [])
+        )
+        viewModel.panes = []
+
+        let workbenchStore = WorkbenchStoreV2(
+            workbenches: [.empty()],
+            activeWorkbenchIndex: 0,
+            persistence: nil
+        )
+        let bridge = UITestTmuxBridge(
+            viewModel: viewModel,
+            workbenchStore: workbenchStore,
+            resolveDirectLocalPane: { sessionName, paneID in
+                XCTAssertEqual(sessionName, pane.sessionName)
+                XCTAssertEqual(paneID, pane.paneId)
+                return pane
+            },
+            env: [:]
+        )
+
+        let opened = try await bridge.openTerminalForPaneForTesting(
+            source: "local",
+            sessionName: pane.sessionName,
+            paneID: pane.paneId
+        )
+
+        XCTAssertEqual(opened.disposition, "opened")
+        XCTAssertEqual(opened.source, "local")
+        XCTAssertEqual(opened.sessionName, pane.sessionName)
+        XCTAssertEqual(opened.paneID, pane.paneId)
+        XCTAssertFalse(opened.tileID.isEmpty)
+        XCTAssertFalse(opened.workbenchID.isEmpty)
+        XCTAssertEqual(viewModel.panes, [pane])
+        XCTAssertTrue(viewModel.runtimeStore.hasCompletedInitialFetch)
+        XCTAssertFalse(viewModel.runtimeStore.offlineHosts.contains("local"))
+        XCTAssertTrue(
+            viewModel.runtimeStore.livePaneSessionKeys.contains("local:\(pane.sessionName)")
+        )
+    }
+
     private func assertDecodeError(
         payload: String,
         expected: GhosttyCLIOSCBridgeError,
@@ -1850,12 +2215,21 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
 private final class GhosttyTerminalViewDrawSpy: GhosttyTerminalView {
     private(set) var triggerDrawCallCount = 0
     private(set) var scrollPresentationDrawCallCount = 0
+    var preferImmediateDirtyDrawForRenderCallback = false
 
     override func hasSurfaceForScrollPresentationDraw() -> Bool {
         true
     }
 
+    override func prefersImmediateDirtyDrawForRenderCallback(now: TimeInterval) -> Bool {
+        preferImmediateDirtyDrawForRenderCallback
+    }
+
     override func triggerDraw() {
+        triggerDrawCallCount += 1
+    }
+
+    override func triggerDirtyDrawForRenderCallback(now: TimeInterval) {
         triggerDrawCallCount += 1
     }
 
@@ -1908,5 +2282,20 @@ private final class GhosttyTerminalViewMetricsSpy: GhosttyTerminalView {
         contentScaleUpdates.removeAll()
         sizeUpdates.removeAll()
         displayIDUpdates.removeAll()
+    }
+}
+
+@MainActor
+private final class GhosttyTerminalViewViewportTextSpy: GhosttyTerminalView {
+    var snapshots: [ViewportTextSnapshot] = []
+
+    override func viewportTextSnapshotForTesting() -> ViewportTextSnapshot {
+        guard snapshots.isEmpty == false else {
+            return super.viewportTextSnapshotForTesting()
+        }
+        if snapshots.count == 1 {
+            return snapshots[0]
+        }
+        return snapshots.removeFirst()
     }
 }

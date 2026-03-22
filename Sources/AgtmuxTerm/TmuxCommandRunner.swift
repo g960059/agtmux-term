@@ -115,8 +115,9 @@ actor TmuxCommandRunner {
     ///
     /// - Parameters:
     ///   - args: tmux subcommand arguments (e.g. ["new-session", "-d", "-s", "main"]).
-    ///   - source: Source identifier used for routing. `"local"` runs tmux directly;
-    ///     any other value runs via SSH. For remote sources this is the hostname.
+    ///   - source: Source identifier used for routing. `"local"` runs tmux directly using
+    ///     the configured local socket override; `"local-default"` runs tmux directly on the
+    ///     default local socket; any other value runs via SSH. For remote sources this is the hostname.
     ///   - sshTarget: Full SSH connection target (e.g. "user@host"). When provided,
     ///     overrides `source` as the SSH connection string. This is needed when the
     ///     hostname and username are configured separately in `RemoteHost`.
@@ -126,14 +127,16 @@ actor TmuxCommandRunner {
         defer { AgtmuxSignpost.tmuxRunner.endInterval("run", runState) }
         let process = Process()
 
-        if source == "local" {
+        if source == "local" || source == "local-default" {
             let originalEnv = ProcessInfo.processInfo.environment
             guard let tmuxURL = resolveLocalTmuxURL() else {
                 throw TmuxCommandError.tmuxNotFound(source: source)
             }
             process.executableURL = tmuxURL
             let configArgs = tmuxConfigArguments(from: originalEnv)
-            let socketArgs = LocalTmuxTarget.socketArguments(from: originalEnv)
+            let socketArgs = source == "local"
+                ? LocalTmuxTarget.socketArguments(from: originalEnv)
+                : []
             process.arguments = configArgs + socketArgs + args
             var env = originalEnv
             env["TMUX"] = nil

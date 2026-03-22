@@ -76,6 +76,15 @@ final class UITestTmuxBridge {
         let focused: Bool
     }
 
+    struct OpenTerminalForPaneSnapshot: Codable, Equatable {
+        let workbenchID: String
+        let tileID: String
+        let disposition: String
+        let source: String
+        let sessionName: String
+        let paneID: String
+    }
+
     private struct FocusStateSnapshot: Codable {
         let appIsActive: Bool
         let keyWindowNumber: Int?
@@ -104,8 +113,20 @@ final class UITestTmuxBridge {
         let publish: AppViewModel.PublishTelemetrySnapshot
     }
 
+    struct TerminalViewportTextSampleSnapshot: Codable, Equatable {
+        let sampleIndex: Int
+        let elapsedMs: Double
+        let snapshot: GhosttyTerminalView.ViewportTextSnapshot
+    }
+
+    struct TerminalViewportTextSamplingSnapshot: Codable, Equatable {
+        let samples: [TerminalViewportTextSampleSnapshot]
+    }
+
     private let viewModel: AppViewModel
+    private let workbenchStore: WorkbenchStoreV2
     private let enableMetadataMode: @MainActor () async -> Void
+    private let resolveDirectLocalPane: @Sendable (_ sessionName: String, _ paneID: String) async throws -> AgtmuxPane?
     private let env: [String: String]
     private var commandLoopTask: Task<Void, Never>?
     private var createdSessions: Set<String> = []
@@ -120,15 +141,28 @@ final class UITestTmuxBridge {
     private let sendTmuxNextPaneKeysCommand = "__agtmux_send_tmux_next_pane_keys__"
     private let resetScrollTelemetryCommand = "__agtmux_reset_scroll_telemetry__"
     private let dumpScrollTelemetryCommand = "__agtmux_dump_scroll_telemetry__"
+    private let dumpTerminalViewportTextCommand = "__agtmux_dump_terminal_viewport_text__"
+    private let sampleTerminalViewportTextCommand = "__agtmux_sample_terminal_viewport_text__"
     private let bridgeReadyCommand = "__agtmux_tmux_bridge_ready__"
 
     init(
         viewModel: AppViewModel,
+        workbenchStore: WorkbenchStoreV2 = workbenchStoreV2,
         enableMetadataMode: @escaping @MainActor () async -> Void = {},
+        resolveDirectLocalPane: @escaping @Sendable (_ sessionName: String, _ paneID: String) async throws -> AgtmuxPane? = { sessionName, paneID in
+            let output = try await TmuxCommandRunner.shared.run(
+                ["list-panes", "-a", "-F", LocalTmuxInventoryClient.formatString],
+                source: "local-default"
+            )
+            let panes = try LocalTmuxInventoryClient.parse(output: output, source: "local")
+            return panes.first(where: { $0.sessionName == sessionName && $0.paneId == paneID })
+        },
         env: [String: String] = ProcessInfo.processInfo.environment
     ) {
         self.viewModel = viewModel
+        self.workbenchStore = workbenchStore
         self.enableMetadataMode = enableMetadataMode
+        self.resolveDirectLocalPane = resolveDirectLocalPane
         self.env = env
     }
 
@@ -223,6 +257,11 @@ final class UITestTmuxBridge {
                     )
                 }
             }
+
+            try await waitForBootstrapPaneInventory(
+                sessionName: scenario.sessionName,
+                expectedPaneCount: paneCount
+            )
 
             let windowOutput = try await runBootstrapTmuxCommand(
                 ["list-windows", "-t", scenario.sessionName, "-F", "#{window_id}"],
@@ -375,8 +414,12 @@ final class UITestTmuxBridge {
                 let data = try JSONEncoder().encode(snapshot)
                 stdout = String(decoding: data, as: UTF8.self)
             case openTerminalForPaneCommand:
-                try openTerminalForPane(request.args)
-                stdout = "ok"
+                if request.refreshInventory ?? false {
+                    await viewModel.fetchAll()
+                }
+                let snapshot = try await openTerminalForPane(request.args)
+                let data = try JSONEncoder().encode(snapshot)
+                stdout = String(decoding: data, as: UTF8.self)
             case focusTerminalHostCommand:
                 try focusTerminalHost(request.args)
                 stdout = "ok"
@@ -388,6 +431,14 @@ final class UITestTmuxBridge {
                 stdout = "ok"
             case dumpScrollTelemetryCommand:
                 let snapshot = try dumpScrollTelemetry(request.args)
+                let data = try JSONEncoder().encode(snapshot)
+                stdout = String(decoding: data, as: UTF8.self)
+            case dumpTerminalViewportTextCommand:
+                let snapshot = try dumpTerminalViewportText(request.args)
+                let data = try JSONEncoder().encode(snapshot)
+                stdout = String(decoding: data, as: UTF8.self)
+            case sampleTerminalViewportTextCommand:
+                let snapshot = try await sampleTerminalViewportText(request.args)
                 let data = try JSONEncoder().encode(snapshot)
                 stdout = String(decoding: data, as: UTF8.self)
             case bridgeReadyCommand:
@@ -468,7 +519,7 @@ final class UITestTmuxBridge {
     }
 
     private func activeTerminalTargetSnapshot() async throws -> ActiveTerminalTargetSnapshot {
-        guard let workbench = workbenchStoreV2.activeWorkbench else {
+        guard let workbench = workbenchStore.activeWorkbench else {
             throw NSError(
                 domain: "UITestTmuxBridge",
                 code: 1,
@@ -476,7 +527,7 @@ final class UITestTmuxBridge {
             )
         }
 
-        let selection = workbenchStoreV2.activePaneSelection(
+        let selection = workbenchStore.activePaneSelection(
             panes: viewModel.panes,
             hostsConfig: viewModel.hostsConfig
         )
@@ -504,7 +555,7 @@ final class UITestTmuxBridge {
             )
         }
 
-        guard let activePaneContext = workbenchStoreV2.activePaneContext,
+        guard let activePaneContext = workbenchStore.activePaneContext,
               activePaneContext.workbenchID == selection.workbenchID else {
             throw NSError(
                 domain: "UITestTmuxBridge",
@@ -571,8 +622,8 @@ final class UITestTmuxBridge {
             paneID: selection.paneID,
             desiredWindowID: activePaneContext.activePaneRef.windowID,
             desiredPaneID: activePaneContext.activePaneRef.paneID,
-            observedWindowID: workbenchStoreV2.activePaneRuntimeContext?.observedPaneRef?.windowID ?? "",
-            observedPaneID: workbenchStoreV2.activePaneRuntimeContext?.observedPaneRef?.paneID ?? "",
+            observedWindowID: workbenchStore.activePaneRuntimeContext?.observedPaneRef?.windowID ?? "",
+            observedPaneID: workbenchStore.activePaneRuntimeContext?.observedPaneRef?.paneID ?? "",
             focusRequestNonce: activePaneContext.focusRequestNonce,
             selectedPaneInventoryID: selectedPaneInventoryID,
             attachCommand: attachPlan.command,
@@ -587,7 +638,7 @@ final class UITestTmuxBridge {
     }
 
     private func activeDocumentTileSnapshot() throws -> ActiveDocumentTileSnapshot {
-        guard let workbench = workbenchStoreV2.activeWorkbench else {
+        guard let workbench = workbenchStore.activeWorkbench else {
             throw NSError(
                 domain: "UITestTmuxBridge",
                 code: 30,
@@ -650,7 +701,96 @@ final class UITestTmuxBridge {
         textView.setSelectedRange(NSRange(location: replacement.utf16.count, length: 0))
     }
 
-    private func openTerminalForPane(_ args: [String]) throws {
+    func openTerminalForPaneForTesting(
+        source: String,
+        sessionName: String,
+        paneID: String
+    ) async throws -> OpenTerminalForPaneSnapshot {
+        uiTestBridgeDebugLog(
+            "openTerminalForPaneForTesting start source=\(source) session=\(sessionName) pane=\(paneID)"
+        )
+        let pane: AgtmuxPane
+        if let inventoryPane = viewModel.panes.first(where: {
+            $0.source == source && $0.sessionName == sessionName && $0.paneId == paneID
+        }) {
+            pane = inventoryPane
+        } else if source == "local",
+                  let directPane = try await resolveDirectLocalPane(sessionName, paneID) {
+            uiTestBridgeDebugLog(
+                "openTerminalForPaneForTesting default-socket-fallback session=\(sessionName) pane=\(paneID)"
+            )
+            pane = directPane
+            prepareDirectLocalPaneForRendering(directPane)
+        } else {
+            throw NSError(
+                domain: "UITestTmuxBridge",
+                code: 11,
+                userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "Pane not found for source=\(source) session=\(sessionName) pane=\(paneID)"
+                ]
+            )
+        }
+        uiTestBridgeDebugLog(
+            "openTerminalForPaneForTesting pane-found window=\(pane.windowId) path=\(pane.currentPath)"
+        )
+        uiTestBridgeDebugLog(
+            "openTerminalForPaneForTesting store-state workbenches=\(workbenchStore.workbenches.count) activeIndex=\(workbenchStore.activeWorkbenchIndex)"
+        )
+
+        let result = workbenchStore.openTerminal(
+            for: pane,
+            hostsConfig: viewModel.hostsConfig
+        )
+        uiTestBridgeDebugLog(
+            "openTerminalForPaneForTesting store-opened tile=\(result.tileID.uuidString)"
+        )
+        let disposition: String
+        let workbenchID: UUID
+        switch result {
+        case .opened(let resolvedWorkbenchID, _):
+            disposition = "opened"
+            workbenchID = resolvedWorkbenchID
+        case .revealedExisting(let resolvedWorkbenchID, _):
+            disposition = "revealedExisting"
+            workbenchID = resolvedWorkbenchID
+        }
+
+        return OpenTerminalForPaneSnapshot(
+            workbenchID: workbenchID.uuidString,
+            tileID: result.tileID.uuidString,
+            disposition: disposition,
+            source: source,
+            sessionName: sessionName,
+            paneID: paneID
+        )
+    }
+
+    private func prepareDirectLocalPaneForRendering(_ pane: AgtmuxPane) {
+        let sessionKey = "local:\(pane.sessionName)"
+        if let existingIndex = viewModel.panes.firstIndex(where: { $0.id == pane.id }) {
+            if viewModel.panes[existingIndex] != pane {
+                var panes = viewModel.panes
+                panes[existingIndex] = pane
+                viewModel.panes = panes
+            }
+        } else {
+            var panes = viewModel.panes
+            panes.append(pane)
+            viewModel.panes = panes
+        }
+        if !viewModel.runtimeStore.hasCompletedInitialFetch {
+            viewModel.runtimeStore.hasCompletedInitialFetch = true
+        }
+        if viewModel.runtimeStore.offlineHosts.contains("local") {
+            viewModel.runtimeStore.offlineHosts.remove("local")
+        }
+        if !viewModel.runtimeStore.livePaneSessionKeys.contains(sessionKey) {
+            viewModel.runtimeStore.livePaneSessionKeys.insert(sessionKey)
+        }
+    }
+
+    private func openTerminalForPane(_ args: [String]) async throws -> OpenTerminalForPaneSnapshot {
         guard args.count >= 4 else {
             throw NSError(
                 domain: "UITestTmuxBridge",
@@ -665,23 +805,10 @@ final class UITestTmuxBridge {
         let source = args[1]
         let sessionName = args[2]
         let paneID = args[3]
-
-        guard let pane = viewModel.panes.first(where: {
-            $0.source == source && $0.sessionName == sessionName && $0.paneId == paneID
-        }) else {
-            throw NSError(
-                domain: "UITestTmuxBridge",
-                code: 11,
-                userInfo: [
-                    NSLocalizedDescriptionKey:
-                        "Pane not found for source=\(source) session=\(sessionName) pane=\(paneID)"
-                ]
-            )
-        }
-
-        workbenchStoreV2.openTerminal(
-            for: pane,
-            hostsConfig: viewModel.hostsConfig
+        return try await openTerminalForPaneForTesting(
+            source: source,
+            sessionName: sessionName,
+            paneID: paneID
         )
     }
 
@@ -810,6 +937,100 @@ final class UITestTmuxBridge {
             scroll: terminalView.scrollTelemetrySnapshotForTesting(),
             island: GhosttyIslandUpdateTelemetry.shared.snapshot(tileID: tileID),
             publish: viewModel.publishTelemetrySnapshotForTesting()
+        )
+    }
+
+    func terminalViewportTextSnapshotForTesting(tileID: UUID) throws -> GhosttyTerminalView.ViewportTextSnapshot {
+        guard let terminalView = SurfacePool.shared.view(leafID: tileID) else {
+            throw NSError(
+                domain: "UITestTmuxBridge",
+                code: 14,
+                userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "No terminal view registered for tileID \(tileID.uuidString)"
+                ]
+            )
+        }
+        return terminalView.viewportTextSnapshotForTesting()
+    }
+
+    func sampleTerminalViewportTextForTesting(
+        tileID: UUID,
+        sampleCount: Int,
+        intervalMilliseconds: Int
+    ) async throws -> TerminalViewportTextSamplingSnapshot {
+        guard sampleCount > 0 else {
+            throw NSError(
+                domain: "UITestTmuxBridge",
+                code: 36,
+                userInfo: [NSLocalizedDescriptionKey: "sampleCount must be greater than zero"]
+            )
+        }
+        guard intervalMilliseconds >= 0 else {
+            throw NSError(
+                domain: "UITestTmuxBridge",
+                code: 37,
+                userInfo: [NSLocalizedDescriptionKey: "intervalMilliseconds must be non-negative"]
+            )
+        }
+
+        var samples: [TerminalViewportTextSampleSnapshot] = []
+        let startUptime = ProcessInfo.processInfo.systemUptime
+        for sampleIndex in 0..<sampleCount {
+            let snapshot = try terminalViewportTextSnapshotForTesting(tileID: tileID)
+            let elapsedMs = (ProcessInfo.processInfo.systemUptime - startUptime) * 1000.0
+            samples.append(
+                TerminalViewportTextSampleSnapshot(
+                    sampleIndex: sampleIndex,
+                    elapsedMs: elapsedMs,
+                    snapshot: snapshot
+                )
+            )
+            if sampleIndex < sampleCount - 1, intervalMilliseconds > 0 {
+                try await Task.sleep(for: .milliseconds(intervalMilliseconds))
+            }
+        }
+
+        return TerminalViewportTextSamplingSnapshot(samples: samples)
+    }
+
+    private func dumpTerminalViewportText(_ args: [String]) throws -> GhosttyTerminalView.ViewportTextSnapshot {
+        let tileID = try tileID(from: args, command: dumpTerminalViewportTextCommand)
+        return try terminalViewportTextSnapshotForTesting(tileID: tileID)
+    }
+
+    private func sampleTerminalViewportText(_ args: [String]) async throws -> TerminalViewportTextSamplingSnapshot {
+        guard args.count >= 4 else {
+            throw NSError(
+                domain: "UITestTmuxBridge",
+                code: 38,
+                userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "\(sampleTerminalViewportTextCommand) requires <tileID> <sampleCount> <intervalMs>"
+                ]
+            )
+        }
+
+        let tileID = try tileID(from: args, command: sampleTerminalViewportTextCommand)
+        guard let sampleCount = Int(args[2]) else {
+            throw NSError(
+                domain: "UITestTmuxBridge",
+                code: 39,
+                userInfo: [NSLocalizedDescriptionKey: "Invalid sampleCount: \(args[2])"]
+            )
+        }
+        guard let intervalMs = Int(args[3]) else {
+            throw NSError(
+                domain: "UITestTmuxBridge",
+                code: 40,
+                userInfo: [NSLocalizedDescriptionKey: "Invalid intervalMs: \(args[3])"]
+            )
+        }
+
+        return try await sampleTerminalViewportTextForTesting(
+            tileID: tileID,
+            sampleCount: sampleCount,
+            intervalMilliseconds: intervalMs
         )
     }
 
@@ -944,6 +1165,47 @@ final class UITestTmuxBridge {
             )
         }
         return socketPath
+    }
+
+    private func waitForBootstrapPaneInventory(
+        sessionName: String,
+        expectedPaneCount: Int,
+        timeoutNanoseconds: UInt64 = 5_000_000_000
+    ) async throws {
+        let deadline = DispatchTime.now().uptimeNanoseconds + timeoutNanoseconds
+        var lastFailure = "bootstrap pane inventory did not become ready"
+
+        while DispatchTime.now().uptimeNanoseconds < deadline {
+            do {
+                let output = try await TmuxCommandRunner.shared.run(
+                    ["list-panes", "-t", sessionName, "-F", "#{pane_id}"],
+                    source: "local"
+                )
+                let paneIDs = output
+                    .components(separatedBy: "\n")
+                    .filter { !$0.isEmpty }
+                if paneIDs.count >= expectedPaneCount {
+                    return
+                }
+                lastFailure = "bootstrap pane inventory incomplete for \(sessionName): expected \(expectedPaneCount), got \(paneIDs.count)"
+            } catch let error as TmuxCommandError {
+                lastFailure = bootstrapTmuxErrorDescription(
+                    step: "wait-for-pane-inventory",
+                    error: error,
+                    fallbackArgs: ["list-panes", "-t", sessionName, "-F", "#{pane_id}"]
+                )
+            } catch {
+                lastFailure = "bootstrap wait-for-pane-inventory failed: \(error.localizedDescription)"
+            }
+
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+
+        throw NSError(
+            domain: "UITestTmuxBridge",
+            code: 16,
+            userInfo: [NSLocalizedDescriptionKey: lastFailure]
+        )
     }
 
     private func managedDaemonStderrTail(maxLength: Int = 2048) -> String? {

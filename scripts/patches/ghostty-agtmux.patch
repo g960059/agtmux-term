@@ -14,10 +14,30 @@ index f8d8c1676..41199b9bf 100644
          },
      },
 diff --git a/include/ghostty.h b/include/ghostty.h
-index 3f1e0c9d9..a39ea6a12 100644
+index 3f1e0c9d9..70dd7e5ac 100644
 --- a/include/ghostty.h
 +++ b/include/ghostty.h
-@@ -733,6 +733,13 @@ typedef struct {
+@@ -432,6 +432,19 @@ typedef struct {
+   uint32_t cell_height_px;
+ } ghostty_surface_size_s;
+
++typedef struct {
++  uint64_t precise_event_count;
++  uint64_t precise_step_count;
++  uint64_t precise_message_queue_count;
++  uint64_t precise_mailbox_notify_count;
++  uint64_t precise_drain_turn_count;
++  uint64_t precise_drained_message_count;
++  uint64_t precise_drain_requeue_count;
++  uint64_t precise_read_chunk_count;
++  uint64_t precise_read_chunk_bytes;
++  uint64_t precise_read_chunk_max_bytes;
++} ghostty_surface_alternate_scroll_telemetry_s;
++
+ // Config types
+
+ // config.Color
+@@ -733,6 +746,13 @@ typedef struct {
    int8_t progress;
  } ghostty_action_progress_report_s;
 
@@ -31,7 +51,7 @@ index 3f1e0c9d9..a39ea6a12 100644
  // apprt.Action.Key
  typedef enum {
    GHOSTTY_ACTION_QUIT,
-@@ -788,6 +795,7 @@ typedef enum {
+@@ -788,6 +808,7 @@ typedef enum {
    GHOSTTY_ACTION_SHOW_CHILD_EXITED,
    GHOSTTY_ACTION_PROGRESS_REPORT,
    GHOSTTY_ACTION_SHOW_ON_SCREEN_KEYBOARD,
@@ -39,7 +59,7 @@ index 3f1e0c9d9..a39ea6a12 100644
  } ghostty_action_tag_e;
 
  typedef union {
-@@ -819,6 +827,7 @@ typedef union {
+@@ -819,6 +840,7 @@ typedef union {
    ghostty_action_close_tab_mode_e close_tab_mode;
    ghostty_surface_message_childexited_s child_exited;
    ghostty_action_progress_report_s progress_report;
@@ -47,8 +67,18 @@ index 3f1e0c9d9..a39ea6a12 100644
  } ghostty_action_u;
 
  typedef struct {
+@@ -935,6 +957,9 @@ ghostty_surface_config_s ghostty_surface_inherited_config(ghostty_surface_t);
+ void ghostty_surface_update_config(ghostty_surface_t, ghostty_config_t);
+ bool ghostty_surface_needs_confirm_quit(ghostty_surface_t);
+ bool ghostty_surface_process_exited(ghostty_surface_t);
++bool ghostty_surface_uses_alternate_scroll(ghostty_surface_t);
++void ghostty_surface_reset_alternate_scroll_telemetry(ghostty_surface_t);
++ghostty_surface_alternate_scroll_telemetry_s ghostty_surface_alternate_scroll_telemetry(ghostty_surface_t);
+ void ghostty_surface_refresh(ghostty_surface_t);
+ void ghostty_surface_draw(ghostty_surface_t);
+ void ghostty_surface_set_content_scale(ghostty_surface_t, double, double);
 diff --git a/src/Surface.zig b/src/Surface.zig
-index 2df720fcb..145a9b985 100644
+index 2df720fcb..753c8850f 100644
 --- a/src/Surface.zig
 +++ b/src/Surface.zig
 @@ -937,6 +937,21 @@ pub fn handleMessage(self: *Surface, msg: Message) !void {
@@ -106,7 +136,110 @@ index 2df720fcb..145a9b985 100644
  }
 
  // The amount to scroll. This structure is always normalized so that
-@@ -2986,6 +3009,8 @@ pub fn scrollCallback(
+@@ -2809,6 +2832,28 @@ const ScrollAmount = struct {
+     }
+ };
+
++const PrecisionAlternateScrollResolution = struct {
++    delta: isize = 0,
++    pending: f64 = 0,
++};
++
++fn resolvePrecisionAlternateScroll(
++    pending: f64,
++    yoff_adjusted: f64,
++    cell_size: f64,
++) PrecisionAlternateScrollResolution {
++    const poff = pending + yoff_adjusted;
++    if (@abs(poff) < cell_size) {
++        return .{ .pending = poff };
++    }
++
++    const delta: isize = if (poff > 0) 1 else -1;
++    return .{
++        .delta = delta,
++        .pending = poff - (@as(f64, @floatFromInt(delta)) * cell_size),
++    };
++}
++
+ /// Mouse scroll event. Negative is down, left. Positive is up, right.
+ ///
+ /// "Natural scrolling" is a macOS term for inverting the scroll direction.
+@@ -2829,6 +2874,11 @@ pub fn scrollCallback(
+     // Always show the mouse again if it is hidden
+     if (self.mouse.hidden) self.showMouse();
+
++    const uses_alternate_scroll =
++        self.io.terminal.active_screen == .alternate and
++        self.io.terminal.flags.mouse_event == .none and
++        self.io.terminal.modes.get(.mouse_alternate_scroll);
++
+     const y: ScrollAmount = if (yoff == 0) .{} else y: {
+         // We use cell_size to determine if we have accumulated enough to trigger a scroll
+         const cell_size: f64 = @floatFromInt(self.size.cell.height);
+@@ -2863,6 +2913,16 @@ pub fn scrollCallback(
+         // direction and undo a pending scroll.
+         const poff: f64 = self.mouse.pending_scroll_y + yoff_adjusted;
+
++        if (scroll_mods.precision and uses_alternate_scroll) {
++            const resolution = resolvePrecisionAlternateScroll(
++                self.mouse.pending_scroll_y,
++                yoff_adjusted,
++                cell_size,
++            );
++            self.mouse.pending_scroll_y = resolution.pending;
++            break :y .{ .delta = resolution.delta };
++        }
++
+         // If the new offset is less than a single unit of scroll, we save
+         // the new pending value and do not scroll yet.
+         if (@abs(poff) < cell_size) {
+@@ -2921,10 +2981,7 @@ pub fn scrollCallback(
+         // we convert to cursor keys. This only happens if we're:
+         // (1) alt screen (2) no explicit mouse reporting and (3) alt
+         // scroll mode enabled.
+-        if (self.io.terminal.active_screen == .alternate and
+-            self.io.terminal.flags.mouse_event == .none and
+-            self.io.terminal.modes.get(.mouse_alternate_scroll))
+-        {
++        if (uses_alternate_scroll) {
+             if (y.delta != 0) {
+                 // When we send mouse events as cursor keys we always
+                 // clear the selection.
+@@ -2943,8 +3000,30 @@ pub fn scrollCallback(
+                         .down_left => "\x1b[B",
+                     };
+                 };
+-                for (0..y.magnitude()) |_| {
+-                    self.io.queueMessage(.{ .write_stable = seq }, .locked);
++                const repeat: usize = if (scroll_mods.precision)
++                    1
++                else
++                    y.magnitude();
++                if (scroll_mods.precision) {
++                    self.io.notePreciseAlternateScrollEvent(repeat);
++                }
++                for (0..repeat) |_| {
++                    var msg: termio.Message = if (scroll_mods.precision)
++                        .{ .write_scroll_step = .{} }
++                    else
++                        .{ .write_small = .{} };
++                    switch (msg) {
++                        .write_scroll_step => |*v| {
++                            @memcpy(v.data[0..seq.len], seq);
++                            v.len = @intCast(seq.len);
++                        },
++                        .write_small => |*v| {
++                            @memcpy(v.data[0..seq.len], seq);
++                            v.len = @intCast(seq.len);
++                        },
++                        else => unreachable,
++                    }
++                    self.io.queueMessage(msg, .locked);
+                 }
+             }
+
+@@ -2986,9 +3065,27 @@ pub fn scrollCallback(
          }
      }
 
@@ -115,6 +248,25 @@ index 2df720fcb..145a9b985 100644
      try self.queueRender();
  }
 
++test "resolvePrecisionAlternateScroll keeps excess pending after one step" {
++    const testing = std.testing;
++
++    const resolution = resolvePrecisionAlternateScroll(0, 2.75 * 20, 20);
++    try testing.expectEqual(@as(isize, 1), resolution.delta);
++    try testing.expectApproxEqAbs(@as(f64, 35), resolution.pending, 0.0001);
++}
++
++test "resolvePrecisionAlternateScroll preserves opposite-direction remainder" {
++    const testing = std.testing;
++
++    const resolution = resolvePrecisionAlternateScroll(12, -40, 20);
++    try testing.expectEqual(@as(isize, -1), resolution.delta);
++    try testing.expectApproxEqAbs(@as(f64, -8), resolution.pending, 0.0001);
++}
++
+ /// This is called when the content scale of the surface changes. The surface
+ /// can then update any DPI-sensitive state.
+ pub fn contentScaleCallback(self: *Surface, content_scale: apprt.ContentScale) !void {
 diff --git a/src/apprt/action.zig b/src/apprt/action.zig
 index b7dc80e03..c29127f4b 100644
 --- a/src/apprt/action.zig
@@ -138,7 +290,7 @@ index b7dc80e03..c29127f4b 100644
 
      /// Sync with: ghostty_action_u
 diff --git a/src/apprt/embedded.zig b/src/apprt/embedded.zig
-index 08d8291ef..df7ea4e9a 100644
+index 08d8291ef..1a4d78daa 100644
 --- a/src/apprt/embedded.zig
 +++ b/src/apprt/embedded.zig
 @@ -332,6 +332,99 @@ pub const App = struct {
@@ -241,6 +393,72 @@ index 08d8291ef..df7ea4e9a 100644
  /// Platform-specific configuration for libghostty.
  pub const Platform = union(PlatformTag) {
      macos: MacOS,
+@@ -1211,6 +1304,19 @@ pub const CAPI = struct {
+         cell_height_px: u32,
+     };
+
++    const SurfaceAlternateScrollTelemetry = extern struct {
++        precise_event_count: u64,
++        precise_step_count: u64,
++        precise_message_queue_count: u64,
++        precise_mailbox_notify_count: u64,
++        precise_drain_turn_count: u64,
++        precise_drained_message_count: u64,
++        precise_drain_requeue_count: u64,
++        precise_read_chunk_count: u64,
++        precise_read_chunk_bytes: u64,
++        precise_read_chunk_max_bytes: u64,
++    };
++
+     // ghostty_text_s
+     const Text = extern struct {
+         tl_px_x: f64,
+@@ -1519,6 +1625,16 @@ pub const CAPI = struct {
+         return surface.core_surface.child_exited;
+     }
+
++    export fn ghostty_surface_uses_alternate_scroll(surface: *Surface) bool {
++        const core_surface = &surface.core_surface;
++        core_surface.renderer_state.mutex.lock();
++        defer core_surface.renderer_state.mutex.unlock();
++
++        return core_surface.io.terminal.active_screen == .alternate and
++            core_surface.io.terminal.flags.mouse_event == .none and
++            core_surface.io.terminal.modes.get(.mouse_alternate_scroll);
++    }
++
+     /// Returns true if the surface has a selection.
+     export fn ghostty_surface_has_selection(surface: *Surface) bool {
+         return surface.core_surface.hasSelection();
+@@ -1611,6 +1727,28 @@ pub const CAPI = struct {
+         surface.draw();
+     }
+
++    export fn ghostty_surface_reset_alternate_scroll_telemetry(surface: *Surface) void {
++        surface.core_surface.io.resetAlternateScrollTelemetry();
++    }
++
++    export fn ghostty_surface_alternate_scroll_telemetry(
++        surface: *Surface,
++    ) SurfaceAlternateScrollTelemetry {
++        const snapshot = surface.core_surface.io.alternateScrollTelemetrySnapshot();
++        return .{
++            .precise_event_count = snapshot.precise_event_count,
++            .precise_step_count = snapshot.precise_step_count,
++            .precise_message_queue_count = snapshot.precise_message_queue_count,
++            .precise_mailbox_notify_count = snapshot.precise_mailbox_notify_count,
++            .precise_drain_turn_count = snapshot.precise_drain_turn_count,
++            .precise_drained_message_count = snapshot.precise_drained_message_count,
++            .precise_drain_requeue_count = snapshot.precise_drain_requeue_count,
++            .precise_read_chunk_count = snapshot.precise_read_chunk_count,
++            .precise_read_chunk_bytes = snapshot.precise_read_chunk_bytes,
++            .precise_read_chunk_max_bytes = snapshot.precise_read_chunk_max_bytes,
++        };
++    }
++
+     /// Update the size of a surface. This will trigger resize notifications
+     /// to the pty and the renderer.
+     export fn ghostty_surface_set_size(surface: *Surface, w: u32, h: u32) void {
 diff --git a/src/apprt/gtk/class/application.zig b/src/apprt/gtk/class/application.zig
 index 04a51b78e..27dc1bdf3 100644
 --- a/src/apprt/gtk/class/application.zig
@@ -370,7 +588,7 @@ index 673f79501..a9fa3dba2 100644
  const log = std.log.scoped(.opengl);
 
 diff --git a/src/renderer/Thread.zig b/src/renderer/Thread.zig
-index 210c2e337..1f5a4718e 100644
+index 210c2e337..8763922e7 100644
 --- a/src/renderer/Thread.zig
 +++ b/src/renderer/Thread.zig
 @@ -68,6 +68,10 @@ draw_active: bool = false,
@@ -384,7 +602,18 @@ index 210c2e337..1f5a4718e 100644
  /// The timer used for cursor blinking
  cursor_h: xev.Timer,
  cursor_c: xev.Completion = .{},
-@@ -481,6 +485,13 @@ fn changeConfig(self: *Thread, config: *const DerivedConfig) !void {
+@@ -466,6 +470,10 @@ fn drainMailbox(self: *Thread) !void {
+                 self.startDrawTimer();
+             },
+
++            .render_and_draw => {
++                _ = self.draw_after_render_requested.swap(1, .seq_cst);
++            },
++
+             .inspector => |v| self.flags.has_inspector = v,
+
+             .macos_display_id => |v| {
+@@ -481,6 +489,13 @@ fn changeConfig(self: *Thread, config: *const DerivedConfig) !void {
      self.config = config.*;
  }
 
@@ -398,7 +627,7 @@ index 210c2e337..1f5a4718e 100644
  /// Trigger a draw. This will not update frame data or anything, it will
  /// just trigger a draw/paint.
  fn drawFrame(self: *Thread, now: bool) void {
-@@ -514,7 +525,7 @@ fn wakeupCallback(
+@@ -514,7 +529,7 @@ fn wakeupCallback(
      };
 
      const t = self_.?;
@@ -407,7 +636,7 @@ index 210c2e337..1f5a4718e 100644
      // When we wake up, we check the mailbox. Mailbox producers should
      // wake up our thread after publishing.
      t.drainMailbox() catch |err|
-@@ -523,6 +534,13 @@ fn wakeupCallback(
+@@ -523,6 +538,13 @@ fn wakeupCallback(
      // Render immediately
      _ = renderCallback(t, undefined, undefined, {});
 
@@ -421,7 +650,7 @@ index 210c2e337..1f5a4718e 100644
      // The below is not used anymore but if we ever want to introduce
      // a configuration to introduce a delay to coalesce renders, we can
      // use this.
-@@ -598,17 +616,7 @@ fn renderCallback(
+@@ -598,17 +620,7 @@ fn renderCallback(
          return .disarm;
      };
 
@@ -440,7 +669,7 @@ index 210c2e337..1f5a4718e 100644
 
      // Draw
      t.drawFrame(false);
-@@ -616,6 +624,19 @@ fn renderCallback(
+@@ -616,6 +628,19 @@ fn renderCallback(
      return .disarm;
  }
 
@@ -3242,6 +3471,22 @@ index 410fb8632..f13ec2fa0 100644
  test "matchset osc8" {
      const testing = std.testing;
      const alloc = testing.allocator;
+diff --git a/src/renderer/message.zig b/src/renderer/message.zig
+index d6255661f..18668eda5 100644
+--- a/src/renderer/message.zig
++++ b/src/renderer/message.zig
+@@ -62,6 +62,11 @@ pub const Message = union(enum) {
+         impl: *renderer.Renderer.DerivedConfig,
+     },
+
++    /// Force the next wakeup-triggered render to follow with an immediate
++    /// draw. This stays renderer-owned while avoiding visible clumping on
++    /// narrow seams such as precise alternate-scroll.
++    render_and_draw: void,
++
+     /// Activate or deactivate the inspector.
+     inspector: bool,
+
 diff --git a/src/renderer/metal/buffer.zig b/src/renderer/metal/buffer.zig
 index 43320a60b..5ad72f239 100644
 --- a/src/renderer/metal/buffer.zig
@@ -3865,6 +4110,288 @@ index 9a3561aac..f4c7d9093 100644
  test "stream: insert characters" {
      const H = struct {
          const Self = @This();
+diff --git a/src/termio/Exec.zig b/src/termio/Exec.zig
+index 77fd2cc68..4a970c97c 100644
+--- a/src/termio/Exec.zig
++++ b/src/termio/Exec.zig
+@@ -1302,6 +1302,9 @@ pub const ReadThread = struct {
+                 if (n == 0) break;
+
+                 // log.info("DATA: {d}", .{n});
++                if (io.hasPreciseAlternateScrollReadBudget()) {
++                    io.notePreciseAlternateScrollReadChunk(n);
++                }
+                 @call(.always_inline, termio.Termio.processOutput, .{ io, buf[0..n] });
+             }
+
+diff --git a/src/termio/Termio.zig b/src/termio/Termio.zig
+index e41fe33a9..216469f0c 100644
+--- a/src/termio/Termio.zig
++++ b/src/termio/Termio.zig
+@@ -28,6 +28,8 @@ const configpkg = @import("../config.zig");
+ const shell_integration = @import("shell_integration.zig");
+
+ const log = std.log.scoped(.io_exec);
++const AtomicU64 = std.atomic.Value(u64);
++const AtomicU32 = std.atomic.Value(u32);
+
+ /// Allocator
+ alloc: Allocator,
+@@ -62,6 +64,15 @@ size: renderer.Size,
+ /// The mailbox implementation to use.
+ mailbox: termio.Mailbox,
+
++/// Alternate-scroll telemetry used by the embedded harness to distinguish
++/// input emission from IO-thread drain clumping on precise trackpad scrolls.
++alternate_scroll_telemetry: AlternateScrollTelemetry = .{},
++
++/// Budget for read-thread yielding after precise alternate-scroll writes.
++/// Each queued precise step arms one potential read-loop early exit so
++/// downstream app redraws are less likely to collapse into one read burst.
++precise_alternate_scroll_read_budget: AtomicU32 = .{ .raw = 0 },
++
+ /// The stream parser. This parses the stream of escape codes and so on
+ /// from the child process and calls callbacks in the stream handler.
+ terminal_stream: terminalpkg.Stream(StreamHandler),
+@@ -201,6 +212,62 @@ pub const DerivedConfig = struct {
+     }
+ };
+
++pub const AlternateScrollTelemetrySnapshot = extern struct {
++    precise_event_count: u64,
++    precise_step_count: u64,
++    precise_message_queue_count: u64,
++    precise_mailbox_notify_count: u64,
++    precise_drain_turn_count: u64,
++    precise_drained_message_count: u64,
++    precise_drain_requeue_count: u64,
++    precise_read_chunk_count: u64,
++    precise_read_chunk_bytes: u64,
++    precise_read_chunk_max_bytes: u64,
++};
++
++const AlternateScrollTelemetry = struct {
++    precise_event_count: AtomicU64 = .{ .raw = 0 },
++    precise_step_count: AtomicU64 = .{ .raw = 0 },
++    precise_message_queue_count: AtomicU64 = .{ .raw = 0 },
++    precise_mailbox_notify_count: AtomicU64 = .{ .raw = 0 },
++    precise_drain_turn_count: AtomicU64 = .{ .raw = 0 },
++    precise_drained_message_count: AtomicU64 = .{ .raw = 0 },
++    precise_drain_requeue_count: AtomicU64 = .{ .raw = 0 },
++    precise_read_chunk_count: AtomicU64 = .{ .raw = 0 },
++    precise_read_chunk_bytes: AtomicU64 = .{ .raw = 0 },
++    precise_read_chunk_max_bytes: AtomicU64 = .{ .raw = 0 },
++
++    fn reset(self: *AlternateScrollTelemetry) void {
++        self.precise_event_count.store(0, .monotonic);
++        self.precise_step_count.store(0, .monotonic);
++        self.precise_message_queue_count.store(0, .monotonic);
++        self.precise_mailbox_notify_count.store(0, .monotonic);
++        self.precise_drain_turn_count.store(0, .monotonic);
++        self.precise_drained_message_count.store(0, .monotonic);
++        self.precise_drain_requeue_count.store(0, .monotonic);
++        self.precise_read_chunk_count.store(0, .monotonic);
++        self.precise_read_chunk_bytes.store(0, .monotonic);
++        self.precise_read_chunk_max_bytes.store(0, .monotonic);
++    }
++
++    fn snapshot(self: *const AlternateScrollTelemetry) AlternateScrollTelemetrySnapshot {
++        return .{
++            .precise_event_count = self.precise_event_count.load(.monotonic),
++            .precise_step_count = self.precise_step_count.load(.monotonic),
++            .precise_message_queue_count = self.precise_message_queue_count.load(.monotonic),
++            .precise_mailbox_notify_count = self.precise_mailbox_notify_count.load(.monotonic),
++            .precise_drain_turn_count = self.precise_drain_turn_count.load(.monotonic),
++            .precise_drained_message_count = self.precise_drained_message_count.load(.monotonic),
++            .precise_drain_requeue_count = self.precise_drain_requeue_count.load(.monotonic),
++            .precise_read_chunk_count = self.precise_read_chunk_count.load(.monotonic),
++            .precise_read_chunk_bytes = self.precise_read_chunk_bytes.load(.monotonic),
++            .precise_read_chunk_max_bytes = self.precise_read_chunk_max_bytes.load(.monotonic),
++        };
++    }
++};
++
++const precise_alternate_scroll_parser_slice_bytes: usize = 48;
++
+ /// Initialize the termio state.
+ ///
+ /// This will also start the child process if the termio is configured
+@@ -408,10 +475,17 @@ pub fn queueMessage(
+     msg: termio.Message,
+     mutex: enum { locked, unlocked },
+ ) void {
++    if (msg == .write_scroll_step) {
++        _ = self.alternate_scroll_telemetry.precise_message_queue_count.fetchAdd(1, .monotonic);
++        _ = self.precise_alternate_scroll_read_budget.fetchAdd(1, .monotonic);
++    }
+     self.mailbox.send(msg, switch (mutex) {
+         .locked => self.renderer_state.mutex,
+         .unlocked => null,
+     });
++    if (msg == .write_scroll_step) {
++        _ = self.alternate_scroll_telemetry.precise_mailbox_notify_count.fetchAdd(1, .monotonic);
++    }
+     self.mailbox.notify();
+ }
+
+@@ -431,6 +505,71 @@ pub inline fn queueWrite(
+     try self.backend.queueWrite(self.alloc, td, data, linefeed);
+ }
+
++pub fn notePreciseAlternateScrollEvent(
++    self: *Termio,
++    step_count: usize,
++) void {
++    _ = self.alternate_scroll_telemetry.precise_event_count.fetchAdd(1, .monotonic);
++    _ = self.alternate_scroll_telemetry.precise_step_count.fetchAdd(step_count, .monotonic);
++}
++
++pub fn notePreciseAlternateScrollDrain(
++    self: *Termio,
++    drained_count: usize,
++    requeued: bool,
++) void {
++    if (drained_count == 0) return;
++    _ = self.alternate_scroll_telemetry.precise_drain_turn_count.fetchAdd(1, .monotonic);
++    _ = self.alternate_scroll_telemetry.precise_drained_message_count.fetchAdd(drained_count, .monotonic);
++    if (requeued) {
++        _ = self.alternate_scroll_telemetry.precise_drain_requeue_count.fetchAdd(1, .monotonic);
++    }
++}
++
++pub fn notePreciseAlternateScrollReadChunk(self: *Termio, byte_count: usize) void {
++    _ = self.alternate_scroll_telemetry.precise_read_chunk_count.fetchAdd(1, .monotonic);
++    _ = self.alternate_scroll_telemetry.precise_read_chunk_bytes.fetchAdd(byte_count, .monotonic);
++
++    var current_max = self.alternate_scroll_telemetry.precise_read_chunk_max_bytes.load(.monotonic);
++    while (byte_count > current_max) {
++        if (self.alternate_scroll_telemetry.precise_read_chunk_max_bytes.cmpxchgWeak(
++            current_max,
++            byte_count,
++            .monotonic,
++            .monotonic,
++        ) == null) break;
++        current_max = self.alternate_scroll_telemetry.precise_read_chunk_max_bytes.load(.monotonic);
++    }
++}
++
++pub fn resetAlternateScrollTelemetry(self: *Termio) void {
++    self.alternate_scroll_telemetry.reset();
++    self.precise_alternate_scroll_read_budget.store(0, .monotonic);
++}
++
++pub fn alternateScrollTelemetrySnapshot(self: *const Termio) AlternateScrollTelemetrySnapshot {
++    return self.alternate_scroll_telemetry.snapshot();
++}
++
++pub fn hasPreciseAlternateScrollReadBudget(self: *const Termio) bool {
++    return self.precise_alternate_scroll_read_budget.load(.monotonic) > 0;
++}
++
++pub fn consumePreciseAlternateScrollReadBudget(self: *Termio) bool {
++    var current = self.precise_alternate_scroll_read_budget.load(.monotonic);
++    while (current > 0) {
++        if (self.precise_alternate_scroll_read_budget.cmpxchgWeak(
++            current,
++            current - 1,
++            .monotonic,
++            .monotonic,
++        ) == null) return true;
++        current = self.precise_alternate_scroll_read_budget.load(.monotonic);
++    }
++
++    return false;
++}
++
+ /// Update the configuration.
+ pub fn changeConfig(self: *Termio, td: *ThreadData, config: *DerivedConfig) !void {
+     // The remainder of this function is modifying terminal state or
+@@ -680,6 +819,22 @@ pub fn focusGained(self: *Termio, td: *ThreadData, focused: bool) !void {
+ /// call with pty data but it is also called by the read thread when using
+ /// an exec subprocess.
+ pub fn processOutput(self: *Termio, buf: []const u8) void {
++    if (self.consumePreciseAlternateScrollReadBudget() and
++        buf.len > precise_alternate_scroll_parser_slice_bytes and
++        self.renderer_state.inspector == null)
++    {
++        var start: usize = 0;
++        while (start < buf.len) {
++            const end = @min(start + precise_alternate_scroll_parser_slice_bytes, buf.len);
++            self.renderer_state.mutex.lock();
++            self.processOutputLocked(buf[start..end]);
++            self.renderer_state.mutex.unlock();
++            start = end;
++            if (start < buf.len) std.Thread.yield() catch {};
++        }
++        return;
++    }
++
+     // We are modifying terminal state from here on out and we need
+     // the lock to grab our read data.
+     self.renderer_state.mutex.lock();
+diff --git a/src/termio/Thread.zig b/src/termio/Thread.zig
+index bb616e623..33ee2bdf4 100644
+--- a/src/termio/Thread.zig
++++ b/src/termio/Thread.zig
+@@ -306,6 +306,7 @@ fn drainMailbox(
+     // expectation is that all our message handlers will be non-blocking
+     // ENOUGH to not mess up throughput on producers.
+     var redraw: bool = false;
++    var drained_scroll_steps: usize = 0;
+     while (mailbox.pop()) |message| {
+         // If we have a message we always redraw
+         redraw = true;
+@@ -338,6 +339,14 @@ fn drainMailbox(
+                 v.data[0..v.len],
+                 self.flags.linefeed_mode,
+             ),
++            .write_scroll_step => |v| {
++                try io.queueWrite(
++                    data,
++                    v.data[0..v.len],
++                    self.flags.linefeed_mode,
++                );
++                drained_scroll_steps += 1;
++            },
+             .write_stable => |v| try io.queueWrite(
+                 data,
+                 v,
+@@ -355,10 +364,18 @@ fn drainMailbox(
+     }
+
+     // Trigger a redraw after we've drained so we don't waste cyces
+-    // messaging a redraw.
++    // messaging a redraw. Precise alternate-scroll steps also request an
++    // immediate renderer-owned draw after the frame update so successive
++    // cursor-key responses are less likely to clump into one presented step.
+     if (redraw) {
++        if (drained_scroll_steps > 0) {
++            if (io.renderer_mailbox.push(.{ .render_and_draw = {} }, .{ .instant = {} }) == 0) {
++                _ = io.renderer_mailbox.push(.{ .render_and_draw = {} }, .{ .forever = {} });
++            }
++        }
+         try io.renderer_wakeup.notify();
+     }
++    io.notePreciseAlternateScrollDrain(drained_scroll_steps, false);
+ }
+
+ fn startSynchronizedOutput(self: *Thread, cb: *CallbackData) void {
+diff --git a/src/termio/message.zig b/src/termio/message.zig
+index ee6dbcc0f..ef1306575 100644
+--- a/src/termio/message.zig
++++ b/src/termio/message.zig
+@@ -71,6 +71,11 @@ pub const Message = union(enum) {
+     /// Write where the data fits in the union.
+     write_small: WriteReq.Small,
+
++    /// Precise alternate-scroll cursor-key step. The IO thread treats this as
++    /// a single-step message and yields after one drain turn so repeated
++    /// trackpad events do not clump into visible multi-line jumps.
++    write_scroll_step: WriteReq.Small,
++
+     /// Write where the data pointer is stable.
+     write_stable: WriteReq.Stable,
+
 diff --git a/src/termio/stream_handler.zig b/src/termio/stream_handler.zig
 index 25bf29533..ea1033820 100644
 --- a/src/termio/stream_handler.zig

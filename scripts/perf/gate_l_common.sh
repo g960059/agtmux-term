@@ -69,6 +69,8 @@ function gate_l_setup_paths() {
 }
 
 function gate_l_cleanup_stale_perf_processes() {
+  local kill_pattern_new='tmux -f /dev/null -L agtmux-gate-l-[^ ]* new-session -d -s agtmux-gate-l-'
+  local kill_pattern_attach='tmux -f /dev/null -L agtmux-gate-l-[^ ]* -C attach-session -t agtmux-gate-l-'
   local stale_sockets=()
   local discovered_socket_name=""
   while IFS= read -r discovered_socket_name; do
@@ -78,14 +80,18 @@ function gate_l_cleanup_stale_perf_processes() {
     ps -ax -o command= | sed -n 's#.*tmux -f /dev/null -L \(agtmux-gate-l-[^ ]*\) new-session.*#\1#p' | sort -u
   )
 
+  # Kill stale tmux client/server processes first so later tmux control commands
+  # do not block forever on orphaned control-mode clients.
+  pkill -f "$kill_pattern_attach" >/dev/null 2>&1 || true
+  pkill -f "$kill_pattern_new" >/dev/null 2>&1 || true
+  pkill -f 'less -R -N /var/folders/.*/agtmux-gate-l-' >/dev/null 2>&1 || true
+
   local stale_socket_name=""
   for stale_socket_name in "${stale_sockets[@]:-}"; do
-    tmux -f /dev/null -L "$stale_socket_name" kill-server >/dev/null 2>&1 || true
+    perl -e 'alarm shift @ARGV; exec @ARGV' 2 \
+      tmux -f /dev/null -L "$stale_socket_name" kill-server >/dev/null 2>&1 || true
   done
 
-  pkill -f 'tmux -f /dev/null -L agtmux-gate-l-[^ ]* new-session -d -s agtmux-gate-l-' >/dev/null 2>&1 || true
-  pkill -f 'tmux -f /dev/null -C attach-session -t agtmux-gate-l-' >/dev/null 2>&1 || true
-  pkill -f 'less -R -N /var/folders/.*/agtmux-gate-l-' >/dev/null 2>&1 || true
   pkill -f 'AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm -ApplePersistenceIgnoreState YES -NSQuitAlwaysKeepsWindows NO' >/dev/null 2>&1 || true
 }
 
@@ -95,10 +101,17 @@ function gate_l_launch_app() {
   local pane_count="${3:-1}"
   local shell_command="${4:-/bin/sleep 600}"
   local inventory_only="${AGTMUX_PERF_UITEST_INVENTORY_ONLY:-1}"
+  local use_default_local_tmux="${AGTMUX_PERF_USE_DEFAULT_LOCAL_TMUX:-0}"
   local scenario_json
+  local -a tmux_socket_env
 
   gate_l_socket_name="$socket_name"
   gate_l_session_name="$session_name"
+  if [[ "$use_default_local_tmux" == "1" ]]; then
+    tmux_socket_env=()
+  else
+    tmux_socket_env=(AGTMUX_TMUX_SOCKET_NAME="$socket_name")
+  fi
   scenario_json="$(jq -cn \
     --arg sessionName "$session_name" \
     --arg windowName "main" \
@@ -106,29 +119,88 @@ function gate_l_launch_app() {
     --arg shellCommand "$shell_command" \
     '{sessionName:$sessionName, windowName:$windowName, paneCount:$paneCount, shellCommand:$shellCommand}')"
 
+  gate_l_app_pid="$(
   env \
     AGTMUX_UITEST=1 \
     AGTMUX_UITEST_INVENTORY_ONLY="$inventory_only" \
     AGTMUX_UITEST_ENABLE_GHOSTTY_SURFACES=1 \
-    AGTMUX_TMUX_SOCKET_NAME="$socket_name" \
+    "${tmux_socket_env[@]}" \
     AGTMUX_DAEMON_SOCKET_PATH="$gate_l_daemon_socket_path" \
     AGTMUX_UITEST_MANAGED_DAEMON_STDERR_PATH="$gate_l_managed_daemon_stderr_path" \
     AGTMUX_UITEST_TMUX_CONFIG_PATH=/dev/null \
     AGTMUX_UITEST_TMUX_COMMAND_PATH="$gate_l_command_path" \
     AGTMUX_UITEST_TMUX_COMMAND_RESULT_PATH="$gate_l_command_result_path" \
     AGTMUX_UITEST_TMUX_RESULT_PATH="$gate_l_bootstrap_result_path" \
-    AGTMUX_UITEST_TMUX_AUTO_CLEANUP=1 \
+    AGTMUX_UITEST_TMUX_AUTO_CLEANUP=0 \
     AGTMUX_UITEST_TMUX_KILL_SERVER=0 \
     AGTMUX_UITEST_TMUX_SCENARIO="$scenario_json" \
     TMUX= \
     TMUX_PANE= \
-    "$GATE_L_APP_BIN" \
-    -ApplePersistenceIgnoreState YES \
-    -NSQuitAlwaysKeepsWindows NO \
-    >"$gate_l_app_stdout_path" \
-    2>"$gate_l_app_stderr_path" &
+    python3 - "$GATE_L_APP_BIN" "$gate_l_app_stdout_path" "$gate_l_app_stderr_path" <<'PY'
+import os
+import subprocess
+import sys
 
-  gate_l_app_pid=$!
+app_bin, stdout_path, stderr_path = sys.argv[1:]
+with open(stdout_path, "wb") as stdout, open(stderr_path, "wb") as stderr:
+    process = subprocess.Popen(
+        [app_bin, "-ApplePersistenceIgnoreState", "YES", "-NSQuitAlwaysKeepsWindows", "NO"],
+        stdout=stdout,
+        stderr=stderr,
+        env=os.environ.copy(),
+        start_new_session=True,
+    )
+print(process.pid)
+PY
+  )"
+}
+
+function gate_l_launch_app_without_bootstrap() {
+  local socket_name="$1"
+  local inventory_only="${2:-0}"
+  local use_default_local_tmux="${AGTMUX_PERF_USE_DEFAULT_LOCAL_TMUX:-0}"
+  local -a tmux_socket_env
+
+  gate_l_socket_name="$socket_name"
+  if [[ "$use_default_local_tmux" == "1" ]]; then
+    tmux_socket_env=()
+  else
+    tmux_socket_env=(AGTMUX_TMUX_SOCKET_NAME="$socket_name")
+  fi
+
+  gate_l_app_pid="$(
+  env \
+    AGTMUX_UITEST=1 \
+    AGTMUX_UITEST_INVENTORY_ONLY="$inventory_only" \
+    AGTMUX_UITEST_ENABLE_GHOSTTY_SURFACES=1 \
+    "${tmux_socket_env[@]}" \
+    AGTMUX_DAEMON_SOCKET_PATH="$gate_l_daemon_socket_path" \
+    AGTMUX_UITEST_MANAGED_DAEMON_STDERR_PATH="$gate_l_managed_daemon_stderr_path" \
+    AGTMUX_UITEST_TMUX_CONFIG_PATH=/dev/null \
+    AGTMUX_UITEST_TMUX_COMMAND_PATH="$gate_l_command_path" \
+    AGTMUX_UITEST_TMUX_COMMAND_RESULT_PATH="$gate_l_command_result_path" \
+    AGTMUX_UITEST_TMUX_RESULT_PATH="$gate_l_bootstrap_result_path" \
+    AGTMUX_UITEST_TMUX_AUTO_CLEANUP=0 \
+    AGTMUX_UITEST_TMUX_KILL_SERVER=0 \
+    TMUX= \
+    TMUX_PANE= \
+    python3 - "$GATE_L_APP_BIN" "$gate_l_app_stdout_path" "$gate_l_app_stderr_path" <<'PY'
+import os
+import subprocess
+import sys
+
+app_bin, stdout_path, stderr_path = sys.argv[1:]
+with open(stdout_path, "wb") as stdout, open(stderr_path, "wb") as stderr:
+    process = subprocess.Popen(
+        [app_bin, "-ApplePersistenceIgnoreState", "YES", "-NSQuitAlwaysKeepsWindows", "NO"],
+        stdout=stdout,
+        stderr=stderr,
+        env=os.environ.copy(),
+        start_new_session=True,
+    )
+print(process.pid)
+PY
+  )"
 }
 
 function gate_l_activate_app() {
@@ -240,6 +312,87 @@ function gate_l_send_bridge_json_command() {
   fi
 
   print -r -- "$output"
+}
+
+function gate_l_start_async_bridge_command() {
+  local refresh="$1"
+  shift
+
+  local request_id
+  request_id="$(uuidgen)"
+
+  rm -f "$gate_l_command_path" "$gate_l_command_result_path"
+  jq -n \
+    --arg id "$request_id" \
+    --argjson refresh "$refresh" \
+    '{id:$id, args:$ARGS.positional, refreshInventory:$refresh}' \
+    --args -- "$@" \
+    >"$gate_l_command_path"
+
+  print -r -- "$request_id"
+}
+
+function gate_l_wait_for_async_bridge_json_result() {
+  local request_id="$1"
+  local timeout="$2"
+  local deadline=$((EPOCHREALTIME + timeout))
+
+  while (( EPOCHREALTIME < deadline )); do
+    if [[ -s "$gate_l_command_result_path" ]]; then
+      local response_id
+      response_id="$(jq -r '.id // empty' "$gate_l_command_result_path" 2>/dev/null || true)"
+      if [[ "$response_id" == "$request_id" ]]; then
+        local ok
+        ok="$(jq -r '.ok' "$gate_l_command_result_path")"
+        if [[ "$ok" == "true" ]]; then
+          local output
+          output="$(jq -r '.stdout' "$gate_l_command_result_path")"
+          if ! jq -e . >/dev/null 2>&1 <<<"$output"; then
+            echo "App-side tmux command returned non-JSON stdout for request $request_id" >&2
+            if [[ -n "$output" ]]; then
+              print -r -- "$output" >&2
+            else
+              echo "<empty stdout>" >&2
+            fi
+            return 1
+          fi
+          print -r -- "$output"
+          return 0
+        fi
+
+        local error_message
+        error_message="$(jq -r '.error // "unknown error"' "$gate_l_command_result_path")"
+        echo "App-side tmux command failed: $error_message" >&2
+        return 1
+      fi
+    fi
+    sleep 0.05
+  done
+
+  echo "Timed out waiting for app-side tmux command result: $request_id" >&2
+  return 1
+}
+
+function gate_l_wait_for_bridge_ready() {
+  local timeout="${1:-15}"
+  local deadline=$((EPOCHREALTIME + timeout))
+  local last_error=""
+
+  while (( EPOCHREALTIME < deadline )); do
+    if gate_l_send_bridge_command false 2 "__agtmux_tmux_bridge_ready__" >/dev/null 2>"$gate_l_tmpdir/bridge-ready.last-error.log"; then
+      return 0
+    fi
+    if [[ -s "$gate_l_tmpdir/bridge-ready.last-error.log" ]]; then
+      last_error="$(<"$gate_l_tmpdir/bridge-ready.last-error.log")"
+    fi
+    sleep 0.05
+  done
+
+  echo "Timed out waiting for UITest bridge readiness" >&2
+  if [[ -n "$last_error" ]]; then
+    echo "$last_error" >&2
+  fi
+  return 1
 }
 
 function gate_l_wait_for_active_target() {

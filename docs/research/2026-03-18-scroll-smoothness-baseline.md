@@ -72,6 +72,51 @@ Two follow-up ideas were tested and rejected the same day:
 - moving the delayed-present recovery probe earlier to `1/240s` regressed the
   debug burst path to `p50 3.319 / p95 17.692 / max 35.651`
 
+As of 2026-03-21, one important interpretation changed:
+
+- the first native-difference "up-scroll step" gate was using wrapped logical
+  line numbers from `less -N`, which overstated coarse jumps whenever several
+  physical rows shared the same source line number
+- after switching that gate to physical visible-row shifts, embedded/native
+  input parity is currently good on this host; the remaining user complaint is
+  presentation cadence, not tmux/less alternate-scroll batching
+- a direct live-pane diagnostic bench on the real Claude pane `%662` then
+  showed that a fresh default-local attach is still not the final realistic
+  gate:
+  - the bench app opened the real pane and bound a rendered client tty
+  - a single burst still recorded `scrollInputCount 19`,
+    `scrollPresentationDrawCount 43`, and `layerPresentCount 43`
+  - visible viewport text never changed:
+    `changed_transition_count 0`, `max_step_rows 0`
+  - interpretation:
+    a fresh bench app can render and receive wheel input, but it still does not
+    represent the existing app's loaded scrollback history. The final realistic
+    gate still needs a preloaded-history path rather than a direct fresh attach.
+- on 2026-03-22, the next realistic automation pivot also landed:
+  - plain `scrollback` replay is now treated as invalid for tmux-attached
+    panes because wheel-up becomes alternate-scroll cursor keys; replaying into
+    a sleeping shell only produces literal `^[[A`
+  - the current proxy gate is a live-captured `curses-history` replay with
+    `--no-join-wrapped` and a longer `1200ms` sample tail
+  - that proxy now measures both coarse-step parity and first-changed latency
+  - on one default live capture, embedded still regressed badly on the new
+    latency slice:
+    embedded `first_changed_elapsed_ms 603.597`,
+    native `419.955`,
+    delta `183.642ms`
+  - but captures from the actual current local panes could also pass:
+    `%662` delta `58.917ms`, `%657` delta `-17.570ms`
+  - interpretation:
+    the reactive TUI proxy is much closer to the user's complaint than the old
+    replay gate, but it still does not fully explain the live normal-screen
+    Claude/Codex history hitch. The remaining gap depends on loaded live-pane
+    state, not just alternate-scroll step delivery.
+- a narrow renderer-owned follow-up then improved the visible seam directly:
+  precise alternate-scroll mailbox drains now request renderer-thread
+  `render_and_draw`, and the local release candidate moved
+  `scroll_to_layer_present_ms` from installed `8-burst p95 25.780 / max 97.628`
+  down to `p95 10.882 / max 15.762`
+
 ## Commands And Results
 
 ### AX helper trust
@@ -2152,3 +2197,158 @@ Interpretation:
 - this is a keepable runtime change because it directly matches the stronger
   bench model and improves the later-`up` / inertial tail without reintroducing
   extra timers
+
+### 2026-03-21 native-difference gate for up-scroll step granularity
+
+The older proxies still missed the latest user complaint. The visible problem
+had shifted from “how long until the first movement starts” toward “how many
+rows move per visible sample while an upward burst is already in flight.” To
+measure that directly, three new scripts were added:
+
+- `scripts/perf/gate_l_trackpad_upscroll_step_bench.sh`
+- `scripts/perf/gate_l_native_ghostty_trackpad_upscroll_step_bench.sh`
+- `scripts/perf/gate_l_trackpad_upscroll_step_parity.sh`
+
+They keep the same transcript-style `less -R -N` fixture and the same
+momentum-aware AX sender (`trackpad-burst-momentum`), but they sample
+`first_visible_line_number` every `16ms` during the active upward burst instead
+of waiting for the first visible-line change after the burst has finished.
+
+The parity wrapper gates on five native deltas:
+
+- `mean_lines_per_step.p50 <= native + 0.50`
+- `step_rows.p95 <= native + 1`
+- `max_step_rows <= native + 2`
+- `coarse_step_ratio_ge_2 <= native + 0.20`
+- `coarse_step_ratio_ge_3 <= native + 0.10`
+
+Measured on the current installed app on 2026-03-21:
+
+- `4-burst parity`:
+  - embedded:
+    `step_rows p50 3 / p95 8 / max 8`,
+    `mean_lines_per_step p50 2.666667`,
+    `coarse_step_ratio_ge_2 0.625`,
+    `coarse_step_ratio_ge_3 0.625`
+  - native:
+    `step_rows p50 2 / p95 2 / max 2`,
+    `mean_lines_per_step p50 1.500000`,
+    `coarse_step_ratio_ge_2 0.625`,
+    `coarse_step_ratio_ge_3 0`
+  - parity deltas:
+    `mean_lines_per_step_p50_delta 1.166667`,
+    `step_rows_p95_delta 6`,
+    `max_step_rows_delta 6`,
+    `coarse_step_ratio_ge_3_delta 0.625`
+- `8-burst parity`:
+  - embedded:
+    `step_rows p50 5 / p95 9 / max 9`,
+    `mean_lines_per_step p50 5.000000`,
+    `coarse_step_ratio_ge_2 0.8`,
+    `coarse_step_ratio_ge_3 0.6`
+  - native:
+    `step_rows p50 2 / p95 2 / max 3`,
+    `mean_lines_per_step p50 1.500000`,
+    `coarse_step_ratio_ge_2 0.5454545454545454`,
+    `coarse_step_ratio_ge_3 0.030303030303030304`
+  - parity deltas:
+    `mean_lines_per_step_p50_delta 3.5`,
+    `step_rows_p95_delta 7`,
+    `max_step_rows_delta 6`,
+    `coarse_step_ratio_ge_2_delta 0.25454545454545463`,
+    `coarse_step_ratio_ge_3_delta 0.5696969696969697`
+
+Interpretation:
+
+- this gate matches the user-reported “3-4 lines jump at once” symptom much
+  better than either `tmux_visible_line_change_ms` or
+  `scroll_to_layer_present_ms`
+- even when the earlier proxy looked near native, the new gate shows embedded
+  upward bursts still bunching multiple rows into individual visible samples
+  while native largely stays at `1-2` rows per changed sample
+
+### 2026-03-22 heavy-proxy gate correction
+
+The first live-captured `curses-history` heavy-proxy runs overstated the
+embedded gap because the gate itself was pessimistic:
+
+- embedded defaulted to `identifier` target mode while native used
+  `front-window`
+- every measured burst re-ran `focus-scroll-*`, which includes a click and
+  `120ms` wait inside the sender
+
+The gate was corrected so that:
+
+- embedded defaults to `front-window`
+- measured bursts reuse the pre-resolved `clickPoint` and send `scroll-point`
+  only
+- embedded waits for
+  `appIsActive && windowIsKey && terminalIsFirstResponder` before telemetry
+  reset
+
+Re-running the `%657` live-captured `curses-history` proxy with
+`--history-lines 2000` produced:
+
+- embedded `first_changed_elapsed_ms 411.532`
+- native `first_changed_elapsed_ms 273.589`
+- delta `137.943ms`
+
+Interpretation:
+
+- the earlier `+311ms` heavy-proxy delta was partly measurement artifact
+- after the gate correction, a smaller but still real first-step latency gap
+  remains on the alternate-screen proxy
+- the remaining user-visible complaint still cannot be closed out with this
+  proxy alone; the final gate still needs the loaded live normal-screen pane
+  path
+
+### 2026-03-22 replayed normal-screen scrollback proved invalid
+
+The next attempt was to replace the alternate-screen proxy with a replayed
+normal-screen path:
+
+- `scripts/perf/gate_l_trackpad_live_scrollback_step_parity.sh`
+- `scripts/perf/gate_l_trackpad_scrollback_step_bench.sh`
+
+The replay was adjusted twice:
+
+1. sender/sampler orchestration was corrected so sender failures and sampler
+   failures are separated
+2. the replay foreground process changed from `exec sleep 600` to an
+   interactive shell prompt (`exec env PS1="" /bin/sh -i`) so the bench client
+   would keep local scrollback instead of idling behind `sleep`
+
+Measured on 2026-03-22, that replay still did not enter real local scrollback.
+The embedded replay produced:
+
+- `firstScrollInputElapsedMs 560.458`
+- `preciseStepCount 13`
+- `preciseApplicationCursorSequenceCount 13`
+- `preciseNormalCursorSequenceCount 0`
+- `changed_sample_count 0`
+- `max_step_rows 0`
+
+The sampled visible text also ended with prompt / control-sequence output rather
+than a moved viewport, which means the replay was still taking
+`alternateScroll` and writing application-cursor sequences to the pty instead
+of exercising the loaded local scrollback path that the user is complaining
+about.
+
+Interpretation:
+
+- the replayed `scrollback` fixture is not a valid acceptance gate for the live
+  Claude/Codex history complaint
+- even after the sender path and AX sampler path were corrected, the replayed
+  pane still behaves like an alternate-scroll prompt proxy rather than a loaded
+  live pane
+- the next realistic gate must target the actually displayed live pane directly
+  and avoid fresh attach / replay entirely
+
+That replacement gate was added as:
+
+- `scripts/perf/gate_l_frontmost_live_upscroll_step_bench.sh`
+- `scripts/perf/gate_l_frontmost_live_upscroll_step_parity.sh`
+
+These scripts sample the currently displayed frontmost pane via AX and use the
+same trackpad sender, so the next comparison can be run directly against loaded
+live panes in agtmux-term and native Ghostty.

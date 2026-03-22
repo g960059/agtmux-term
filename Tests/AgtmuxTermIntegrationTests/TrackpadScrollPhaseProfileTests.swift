@@ -83,6 +83,54 @@ final class TrackpadScrollPhaseProfileTests: XCTestCase {
         )
     }
 
+    func testSyntheticSequenceSeparatesDirectEndedIntoZeroDeltaTailEvent() {
+        let events = TrackpadScrollPhaseProfile.syntheticSequence(
+            repeatCount: 4,
+            mode: .trackpadBurst
+        )
+
+        XCTAssertEqual(
+            events,
+            [
+                SyntheticTrackpadScrollEvent(deliversDelta: true, phase: .began, momentumPhase: []),
+                SyntheticTrackpadScrollEvent(deliversDelta: true, phase: .changed, momentumPhase: []),
+                SyntheticTrackpadScrollEvent(deliversDelta: true, phase: .changed, momentumPhase: []),
+                SyntheticTrackpadScrollEvent(deliversDelta: true, phase: .changed, momentumPhase: []),
+                SyntheticTrackpadScrollEvent(deliversDelta: false, phase: .ended, momentumPhase: []),
+            ]
+        )
+    }
+
+    func testSyntheticSequenceSeparatesMomentumEndedIntoZeroDeltaTailEvent() {
+        let events = TrackpadScrollPhaseProfile.syntheticSequence(
+            repeatCount: 24,
+            mode: .trackpadBurstMomentum
+        )
+
+        XCTAssertEqual(events.count, 26)
+        XCTAssertEqual(events.first, SyntheticTrackpadScrollEvent(deliversDelta: true, phase: .began, momentumPhase: []))
+        XCTAssertEqual(events[9], SyntheticTrackpadScrollEvent(deliversDelta: true, phase: .changed, momentumPhase: []))
+        XCTAssertEqual(events[10], SyntheticTrackpadScrollEvent(deliversDelta: false, phase: .ended, momentumPhase: []))
+        XCTAssertEqual(events[11], SyntheticTrackpadScrollEvent(deliversDelta: true, phase: [], momentumPhase: .began))
+        XCTAssertEqual(events[24], SyntheticTrackpadScrollEvent(deliversDelta: true, phase: [], momentumPhase: .changed))
+        XCTAssertEqual(events[25], SyntheticTrackpadScrollEvent(deliversDelta: false, phase: [], momentumPhase: .ended))
+    }
+
+    func testSyntheticSequenceUsesZeroDeltaEndForSingleDirectEvent() {
+        let events = TrackpadScrollPhaseProfile.syntheticSequence(
+            repeatCount: 1,
+            mode: .trackpadBurst
+        )
+
+        XCTAssertEqual(
+            events,
+            [
+                SyntheticTrackpadScrollEvent(deliversDelta: true, phase: .began, momentumPhase: []),
+                SyntheticTrackpadScrollEvent(deliversDelta: false, phase: .ended, momentumPhase: []),
+            ]
+        )
+    }
+
     func testTrackpadBurstMomentumModeParsesFromRawValue() {
         XCTAssertEqual(
             TrackpadScrollPhaseMode(rawValue: "trackpad-burst-momentum"),

@@ -225,14 +225,18 @@ func hashForWindow(windowID: CGWindowID, options: GateLWindowProbeOptions) throw
         throw GateLWindowProbeError.windowNotFound("bounds for window \(windowID)")
     }
 
-    let tempDir = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
-    let tempURL = tempDir.appendingPathComponent("gate-l-window-\(windowID)-\(UUID().uuidString).png")
-    defer { try? FileManager.default.removeItem(at: tempURL) }
-
     let targetRect = cropRect(bounds: bounds, options: options)
     guard targetRect.width > 0, targetRect.height > 0 else {
         throw GateLWindowProbeError.invalidFraction("crop produced an empty rect")
     }
+
+    guard CGPreflightScreenCaptureAccess() else {
+        throw GateLWindowProbeError.imageCaptureFailed("screen capture access not granted")
+    }
+
+    let tempDir = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+    let tempURL = tempDir.appendingPathComponent("gate-l-window-\(windowID)-\(UUID().uuidString).png")
+    defer { try? FileManager.default.removeItem(at: tempURL) }
 
     let process = Process()
     process.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")

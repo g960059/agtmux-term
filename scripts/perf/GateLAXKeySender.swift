@@ -93,6 +93,9 @@ struct GateLAXKeySenderOptions {
         case focusKeyPoint
         case focusKeyFrontWindow
         case focusKeyIdentifier
+        case scrollPoint
+        case scrollFrontWindow
+        case scrollIdentifier
         case focusScrollPoint
         case focusScrollFrontWindow
         case focusScrollIdentifier
@@ -148,6 +151,12 @@ func parseOptions(arguments: [String]) throws -> GateLAXKeySenderOptions {
         case "--focus-key-front-window":
             options.action = .focusKeyFrontWindow
             index += 1
+        case "--scroll-point":
+            options.action = .scrollPoint
+            index += 1
+        case "--scroll-front-window":
+            options.action = .scrollFrontWindow
+            index += 1
         case "--focus-scroll-point":
             options.action = .focusScrollPoint
             index += 1
@@ -187,6 +196,14 @@ func parseOptions(arguments: [String]) throws -> GateLAXKeySenderOptions {
                 throw GateLAXKeySenderError.invalidArgument(argument)
             }
             options.action = .focusScrollIdentifier
+            options.targetIdentifier = arguments[nextIndex]
+            index += 2
+        case "--scroll-identifier":
+            let nextIndex = index + 1
+            guard nextIndex < arguments.count else {
+                throw GateLAXKeySenderError.invalidArgument(argument)
+            }
+            options.action = .scrollIdentifier
             options.targetIdentifier = arguments[nextIndex]
             index += 2
         case "--app-pid":
@@ -405,6 +422,12 @@ func actionName(for options: GateLAXKeySenderOptions) -> String {
         return "focus-key-front-window"
     case .focusKeyIdentifier:
         return "focus-key-identifier"
+    case .scrollPoint:
+        return "scroll-point"
+    case .scrollFrontWindow:
+        return "scroll-front-window"
+    case .scrollIdentifier:
+        return "scroll-identifier"
     case .focusScrollPoint:
         return "focus-scroll-point"
     case .focusScrollFrontWindow:
@@ -587,13 +610,28 @@ func postScroll(
 ) throws {
     let cgUnit: CGScrollEventUnit = unit == .pixel ? .pixel : .line
     let intervalMicros = useconds_t(max(0, intervalMs) * 1_000)
+    let deltaRepeatCount = max(1, repeatCount)
+    let scrollEvents: [SyntheticTrackpadScrollEvent]
+    if unit == .pixel, phaseMode != .none {
+        scrollEvents = TrackpadScrollPhaseProfile.syntheticSequence(
+            repeatCount: deltaRepeatCount,
+            mode: phaseMode
+        )
+    } else {
+        scrollEvents = (0..<deltaRepeatCount).map { _ in
+            SyntheticTrackpadScrollEvent(deliversDelta: true, phase: [], momentumPhase: [])
+        }
+    }
 
-    for iteration in 0..<max(1, repeatCount) {
+    var postedDeltaEventCount = 0
+
+    for syntheticEvent in scrollEvents {
+        let eventAmount = syntheticEvent.deliversDelta ? amount : 0
         guard let event = CGEvent(
             scrollWheelEvent2Source: source,
             units: cgUnit,
             wheelCount: 1,
-            wheel1: Int32(amount),
+            wheel1: Int32(eventAmount),
             wheel2: 0,
             wheel3: 0
         ) else {
@@ -602,24 +640,19 @@ func postScroll(
 
         if unit == .pixel {
             event.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)
-            event.setIntegerValueField(.scrollWheelEventPointDeltaAxis1, value: Int64(amount))
+            event.setIntegerValueField(.scrollWheelEventPointDeltaAxis1, value: Int64(eventAmount))
             event.setIntegerValueField(
                 .scrollWheelEventFixedPtDeltaAxis1,
-                value: Int64(amount * 65_536)
+                value: Int64(eventAmount * 65_536)
             )
             if phaseMode != .none {
-                let phaseEvent = TrackpadScrollPhaseProfile.event(
-                    forIteration: iteration,
-                    repeatCount: repeatCount,
-                    mode: phaseMode
-                )
                 event.setIntegerValueField(
                     .scrollWheelEventScrollPhase,
-                    value: Int64(phaseEvent.phase.rawValue)
+                    value: Int64(syntheticEvent.phase.rawValue)
                 )
                 event.setIntegerValueField(
                     .scrollWheelEventMomentumPhase,
-                    value: Int64(phaseEvent.momentumPhase.rawValue)
+                    value: Int64(syntheticEvent.momentumPhase.rawValue)
                 )
             }
         }
@@ -627,7 +660,11 @@ func postScroll(
         event.location = point
         event.post(tap: .cghidEventTap)
 
-        if intervalMicros > 0, iteration < repeatCount - 1 {
+        if syntheticEvent.deliversDelta {
+            postedDeltaEventCount += 1
+        }
+
+        if intervalMicros > 0, syntheticEvent.deliversDelta, postedDeltaEventCount < deltaRepeatCount {
             usleep(intervalMicros)
         }
     }
@@ -1006,6 +1043,57 @@ enum GateLAXKeySenderMain {
                     source: source,
                     keyCode: options.keyCode,
                     modifiers: options.modifiers
+                )
+                clickPoint = ClickPoint(x: point.x, y: point.y)
+            case .scrollPoint:
+                let point = try requiredExplicitPoint(for: options)
+                try postScroll(
+                    source: source,
+                    point: point,
+                    amount: options.resolvedScrollAmount,
+                    unit: options.resolvedScrollUnit,
+                    repeatCount: options.scrollRepeat,
+                    intervalMs: options.scrollIntervalMs,
+                    phaseMode: options.scrollPhaseMode
+                )
+                clickPoint = ClickPoint(x: point.x, y: point.y)
+            case .scrollFrontWindow:
+                let point = try frontWindowClickPoint(
+                    xFraction: options.xFraction,
+                    yFraction: options.yFraction,
+                    targetIdentifier: nil,
+                    appPID: options.appPID,
+                    bundleIdentifier: options.bundleIdentifier
+                )
+                try postScroll(
+                    source: source,
+                    point: point,
+                    amount: options.resolvedScrollAmount,
+                    unit: options.resolvedScrollUnit,
+                    repeatCount: options.scrollRepeat,
+                    intervalMs: options.scrollIntervalMs,
+                    phaseMode: options.scrollPhaseMode
+                )
+                clickPoint = ClickPoint(x: point.x, y: point.y)
+            case .scrollIdentifier:
+                guard let targetIdentifier = options.targetIdentifier, !targetIdentifier.isEmpty else {
+                    throw GateLAXKeySenderError.elementIdentifierMissing
+                }
+                let point = try frontWindowClickPoint(
+                    xFraction: options.xFraction,
+                    yFraction: options.yFraction,
+                    targetIdentifier: targetIdentifier,
+                    appPID: options.appPID,
+                    bundleIdentifier: options.bundleIdentifier
+                )
+                try postScroll(
+                    source: source,
+                    point: point,
+                    amount: options.resolvedScrollAmount,
+                    unit: options.resolvedScrollUnit,
+                    repeatCount: options.scrollRepeat,
+                    intervalMs: options.scrollIntervalMs,
+                    phaseMode: options.scrollPhaseMode
                 )
                 clickPoint = ClickPoint(x: point.x, y: point.y)
             case .focusScrollPoint:

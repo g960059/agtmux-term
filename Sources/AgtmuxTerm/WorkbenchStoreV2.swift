@@ -206,7 +206,7 @@ final class WorkbenchStoreV2 {
 
     @discardableResult
     func openTerminal(sessionRef: SessionRef) -> WorkbenchStoreV2TerminalOpenResult {
-        openTerminal(sessionRef: sessionRef, activePaneRef: nil)
+        return openTerminal(sessionRef: sessionRef, activePaneRef: nil)
     }
 
     @discardableResult
@@ -214,13 +214,16 @@ final class WorkbenchStoreV2 {
         for pane: AgtmuxPane,
         hostsConfig: HostsConfig
     ) -> WorkbenchStoreV2TerminalOpenResult {
-        openTerminal(
-            sessionRef: SessionRef(
-                target: Self.targetRef(for: pane.source, hostsConfig: hostsConfig),
-                sessionName: pane.sessionName,
-                lastSeenRepoRoot: pane.currentPath
-            ),
-            activePaneRef: Self.activePaneRef(for: pane, hostsConfig: hostsConfig)
+        let target = Self.targetRef(for: pane.source, hostsConfig: hostsConfig)
+        let sessionRef = SessionRef(
+            target: target,
+            sessionName: pane.sessionName,
+            lastSeenRepoRoot: pane.currentPath
+        )
+        let activePaneRef = Self.activePaneRef(for: pane, hostsConfig: hostsConfig)
+        return openTerminal(
+            sessionRef: sessionRef,
+            activePaneRef: activePaneRef
         )
     }
 

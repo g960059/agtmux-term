@@ -14,8 +14,8 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     private static let scrollPresentationDrawPumpIntervalSeconds = 1.0 / 120.0
     private static let scrollPresentationDrawPumpTailSeconds = 0.18
     private static let scrollPresentationDrawRecoveryProbeDelaySeconds = 1.0 / 180.0
+    private static let preciseAlternateScrollDirtyDrawFastPathTailSeconds = 0.18
     private static let scrollDirectionFlipEpsilon = 0.001
-
     struct SurfaceMetrics: Equatable {
         let pixelWidth: UInt32
         let pixelHeight: UInt32
@@ -31,7 +31,49 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         let maxMs: Double?
     }
 
+    struct ScrollTelemetryValueSummary: Codable, Equatable {
+        let count: Int
+        let p50: Double?
+        let p95: Double?
+        let max: Double?
+    }
+
+    struct AlternateScrollTelemetrySnapshot: Codable, Equatable {
+        let preciseEventCount: Int
+        let preciseStepCount: Int
+        let preciseFirstEventElapsedMs: Int
+        let preciseMessageQueueCount: Int
+        let preciseFirstMessageQueueElapsedMs: Int
+        let preciseMailboxNotifyCount: Int
+        let preciseFirstMailboxNotifyElapsedMs: Int
+        let preciseWriteQueueCount: Int
+        let preciseWriteQueueBytes: Int
+        let preciseFirstWriteQueueElapsedMs: Int
+        let preciseWriteCompletedCount: Int
+        let preciseWriteCompletedBytes: Int
+        let preciseFirstWriteCompletedElapsedMs: Int
+        let preciseDrainTurnCount: Int
+        let preciseDrainedMessageCount: Int
+        let preciseDrainRequeueCount: Int
+        let preciseFirstDrainTurnElapsedMs: Int
+        let preciseReadChunkCount: Int
+        let preciseReadChunkBytes: Int
+        let preciseReadChunkMaxBytes: Int
+        let preciseFirstReadChunkElapsedMs: Int
+        let preciseUpSequenceCount: Int
+        let preciseDownSequenceCount: Int
+        let preciseApplicationCursorSequenceCount: Int
+        let preciseNormalCursorSequenceCount: Int
+        let preciseReadEscapeByteCount: Int
+        let preciseReadPrintableByteCount: Int
+        let preciseReadNewlineByteCount: Int
+    }
+
     struct ScrollTelemetrySnapshot: Codable, Equatable {
+        let firstScrollInputElapsedMs: Double?
+        let firstPreciseScrollInputElapsedMs: Double?
+        let firstDirectPhaseScrollInputElapsedMs: Double?
+        let firstMomentumPhaseScrollInputElapsedMs: Double?
         let scrollToRenderRequest: ScrollTelemetryMetricSummary
         let scrollToFirstDraw: ScrollTelemetryMetricSummary
         let scrollToLayerPresent: ScrollTelemetryMetricSummary
@@ -42,6 +84,10 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         let scrollPresentationPumpWakeLateness: ScrollTelemetryMetricSummary
         let scrollPresentationRecoveryProbeWakeLateness: ScrollTelemetryMetricSummary
         let layerPresentGap: ScrollTelemetryMetricSummary
+        let scrollInputGap: ScrollTelemetryMetricSummary
+        let scrollInputHandler: ScrollTelemetryMetricSummary
+        let scrollInputDispatch: ScrollTelemetryMetricSummary
+        let scrollInputVerticalDeltaAbs: ScrollTelemetryValueSummary
         let scrollToFirstDrawSamplesMs: [Double]
         let scrollToLayerPresentSamplesMs: [Double]
         let scrollPresentationDrawGapSamplesMs: [Double]
@@ -49,13 +95,29 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         let scrollPresentationPumpWakeLatenessSamplesMs: [Double]
         let scrollPresentationRecoveryProbeWakeLatenessSamplesMs: [Double]
         let layerPresentGapSamplesMs: [Double]
+        let scrollInputGapSamplesMs: [Double]
+        let scrollInputHandlerSamplesMs: [Double]
+        let scrollInputDispatchSamplesMs: [Double]
+        let scrollInputVerticalDeltaAbsSamples: [Double]
         let drawCount: Int
         let scrollPresentationDrawCount: Int
         let layerPresentCount: Int
+        let scrollInputCount: Int
+        let preciseScrollInputCount: Int
+        let directPhaseScrollInputCount: Int
+        let momentumPhaseScrollInputCount: Int
         let pendingScrollToRenderCount: Int
         let pendingScrollToDrawCount: Int
         let pendingScrollToLayerPresentCount: Int
         let pendingRenderToDrawCount: Int
+        let alternateScroll: AlternateScrollTelemetrySnapshot
+    }
+
+    struct ViewportTextSnapshot: Codable, Equatable {
+        let text: String
+        let lineCount: Int
+        let characterCount: Int
+        let usesAlternateScroll: Bool
     }
 
     private enum ScrollVerticalDirection: Equatable {
@@ -108,6 +170,10 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     private var scrollToRenderSamplesMs: [Double] = []
     private var scrollToDrawSamplesMs: [Double] = []
     private var scrollToLayerPresentSamplesMs: [Double] = []
+    private var scrollInputGapSamplesMs: [Double] = []
+    private var scrollInputHandlerSamplesMs: [Double] = []
+    private var scrollInputDispatchSamplesMs: [Double] = []
+    private var scrollInputVerticalDeltaAbsSamples: [Double] = []
     private var renderToDrawSamplesMs: [Double] = []
     private var drawGapSamplesMs: [Double] = []
     private var scrollPresentationDrawGapSamplesMs: [Double] = []
@@ -115,10 +181,21 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     private var scrollPresentationPumpWakeLatenessSamplesMs: [Double] = []
     private var scrollPresentationRecoveryProbeWakeLatenessSamplesMs: [Double] = []
     private var layerPresentGapSamplesMs: [Double] = []
+    private var scrollInputCount = 0
+    private var preciseScrollInputCount = 0
+    private var directPhaseScrollInputCount = 0
+    private var momentumPhaseScrollInputCount = 0
+    private var scrollTelemetryResetUptime: TimeInterval?
+    private var firstScrollInputElapsedMs: Double?
+    private var firstPreciseScrollInputElapsedMs: Double?
+    private var firstDirectPhaseScrollInputElapsedMs: Double?
+    private var firstMomentumPhaseScrollInputElapsedMs: Double?
     private var drawCount = 0
     private var scrollPresentationDrawCount = 0
     private var layerPresentCount = 0
     private var lastHostDrawUptime: TimeInterval?
+    private var lastScrollInputEventUptime: TimeInterval?
+    private var preciseAlternateScrollDirtyDrawEligibleUntilUptime: TimeInterval?
     private var lastScrollPresentationDrawTelemetryUptime: TimeInterval?
     private var lastLayerPresentUptime: TimeInterval?
 
@@ -269,6 +346,15 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     func triggerDraw() {
         guard let surface else { return }
         ghostty_surface_refresh(surface)
+    }
+
+    @MainActor
+    func triggerDirtyDrawForRenderCallback(now: TimeInterval) {
+        if prefersImmediateDirtyDrawForRenderCallback(now: now) {
+            performImmediatePresentationDraw()
+            return
+        }
+        triggerDraw()
     }
 
     // MARK: - NSTextInputClient (IME)
@@ -627,6 +713,10 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         }
     }
 
+    override func accessibilityValue() -> Any? {
+        visibleViewportTextForTesting()
+    }
+
     override func accessibilityPerformPress() -> Bool {
         window?.makeFirstResponder(self)
         return true
@@ -770,24 +860,56 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
 
     override func scrollWheel(with event: NSEvent) {
         guard let surface else { return }
+        let handlerStartUptime = ProcessInfo.processInfo.systemUptime
         // Pass deltas raw — Ghostty expects the same sign convention as
         // NSEvent.scrollingDeltaY (positive = up). Negating was inverting scroll.
         var x = event.scrollingDeltaX
         var y = event.scrollingDeltaY
+        let usesAlternateScroll = ghostty_surface_uses_alternate_scroll(surface)
         // Match Ghostty's own SurfaceView: 2x multiplier for trackpad precision.
         if event.hasPreciseScrollingDeltas {
-            x *= 2
-            y *= 2
+            let precisionMultiplier = Self.precisionScrollMultiplier(
+                usesAlternateScroll: usesAlternateScroll,
+                phase: event.phase,
+                momentumPhase: event.momentumPhase
+            )
+            x *= precisionMultiplier
+            y *= precisionMultiplier
         }
-        noteScrollInputTelemetry()
+        noteScrollInputTelemetry(
+            precision: event.hasPreciseScrollingDeltas,
+            phase: event.phase,
+            momentumPhase: event.momentumPhase,
+            verticalDelta: y
+        )
         updateScrollPresentationGestureState(
             precision: event.hasPreciseScrollingDeltas,
             phase: event.phase,
             momentumPhase: event.momentumPhase,
             verticalDelta: y
         )
-        ghostty_surface_mouse_scroll(surface, x, y, GhosttyInput.toScrollMods(event))
-        scheduleScrollPresentationDrawIfNeeded()
+        updatePreciseAlternateScrollDirtyDrawEligibility(
+            usesAlternateScroll: usesAlternateScroll,
+            precision: event.hasPreciseScrollingDeltas,
+            phase: event.phase,
+            momentumPhase: event.momentumPhase,
+            verticalDelta: y,
+            now: handlerStartUptime
+        )
+        let scrollMods = GhosttyInput.toScrollMods(event)
+        let dispatchStartUptime = ProcessInfo.processInfo.systemUptime
+        ghostty_surface_mouse_scroll(surface, x, y, scrollMods)
+        let dispatchEndUptime = ProcessInfo.processInfo.systemUptime
+        let hostScrollPresentationEnabled = !(usesAlternateScroll && event.hasPreciseScrollingDeltas)
+        if hostScrollPresentationEnabled {
+            scheduleScrollPresentationDrawIfNeeded()
+        }
+        noteScrollInputExecutionTelemetry(
+            handlerStartUptime: handlerStartUptime,
+            dispatchStartUptime: dispatchStartUptime,
+            dispatchEndUptime: dispatchEndUptime,
+            handlerEndUptime: ProcessInfo.processInfo.systemUptime
+        )
     }
 
     @MainActor
@@ -942,6 +1064,7 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
 
     @MainActor
     func resetScrollTelemetryForTesting() {
+        scrollTelemetryResetUptime = ProcessInfo.processInfo.systemUptime
         pendingScrollToRenderStates.removeAll(keepingCapacity: false)
         pendingScrollToDrawStates.removeAll(keepingCapacity: false)
         pendingScrollToLayerPresentStates.removeAll(keepingCapacity: false)
@@ -953,6 +1076,10 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         scrollToRenderSamplesMs.removeAll(keepingCapacity: false)
         scrollToDrawSamplesMs.removeAll(keepingCapacity: false)
         scrollToLayerPresentSamplesMs.removeAll(keepingCapacity: false)
+        scrollInputGapSamplesMs.removeAll(keepingCapacity: false)
+        scrollInputHandlerSamplesMs.removeAll(keepingCapacity: false)
+        scrollInputDispatchSamplesMs.removeAll(keepingCapacity: false)
+        scrollInputVerticalDeltaAbsSamples.removeAll(keepingCapacity: false)
         renderToDrawSamplesMs.removeAll(keepingCapacity: false)
         drawGapSamplesMs.removeAll(keepingCapacity: false)
         scrollPresentationDrawGapSamplesMs.removeAll(keepingCapacity: false)
@@ -960,9 +1087,19 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         scrollPresentationPumpWakeLatenessSamplesMs.removeAll(keepingCapacity: false)
         scrollPresentationRecoveryProbeWakeLatenessSamplesMs.removeAll(keepingCapacity: false)
         layerPresentGapSamplesMs.removeAll(keepingCapacity: false)
+        scrollInputCount = 0
+        preciseScrollInputCount = 0
+        directPhaseScrollInputCount = 0
+        momentumPhaseScrollInputCount = 0
+        firstScrollInputElapsedMs = nil
+        firstPreciseScrollInputElapsedMs = nil
+        firstDirectPhaseScrollInputElapsedMs = nil
+        firstMomentumPhaseScrollInputElapsedMs = nil
         drawCount = 0
         scrollPresentationDrawCount = 0
         layerPresentCount = 0
+        lastScrollInputEventUptime = nil
+        preciseAlternateScrollDirtyDrawEligibleUntilUptime = nil
         lastHostDrawUptime = nil
         lastScrollPresentationDrawTelemetryUptime = nil
         lastLayerPresentUptime = nil
@@ -970,11 +1107,35 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         paneRetargetPresentationRecoveryProbeScheduled = false
         lastPaneRetargetPresentationDrawUptime = nil
         paneRetargetPresentationRecoveryProbeGeneration &+= 1
+        if let surface {
+            ghostty_surface_reset_alternate_scroll_telemetry(surface)
+        }
     }
 
     @MainActor
-    func noteScrollInputTelemetryForTesting(now: TimeInterval? = nil) {
-        noteScrollInputTelemetry(now: now ?? ProcessInfo.processInfo.systemUptime)
+    func noteScrollInputTelemetryForTesting(
+        now: TimeInterval? = nil,
+        precision: Bool = false,
+        phase: NSEvent.Phase = [],
+        momentumPhase: NSEvent.Phase = [],
+        verticalDelta: Double = 0
+    ) {
+        noteScrollInputTelemetry(
+            now: now ?? ProcessInfo.processInfo.systemUptime,
+            precision: precision,
+            phase: phase,
+            momentumPhase: momentumPhase,
+            verticalDelta: verticalDelta
+        )
+    }
+
+    @MainActor
+    func noteScrollInputExecutionTelemetryForTesting(
+        handlerDurationMs: Double,
+        dispatchDurationMs: Double
+    ) {
+        scrollInputHandlerSamplesMs.append(handlerDurationMs)
+        scrollInputDispatchSamplesMs.append(dispatchDurationMs)
     }
 
     @MainActor
@@ -997,6 +1158,18 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     @MainActor
     func noteScrollPresentationDrawForTesting(now: TimeInterval) {
         lastScrollPresentationDrawUptime = now
+    }
+
+    func precisionScrollMultiplierForTesting(
+        usesAlternateScroll: Bool,
+        phase: NSEvent.Phase = [],
+        momentumPhase: NSEvent.Phase = []
+    ) -> Double {
+        Self.precisionScrollMultiplier(
+            usesAlternateScroll: usesAlternateScroll,
+            phase: phase,
+            momentumPhase: momentumPhase
+        )
     }
 
     @MainActor
@@ -1051,6 +1224,10 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
 
     func scrollTelemetrySnapshotForTesting() -> ScrollTelemetrySnapshot {
         ScrollTelemetrySnapshot(
+            firstScrollInputElapsedMs: firstScrollInputElapsedMs,
+            firstPreciseScrollInputElapsedMs: firstPreciseScrollInputElapsedMs,
+            firstDirectPhaseScrollInputElapsedMs: firstDirectPhaseScrollInputElapsedMs,
+            firstMomentumPhaseScrollInputElapsedMs: firstMomentumPhaseScrollInputElapsedMs,
             scrollToRenderRequest: summary(for: scrollToRenderSamplesMs),
             scrollToFirstDraw: summary(for: scrollToDrawSamplesMs),
             scrollToLayerPresent: summary(for: scrollToLayerPresentSamplesMs),
@@ -1061,6 +1238,10 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
             scrollPresentationPumpWakeLateness: summary(for: scrollPresentationPumpWakeLatenessSamplesMs),
             scrollPresentationRecoveryProbeWakeLateness: summary(for: scrollPresentationRecoveryProbeWakeLatenessSamplesMs),
             layerPresentGap: summary(for: layerPresentGapSamplesMs),
+            scrollInputGap: summary(for: scrollInputGapSamplesMs),
+            scrollInputHandler: summary(for: scrollInputHandlerSamplesMs),
+            scrollInputDispatch: summary(for: scrollInputDispatchSamplesMs),
+            scrollInputVerticalDeltaAbs: valueSummary(for: scrollInputVerticalDeltaAbsSamples),
             scrollToFirstDrawSamplesMs: scrollToDrawSamplesMs,
             scrollToLayerPresentSamplesMs: scrollToLayerPresentSamplesMs,
             scrollPresentationDrawGapSamplesMs: scrollPresentationDrawGapSamplesMs,
@@ -1068,13 +1249,155 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
             scrollPresentationPumpWakeLatenessSamplesMs: scrollPresentationPumpWakeLatenessSamplesMs,
             scrollPresentationRecoveryProbeWakeLatenessSamplesMs: scrollPresentationRecoveryProbeWakeLatenessSamplesMs,
             layerPresentGapSamplesMs: layerPresentGapSamplesMs,
+            scrollInputGapSamplesMs: scrollInputGapSamplesMs,
+            scrollInputHandlerSamplesMs: scrollInputHandlerSamplesMs,
+            scrollInputDispatchSamplesMs: scrollInputDispatchSamplesMs,
+            scrollInputVerticalDeltaAbsSamples: scrollInputVerticalDeltaAbsSamples,
             drawCount: drawCount,
             scrollPresentationDrawCount: scrollPresentationDrawCount,
             layerPresentCount: layerPresentCount,
+            scrollInputCount: scrollInputCount,
+            preciseScrollInputCount: preciseScrollInputCount,
+            directPhaseScrollInputCount: directPhaseScrollInputCount,
+            momentumPhaseScrollInputCount: momentumPhaseScrollInputCount,
             pendingScrollToRenderCount: pendingScrollToRenderUptimes.count,
             pendingScrollToDrawCount: pendingScrollToDrawUptimes.count,
             pendingScrollToLayerPresentCount: pendingScrollToLayerPresentUptimes.count,
-            pendingRenderToDrawCount: pendingRenderToDrawUptimes.count
+            pendingRenderToDrawCount: pendingRenderToDrawUptimes.count,
+            alternateScroll: alternateScrollTelemetrySnapshot()
+        )
+    }
+
+    func viewportTextSnapshotForTesting() -> ViewportTextSnapshot {
+        let text = visibleViewportTextForTesting()
+        let lineCount = text.isEmpty ? 0 : text.split(
+            separator: "\n",
+            omittingEmptySubsequences: false
+        ).count
+        return ViewportTextSnapshot(
+            text: text,
+            lineCount: lineCount,
+            characterCount: text.count,
+            usesAlternateScroll: surface.map(ghostty_surface_uses_alternate_scroll) ?? false
+        )
+    }
+
+    func visibleViewportTextForTesting() -> String {
+        guard let surface else { return "" }
+
+        var text = ghostty_text_s()
+        let selection = ghostty_selection_s(
+            top_left: ghostty_point_s(
+                tag: GHOSTTY_POINT_VIEWPORT,
+                coord: GHOSTTY_POINT_COORD_TOP_LEFT,
+                x: 0,
+                y: 0
+            ),
+            bottom_right: ghostty_point_s(
+                tag: GHOSTTY_POINT_VIEWPORT,
+                coord: GHOSTTY_POINT_COORD_BOTTOM_RIGHT,
+                x: 0,
+                y: 0
+            ),
+            rectangle: false
+        )
+        guard ghostty_surface_read_text(surface, selection, &text) else { return "" }
+        defer { ghostty_surface_free_text(surface, &text) }
+        guard let rawText = text.text else { return "" }
+        return String(cString: rawText)
+    }
+
+    private func alternateScrollTelemetrySnapshot() -> AlternateScrollTelemetrySnapshot {
+        guard let surface else {
+            return AlternateScrollTelemetrySnapshot(
+                preciseEventCount: 0,
+                preciseStepCount: 0,
+                preciseFirstEventElapsedMs: 0,
+                preciseMessageQueueCount: 0,
+                preciseFirstMessageQueueElapsedMs: 0,
+                preciseMailboxNotifyCount: 0,
+                preciseFirstMailboxNotifyElapsedMs: 0,
+                preciseWriteQueueCount: 0,
+                preciseWriteQueueBytes: 0,
+                preciseFirstWriteQueueElapsedMs: 0,
+                preciseWriteCompletedCount: 0,
+                preciseWriteCompletedBytes: 0,
+                preciseFirstWriteCompletedElapsedMs: 0,
+                preciseDrainTurnCount: 0,
+                preciseDrainedMessageCount: 0,
+                preciseDrainRequeueCount: 0,
+                preciseFirstDrainTurnElapsedMs: 0,
+                preciseReadChunkCount: 0,
+                preciseReadChunkBytes: 0,
+                preciseReadChunkMaxBytes: 0,
+                preciseFirstReadChunkElapsedMs: 0,
+                preciseUpSequenceCount: 0,
+                preciseDownSequenceCount: 0,
+                preciseApplicationCursorSequenceCount: 0,
+                preciseNormalCursorSequenceCount: 0,
+                preciseReadEscapeByteCount: 0,
+                preciseReadPrintableByteCount: 0,
+                preciseReadNewlineByteCount: 0
+            )
+        }
+        let snapshot = ghostty_surface_alternate_scroll_telemetry(surface)
+        let preciseEventCount = Int(snapshot.precise_event_count)
+        let preciseStepCount = Int(snapshot.precise_step_count)
+        let preciseFirstEventElapsedMs = Int(snapshot.precise_first_event_elapsed_ms)
+        let preciseMessageQueueCount = Int(snapshot.precise_message_queue_count)
+        let preciseFirstMessageQueueElapsedMs = Int(snapshot.precise_first_message_queue_elapsed_ms)
+        let preciseMailboxNotifyCount = Int(snapshot.precise_mailbox_notify_count)
+        let preciseFirstMailboxNotifyElapsedMs = Int(snapshot.precise_first_mailbox_notify_elapsed_ms)
+        let preciseWriteQueueCount = Int(snapshot.precise_write_queue_count)
+        let preciseWriteQueueBytes = Int(snapshot.precise_write_queue_bytes)
+        let preciseFirstWriteQueueElapsedMs = Int(snapshot.precise_first_write_queue_elapsed_ms)
+        let preciseWriteCompletedCount = Int(snapshot.precise_write_completed_count)
+        let preciseWriteCompletedBytes = Int(snapshot.precise_write_completed_bytes)
+        let preciseFirstWriteCompletedElapsedMs = Int(snapshot.precise_first_write_completed_elapsed_ms)
+        let preciseDrainTurnCount = Int(snapshot.precise_drain_turn_count)
+        let preciseDrainedMessageCount = Int(snapshot.precise_drained_message_count)
+        let preciseDrainRequeueCount = Int(snapshot.precise_drain_requeue_count)
+        let preciseFirstDrainTurnElapsedMs = Int(snapshot.precise_first_drain_turn_elapsed_ms)
+        let preciseReadChunkCount = Int(snapshot.precise_read_chunk_count)
+        let preciseReadChunkBytes = Int(snapshot.precise_read_chunk_bytes)
+        let preciseReadChunkMaxBytes = Int(snapshot.precise_read_chunk_max_bytes)
+        let preciseFirstReadChunkElapsedMs = Int(snapshot.precise_first_read_chunk_elapsed_ms)
+        let preciseUpSequenceCount = Int(snapshot.precise_up_sequence_count)
+        let preciseDownSequenceCount = Int(snapshot.precise_down_sequence_count)
+        let preciseApplicationCursorSequenceCount = Int(snapshot.precise_application_cursor_sequence_count)
+        let preciseNormalCursorSequenceCount = Int(snapshot.precise_normal_cursor_sequence_count)
+        let preciseReadEscapeByteCount = Int(snapshot.precise_read_escape_byte_count)
+        let preciseReadPrintableByteCount = Int(snapshot.precise_read_printable_byte_count)
+        let preciseReadNewlineByteCount = Int(snapshot.precise_read_newline_byte_count)
+        return AlternateScrollTelemetrySnapshot(
+            preciseEventCount: preciseEventCount,
+            preciseStepCount: preciseStepCount,
+            preciseFirstEventElapsedMs: preciseFirstEventElapsedMs,
+            preciseMessageQueueCount: preciseMessageQueueCount,
+            preciseFirstMessageQueueElapsedMs: preciseFirstMessageQueueElapsedMs,
+            preciseMailboxNotifyCount: preciseMailboxNotifyCount,
+            preciseFirstMailboxNotifyElapsedMs: preciseFirstMailboxNotifyElapsedMs,
+            preciseWriteQueueCount: preciseWriteQueueCount,
+            preciseWriteQueueBytes: preciseWriteQueueBytes,
+            preciseFirstWriteQueueElapsedMs: preciseFirstWriteQueueElapsedMs,
+            preciseWriteCompletedCount: preciseWriteCompletedCount,
+            preciseWriteCompletedBytes: preciseWriteCompletedBytes,
+            preciseFirstWriteCompletedElapsedMs: preciseFirstWriteCompletedElapsedMs,
+            preciseDrainTurnCount: preciseDrainTurnCount,
+            preciseDrainedMessageCount: preciseDrainedMessageCount,
+            preciseDrainRequeueCount: preciseDrainRequeueCount,
+            preciseFirstDrainTurnElapsedMs: preciseFirstDrainTurnElapsedMs,
+            preciseReadChunkCount: preciseReadChunkCount,
+            preciseReadChunkBytes: preciseReadChunkBytes,
+            preciseReadChunkMaxBytes: preciseReadChunkMaxBytes,
+            preciseFirstReadChunkElapsedMs: preciseFirstReadChunkElapsedMs,
+            preciseUpSequenceCount: preciseUpSequenceCount,
+            preciseDownSequenceCount: preciseDownSequenceCount,
+            preciseApplicationCursorSequenceCount: preciseApplicationCursorSequenceCount,
+            preciseNormalCursorSequenceCount: preciseNormalCursorSequenceCount,
+            preciseReadEscapeByteCount: preciseReadEscapeByteCount,
+            preciseReadPrintableByteCount: preciseReadPrintableByteCount,
+            preciseReadNewlineByteCount: preciseReadNewlineByteCount
         )
     }
 
@@ -1149,6 +1472,12 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     func performScrollPresentationDraw() {
         noteScrollPresentationDrawTelemetry()
         performImmediatePresentationDraw()
+    }
+
+    @MainActor
+    func prefersImmediateDirtyDrawForRenderCallback(now: TimeInterval) -> Bool {
+        guard let preciseAlternateScrollDirtyDrawEligibleUntilUptime else { return false }
+        return now <= preciseAlternateScrollDirtyDrawEligibleUntilUptime
     }
 
     @MainActor
@@ -1429,6 +1758,7 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         lastScrollInputUptime = nil
         lastScrollPresentationDrawUptime = nil
         lastPaneRetargetPresentationDrawUptime = nil
+        preciseAlternateScrollDirtyDrawEligibleUntilUptime = nil
         scrollPresentationDirectGestureActive = false
         lastPreciseScrollVerticalDirection = nil
         scrollPresentationContinuationGeneration &+= 1
@@ -1500,6 +1830,34 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         scrollPresentationContinuationGeneration &+= 1
     }
 
+    @MainActor
+    private func updatePreciseAlternateScrollDirtyDrawEligibility(
+        usesAlternateScroll: Bool,
+        precision: Bool,
+        phase: NSEvent.Phase,
+        momentumPhase: NSEvent.Phase,
+        verticalDelta: Double,
+        now: TimeInterval
+    ) {
+        guard usesAlternateScroll, precision else {
+            preciseAlternateScrollDirtyDrawEligibleUntilUptime = nil
+            return
+        }
+
+        let hasDirection = Self.verticalScrollDirection(for: verticalDelta) != nil
+        let directActive = Self.isActiveDirectScrollPhase(phase)
+        let momentumActive = Self.isActiveMomentumScrollPhase(momentumPhase)
+        if hasDirection && (directActive || momentumActive) {
+            preciseAlternateScrollDirtyDrawEligibleUntilUptime =
+                now + Self.preciseAlternateScrollDirtyDrawFastPathTailSeconds
+            return
+        }
+
+        if Self.isTerminalScrollPhase(phase), Self.isTerminalScrollPhase(momentumPhase) {
+            preciseAlternateScrollDirtyDrawEligibleUntilUptime = nil
+        }
+    }
+
     private static func verticalScrollDirection(for deltaY: Double) -> ScrollVerticalDirection? {
         if deltaY > Self.scrollDirectionFlipEpsilon {
             return .up
@@ -1521,6 +1879,18 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     private static func isTerminalScrollPhase(_ phase: NSEvent.Phase) -> Bool {
         phase.contains(.ended) || phase.contains(.cancelled)
     }
+
+    private static func precisionScrollMultiplier(
+        usesAlternateScroll: Bool,
+        phase: NSEvent.Phase,
+        momentumPhase: NSEvent.Phase
+    ) -> Double {
+        if usesAlternateScroll {
+            return 2.0
+        }
+        return 2.0
+    }
+
 
     private func updateWindowObservers() {
         guard observedWindow !== window else { return }
@@ -1643,7 +2013,43 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     }
 
     @MainActor
-    private func noteScrollInputTelemetry(now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+    private func noteScrollInputTelemetry(
+        now: TimeInterval = ProcessInfo.processInfo.systemUptime,
+        precision: Bool = false,
+        phase: NSEvent.Phase = [],
+        momentumPhase: NSEvent.Phase = [],
+        verticalDelta: Double = 0
+    ) {
+        if let lastScrollInputEventUptime {
+            scrollInputGapSamplesMs.append((now - lastScrollInputEventUptime) * 1000.0)
+        }
+        if let scrollTelemetryResetUptime {
+            let elapsedMs = (now - scrollTelemetryResetUptime) * 1000.0
+            if firstScrollInputElapsedMs == nil {
+                firstScrollInputElapsedMs = elapsedMs
+            }
+            if precision && firstPreciseScrollInputElapsedMs == nil {
+                firstPreciseScrollInputElapsedMs = elapsedMs
+            }
+            if Self.isActiveDirectScrollPhase(phase) && firstDirectPhaseScrollInputElapsedMs == nil {
+                firstDirectPhaseScrollInputElapsedMs = elapsedMs
+            }
+            if Self.isActiveMomentumScrollPhase(momentumPhase) && firstMomentumPhaseScrollInputElapsedMs == nil {
+                firstMomentumPhaseScrollInputElapsedMs = elapsedMs
+            }
+        }
+        lastScrollInputEventUptime = now
+        scrollInputCount += 1
+        if precision {
+            preciseScrollInputCount += 1
+        }
+        if Self.isActiveDirectScrollPhase(phase) {
+            directPhaseScrollInputCount += 1
+        }
+        if Self.isActiveMomentumScrollPhase(momentumPhase) {
+            momentumPhaseScrollInputCount += 1
+        }
+        scrollInputVerticalDeltaAbsSamples.append(abs(verticalDelta))
         lastScrollInputUptime = now
         let renderID = AgtmuxSignpost.scrollLatency.makeSignpostID()
         let renderState = AgtmuxSignpost.scrollLatency.beginInterval(
@@ -1668,6 +2074,17 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         )
         pendingScrollToLayerPresentStates.append(layerPresentState)
         pendingScrollToLayerPresentUptimes.append(now)
+    }
+
+    @MainActor
+    private func noteScrollInputExecutionTelemetry(
+        handlerStartUptime: TimeInterval,
+        dispatchStartUptime: TimeInterval,
+        dispatchEndUptime: TimeInterval,
+        handlerEndUptime: TimeInterval
+    ) {
+        scrollInputDispatchSamplesMs.append((dispatchEndUptime - dispatchStartUptime) * 1000.0)
+        scrollInputHandlerSamplesMs.append((handlerEndUptime - handlerStartUptime) * 1000.0)
     }
 
     @MainActor
@@ -1700,6 +2117,20 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
             p50Ms: percentile(50, sortedSamples: sorted),
             p95Ms: percentile(95, sortedSamples: sorted),
             maxMs: sorted.last
+        )
+    }
+
+    private func valueSummary(for samples: [Double]) -> ScrollTelemetryValueSummary {
+        guard samples.isEmpty == false else {
+            return ScrollTelemetryValueSummary(count: 0, p50: nil, p95: nil, max: nil)
+        }
+
+        let sorted = samples.sorted()
+        return ScrollTelemetryValueSummary(
+            count: sorted.count,
+            p50: percentile(50, sortedSamples: sorted),
+            p95: percentile(95, sortedSamples: sorted),
+            max: sorted.last
         )
     }
 

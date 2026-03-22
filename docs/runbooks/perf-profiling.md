@@ -36,6 +36,13 @@ scripts/perf/gate_l_ax_key_sender.sh --dry-run
 - `scripts/perf/gate_l_native_ghostty_scroll_bench.sh`
 - `scripts/perf/gate_l_trackpad_history_scroll_bench.sh`
 - `scripts/perf/gate_l_native_ghostty_trackpad_history_scroll_bench.sh`
+- `scripts/perf/gate_l_trackpad_upscroll_step_bench.sh`
+- `scripts/perf/gate_l_native_ghostty_trackpad_upscroll_step_bench.sh`
+- `scripts/perf/gate_l_trackpad_upscroll_step_parity.sh`
+- `scripts/perf/gate_l_trackpad_live_curses_history_step_parity.sh`
+- `scripts/perf/gate_l_trackpad_live_pane_bench.sh`
+- `scripts/perf/gate_l_frontmost_live_client_scroll_bench.sh`
+- `scripts/perf/gate_l_frontmost_live_client_scroll_parity.sh`
 - `scripts/perf/gate_l_keypress_bench.sh`
 - `scripts/perf/gate_l_native_ghostty_keypress_bench.sh`
 - `scripts/perf/gate_l_pane_switch_bench.sh`
@@ -66,6 +73,63 @@ scripts/perf/gate_l_ax_key_sender.sh --dry-run
   when you need the exact same `tmux_visible_line_change_ms` proxy against
   `/Applications/Ghostty.app`, but do not confuse that proxy with the actual
   user-visible presentation seam.
+- `gate_l_trackpad_upscroll_step_bench.sh` now samples the visible pane rows
+  themselves, not just the wrapped logical line number. Use it when the user
+  complaint is “rows jump in chunks” rather than “the first movement starts
+  late.” The older logical-line-only interpretation was too sensitive to
+  `less -N` wrapping and can overstate coarse steps.
+- `gate_l_native_ghostty_trackpad_upscroll_step_bench.sh` is the native
+  companion for the same up-scroll step-granularity path.
+- `gate_l_trackpad_upscroll_step_parity.sh` is the new native-difference gate
+  for upward trackpad smoothness. It runs embedded and native serially, then
+  fails if embedded exceeds native by more than the configured deltas for
+  `mean_lines_per_step.p50`, `step_rows.p95`, `max_step_rows`,
+  `coarse_step_ratio_ge_2`, `coarse_step_ratio_ge_3`, and
+  `first_changed_elapsed_ms`.
+- `gate_l_trackpad_live_curses_history_step_parity.sh` is the current
+  alternate-screen proxy for tmux-attached live history:
+  - it captures the real pane history with `--no-join-wrapped`
+  - replays it through the repo-local reactive `curses-history` fixture
+  - it uses the same native-difference parity gate, but defaults the tail long
+    enough (`AGTMUX_PERF_UPSTEP_SAMPLE_TAIL_MS=1200`) to observe the first
+    changed step
+- treat the `curses-history` wrapper as a proxy, not the final acceptance gate
+  for loaded live normal-screen scrollback
+- prefer the live-captured `curses-history` wrapper over the older
+  `scrollback` replay path when the user complaint is “the first visible up
+  step arrives too late”:
+  - the plain replay path writes history into a sleeping shell
+  - tmux-attached wheel-up becomes alternate-scroll cursor keys
+  - the sleeping shell just echoes `^[[A`, so that path is structurally invalid
+    as a realistic gate
+- `gate_l_frontmost_live_client_scroll_bench.sh` is the current realistic gate
+  for the actual displayed live pane path:
+  - it targets the current frontmost app window only
+  - it primes tmux copy mode and measures the frontmost tmux client's
+    `scroll_position` directly instead of depending on AX text sampling alone
+  - use it when agtmux-term and native Ghostty are already open on the panes
+    you want to compare
+- `gate_l_frontmost_live_client_scroll_parity.sh` runs that same live-client
+  bench twice, once for agtmux-term and once for native Ghostty, and compares
+  `first_changed_elapsed_ms`, scroll delta, and coarse-step counts.
+- `gate_l_trackpad_live_pane_bench.sh` is the direct diagnostic seam for an
+  actual local pane, for example a live Claude/Codex history pane. It launches
+  a UITest-enabled app without a bootstrap tmux socket, opens the real pane on
+  the default local tmux server, then samples the terminal viewport while a
+  single injected trackpad burst runs.
+- Use the direct live-pane bench to answer “does a fresh client even expose
+  older rows for this pane?” not “is this the final native parity gate?” On
+  2026-03-21 the real Claude pane `%662` recorded non-zero `scrollInputCount`,
+  `scrollPresentationDrawCount`, and `layerPresentCount`, but
+  `changed_transition_count` stayed `0`, which showed that a fresh direct
+  attach still does not represent the existing app's loaded scrollback history.
+- The step-granularity gate uses the same momentum-aware injector as the
+  history bench (`AGTMUX_PERF_UPSTEP_PHASE_MODE=trackpad-burst-momentum` by
+  default) and samples every `16ms`.
+  - the base upscroll-step benches default to a `180ms` tail
+  - the live-captured `curses-history` wrapper raises that default to `1200ms`
+    because the first changed sample can arrive well after the last injected
+    scroll event
 - A true screen/image-diff native parity bench requires Screen Recording
   capability for the current terminal environment. If `/usr/sbin/screencapture`
   fails with `could not create image from display`, treat visual parity work as
