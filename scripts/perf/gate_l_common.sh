@@ -102,8 +102,9 @@ function gate_l_launch_app() {
   local shell_command="${4:-/bin/sleep 600}"
   local inventory_only="${AGTMUX_PERF_UITEST_INVENTORY_ONLY:-1}"
   local use_default_local_tmux="${AGTMUX_PERF_USE_DEFAULT_LOCAL_TMUX:-0}"
+  local terminal_host_mode="${AGTMUX_PERF_TERMINAL_HOST_MODE:-}"
   local scenario_json
-  local -a tmux_socket_env
+  local -a tmux_socket_env host_mode_env
 
   gate_l_socket_name="$socket_name"
   gate_l_session_name="$session_name"
@@ -111,6 +112,11 @@ function gate_l_launch_app() {
     tmux_socket_env=()
   else
     tmux_socket_env=(AGTMUX_TMUX_SOCKET_NAME="$socket_name")
+  fi
+  if [[ -n "$terminal_host_mode" ]]; then
+    host_mode_env=(AGTMUX_TERMINAL_HOST_MODE="$terminal_host_mode")
+  else
+    host_mode_env=()
   fi
   scenario_json="$(jq -cn \
     --arg sessionName "$session_name" \
@@ -125,6 +131,7 @@ function gate_l_launch_app() {
     AGTMUX_UITEST_INVENTORY_ONLY="$inventory_only" \
     AGTMUX_UITEST_ENABLE_GHOSTTY_SURFACES=1 \
     "${tmux_socket_env[@]}" \
+    "${host_mode_env[@]}" \
     AGTMUX_DAEMON_SOCKET_PATH="$gate_l_daemon_socket_path" \
     AGTMUX_UITEST_MANAGED_DAEMON_STDERR_PATH="$gate_l_managed_daemon_stderr_path" \
     AGTMUX_UITEST_TMUX_CONFIG_PATH=/dev/null \
@@ -159,13 +166,19 @@ function gate_l_launch_app_without_bootstrap() {
   local socket_name="$1"
   local inventory_only="${2:-0}"
   local use_default_local_tmux="${AGTMUX_PERF_USE_DEFAULT_LOCAL_TMUX:-0}"
-  local -a tmux_socket_env
+  local terminal_host_mode="${AGTMUX_PERF_TERMINAL_HOST_MODE:-}"
+  local -a tmux_socket_env host_mode_env
 
   gate_l_socket_name="$socket_name"
   if [[ "$use_default_local_tmux" == "1" ]]; then
     tmux_socket_env=()
   else
     tmux_socket_env=(AGTMUX_TMUX_SOCKET_NAME="$socket_name")
+  fi
+  if [[ -n "$terminal_host_mode" ]]; then
+    host_mode_env=(AGTMUX_TERMINAL_HOST_MODE="$terminal_host_mode")
+  else
+    host_mode_env=()
   fi
 
   gate_l_app_pid="$(
@@ -174,6 +187,7 @@ function gate_l_launch_app_without_bootstrap() {
     AGTMUX_UITEST_INVENTORY_ONLY="$inventory_only" \
     AGTMUX_UITEST_ENABLE_GHOSTTY_SURFACES=1 \
     "${tmux_socket_env[@]}" \
+    "${host_mode_env[@]}" \
     AGTMUX_DAEMON_SOCKET_PATH="$gate_l_daemon_socket_path" \
     AGTMUX_UITEST_MANAGED_DAEMON_STDERR_PATH="$gate_l_managed_daemon_stderr_path" \
     AGTMUX_UITEST_TMUX_CONFIG_PATH=/dev/null \

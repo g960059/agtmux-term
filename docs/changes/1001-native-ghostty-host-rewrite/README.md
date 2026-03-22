@@ -21,6 +21,9 @@ Current state:
 - phase 1 next-host ownership now keeps pane-keyed child controllers with a
   capped retention set, so same-tile pane switches can move toward controller
   swap instead of same-surface reattach
+- the UITest tmux bridge and perf app launcher now surface
+  `AGTMUX_TERMINAL_HOST_MODE`, so realistic live gates can target `legacy`
+  and `next` explicitly instead of inferring host ownership from the app build
 - the obsolete replay/frontmost-AX scroll gates are retired in favor of:
   - the live-captured `curses-history` proxy
   - the frontmost live client-scroll parity gate

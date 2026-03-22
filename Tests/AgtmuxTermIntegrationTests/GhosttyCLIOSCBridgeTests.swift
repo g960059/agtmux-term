@@ -2006,6 +2006,7 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
             sessionName: pane.sessionName,
             paneID: pane.paneId
         )
+        XCTAssertEqual(opened.terminalHostMode, "legacy")
         XCTAssertEqual(opened.disposition, "opened")
         XCTAssertEqual(opened.source, "local")
         XCTAssertEqual(opened.sessionName, pane.sessionName)
@@ -2018,6 +2019,7 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
             sessionName: pane.sessionName,
             paneID: pane.paneId
         )
+        XCTAssertEqual(revealed.terminalHostMode, "legacy")
         XCTAssertEqual(revealed.disposition, "revealedExisting")
         XCTAssertEqual(revealed.tileID, opened.tileID)
         XCTAssertEqual(revealed.workbenchID, opened.workbenchID)
@@ -2061,6 +2063,7 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
             paneID: pane.paneId
         )
 
+        XCTAssertEqual(opened.terminalHostMode, "legacy")
         XCTAssertEqual(opened.disposition, "opened")
         XCTAssertEqual(opened.source, "local")
         XCTAssertEqual(opened.sessionName, pane.sessionName)
@@ -2073,6 +2076,27 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
         XCTAssertTrue(
             viewModel.runtimeStore.livePaneSessionKeys.contains("local:\(pane.sessionName)")
         )
+
+        let nextBridge = UITestTmuxBridge(
+            viewModel: viewModel,
+            workbenchStore: WorkbenchStoreV2(
+                workbenches: [.empty()],
+                activeWorkbenchIndex: 0,
+                persistence: nil
+            ),
+            resolveDirectLocalPane: { _, _ in pane },
+            env: [TerminalHostMode.environmentKey: "next"]
+        )
+
+        let nextOpened = try await nextBridge.openTerminalForPaneForTesting(
+            source: "local",
+            sessionName: pane.sessionName,
+            paneID: pane.paneId
+        )
+
+        XCTAssertEqual(nextOpened.terminalHostMode, "next")
+        XCTAssertEqual(nextOpened.disposition, "opened")
+        XCTAssertEqual(nextOpened.paneID, pane.paneId)
     }
 
     private func assertDecodeError(

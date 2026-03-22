@@ -47,6 +47,7 @@ final class UITestTmuxBridge {
     }
 
     private struct ActiveTerminalTargetSnapshot: Codable {
+        let terminalHostMode: String
         let workbenchID: String
         let tileID: String
         let sessionName: String
@@ -77,6 +78,7 @@ final class UITestTmuxBridge {
     }
 
     struct OpenTerminalForPaneSnapshot: Codable, Equatable {
+        let terminalHostMode: String
         let workbenchID: String
         let tileID: String
         let disposition: String
@@ -144,6 +146,10 @@ final class UITestTmuxBridge {
     private let dumpTerminalViewportTextCommand = "__agtmux_dump_terminal_viewport_text__"
     private let sampleTerminalViewportTextCommand = "__agtmux_sample_terminal_viewport_text__"
     private let bridgeReadyCommand = "__agtmux_tmux_bridge_ready__"
+
+    private var terminalHostMode: TerminalHostMode {
+        TerminalHostMode(environment: env)
+    }
 
     init(
         viewModel: AppViewModel,
@@ -615,6 +621,7 @@ final class UITestTmuxBridge {
         }
 
         return ActiveTerminalTargetSnapshot(
+            terminalHostMode: terminalHostMode.rawValue,
             workbenchID: selection.workbenchID.uuidString,
             tileID: terminalTile.id.uuidString,
             sessionName: sessionRef.sessionName,
@@ -757,6 +764,7 @@ final class UITestTmuxBridge {
         }
 
         return OpenTerminalForPaneSnapshot(
+            terminalHostMode: terminalHostMode.rawValue,
             workbenchID: workbenchID.uuidString,
             tileID: result.tileID.uuidString,
             disposition: disposition,
