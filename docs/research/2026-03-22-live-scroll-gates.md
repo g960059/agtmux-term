@@ -131,26 +131,28 @@ This wrapper is useful for rewrite diagnostics, but not for acceptance.
 
 Latest durable finding:
 
-- a fresh attached client can be primed into a scrollable state with a
-  client-targeted `PageUp`
-- on pane `%666`, the prime step moved `scroll_position` from `0 -> 14`
-- the post-run `clientCommandProbe` moved the same fresh client again
-  (`14 -> 28`)
-- the measured wheel burst still left `changed_sample_count = 0`
-- with `AGTMUX_SCROLL_TELEMETRY=1`, the same wheel burst still recorded
+- tmux client `scroll_position` is no longer a required truth source for the
+  measured run, because the user's default tmux server can block `list-clients`
+  and `display-message`
+- the wrapper now mounts, focuses, samples bridge viewport text, sends the
+  wheel burst directly, and returns complete JSON on both `legacy` and `next`
+- even with that viewport-only path, the fresh app still renders only the new
+  login shell and records `changed_sample_count = 0`
+- with `AGTMUX_SCROLL_TELEMETRY=1`, the same wheel burst still records
   non-zero `scrollInputCount`, `scrollPresentationDrawCount`, and
   `layerPresentCount`
-- the terminal viewport text snapshot before and after the wheel burst was
-  identical
+- the terminal viewport text snapshot before and after the wheel burst remains
+  identical on both `legacy` and `next`
 
 Interpretation:
 
-- the current blocker on the phase-1 host-mode wrapper is not "fresh client
-  cannot scroll at all"
-- it is specifically "wheel-up on the fresh live client reaches the terminal
-  path, but changes neither tmux client scroll nor visible viewport state"
-- host-mode parity on this wrapper is therefore invalid until both sides show
-  non-zero wheel-driven movement
+- the current blocker on the phase-2 host-mode wrapper is not "the live gate
+  hangs on tmux client probes"
+- it is now specifically "fresh app mounting does not reproduce the already
+  loaded live history path, so wheel-up reaches the terminal path without
+  changing visible viewport state"
+- host-mode parity on this wrapper is therefore still invalid until the gate
+  can observe a genuinely loaded live pane
 
 ## Root Cause From Vendor Code
 

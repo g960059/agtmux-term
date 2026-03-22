@@ -27,6 +27,12 @@ sample_tail_ms="${AGTMUX_PERF_UPSTEP_SAMPLE_TAIL_MS:-180}"
 scroll_x_frac="${AGTMUX_PERF_SCROLL_X_FRAC:-0.5}"
 scroll_y_frac="${AGTMUX_PERF_SCROLL_Y_FRAC:-0.5}"
 use_scroll_identifier="${AGTMUX_PERF_LIVE_USE_SCROLL_IDENTIFIER:-1}"
+focus_settle_ms="${AGTMUX_PERF_FOCUS_SETTLE_MS:-120}"
+registration_timeout_ms="${AGTMUX_PERF_LIVE_REGISTRATION_TIMEOUT_MS:-15000}"
+frontmost_timeout_ms="${AGTMUX_PERF_LIVE_FRONTMOST_TIMEOUT_MS:-20000}"
+open_retry_count="${AGTMUX_PERF_LIVE_OPEN_RETRY_COUNT:-3}"
+open_retry_sleep_ms="${AGTMUX_PERF_LIVE_OPEN_RETRY_SLEEP_MS:-400}"
+agtmux_cli_bin="${AGTMUX_PERF_AGTMUX_BIN:-${AGTMUX_BIN:-$GATE_L_ROOT/../agtmux/target/release/agtmux}}"
 
 function extract_last_json_line() {
   local raw="$1"
@@ -45,125 +51,98 @@ function sleep_ms() {
   sleep "$(awk -v ms="$milliseconds" 'BEGIN { printf "%.3f", (ms / 1000.0) }')"
 }
 
-function live_tmux() {
-  env -u TMUX -u TMUX_PANE tmux "$@"
-}
-
-function sample_client_scroll_position() {
-  local client_tty="$1"
-  live_tmux display-message -p -c "$client_tty" '#{scroll_position}' 2>/dev/null | tr -d '\r\n'
-}
-
-function sample_client_pane_in_mode() {
-  local client_tty="$1"
-  live_tmux display-message -p -c "$client_tty" '#{pane_in_mode}' 2>/dev/null | tr -d '\r\n'
-}
-
-function sample_client_key_table() {
-  local client_tty="$1"
-  live_tmux display-message -p -c "$client_tty" '#{client_key_table}' 2>/dev/null | tr -d '\r\n'
-}
-
-function resolve_live_pane_target() {
+function resolve_live_pane_target_via_daemon_cli() {
   local session_name="$1"
   local requested_pane_id="$2"
-  local pane_line=""
+  local timeout="${3:-15}"
+  local deadline=$(( EPOCHREALTIME + timeout ))
+  local last_snapshot=""
 
-  if [[ -n "$requested_pane_id" ]]; then
-    pane_line="$(live_tmux display-message -p -t "$requested_pane_id" '#{session_name}|#{pane_id}|#{window_id}|#{pane_active}|#{pane_current_command}|#{pane_title}' 2>/dev/null || true)"
-    if [[ -n "$pane_line" && "${pane_line%%|*}" == "$session_name" ]]; then
-      printf '%s\n' "$pane_line|requested"
-      return 0
-    fi
-  fi
-
-  while IFS= read -r pane_line; do
-    if [[ -n "$pane_title_contains" ]]; then
-      local title
-      title="${pane_line##*|}"
-      if [[ "$title" == *"$pane_title_contains"* ]]; then
-        printf '%s\n' "$pane_line|title-match"
+  while (( EPOCHREALTIME < deadline )); do
+    if [[ -x "$agtmux_cli_bin" ]] && last_snapshot="$("$agtmux_cli_bin" --socket-path "$gate_l_daemon_socket_path" json 2>"$gate_l_tmpdir/live-resolve-daemon.last-error.log")"; then
+      printf '%s\n' "$last_snapshot" >"$gate_l_tmpdir/live-resolve-daemon.json"
+      local resolved
+      resolved="$(jq -r \
+        --arg session_name "$session_name" \
+        --arg requested_pane_id "$requested_pane_id" \
+        --arg pane_title_contains "$pane_title_contains" \
+        --arg pane_command "$pane_command" '
+        def title_text:
+          (.conversation_title // .session_subtitle // .window_name // .current_cmd // "");
+        def as_line($reason):
+          "\(.session_name)|\(.pane_id)|\(.window_id)|0|\(.current_cmd // "")|\(title_text)|\($reason)";
+        def first_line($panes; $reason):
+          ($panes | first?) as $pane
+          | if $pane == null then empty else ($pane | as_line($reason)) end;
+        [(.panes // [])
+          | .[]
+          | select(((.source // "local") == "local") and (.session_name == $session_name or .session_name == null))] as $panes
+        | ($panes
+            | map(select(
+                ((.conversation_title // "") | contains($pane_title_contains))
+                or ((.session_subtitle // "") | contains($pane_title_contains))
+                or ((.window_name // "") | contains($pane_title_contains))
+                or ((.current_cmd // "") | contains($pane_title_contains))
+            ))) as $title_matches
+        | ($panes | map(select(.current_cmd == $pane_command))) as $command_matches
+        | if ($requested_pane_id | length) > 0 then
+            first_line(($panes | map(select(.pane_id == $requested_pane_id))); "requested")
+            // if ($pane_title_contains | length) > 0 then first_line($title_matches; "title-match") else empty end
+            // if ($pane_command | length) > 0 then first_line($command_matches; "command-match") else empty end
+            // first_line($panes; "first-pane-fallback")
+          elif ($pane_title_contains | length) > 0 then
+            first_line($title_matches; "title-match")
+            // if ($pane_command | length) > 0 then first_line($command_matches; "command-match") else empty end
+            // first_line($panes; "first-pane-fallback")
+          elif ($pane_command | length) > 0 then
+            first_line($command_matches; "command-match")
+            // first_line($panes; "first-pane-fallback")
+          else
+            first_line($panes; "first-pane-fallback")
+          end
+      ' <<<"$last_snapshot" | awk '/\|/ { print; exit }')"
+      if [[ -n "$resolved" ]]; then
+        printf '%s\n' "$resolved"
         return 0
       fi
     fi
-  done < <(live_tmux list-panes -t "$session_name" -F '#{session_name}|#{pane_id}|#{window_id}|#{pane_active}|#{pane_current_command}|#{pane_title}' 2>/dev/null || true)
+    sleep 0.10
+  done
 
-  while IFS= read -r pane_line; do
-    if [[ -n "$pane_command" ]]; then
-      local command
-      command="$(printf '%s' "$pane_line" | awk -F'|' '{print $5}')"
-      if [[ "$command" == "$pane_command" ]]; then
-        printf '%s\n' "$pane_line|command-match"
-        return 0
-      fi
-    fi
-  done < <(live_tmux list-panes -t "$session_name" -F '#{session_name}|#{pane_id}|#{window_id}|#{pane_active}|#{pane_current_command}|#{pane_title}' 2>/dev/null || true)
-
-  pane_line="$(live_tmux list-panes -t "$session_name" -F '#{session_name}|#{pane_id}|#{window_id}|#{pane_active}|#{pane_current_command}|#{pane_title}' 2>/dev/null | awk -F'|' '$4 == "1" { print; exit }')"
-  if [[ -n "$pane_line" ]]; then
-    printf '%s\n' "$pane_line|active-fallback"
-    return 0
+  echo "Timed out resolving live pane target via daemon json for session=$session_name pane=$requested_pane_id title=${pane_title_contains:-<none>} command=${pane_command:-<none>}" >&2
+  if [[ -n "$last_snapshot" ]]; then
+    echo "Last daemon snapshot: $last_snapshot" >&2
+  elif [[ -s "$gate_l_tmpdir/live-resolve-daemon.last-error.log" ]]; then
+    cat "$gate_l_tmpdir/live-resolve-daemon.last-error.log" >&2
   fi
-
-  pane_line="$(live_tmux list-panes -t "$session_name" -F '#{session_name}|#{pane_id}|#{window_id}|#{pane_active}|#{pane_current_command}|#{pane_title}' 2>/dev/null | head -n 1)"
-  if [[ -n "$pane_line" ]]; then
-    printf '%s\n' "$pane_line|first-pane-fallback"
-    return 0
-  fi
-
   return 1
 }
 
-function probe_client_scroll_command() {
-  local client_tty="$1"
-  local before_scroll_position
-  local after_scroll_position
-  local pane_in_mode
-  local before_key_table
-  local after_key_table
-
-  before_scroll_position="$(sample_client_scroll_position "$client_tty")"
-  pane_in_mode="$(sample_client_pane_in_mode "$client_tty")"
-  before_key_table="$(sample_client_key_table "$client_tty")"
-
-  live_tmux send-keys -c "$client_tty" PageUp >/dev/null 2>&1 || true
-  sleep_ms 120
-
-  after_scroll_position="$(sample_client_scroll_position "$client_tty")"
-  after_key_table="$(sample_client_key_table "$client_tty")"
-
-  jq -n \
-    --arg client_tty "$client_tty" \
-    --arg before_scroll_position "$before_scroll_position" \
-    --arg after_scroll_position "$after_scroll_position" \
-    --arg pane_in_mode "$pane_in_mode" \
-    --arg before_key_table "$before_key_table" \
-    --arg after_key_table "$after_key_table" \
-    '{
-      clientTTY: $client_tty,
-      paneInMode: (if $pane_in_mode == "" then null else ($pane_in_mode | tonumber) end),
-      beforeKeyTable: (if $before_key_table == "" then null else $before_key_table end),
-      afterKeyTable: (if $after_key_table == "" then null else $after_key_table end),
-      beforeScrollPosition: (if $before_scroll_position == "" then null else ($before_scroll_position | tonumber) end),
-      afterScrollPosition: (if $after_scroll_position == "" then null else ($after_scroll_position | tonumber) end),
-      moved: (
-        if ($before_scroll_position == "" or $after_scroll_position == "") then
-          false
-        else
-          (($after_scroll_position | tonumber) != ($before_scroll_position | tonumber))
-        end
-      )
-    }'
-}
-
 function viewport_sample_count() {
-  awk -v events="$events_per_burst" -v interval="$scroll_interval_ms" -v tail="$sample_tail_ms" -v sample_interval="$sample_interval_ms" \
+  local events="${1:-$events_per_burst}"
+  local interval="${2:-$scroll_interval_ms}"
+  local tail="${3:-$sample_tail_ms}"
+  local sample_interval="${4:-$sample_interval_ms}"
+  awk -v events="$events" -v interval="$interval" -v tail="$tail" -v sample_interval="$sample_interval" \
     'BEGIN {
       total_ms = (events * interval) + tail
       samples = int((total_ms / sample_interval) + 2.999999)
       if (samples < 3) samples = 3
       print samples
     }'
+}
+
+function viewport_sample_timeout() {
+  local sample_count="$1"
+  local interval_ms="$2"
+  awk -v count="$sample_count" -v interval="$interval_ms" 'BEGIN {
+    printf "%.3f", ((count * interval) / 1000.0) + 5.0
+  }'
+}
+
+function mark_stage() {
+  local stage="$1"
+  printf '%s %s\n' "$(date '+%H:%M:%S')" "$stage" >>"$stage_log_path"
 }
 
 function wait_for_terminal_viewport_ready() {
@@ -187,58 +166,113 @@ function wait_for_terminal_viewport_ready() {
 }
 
 function send_prime_scroll() {
-  "$SCRIPT_DIR/gate_l_ax_key_sender.sh" \
-    --app-pid "$gate_l_app_pid" \
-    --focus-scroll-front-window \
-    --x-frac "$scroll_x_frac" \
-    --y-frac "$scroll_y_frac" \
-    --scroll-pixels "$prime_scroll_pixels" \
-    --scroll-repeat "$prime_scroll_repeat" \
-    --scroll-interval-ms "$prime_scroll_interval_ms" \
-    --scroll-phase-mode "$prime_scroll_phase_mode" >/dev/null
+  local terminal_ax_identifier="$1"
+  local scroll_point_x="$2"
+  local scroll_point_y="$3"
+
+  if [[ "$use_scroll_identifier" == "1" ]]; then
+    "$SCRIPT_DIR/gate_l_ax_key_sender.sh" \
+      --app-pid "$gate_l_app_pid" \
+      --scroll-identifier "$terminal_ax_identifier" \
+      --x-frac "$scroll_x_frac" \
+      --y-frac "$scroll_y_frac" \
+      --scroll-pixels "$prime_scroll_pixels" \
+      --scroll-repeat "$prime_scroll_repeat" \
+      --scroll-interval-ms "$prime_scroll_interval_ms" \
+      --scroll-phase-mode "$prime_scroll_phase_mode"
+  else
+    "$SCRIPT_DIR/gate_l_ax_key_sender.sh" \
+      --app-pid "$gate_l_app_pid" \
+      --scroll-point \
+      --point-x "$scroll_point_x" \
+      --point-y "$scroll_point_y" \
+      --scroll-pixels "$prime_scroll_pixels" \
+      --scroll-repeat "$prime_scroll_repeat" \
+      --scroll-interval-ms "$prime_scroll_interval_ms" \
+      --scroll-phase-mode "$prime_scroll_phase_mode"
+  fi
 }
 
-function prepare_live_client() {
-  local client_tty="$1"
-  local previous_scroll_position=""
-  local current_scroll_position
-  local current_mode
-  local current_key_table
+function prepare_live_viewport() {
+  local tile_id="$1"
+  local terminal_ax_identifier="$2"
+  local scroll_point_x="$3"
+  local scroll_point_y="$4"
   local round=0
+  local prime_sample_count
+  local sample_timeout
+  local sample_request_id
+  local prime_sample_json_path=""
+  local prime_metrics_json_path=""
+  local changed_sample_count=0
 
-  current_scroll_position="$(sample_client_scroll_position "$client_tty")"
-  current_mode="$(sample_client_pane_in_mode "$client_tty")"
-  current_key_table="$(sample_client_key_table "$client_tty")"
-
-  if [[ -z "$current_scroll_position" || "$current_scroll_position" == "0" ]]; then
-    live_tmux send-keys -c "$client_tty" PageUp >/dev/null 2>&1 || true
-    sleep_ms "$prime_settle_ms"
-    current_scroll_position="$(sample_client_scroll_position "$client_tty")"
-    current_mode="$(sample_client_pane_in_mode "$client_tty")"
-    current_key_table="$(sample_client_key_table "$client_tty")"
-  fi
+  prime_sample_count="$(viewport_sample_count "$prime_scroll_repeat" "$prime_scroll_interval_ms" "$sample_tail_ms" "$sample_interval_ms")"
+  sample_timeout="$(viewport_sample_timeout "$prime_sample_count" "$sample_interval_ms")"
 
   while (( round < prime_max_rounds )); do
-    if (( round >= prime_min_rounds )) && [[ "$current_mode" == "1" \
-          && -n "$current_scroll_position" \
-          && "$current_scroll_position" != "0" \
-          && -n "$current_scroll_position" \
-          && "$current_scroll_position" == "$previous_scroll_position" ]]; then
+    round=$((round + 1))
+    prime_sample_json_path="$gate_l_tmpdir/prime-viewport-samples.$round.json"
+    prime_metrics_json_path="$gate_l_tmpdir/prime-viewport-metrics.$round.json"
+    sample_request_id="$(gate_l_start_async_bridge_command false "__agtmux_sample_terminal_viewport_text__" "$tile_id" "$prime_sample_count" "$sample_interval_ms")"
+    sleep_ms 20
+    send_prime_scroll "$terminal_ax_identifier" "$scroll_point_x" "$scroll_point_y" >"$gate_l_tmpdir/prime-send.$round.json"
+    if ! gate_l_wait_for_async_bridge_json_result "$sample_request_id" "$sample_timeout" >"$prime_sample_json_path"; then
+      echo "Failed to collect prime viewport samples for host mode $host_mode" >&2
+      return 1
+    fi
+    python3 "$STEP_METRICS_PY" "$prime_sample_json_path" >"$prime_metrics_json_path"
+    changed_sample_count="$(jq -r '.summary.changed_sample_count // 0' "$prime_metrics_json_path")"
+    if (( round >= prime_min_rounds )) && (( changed_sample_count > 0 )); then
       return 0
     fi
-    round=$((round + 1))
-    previous_scroll_position="$current_scroll_position"
-    send_prime_scroll
     sleep_ms "$prime_settle_ms"
-    current_scroll_position="$(sample_client_scroll_position "$client_tty")"
-    current_mode="$(sample_client_pane_in_mode "$client_tty")"
-    current_key_table="$(sample_client_key_table "$client_tty")"
   done
 
-  if [[ "$current_mode" != "1" || -z "$current_scroll_position" || "$current_scroll_position" == "0" ]]; then
-    echo "Failed to prime live client into copy mode for host mode $host_mode: keyTable=$current_key_table mode=$current_mode scroll=$current_scroll_position" >&2
-    return 1
+  echo "Failed to prime live viewport for host mode $host_mode" >&2
+  if [[ -n "$prime_metrics_json_path" && -f "$prime_metrics_json_path" ]]; then
+    cat "$prime_metrics_json_path" >&2
   fi
+  return 1
+}
+
+function open_terminal_for_live_pane() {
+  local source="$1"
+  local session_name="$2"
+  local pane_id="$3"
+  local last_error=""
+  local raw_output normalized_output
+  local attempt=1
+
+  while (( attempt <= open_retry_count )); do
+    if raw_output="$(
+      gate_l_send_bridge_json_command false "$settle_timeout" "__agtmux_open_terminal_for_pane__" "$source" "$session_name" "$pane_id" \
+        2>"$gate_l_tmpdir/open-terminal.last-error.log"
+    )"; then
+      if normalized_output="$(extract_last_json_line "$raw_output")"; then
+        print -r -- "$normalized_output"
+        return 0
+      fi
+    fi
+
+    if [[ -s "$gate_l_tmpdir/open-terminal.last-error.log" ]]; then
+      last_error="$(<"$gate_l_tmpdir/open-terminal.last-error.log")"
+    else
+      last_error="open terminal command failed without stderr"
+    fi
+
+    if (( attempt < open_retry_count )) && [[ "$last_error" == *"Timed out waiting for terminal view registration"* ]]; then
+      gate_l_activate_app
+      sleep_ms "$open_retry_sleep_ms"
+      attempt=$((attempt + 1))
+      continue
+    fi
+
+    echo "$last_error" >&2
+    return 1
+  done
+
+  echo "Failed to open live terminal pane after $open_retry_count attempts" >&2
+  return 1
 }
 
 while (( $# > 0 )); do
@@ -266,34 +300,6 @@ while (( $# > 0 )); do
   esac
 done
 
-if [[ -z "$pane_id" ]]; then
-  pane_id="$(live_tmux display-message -p '#{pane_id}' 2>/dev/null || true)"
-fi
-
-resolved_pane_target="$(resolve_live_pane_target "$session_name" "$pane_id" || true)"
-if [[ -z "$resolved_pane_target" ]]; then
-  echo "Failed to resolve pane target in session $session_name" >&2
-  exit 1
-fi
-resolved_session_name="${resolved_pane_target%%|*}"
-remaining_target="${resolved_pane_target#*|}"
-resolved_pane_id="${remaining_target%%|*}"
-remaining_target="${remaining_target#*|}"
-window_id="${remaining_target%%|*}"
-remaining_target="${remaining_target#*|}"
-resolved_pane_active="${remaining_target%%|*}"
-remaining_target="${remaining_target#*|}"
-resolved_pane_command="${remaining_target%%|*}"
-remaining_target="${remaining_target#*|}"
-resolved_pane_title="${remaining_target%%|*}"
-resolution_reason="${resolved_pane_target##*|}"
-pane_id="$resolved_pane_id"
-
-if [[ -z "$window_id" ]]; then
-  echo "Failed to resolve window id for pane $pane_id" >&2
-  exit 1
-fi
-
 case "$host_mode" in
   legacy|next)
     ;;
@@ -303,11 +309,20 @@ case "$host_mode" in
     ;;
 esac
 
+export AGTMUX_PERF_DAEMON_SOCKET_PATH_OVERRIDE="$HOME/Library/Application Support/AGTMUXDesktop/agtmuxd.sock"
 token="live-client-${host_mode}-$(uuidgen | tr '[:upper:]' '[:lower:]' | cut -c1-8)"
 gate_l_setup_paths "$token"
+stage_log_path="$gate_l_tmpdir/stage.log"
+mark_stage setup
+if [[ "${AGTMUX_PERF_KEEP_TMP:-0}" == "1" ]]; then
+  echo "Gate-L terminal-host live client-scroll temp dir: $gate_l_tmpdir" >&2
+fi
+
 export AGTMUX_PERF_USE_DEFAULT_LOCAL_TMUX=1
 export AGTMUX_PERF_UITEST_INVENTORY_ONLY=0
 export AGTMUX_PERF_TERMINAL_HOST_MODE="$host_mode"
+export AGTMUX_UITEST_TERMINAL_VIEW_REGISTRATION_TIMEOUT_MS="$registration_timeout_ms"
+export AGTMUX_UITEST_ALLOW_SESSION_ONLY_OPEN_FALLBACK=1
 
 cleanup() {
   local exit_status=$?
@@ -324,6 +339,33 @@ trap cleanup EXIT INT TERM
 gate_l_launch_app_without_bootstrap "agtmux-gate-l-$token" 0
 gate_l_wait_for_bridge_ready "$settle_timeout"
 gate_l_activate_app
+mark_stage app-ready
+
+mark_stage resolve-pane-start
+resolved_pane_target="$(resolve_live_pane_target_via_daemon_cli "$session_name" "$pane_id" "$settle_timeout" || true)"
+if [[ -z "$resolved_pane_target" ]]; then
+  echo "Failed to resolve pane target in session $session_name via daemon json" >&2
+  exit 1
+fi
+resolved_session_name="${resolved_pane_target%%|*}"
+remaining_target="${resolved_pane_target#*|}"
+resolved_pane_id="${remaining_target%%|*}"
+remaining_target="${remaining_target#*|}"
+window_id="${remaining_target%%|*}"
+remaining_target="${remaining_target#*|}"
+resolved_pane_active="${remaining_target%%|*}"
+remaining_target="${remaining_target#*|}"
+resolved_pane_command="${remaining_target%%|*}"
+remaining_target="${remaining_target#*|}"
+resolved_pane_title="${remaining_target%%|*}"
+resolution_reason="${resolved_pane_target##*|}"
+[[ "$resolved_session_name" == "null" ]] && resolved_session_name="$session_name"
+[[ "$window_id" == "null" ]] && window_id=""
+[[ "$resolved_pane_active" == "null" ]] && resolved_pane_active=""
+[[ "$resolved_pane_command" == "null" ]] && resolved_pane_command=""
+[[ "$resolved_pane_title" == "null" ]] && resolved_pane_title=""
+pane_id="$resolved_pane_id"
+mark_stage resolve-pane-done
 
 open_json_path="$gate_l_tmpdir/open-terminal.json"
 active_json_path="$gate_l_tmpdir/active-target.json"
@@ -332,17 +374,16 @@ post_focus_json_path="$gate_l_tmpdir/post-focus-state.json"
 baseline_viewport_json_path="$gate_l_tmpdir/baseline-viewport.json"
 final_viewport_json_path="$gate_l_tmpdir/final-viewport.json"
 bench_json_path="$gate_l_tmpdir/live-client-bench.json"
-client_probe_json_path="$gate_l_tmpdir/client-command-probe.json"
+bench_stderr_path="$gate_l_tmpdir/live-client-bench.stderr.log"
 post_scroll_telemetry_json_path="$gate_l_tmpdir/post-scroll-telemetry.json"
 viewport_sample_json_path="$gate_l_tmpdir/live-client-viewport-samples.json"
 viewport_metrics_json_path="$gate_l_tmpdir/live-client-viewport-metrics.json"
+send_json_path="$gate_l_tmpdir/live-client-send.json"
 
-open_json="$(
-  extract_last_json_line "$(
-    gate_l_send_bridge_json_command true "$settle_timeout" "__agtmux_open_terminal_for_pane__" "local" "$session_name" "$pane_id"
-  )"
-)"
+mark_stage open-terminal-start
+open_json="$(open_terminal_for_live_pane "local" "$session_name" "$pane_id")"
 printf '%s\n' "$open_json" >"$open_json_path"
+mark_stage open-terminal-done
 
 reported_host_mode="$(jq -r '.terminalHostMode // empty' <<<"$open_json")"
 tile_id="$(jq -r '.tileID // empty' <<<"$open_json")"
@@ -356,15 +397,16 @@ if [[ "$reported_host_mode" != "$host_mode" ]]; then
 fi
 
 wait_for_terminal_viewport_ready "$tile_id" "$settle_timeout"
+mark_stage viewport-ready
 
-if active_json="$(
-  extract_last_json_line "$(
-    gate_l_wait_for_active_target "$session_name" "$window_id" "$pane_id" "$settle_timeout"
-  )"
-)"; then
-  :
-else
+if [[ -n "$window_id" ]]; then
   if active_json="$(
+    extract_last_json_line "$(
+      gate_l_wait_for_active_target "$session_name" "$window_id" "$pane_id" "$settle_timeout"
+    )"
+  )"; then
+    :
+  elif active_json="$(
     extract_last_json_line "$(
       gate_l_wait_for_rendered_target "$session_name" "$window_id" "$pane_id" "$settle_timeout"
     )"
@@ -377,11 +419,15 @@ else
       )"
     )"
   fi
+else
+  active_json="$(gate_l_send_bridge_json_command false 5 "__agtmux_dump_rendered_terminal_target__" "$tile_id")"
 fi
 printf '%s\n' "$active_json" >"$active_json_path"
+mark_stage active-target-ready
 
 active_host_mode="$(jq -r '.terminalHostMode // empty' <<<"$active_json")"
 rendered_client_tty="$(jq -r '.renderedClientTTY // empty' <<<"$active_json")"
+rendered_client_pane_id="$(jq -r '.renderedClientPaneID // empty' <<<"$active_json")"
 if [[ -z "$rendered_client_tty" ]]; then
   echo "Failed to resolve rendered client tty for $session_name $pane_id ($host_mode)" >&2
   exit 1
@@ -390,6 +436,15 @@ if [[ "$active_host_mode" != "$host_mode" ]]; then
   echo "Active target reported unexpected host mode: expected=$host_mode got=$active_host_mode" >&2
   exit 1
 fi
+if [[ -n "$pane_id" && -n "$rendered_client_pane_id" && "$rendered_client_pane_id" != "$pane_id" ]]; then
+  echo "Active target reported unexpected pane: expected=$pane_id got=$rendered_client_pane_id" >&2
+  exit 1
+fi
+
+gate_l_send_bridge_command false 10 "__agtmux_focus_terminal_host__" "$tile_id" >/dev/null
+gate_l_activate_app
+sleep_ms "$focus_settle_ms"
+mark_stage focus-host
 
 terminal_ax_identifier="workspace.terminalHost.${tile_id}"
 if focus_json="$(gate_l_send_bridge_json_command false 5 "__agtmux_dump_focus_state__" "$tile_id" 2>"$gate_l_tmpdir/focus-state.last-error.log")"; then
@@ -402,29 +457,38 @@ else
   printf '%s\n' '{"terminalAccessibilityIdentifier":null}' >"$focus_json_path"
 fi
 
-prepare_live_client "$rendered_client_tty"
-
 if baseline_viewport_json="$(gate_l_send_bridge_json_command false 5 "__agtmux_dump_terminal_viewport_text__" "$tile_id" 2>"$gate_l_tmpdir/baseline-viewport.last-error.log")"; then
   printf '%s\n' "$baseline_viewport_json" >"$baseline_viewport_json_path"
 else
   printf '%s\n' '{}' >"$baseline_viewport_json_path"
 fi
+mark_stage baseline-viewport
 
 sample_count="$(viewport_sample_count)"
 sample_request_id="$(gate_l_start_async_bridge_command false "__agtmux_sample_terminal_viewport_text__" "$tile_id" "$sample_count" "$sample_interval_ms")"
-
-frontmost_bench_args=(
-  --app-pid "$gate_l_app_pid"
-  --client-tty "$rendered_client_tty"
-  --label "$host_mode"
-)
-
+sleep_ms 20
 if [[ "$use_scroll_identifier" == "1" ]]; then
-  frontmost_bench_args+=(--scroll-identifier "$terminal_ax_identifier")
+  "$SCRIPT_DIR/gate_l_ax_key_sender.sh" \
+    --app-pid "$gate_l_app_pid" \
+    --scroll-identifier "$terminal_ax_identifier" \
+    --x-frac "$scroll_x_frac" \
+    --y-frac "$scroll_y_frac" \
+    --scroll-pixels "$scroll_pixels_per_event" \
+    --scroll-repeat "$events_per_burst" \
+    --scroll-interval-ms "$scroll_interval_ms" \
+    --scroll-phase-mode "$scroll_phase_mode" >"$send_json_path" 2>"$bench_stderr_path"
+else
+  "$SCRIPT_DIR/gate_l_ax_key_sender.sh" \
+    --app-pid "$gate_l_app_pid" \
+    --scroll-front-window \
+    --x-frac "$scroll_x_frac" \
+    --y-frac "$scroll_y_frac" \
+    --scroll-pixels "$scroll_pixels_per_event" \
+    --scroll-repeat "$events_per_burst" \
+    --scroll-interval-ms "$scroll_interval_ms" \
+    --scroll-phase-mode "$scroll_phase_mode" >"$send_json_path" 2>"$bench_stderr_path"
 fi
-
-"$SCRIPT_DIR/gate_l_frontmost_live_client_scroll_bench.sh" \
-  "${frontmost_bench_args[@]}" >"$bench_json_path"
+mark_stage live-bench-done
 
 sample_timeout="$(
   awk -v count="$sample_count" -v interval="$sample_interval_ms" 'BEGIN {
@@ -437,12 +501,14 @@ else
   printf '%s\n' '{}' >"$viewport_sample_json_path"
   printf '%s\n' '{}' >"$viewport_metrics_json_path"
 fi
+mark_stage viewport-samples-done
 
 if final_viewport_json="$(gate_l_send_bridge_json_command false 5 "__agtmux_dump_terminal_viewport_text__" "$tile_id" 2>"$gate_l_tmpdir/final-viewport.last-error.log")"; then
   printf '%s\n' "$final_viewport_json" >"$final_viewport_json_path"
 else
   printf '%s\n' '{}' >"$final_viewport_json_path"
 fi
+mark_stage final-viewport
 
 if post_focus_json="$(gate_l_send_bridge_json_command false 5 "__agtmux_dump_focus_state__" "$tile_id" 2>"$gate_l_tmpdir/post-focus-state.last-error.log")"; then
   printf '%s\n' "$post_focus_json" >"$post_focus_json_path"
@@ -455,8 +521,37 @@ if post_scroll_telemetry_json="$(gate_l_send_bridge_json_command false 5 "__agtm
 else
   printf '%s\n' '{}' >"$post_scroll_telemetry_json_path"
 fi
+mark_stage post-scroll-telemetry
 
-probe_client_scroll_command "$rendered_client_tty" >"$client_probe_json_path"
+jq -n \
+  --arg host_mode "$host_mode" \
+  --arg rendered_client_tty "$rendered_client_tty" \
+  --argjson events_per_burst "$events_per_burst" \
+  --argjson sample_interval_ms "$sample_interval_ms" \
+  --argjson sample_tail_ms "$sample_tail_ms" \
+  --argjson scroll_interval_ms "$scroll_interval_ms" \
+  --arg use_scroll_identifier "$use_scroll_identifier" \
+  --arg terminal_ax_identifier "$terminal_ax_identifier" \
+  --slurpfile focus "$focus_json_path" \
+  --slurpfile sender "$send_json_path" \
+  --slurpfile metrics "$viewport_metrics_json_path" \
+  --arg tmpdir "$gate_l_tmpdir" \
+  '{
+    hostMode: $host_mode,
+    clientTTY: (if $rendered_client_tty == "" then null else $rendered_client_tty end),
+    config: {
+      eventsPerBurst: $events_per_burst,
+      scrollIntervalMs: $scroll_interval_ms,
+      sampleIntervalMs: $sample_interval_ms,
+      sampleTailMs: $sample_tail_ms,
+      scrollTargetMode: (if $use_scroll_identifier == "1" then "identifier" else "front-window" end),
+      terminalAccessibilityIdentifier: (if $terminal_ax_identifier == "" then null else $terminal_ax_identifier end)
+    },
+    focus: $focus[0],
+    sender: $sender[0],
+    metrics: $metrics[0],
+    tmpdir: $tmpdir
+  }' >"$bench_json_path"
 
 jq -n \
   --arg host_mode "$host_mode" \
@@ -478,7 +573,6 @@ jq -n \
   --slurpfile baselineViewport "$baseline_viewport_json_path" \
   --slurpfile finalViewport "$final_viewport_json_path" \
   --slurpfile bench "$bench_json_path" \
-  --slurpfile clientProbe "$client_probe_json_path" \
   --slurpfile postScrollTelemetry "$post_scroll_telemetry_json_path" \
   --slurpfile viewportSamples "$viewport_sample_json_path" \
   --slurpfile viewportMetrics "$viewport_metrics_json_path" \
@@ -506,7 +600,6 @@ jq -n \
     baselineViewport: $baselineViewport[0],
     finalViewport: $finalViewport[0],
     bench: $bench[0],
-    clientCommandProbe: $clientProbe[0],
     postScrollTelemetry: $postScrollTelemetry[0],
     viewportSamples: $viewportSamples[0],
     viewportMetrics: $viewportMetrics[0]

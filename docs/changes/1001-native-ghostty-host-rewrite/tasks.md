@@ -13,6 +13,8 @@
   `legacy` vs `next` runs
 - [x] harden the fresh/live host-mode wrapper against stale tmux environment
   and stale pane IDs
+- [x] remove measured-run dependence on tmux client scroll probes from the live
+  host-mode wrapper
 - [ ] realistic loaded live-pane parity gate for the next host
 - [ ] durable-knowledge promotion
 - [ ] remove `docs/changes/1001-native-ghostty-host-rewrite/` before merge

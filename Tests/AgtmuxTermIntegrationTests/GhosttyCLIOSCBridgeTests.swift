@@ -1973,6 +1973,56 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
     }
 
     @MainActor
+    func testUITestTmuxBridgeRenderedTerminalTargetSnapshotUsesRegisteredSurfaceState() async throws {
+        let tileID = UUID()
+        let workbenchID = UUID()
+        let sessionRef = SessionRef(target: .local, sessionName: "vm agtmux-term")
+        let tile = WorkbenchTile(id: tileID, kind: .terminal(sessionRef: sessionRef))
+        let workbench = Workbench(
+            id: workbenchID,
+            title: "Live",
+            root: .tile(tile),
+            focusedTileID: tileID
+        )
+        let surfaceHandle = GhosttySurfaceHandle(rawValue: 0x9914)
+
+        GhosttyTerminalSurfaceRegistry.shared.register(
+            surfaceHandle: surfaceHandle,
+            context: GhosttyTerminalSurfaceContext(
+                workbenchID: workbenchID,
+                tileID: tileID,
+                surfaceKey: "wb:live",
+                sessionRef: sessionRef
+            ),
+            attachCommand: "tmux attach-session -t vm agtmux-term"
+        )
+        try GhosttyTerminalSurfaceRegistry.shared.register(
+            clientTTY: "/dev/ttys042",
+            forSurfaceHandle: surfaceHandle
+        )
+        defer {
+            GhosttyTerminalSurfaceRegistry.shared.unregister(surfaceHandle: surfaceHandle)
+        }
+
+        let bridge = UITestTmuxBridge(
+            viewModel: AppViewModel(hostsConfig: HostsConfig(hosts: [])),
+            workbenchStore: WorkbenchStoreV2(
+                workbenches: [workbench],
+                activeWorkbenchIndex: 0,
+                persistence: nil
+            ),
+            env: [:]
+        )
+
+        let snapshot = try await bridge.renderedTerminalTargetSnapshotForTesting(tileID: tileID)
+        XCTAssertEqual(snapshot.terminalHostMode, "legacy")
+        XCTAssertEqual(snapshot.workbenchID, workbenchID.uuidString)
+        XCTAssertEqual(snapshot.tileID, tileID.uuidString)
+        XCTAssertEqual(snapshot.sessionName, sessionRef.sessionName)
+        XCTAssertEqual(snapshot.renderedClientTTY, "/dev/ttys042")
+    }
+
+    @MainActor
     func testUITestTmuxBridgeSamplesTerminalViewportTextRepeatedly() async throws {
         SurfacePool.shared.resetForTesting()
         defer { SurfacePool.shared.resetForTesting() }
@@ -2173,6 +2223,71 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
         XCTAssertEqual(nextOpened.terminalHostMode, "next")
         XCTAssertEqual(nextOpened.disposition, "opened")
         XCTAssertEqual(nextOpened.paneID, pane.paneId)
+    }
+
+    @MainActor
+    func testUITestTmuxBridgeOpenTerminalForPaneCanUseSessionOnlyFallback() async throws {
+        SurfacePool.shared.resetForTesting()
+        defer { SurfacePool.shared.resetForTesting() }
+
+        let viewModel = AppViewModel(
+            hostsConfig: HostsConfig(hosts: [])
+        )
+        viewModel.panes = []
+
+        let workbenchStore = WorkbenchStoreV2(
+            workbenches: [.empty()],
+            activeWorkbenchIndex: 0,
+            persistence: nil
+        )
+        let bridge = UITestTmuxBridge(
+            viewModel: viewModel,
+            workbenchStore: workbenchStore,
+            resolveDirectLocalPane: { _, _ in
+                XCTFail("session-only fallback should skip direct pane resolution")
+                return nil
+            },
+            env: ["AGTMUX_UITEST_ALLOW_SESSION_ONLY_OPEN_FALLBACK": "1"]
+        )
+
+        let view = GhosttyTerminalViewViewportTextSpy()
+        view.snapshots = [
+            .init(text: "ready", lineCount: 1, characterCount: 5, usesAlternateScroll: false)
+        ]
+        Task { @MainActor in
+            let deadline = ContinuousClock.now + .milliseconds(500)
+            while ContinuousClock.now < deadline {
+                if let tileID = workbenchStore.activeWorkbench?.tiles.first?.id {
+                    SurfacePool.shared.register(
+                        view: view,
+                        leafID: tileID,
+                        tmuxPaneID: "%657",
+                        surfaceHandle: GhosttySurfaceHandle(rawValue: 0x657)
+                    )
+                    return
+                }
+                try? await Task.sleep(for: .milliseconds(20))
+            }
+        }
+
+        let opened = try await bridge.openTerminalForPaneForTesting(
+            source: "local",
+            sessionName: "vm agtmux-term",
+            paneID: "%657"
+        )
+
+        XCTAssertEqual(opened.terminalHostMode, "legacy")
+        XCTAssertEqual(opened.disposition, "opened")
+        XCTAssertEqual(opened.source, "local")
+        XCTAssertEqual(opened.sessionName, "vm agtmux-term")
+        XCTAssertEqual(opened.paneID, "%657")
+        XCTAssertFalse(opened.tileID.isEmpty)
+        XCTAssertFalse(opened.workbenchID.isEmpty)
+        XCTAssertTrue(viewModel.runtimeStore.hasCompletedInitialFetch)
+        XCTAssertFalse(viewModel.runtimeStore.offlineHosts.contains("local"))
+        XCTAssertTrue(
+            viewModel.runtimeStore.livePaneSessionKeys.contains("local:vm agtmux-term")
+        )
     }
 
     private func assertDecodeError(

@@ -70,26 +70,26 @@ Current state:
     TMUX_PANE tmux`, both in the shell wrapper and in the client-scroll
     sampler, so the gate no longer depends on the invoking shell's stale tmux
     environment
-  - it now samples the terminal viewport text in parallel with tmux client
-    `scroll_position`, because client scroll alone is insufficient to prove
-    that wheel input moved the loaded live viewport
+  - it no longer depends on tmux client `scroll_position` / `list-clients` /
+    `display-message` during the measured run, because the user's default live
+    tmux server can block those commands
+  - the measured run now uses the bridge viewport sampler as ground truth and
+    sends the wheel burst directly with `gate_l_ax_key_sender.sh`
 - fresh live-client investigation has now isolated a stricter boundary:
-  - client-targeted `PageUp` successfully primes a fresh attached client from
-    `scroll_position 0 -> 14` and a post-run probe can move it again
-    (`14 -> 28`)
-  - the same fresh client still records `changed_sample_count = 0` for the
-    injected wheel burst
+  - the fresh host-mode wrapper now completes on both `legacy` and `next`
+    using viewport-only truth
+  - both modes currently render a fresh local session viewport that still shows
+    only the new-login shell and records `changed_sample_count = 0`
   - with `AGTMUX_SCROLL_TELEMETRY=1`, that same wheel burst still increments
     `scrollInputCount`, `scrollPresentationDrawCount`, and `layerPresentCount`
-    while both the tmux client `scroll_position` and the terminal viewport text
-    stay unchanged
+    while the terminal viewport text stays unchanged
   - vendor `Surface.scrollCallback` explains why: on a normal-screen pane with
     `uses_alternate_scroll == false` and no mouse-reporting mode, wheel input
     takes the local `scrollViewport` path rather than tmux copy-mode or
     alternate-scroll writes
-  - therefore the current phase-1 blocker is not "fresh client cannot scroll"
-    but "fresh live client wheel-up reaches the terminal path without changing
-    either tmux client scroll or visible viewport state"
+  - therefore the current phase-2 blocker is not "live wrapper hangs" but
+    "fresh app mounting does not reproduce the already-loaded live history path
+    that the user is scrolling in the existing app"
   - bridge `open_terminal_for_pane` now waits for terminal view registration
     before returning, because otherwise fresh live gates can fail with
     `No terminal view registered for tileID ...` before the tile is actually

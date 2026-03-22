@@ -66,7 +66,7 @@ function gate_l_setup_paths() {
   gate_l_managed_daemon_stderr_path="$gate_l_tmpdir/managed-daemon.stderr.log"
   gate_l_app_stdout_path="$gate_l_tmpdir/app.stdout.log"
   gate_l_app_stderr_path="$gate_l_tmpdir/app.stderr.log"
-  gate_l_daemon_socket_path="$HOME/.agt/perf-${token}.sock"
+  gate_l_daemon_socket_path="${AGTMUX_PERF_DAEMON_SOCKET_PATH_OVERRIDE:-$HOME/.agt/perf-${token}.sock}"
 }
 
 function gate_l_cleanup_stale_perf_processes() {
@@ -105,7 +105,7 @@ function gate_l_launch_app() {
   local use_default_local_tmux="${AGTMUX_PERF_USE_DEFAULT_LOCAL_TMUX:-0}"
   local terminal_host_mode="${AGTMUX_PERF_TERMINAL_HOST_MODE:-}"
   local scenario_json
-  local -a tmux_socket_env host_mode_env
+  local -a tmux_socket_env host_mode_env extra_uitest_env
 
   gate_l_socket_name="$socket_name"
   gate_l_session_name="$session_name"
@@ -118,6 +118,17 @@ function gate_l_launch_app() {
     host_mode_env=(AGTMUX_TERMINAL_HOST_MODE="$terminal_host_mode")
   else
     host_mode_env=()
+  fi
+  extra_uitest_env=()
+  if [[ -n "${AGTMUX_UITEST_TERMINAL_VIEW_REGISTRATION_TIMEOUT_MS:-}" ]]; then
+    extra_uitest_env+=(
+      AGTMUX_UITEST_TERMINAL_VIEW_REGISTRATION_TIMEOUT_MS="${AGTMUX_UITEST_TERMINAL_VIEW_REGISTRATION_TIMEOUT_MS}"
+    )
+  fi
+  if [[ -n "${AGTMUX_UITEST_ALLOW_SESSION_ONLY_OPEN_FALLBACK:-}" ]]; then
+    extra_uitest_env+=(
+      AGTMUX_UITEST_ALLOW_SESSION_ONLY_OPEN_FALLBACK="${AGTMUX_UITEST_ALLOW_SESSION_ONLY_OPEN_FALLBACK}"
+    )
   fi
   scenario_json="$(jq -cn \
     --arg sessionName "$session_name" \
@@ -133,6 +144,7 @@ function gate_l_launch_app() {
     AGTMUX_UITEST_ENABLE_GHOSTTY_SURFACES=1 \
     "${tmux_socket_env[@]}" \
     "${host_mode_env[@]}" \
+    "${extra_uitest_env[@]}" \
     AGTMUX_DAEMON_SOCKET_PATH="$gate_l_daemon_socket_path" \
     AGTMUX_UITEST_MANAGED_DAEMON_STDERR_PATH="$gate_l_managed_daemon_stderr_path" \
     AGTMUX_UITEST_TMUX_CONFIG_PATH=/dev/null \
@@ -168,7 +180,7 @@ function gate_l_launch_app_without_bootstrap() {
   local inventory_only="${2:-0}"
   local use_default_local_tmux="${AGTMUX_PERF_USE_DEFAULT_LOCAL_TMUX:-0}"
   local terminal_host_mode="${AGTMUX_PERF_TERMINAL_HOST_MODE:-}"
-  local -a tmux_socket_env host_mode_env
+  local -a tmux_socket_env host_mode_env extra_uitest_env
 
   gate_l_socket_name="$socket_name"
   if [[ "$use_default_local_tmux" == "1" ]]; then
@@ -181,6 +193,17 @@ function gate_l_launch_app_without_bootstrap() {
   else
     host_mode_env=()
   fi
+  extra_uitest_env=()
+  if [[ -n "${AGTMUX_UITEST_TERMINAL_VIEW_REGISTRATION_TIMEOUT_MS:-}" ]]; then
+    extra_uitest_env+=(
+      AGTMUX_UITEST_TERMINAL_VIEW_REGISTRATION_TIMEOUT_MS="${AGTMUX_UITEST_TERMINAL_VIEW_REGISTRATION_TIMEOUT_MS}"
+    )
+  fi
+  if [[ -n "${AGTMUX_UITEST_ALLOW_SESSION_ONLY_OPEN_FALLBACK:-}" ]]; then
+    extra_uitest_env+=(
+      AGTMUX_UITEST_ALLOW_SESSION_ONLY_OPEN_FALLBACK="${AGTMUX_UITEST_ALLOW_SESSION_ONLY_OPEN_FALLBACK}"
+    )
+  fi
 
   gate_l_app_pid="$(
   env \
@@ -189,6 +212,7 @@ function gate_l_launch_app_without_bootstrap() {
     AGTMUX_UITEST_ENABLE_GHOSTTY_SURFACES=1 \
     "${tmux_socket_env[@]}" \
     "${host_mode_env[@]}" \
+    "${extra_uitest_env[@]}" \
     AGTMUX_DAEMON_SOCKET_PATH="$gate_l_daemon_socket_path" \
     AGTMUX_UITEST_MANAGED_DAEMON_STDERR_PATH="$gate_l_managed_daemon_stderr_path" \
     AGTMUX_UITEST_TMUX_CONFIG_PATH=/dev/null \

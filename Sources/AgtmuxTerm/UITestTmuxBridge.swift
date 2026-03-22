@@ -77,6 +77,16 @@ final class UITestTmuxBridge {
         let focused: Bool
     }
 
+    struct RenderedTerminalTargetSnapshot: Codable, Equatable {
+        let terminalHostMode: String
+        let workbenchID: String
+        let tileID: String
+        let sessionName: String
+        let renderedClientTTY: String
+        let renderedClientWindowID: String
+        let renderedClientPaneID: String
+    }
+
     struct OpenTerminalForPaneSnapshot: Codable, Equatable {
         let terminalHostMode: String
         let workbenchID: String
@@ -140,15 +150,28 @@ final class UITestTmuxBridge {
     private let enableMetadataCommand = "__agtmux_enable_metadata__"
     private let openTerminalForPaneCommand = "__agtmux_open_terminal_for_pane__"
     private let focusTerminalHostCommand = "__agtmux_focus_terminal_host__"
+    private let renderedTerminalTargetCommand = "__agtmux_dump_rendered_terminal_target__"
     private let sendTmuxNextPaneKeysCommand = "__agtmux_send_tmux_next_pane_keys__"
     private let resetScrollTelemetryCommand = "__agtmux_reset_scroll_telemetry__"
     private let dumpScrollTelemetryCommand = "__agtmux_dump_scroll_telemetry__"
     private let dumpTerminalViewportTextCommand = "__agtmux_dump_terminal_viewport_text__"
     private let sampleTerminalViewportTextCommand = "__agtmux_sample_terminal_viewport_text__"
     private let bridgeReadyCommand = "__agtmux_tmux_bridge_ready__"
+    private var terminalViewRegistrationTimeoutMilliseconds: Int {
+        guard let raw = env["AGTMUX_UITEST_TERMINAL_VIEW_REGISTRATION_TIMEOUT_MS"],
+              let value = Int(raw),
+              value > 0 else {
+            return 5_000
+        }
+        return value
+    }
 
     private var terminalHostMode: TerminalHostMode {
         TerminalHostMode(environment: env)
+    }
+
+    private var allowSessionOnlyOpenFallback: Bool {
+        env["AGTMUX_UITEST_ALLOW_SESSION_ONLY_OPEN_FALLBACK"] == "1"
     }
 
     init(
@@ -429,6 +452,10 @@ final class UITestTmuxBridge {
             case focusTerminalHostCommand:
                 try focusTerminalHost(request.args)
                 stdout = "ok"
+            case renderedTerminalTargetCommand:
+                let snapshot = try await renderedTerminalTargetSnapshot(for: request.args)
+                let data = try JSONEncoder().encode(snapshot)
+                stdout = String(decoding: data, as: UTF8.self)
             case sendTmuxNextPaneKeysCommand:
                 try sendTmuxNextPaneKeys(request.args)
                 stdout = "ok"
@@ -644,6 +671,49 @@ final class UITestTmuxBridge {
         )
     }
 
+    private func renderedTerminalTargetSnapshot(for args: [String]) async throws -> RenderedTerminalTargetSnapshot {
+        let tileID = try tileID(from: args, command: renderedTerminalTargetCommand)
+        guard let workbench = workbenchStore.workbenches.first(where: { workbench in
+            workbench.tiles.contains(where: { $0.id == tileID })
+        }), let terminalTile = workbench.tiles.first(where: { $0.id == tileID }) else {
+            throw NSError(
+                domain: "UITestTmuxBridge",
+                code: 42,
+                userInfo: [NSLocalizedDescriptionKey: "No terminal tile found for tileID \(tileID.uuidString)"]
+            )
+        }
+        guard case .terminal(let sessionRef) = terminalTile.kind else {
+            throw NSError(
+                domain: "UITestTmuxBridge",
+                code: 43,
+                userInfo: [NSLocalizedDescriptionKey: "Tile \(tileID.uuidString) is not a terminal tile"]
+            )
+        }
+        guard let renderedState = GhosttyTerminalSurfaceRegistry.shared.renderedState(forTileID: tileID) else {
+            throw NSError(
+                domain: "UITestTmuxBridge",
+                code: 44,
+                userInfo: [NSLocalizedDescriptionKey: "Rendered Ghostty surface state is missing"]
+            )
+        }
+        guard let renderedClientTTY = renderedState.clientTTY else {
+            throw NSError(
+                domain: "UITestTmuxBridge",
+                code: 45,
+                userInfo: [NSLocalizedDescriptionKey: "Rendered Ghostty surface client tty is missing"]
+            )
+        }
+        return RenderedTerminalTargetSnapshot(
+            terminalHostMode: terminalHostMode.rawValue,
+            workbenchID: workbench.id.uuidString,
+            tileID: tileID.uuidString,
+            sessionName: sessionRef.sessionName,
+            renderedClientTTY: renderedClientTTY,
+            renderedClientWindowID: "",
+            renderedClientPaneID: ""
+        )
+    }
+
     private func activeDocumentTileSnapshot() throws -> ActiveDocumentTileSnapshot {
         guard let workbench = workbenchStore.activeWorkbench else {
             throw NSError(
@@ -717,16 +787,56 @@ final class UITestTmuxBridge {
             "openTerminalForPaneForTesting start source=\(source) session=\(sessionName) pane=\(paneID)"
         )
         let pane: AgtmuxPane
+        let usedSessionOnlyFallback: Bool
         if let inventoryPane = viewModel.panes.first(where: {
             $0.source == source && $0.sessionName == sessionName && $0.paneId == paneID
         }) {
             pane = inventoryPane
+            usedSessionOnlyFallback = false
+            uiTestBridgeDebugLog(
+                "openTerminalForPaneForTesting inventory-hit panes=\(viewModel.panes.count)"
+            )
+        } else if source == "local" && allowSessionOnlyOpenFallback {
+            uiTestBridgeDebugLog(
+                "openTerminalForPaneForTesting session-only-fallback session=\(sessionName) pane=\(paneID)"
+            )
+            prepareDirectLocalSessionForRendering(sessionName)
+            let result = workbenchStore.openTerminal(
+                sessionRef: SessionRef(target: .local, sessionName: sessionName)
+            )
+            uiTestBridgeDebugLog(
+                "openTerminalForPaneForTesting session-only-opened tile=\(result.tileID.uuidString)"
+            )
+            try await waitForTerminalViewRegistration(
+                tileID: result.tileID,
+                timeoutMilliseconds: terminalViewRegistrationTimeoutMilliseconds
+            )
+            let disposition: String
+            let workbenchID: UUID
+            switch result {
+            case .opened(let resolvedWorkbenchID, _):
+                disposition = "opened"
+                workbenchID = resolvedWorkbenchID
+            case .revealedExisting(let resolvedWorkbenchID, _):
+                disposition = "revealedExisting"
+                workbenchID = resolvedWorkbenchID
+            }
+            return OpenTerminalForPaneSnapshot(
+                terminalHostMode: terminalHostMode.rawValue,
+                workbenchID: workbenchID.uuidString,
+                tileID: result.tileID.uuidString,
+                disposition: disposition,
+                source: source,
+                sessionName: sessionName,
+                paneID: paneID
+            )
         } else if source == "local",
                   let directPane = try await resolveDirectLocalPane(sessionName, paneID) {
             uiTestBridgeDebugLog(
                 "openTerminalForPaneForTesting default-socket-fallback session=\(sessionName) pane=\(paneID)"
             )
             pane = directPane
+            usedSessionOnlyFallback = false
             prepareDirectLocalPaneForRendering(directPane)
         } else {
             throw NSError(
@@ -739,7 +849,7 @@ final class UITestTmuxBridge {
             )
         }
         uiTestBridgeDebugLog(
-            "openTerminalForPaneForTesting pane-found window=\(pane.windowId) path=\(pane.currentPath)"
+            "openTerminalForPaneForTesting pane-found window=\(pane.windowId) path=\(String(describing: pane.currentPath)) sessionOnlyFallback=\(usedSessionOnlyFallback)"
         )
         uiTestBridgeDebugLog(
             "openTerminalForPaneForTesting store-state workbenches=\(workbenchStore.workbenches.count) activeIndex=\(workbenchStore.activeWorkbenchIndex)"
@@ -752,7 +862,10 @@ final class UITestTmuxBridge {
         uiTestBridgeDebugLog(
             "openTerminalForPaneForTesting store-opened tile=\(result.tileID.uuidString)"
         )
-        try await waitForTerminalViewRegistration(tileID: result.tileID)
+        try await waitForTerminalViewRegistration(
+            tileID: result.tileID,
+            timeoutMilliseconds: terminalViewRegistrationTimeoutMilliseconds
+        )
         let disposition: String
         let workbenchID: UUID
         switch result {
@@ -776,7 +889,6 @@ final class UITestTmuxBridge {
     }
 
     private func prepareDirectLocalPaneForRendering(_ pane: AgtmuxPane) {
-        let sessionKey = "local:\(pane.sessionName)"
         if let existingIndex = viewModel.panes.firstIndex(where: { $0.id == pane.id }) {
             if viewModel.panes[existingIndex] != pane {
                 var panes = viewModel.panes
@@ -788,6 +900,11 @@ final class UITestTmuxBridge {
             panes.append(pane)
             viewModel.panes = panes
         }
+        prepareDirectLocalSessionForRendering(pane.sessionName)
+    }
+
+    private func prepareDirectLocalSessionForRendering(_ sessionName: String) {
+        let sessionKey = "local:\(sessionName)"
         if !viewModel.runtimeStore.hasCompletedInitialFetch {
             viewModel.runtimeStore.hasCompletedInitialFetch = true
         }
@@ -963,6 +1080,10 @@ final class UITestTmuxBridge {
             )
         }
         return terminalView.viewportTextSnapshotForTesting()
+    }
+
+    func renderedTerminalTargetSnapshotForTesting(tileID: UUID) async throws -> RenderedTerminalTargetSnapshot {
+        try await renderedTerminalTargetSnapshot(for: [renderedTerminalTargetCommand, tileID.uuidString])
     }
 
     func sampleTerminalViewportTextForTesting(
