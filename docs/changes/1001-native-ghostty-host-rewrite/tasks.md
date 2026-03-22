@@ -18,6 +18,12 @@
 - [x] add local pane-id inventory fallback before session-only live open
 - [x] add runtime terminal-host-mode override groundwork for same-app live
   parity
+- [x] stop targeting tmux clients by `client_tty` in the live wrapper; resolve
+  `client_name` before `switch-client`
+- [x] phase-3 next-host scroll cadence wiring on the deterministic loaded-TUI
+  gate
+- [x] installed-app host-mode override via app defaults for rewrite-branch
+  trials
 - [ ] realistic loaded live-pane parity gate for the next host
 - [ ] durable-knowledge promotion
 - [ ] remove `docs/changes/1001-native-ghostty-host-rewrite/` before merge

@@ -55,6 +55,19 @@ Unchanged in this wave:
 - once `next` wins or matches `legacy` there, phase 3 can return to the more
   variable loaded live-pane gate
 
+## Current Phase-3 Shape
+
+- `GhosttyTerminalSurfaceContext` now carries `terminalHostMode` into the
+  terminal view layer
+- `GhosttyTerminalView` now chooses between:
+  - `legacyHybrid`: the existing host scroll-presentation scheduler
+  - `ghosttyOwned`: no host scroll-presentation pump for normal-screen wheel
+    input
+- `next` host selects `ghosttyOwned`, while `legacy` keeps `legacyHybrid`
+- runtime selection is no longer launch-env only; the app also honors the
+  `TerminalHostMode` user default so rewrite-branch installs can be switched to
+  `next` without changing the default branch behavior
+
 ## Failure Modes
 
 - next-host attach fails:

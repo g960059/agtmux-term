@@ -92,6 +92,7 @@ final class UITestTmuxBridge {
         let workbenchID: String
         let tileID: String
         let disposition: String
+        let usedSessionOnlyFallback: Bool
         let source: String
         let sessionName: String
         let paneID: String
@@ -139,6 +140,8 @@ final class UITestTmuxBridge {
     private let workbenchStore: WorkbenchStoreV2
     private let enableMetadataMode: @MainActor () async -> Void
     private let resolveDirectLocalPane: @Sendable (_ sessionName: String, _ paneID: String) async throws -> AgtmuxPane?
+    private let applyNavigationIntent: @Sendable (_ activePaneRef: ActivePaneRef, _ renderedClientTTY: String, _ hostsConfig: HostsConfig) async throws -> Void
+    private let resolveRenderedLiveTarget: @Sendable (_ renderedClientTTY: String, _ target: TargetRef, _ hostsConfig: HostsConfig) async throws -> WorkbenchV2TerminalLiveTarget
     private let env: [String: String]
     private var commandLoopTask: Task<Void, Never>?
     private var createdSessions: Set<String> = []
@@ -150,6 +153,7 @@ final class UITestTmuxBridge {
     private let enableMetadataCommand = "__agtmux_enable_metadata__"
     private let openTerminalForPaneCommand = "__agtmux_open_terminal_for_pane__"
     private let focusTerminalHostCommand = "__agtmux_focus_terminal_host__"
+    private let focusRenderedPaneCommand = "__agtmux_focus_rendered_pane__"
     private let renderedTerminalTargetCommand = "__agtmux_dump_rendered_terminal_target__"
     private let setTerminalHostModeCommand = "__agtmux_set_terminal_host_mode__"
     private let sendTmuxNextPaneKeysCommand = "__agtmux_send_tmux_next_pane_keys__"
@@ -187,12 +191,28 @@ final class UITestTmuxBridge {
             let panes = try LocalTmuxInventoryClient.parse(output: output, source: "local")
             return panes.first(where: { $0.sessionName == sessionName && $0.paneId == paneID })
         },
+        applyNavigationIntent: @escaping @Sendable (_ activePaneRef: ActivePaneRef, _ renderedClientTTY: String, _ hostsConfig: HostsConfig) async throws -> Void = { activePaneRef, renderedClientTTY, hostsConfig in
+            try await UITestTmuxBridge.applyRenderedPaneNavigation(
+                activePaneRef: activePaneRef,
+                renderedClientTTY: renderedClientTTY,
+                hostsConfig: hostsConfig
+            )
+        },
+        resolveRenderedLiveTarget: @escaping @Sendable (_ renderedClientTTY: String, _ target: TargetRef, _ hostsConfig: HostsConfig) async throws -> WorkbenchV2TerminalLiveTarget = { renderedClientTTY, target, hostsConfig in
+            try await WorkbenchV2TerminalNavigationResolver.liveTarget(
+                renderedClientTTY: renderedClientTTY,
+                target: target,
+                hostsConfig: hostsConfig
+            )
+        },
         env: [String: String] = ProcessInfo.processInfo.environment
     ) {
         self.viewModel = viewModel
         self.workbenchStore = workbenchStore
         self.enableMetadataMode = enableMetadataMode
         self.resolveDirectLocalPane = resolveDirectLocalPane
+        self.applyNavigationIntent = applyNavigationIntent
+        self.resolveRenderedLiveTarget = resolveRenderedLiveTarget
         self.env = env
     }
 
@@ -453,6 +473,9 @@ final class UITestTmuxBridge {
             case focusTerminalHostCommand:
                 try focusTerminalHost(request.args)
                 stdout = "ok"
+            case focusRenderedPaneCommand:
+                try await focusRenderedPane(request.args)
+                stdout = "ok"
             case renderedTerminalTargetCommand:
                 let snapshot = try await renderedTerminalTargetSnapshot(for: request.args)
                 let data = try JSONEncoder().encode(snapshot)
@@ -631,10 +654,10 @@ final class UITestTmuxBridge {
             )
         }
 
-        let renderedClientTarget = try await WorkbenchV2TerminalNavigationResolver.liveTarget(
-            renderedClientTTY: renderedClientTTY,
-            target: sessionRef.target,
-            hostsConfig: viewModel.hostsConfig
+        let renderedClientTarget = try await resolveRenderedLiveTarget(
+            renderedClientTTY,
+            sessionRef.target,
+            viewModel.hostsConfig
         )
         let controlModeKey = WorkbenchFocusedNavigationControlModeKey.make(
             sessionRef: sessionRef,
@@ -707,14 +730,19 @@ final class UITestTmuxBridge {
                 userInfo: [NSLocalizedDescriptionKey: "Rendered Ghostty surface client tty is missing"]
             )
         }
+        let liveTarget = try? await resolveRenderedLiveTarget(
+            renderedClientTTY,
+            sessionRef.target,
+            viewModel.hostsConfig
+        )
         return RenderedTerminalTargetSnapshot(
             terminalHostMode: terminalHostMode.rawValue,
             workbenchID: workbench.id.uuidString,
             tileID: tileID.uuidString,
             sessionName: sessionRef.sessionName,
             renderedClientTTY: renderedClientTTY,
-            renderedClientWindowID: "",
-            renderedClientPaneID: ""
+            renderedClientWindowID: liveTarget?.windowID ?? "",
+            renderedClientPaneID: liveTarget?.paneID ?? ""
         )
     }
 
@@ -835,6 +863,14 @@ final class UITestTmuxBridge {
             uiTestBridgeDebugLog(
                 "openTerminalForPaneForTesting inventory-paneid-fallback requestedSession=\(sessionName) resolvedSession=\(localPane.sessionName)"
             )
+        } else if source == "local",
+                  let directPane = try await resolveDirectLocalPane(sessionName, paneID) {
+            uiTestBridgeDebugLog(
+                "openTerminalForPaneForTesting default-socket-fallback session=\(sessionName) pane=\(paneID)"
+            )
+            pane = directPane
+            usedSessionOnlyFallback = false
+            prepareDirectLocalPaneForRendering(directPane)
         } else if source == "local" && allowSessionOnlyOpenFallback {
             uiTestBridgeDebugLog(
                 "openTerminalForPaneForTesting session-only-fallback session=\(sessionName) pane=\(paneID)"
@@ -865,18 +901,11 @@ final class UITestTmuxBridge {
                 workbenchID: workbenchID.uuidString,
                 tileID: result.tileID.uuidString,
                 disposition: disposition,
+                usedSessionOnlyFallback: true,
                 source: source,
                 sessionName: sessionName,
                 paneID: paneID
             )
-        } else if source == "local",
-                  let directPane = try await resolveDirectLocalPane(sessionName, paneID) {
-            uiTestBridgeDebugLog(
-                "openTerminalForPaneForTesting default-socket-fallback session=\(sessionName) pane=\(paneID)"
-            )
-            pane = directPane
-            usedSessionOnlyFallback = false
-            prepareDirectLocalPaneForRendering(directPane)
         } else {
             throw NSError(
                 domain: "UITestTmuxBridge",
@@ -921,6 +950,7 @@ final class UITestTmuxBridge {
             workbenchID: workbenchID.uuidString,
             tileID: result.tileID.uuidString,
             disposition: disposition,
+            usedSessionOnlyFallback: usedSessionOnlyFallback,
             source: source,
             sessionName: sessionName,
             paneID: paneID
@@ -1056,6 +1086,107 @@ final class UITestTmuxBridge {
         window.makeFirstResponder(terminalView)
     }
 
+    private func focusRenderedPane(_ args: [String]) async throws {
+        guard args.count >= 3 else {
+            throw NSError(
+                domain: "UITestTmuxBridge",
+                code: 48,
+                userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "\(focusRenderedPaneCommand) requires <tileID> <paneID>"
+                ]
+            )
+        }
+
+        let tileID = try tileID(from: args, command: focusRenderedPaneCommand)
+        let paneID = args[2]
+        uiTestBridgeDebugLog("focusRenderedPane start tileID=\(tileID.uuidString) pane=\(paneID)")
+        let sessionRef = try sessionRef(forTileID: tileID)
+        uiTestBridgeDebugLog("focusRenderedPane sessionRef session=\(sessionRef.sessionName) target=\(sessionRef.target)")
+        guard let renderedClientTTY = GhosttyTerminalSurfaceRegistry.shared.renderedState(forTileID: tileID)?.clientTTY else {
+            throw NSError(
+                domain: "UITestTmuxBridge",
+                code: 49,
+                userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "Rendered Ghostty surface client tty is missing for tileID \(tileID.uuidString)"
+                ]
+            )
+        }
+        uiTestBridgeDebugLog("focusRenderedPane renderedClientTTY=\(renderedClientTTY)")
+
+        uiTestBridgeDebugLog("focusRenderedPane applyNavigationIntent start pane=\(paneID)")
+        try await applyNavigationIntent(
+            ActivePaneRef(
+                target: sessionRef.target,
+                sessionName: sessionRef.sessionName,
+                windowID: "",
+                paneID: paneID
+            ),
+            renderedClientTTY,
+            viewModel.hostsConfig
+        )
+        uiTestBridgeDebugLog("focusRenderedPane applyNavigationIntent done pane=\(paneID)")
+    }
+
+    private static func applyRenderedPaneNavigation(
+        activePaneRef: ActivePaneRef,
+        renderedClientTTY: String,
+        hostsConfig: HostsConfig
+    ) async throws {
+        let source = try tmuxSource(for: activePaneRef.target, hostsConfig: hostsConfig)
+        let clientName = try await resolveClientName(
+            renderedClientTTY: renderedClientTTY,
+            source: source
+        )
+        uiTestBridgeDebugLog(
+            "applyRenderedPaneNavigation clientName=\(clientName) tty=\(renderedClientTTY) pane=\(activePaneRef.paneID)"
+        )
+        _ = try await TmuxCommandRunner.shared.run(
+            ["switch-client", "-c", clientName, "-t", activePaneRef.paneID],
+            source: source
+        )
+    }
+
+    private static func resolveClientName(
+        renderedClientTTY: String,
+        source: String
+    ) async throws -> String {
+        let output = try await TmuxCommandRunner.shared.run(
+            ["list-clients", "-F", "#{client_name}|#{client_tty}"],
+            source: source
+        )
+
+        for line in output.split(separator: "\n") {
+            let fields = line.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+            guard fields.count == 2 else { continue }
+            guard fields[1] == renderedClientTTY else { continue }
+            guard !fields[0].isEmpty else { continue }
+            return fields[0]
+        }
+
+        throw NSError(
+            domain: "UITestTmuxBridge",
+            code: 52,
+            userInfo: [NSLocalizedDescriptionKey: "No tmux client name found for rendered tty \(renderedClientTTY)"]
+        )
+    }
+
+    private static func tmuxSource(
+        for target: TargetRef,
+        hostsConfig: HostsConfig
+    ) throws -> String {
+        switch target {
+        case .local:
+            return "local"
+        case .remote(let hostKey):
+            guard let host = hostsConfig.host(id: hostKey) else {
+                throw WorkbenchV2TerminalNavigationError.missingRemoteHostKey(hostKey)
+            }
+            return host.sshTarget
+        }
+    }
+
     private func sendTmuxNextPaneKeys(_ args: [String]) throws {
         uiTestBridgeDebugLog("sendTmuxNextPaneKeys start args=\(args)")
         let terminalView = try terminalView(for: args, command: sendTmuxNextPaneKeysCommand)
@@ -1123,6 +1254,10 @@ final class UITestTmuxBridge {
 
     func renderedTerminalTargetSnapshotForTesting(tileID: UUID) async throws -> RenderedTerminalTargetSnapshot {
         try await renderedTerminalTargetSnapshot(for: [renderedTerminalTargetCommand, tileID.uuidString])
+    }
+
+    func focusRenderedPaneForTesting(tileID: UUID, paneID: String) async throws {
+        try await focusRenderedPane([focusRenderedPaneCommand, tileID.uuidString, paneID])
     }
 
     func sampleTerminalViewportTextForTesting(
@@ -1232,6 +1367,28 @@ final class UITestTmuxBridge {
 
         uiTestBridgeDebugLog("terminalView resolved command=\(command) tileID=\(tileID.uuidString)")
         return terminalView
+    }
+
+    private func sessionRef(forTileID tileID: UUID) throws -> SessionRef {
+        guard let workbench = workbenchStore.workbenches.first(where: { workbench in
+            workbench.tiles.contains(where: { $0.id == tileID })
+        }), let terminalTile = workbench.tiles.first(where: { $0.id == tileID }) else {
+            throw NSError(
+                domain: "UITestTmuxBridge",
+                code: 50,
+                userInfo: [NSLocalizedDescriptionKey: "No terminal tile found for tileID \(tileID.uuidString)"]
+            )
+        }
+
+        guard case .terminal(let sessionRef) = terminalTile.kind else {
+            throw NSError(
+                domain: "UITestTmuxBridge",
+                code: 51,
+                userInfo: [NSLocalizedDescriptionKey: "Tile \(tileID.uuidString) is not a terminal tile"]
+            )
+        }
+
+        return sessionRef
     }
 
     private func resolvedTerminalLeafID(for tileID: UUID) -> UUID {

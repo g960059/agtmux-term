@@ -180,6 +180,7 @@ final class GhosttyIslandViewController: NSViewController {
         view.setAccessibilityElement(false)
         let tv = GhosttyTerminalView()
         if let pendingSurfaceContext {
+            tv.setTerminalHostMode(pendingSurfaceContext.terminalHostMode)
             tv.configureAccessibility(
                 identifier: AccessibilityID.workspaceTerminalHostPrefix + pendingSurfaceContext.tileID.uuidString,
                 label: "Terminal \(pendingSurfaceContext.sessionRef.sessionName)"
@@ -258,6 +259,7 @@ final class GhosttyIslandViewController: NSViewController {
         if surfaceContextChanged,
            let surfaceContext,
            let terminalView {
+            terminalView.setTerminalHostMode(surfaceContext.terminalHostMode)
             terminalView.configureAccessibility(
                 identifier: AccessibilityID.workspaceTerminalHostPrefix + surfaceContext.tileID.uuidString,
                 label: "Terminal \(surfaceContext.sessionRef.sessionName)"

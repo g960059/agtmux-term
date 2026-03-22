@@ -495,7 +495,8 @@ private struct WorkbenchTerminalTileViewV2: View {
                                 workbenchID: workbenchID,
                                 tileID: tile.id,
                                 surfaceKey: plan.surfaceKey,
-                                sessionRef: sessionRef
+                                sessionRef: sessionRef,
+                                terminalHostMode: terminalHostMode
                             ),
                             visiblePaneIdentity: visiblePaneIdentity,
                             isFocused: isFocused,

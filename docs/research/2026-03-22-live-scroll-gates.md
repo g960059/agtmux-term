@@ -81,6 +81,16 @@ Durable findings:
   - durable conclusion: keep the deterministic gate on
     `focusMode=identifier` and `scrollMode=point`; `front-window` delivery is
     diagnostic-only for loaded-TUI repeatability
+  - phase-3 rewrite wiring is now live on this same gate:
+    - `next` host threads `terminalHostMode` into `GhosttyTerminalView`
+    - normal-screen wheel input on `next` disables the legacy host
+      scroll-presentation pump and leaves cadence to Ghostty
+    - a fresh `--iterations 2` deterministic parity run passed with median
+      `first_changed_elapsed_delta_ms = -18.8639`
+    - the same run still showed zero `islandRetryCountDelta` and zero
+      `islandApplyCommandCountDelta`
+  - durable conclusion: phase-3 next-host cadence wiring is at least not a
+    regression on the deterministic gate and is ready for installed-app trials
 
 ### Live-captured `curses-history` proxy
 
@@ -149,6 +159,15 @@ Latest durable finding:
 - therefore the next useful step is not more fresh-wrapper tuning but same-app
   live parity, which now has groundwork via a runtime terminal-host-mode
   override inside the app
+- while hardening that wrapper, a separate tmux targeting bug surfaced:
+  - the bridge was trying `switch-client -c <renderedClientTTY> -t %pane`
+  - tmux rejects that form with `can't find client`, so `client_tty` is not a
+    valid `target-client` identifier for this path
+  - the bridge now resolves `client_name` from `list-clients` before
+    `switch-client`
+  - this fixes one false blocker in the wrapper, but the overall gate is still
+    diagnostic-only because fresh mounts can stall before `open_terminal` or
+    before reaching the already-loaded live pane path
 
 Interpretation:
 

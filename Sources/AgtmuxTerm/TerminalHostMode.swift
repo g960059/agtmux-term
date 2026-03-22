@@ -5,6 +5,7 @@ enum TerminalHostMode: String, Equatable, Codable, CaseIterable {
     case next
 
     static let environmentKey = "AGTMUX_TERMINAL_HOST_MODE"
+    static let userDefaultsKey = "TerminalHostMode"
 
     init(environment: [String: String]) {
         self = Self.parse(environment[Self.environmentKey]) ?? .legacy

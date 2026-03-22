@@ -2,6 +2,11 @@ import XCTest
 @testable import AgtmuxTerm
 
 final class TerminalHostModeTests: XCTestCase {
+    override func tearDown() {
+        UserDefaults.standard.removeObject(forKey: TerminalHostMode.userDefaultsKey)
+        super.tearDown()
+    }
+
     func testDefaultsToLegacyWhenEnvironmentIsMissingOrUnknown() {
         XCTAssertEqual(TerminalHostMode(environment: [:]), .legacy)
         XCTAssertEqual(TerminalHostMode(environment: [TerminalHostMode.environmentKey: "bogus"]), .legacy)
@@ -50,7 +55,9 @@ final class TerminalHostModeTests: XCTestCase {
 
     @MainActor
     func testRuntimeOverrideWinsOverEnvironmentUntilCleared() {
-        let runtime = TerminalHostModeRuntime.shared
+        let defaults = UserDefaults.standard
+        defaults.removeObject(forKey: TerminalHostMode.userDefaultsKey)
+        let runtime = TerminalHostModeRuntime(userDefaults: defaults)
         runtime.resetForTesting()
         defer { runtime.resetForTesting() }
 
@@ -66,6 +73,31 @@ final class TerminalHostModeTests: XCTestCase {
         )
 
         runtime.setOverride(nil)
+        XCTAssertEqual(
+            runtime.resolved(environment: [TerminalHostMode.environmentKey: "legacy"]),
+            .legacy
+        )
+    }
+
+    @MainActor
+    func testRuntimeFallsBackToUserDefaultsWhenEnvironmentMissing() {
+        let defaults = UserDefaults.standard
+        defaults.set("next", forKey: TerminalHostMode.userDefaultsKey)
+        let runtime = TerminalHostModeRuntime(userDefaults: defaults)
+        runtime.resetForTesting()
+        defer { runtime.resetForTesting() }
+
+        XCTAssertEqual(runtime.resolved(environment: [:]), .next)
+    }
+
+    @MainActor
+    func testEnvironmentWinsOverUserDefaultsWithoutRuntimeOverride() {
+        let defaults = UserDefaults.standard
+        defaults.set("next", forKey: TerminalHostMode.userDefaultsKey)
+        let runtime = TerminalHostModeRuntime(userDefaults: defaults)
+        runtime.resetForTesting()
+        defer { runtime.resetForTesting() }
+
         XCTAssertEqual(
             runtime.resolved(environment: [TerminalHostMode.environmentKey: "legacy"]),
             .legacy

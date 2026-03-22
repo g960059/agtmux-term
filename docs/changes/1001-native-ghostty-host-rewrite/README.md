@@ -101,6 +101,15 @@ Current state:
     overridden at runtime for UITest/bench flows instead of being fixed only
     at app launch, which is the foundation for measuring `legacy` and `next`
     against the same already-loaded app state
+  - during live-wrapper hardening, tmux client targeting turned out to be
+    stricter than the old code assumed:
+    - `switch-client -c <renderedClientTTY> -t %pane` is invalid on tmux and
+      fails with `can't find client`
+    - the bridge now resolves `client_name` from `list-clients` before issuing
+      `switch-client`
+    - this removes one false blocker from the fresh wrapper, but it is still
+      not acceptance-ready because `open_terminal_for_pane` on fresh app
+      mounts can stall before the already-loaded live pane path is reached
   - as a result, the fresh host-mode live-client wrapper is diagnostic only and
     cannot be the final rewrite acceptance gate for the user's loaded-pane
     history complaint
@@ -109,3 +118,15 @@ Current state:
     acceptance
   - the live-captured `curses-history` proxy
   - the frontmost live client-scroll parity gate
+- phase 3 has now started on the rewrite branch:
+  - `GhosttyTerminalSurfaceContext` carries `terminalHostMode` all the way into
+    `GhosttyTerminalView`
+  - `next` host disables the legacy host scroll-presentation pump and relies on
+    Ghostty-owned cadence for normal-screen wheel input
+  - the deterministic loaded-TUI parity gate currently passes with this phase-3
+    wiring; a fresh `--iterations 2` run recorded median
+    `first_changed_elapsed_delta_ms = -18.8639`, with zero
+    `islandRetryCountDelta` and zero `islandApplyCommandCountDelta`
+  - runtime host-mode selection now also honors the app default
+    `TerminalHostMode`, so an installed rewrite-branch build can be switched to
+    `next` without launch-time env injection

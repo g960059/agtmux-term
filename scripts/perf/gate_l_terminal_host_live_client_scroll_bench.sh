@@ -21,6 +21,7 @@ prime_settle_ms="${AGTMUX_PERF_LIVE_PRIME_SETTLE_MS:-220}"
 prime_max_rounds="${AGTMUX_PERF_LIVE_PRIME_MAX_ROUNDS:-6}"
 prime_min_rounds="${AGTMUX_PERF_LIVE_PRIME_MIN_ROUNDS:-1}"
 events_per_burst="${AGTMUX_PERF_UPSTEP_EVENTS_PER_BURST:-24}"
+scroll_pixels_per_event="${AGTMUX_PERF_UPSTEP_PIXELS_PER_EVENT:-10}"
 scroll_interval_ms="${AGTMUX_PERF_UPSTEP_SCROLL_INTERVAL_MS:-8}"
 sample_interval_ms="${AGTMUX_PERF_UPSTEP_SAMPLE_INTERVAL_MS:-16}"
 sample_tail_ms="${AGTMUX_PERF_UPSTEP_SAMPLE_TAIL_MS:-180}"
@@ -32,7 +33,10 @@ registration_timeout_ms="${AGTMUX_PERF_LIVE_REGISTRATION_TIMEOUT_MS:-15000}"
 frontmost_timeout_ms="${AGTMUX_PERF_LIVE_FRONTMOST_TIMEOUT_MS:-20000}"
 open_retry_count="${AGTMUX_PERF_LIVE_OPEN_RETRY_COUNT:-3}"
 open_retry_sleep_ms="${AGTMUX_PERF_LIVE_OPEN_RETRY_SLEEP_MS:-400}"
+refresh_inventory_before_open="${AGTMUX_PERF_LIVE_REFRESH_INVENTORY_BEFORE_OPEN:-0}"
 agtmux_cli_bin="${AGTMUX_PERF_AGTMUX_BIN:-${AGTMUX_BIN:-$GATE_L_ROOT/../agtmux/target/release/agtmux}}"
+switch_to_host_mode="${AGTMUX_PERF_LIVE_SWITCH_TO_HOST_MODE:-}"
+reprime_after_switch="${AGTMUX_PERF_LIVE_REPRIME_AFTER_SWITCH:-0}"
 
 function extract_last_json_line() {
   local raw="$1"
@@ -165,6 +169,85 @@ function wait_for_terminal_viewport_ready() {
   return 1
 }
 
+function wait_for_rendered_client_pane() {
+  local tile_id="$1"
+  local expected_pane_id="$2"
+  local timeout="${3:-15}"
+  local deadline=$((EPOCHREALTIME + timeout))
+  local output=""
+
+  while (( EPOCHREALTIME < deadline )); do
+    if output="$(gate_l_send_bridge_json_command false 5 "__agtmux_dump_rendered_terminal_target__" "$tile_id" 2>"$gate_l_tmpdir/rendered-pane.last-error.log")"; then
+      local rendered_pane_id
+      rendered_pane_id="$(jq -r '.renderedClientPaneID // empty' <<<"$output")"
+      if [[ "$rendered_pane_id" == "$expected_pane_id" ]]; then
+        printf '%s\n' "$output"
+        return 0
+      fi
+    fi
+    sleep 0.05
+  done
+
+  echo "Timed out waiting for rendered client pane $expected_pane_id on tile $tile_id" >&2
+  if [[ -n "$output" ]]; then
+    echo "$output" >&2
+  elif [[ -s "$gate_l_tmpdir/rendered-pane.last-error.log" ]]; then
+    cat "$gate_l_tmpdir/rendered-pane.last-error.log" >&2
+  fi
+  return 1
+}
+
+function wait_for_rendered_terminal_target_ready() {
+  local tile_id="$1"
+  local timeout="${2:-15}"
+  local deadline=$((EPOCHREALTIME + timeout))
+  local output=""
+
+  while (( EPOCHREALTIME < deadline )); do
+    if output="$(gate_l_send_bridge_json_command false 5 "__agtmux_dump_rendered_terminal_target__" "$tile_id" 2>"$gate_l_tmpdir/rendered-target-ready.last-error.log")"; then
+      printf '%s\n' "$output"
+      return 0
+    fi
+    sleep 0.05
+  done
+
+  echo "Timed out waiting for rendered terminal target readiness for tile $tile_id" >&2
+  if [[ -n "$output" ]]; then
+    echo "$output" >&2
+  elif [[ -s "$gate_l_tmpdir/rendered-target-ready.last-error.log" ]]; then
+    cat "$gate_l_tmpdir/rendered-target-ready.last-error.log" >&2
+  fi
+  return 1
+}
+
+function wait_for_tile_host_mode() {
+  local tile_id="$1"
+  local expected_mode="$2"
+  local timeout="${3:-15}"
+  local deadline=$((EPOCHREALTIME + timeout))
+  local output=""
+
+  while (( EPOCHREALTIME < deadline )); do
+    if output="$(gate_l_send_bridge_json_command false 5 "__agtmux_dump_rendered_terminal_target__" "$tile_id" 2>"$gate_l_tmpdir/host-mode-ready.last-error.log")"; then
+      local actual_mode
+      actual_mode="$(jq -r '.terminalHostMode // empty' <<<"$output")"
+      if [[ "$actual_mode" == "$expected_mode" ]]; then
+        printf '%s\n' "$output"
+        return 0
+      fi
+    fi
+    sleep 0.05
+  done
+
+  echo "Timed out waiting for tile $tile_id to report host mode $expected_mode" >&2
+  if [[ -n "$output" ]]; then
+    echo "$output" >&2
+  elif [[ -s "$gate_l_tmpdir/host-mode-ready.last-error.log" ]]; then
+    cat "$gate_l_tmpdir/host-mode-ready.last-error.log" >&2
+  fi
+  return 1
+}
+
 function send_prime_scroll() {
   local terminal_ax_identifier="$1"
   local scroll_point_x="$2"
@@ -191,6 +274,159 @@ function send_prime_scroll() {
       --scroll-interval-ms "$prime_scroll_interval_ms" \
       --scroll-phase-mode "$prime_scroll_phase_mode"
   fi
+}
+
+function measure_live_scroll_burst() {
+  local label="$1"
+  local tile_id="$2"
+  local terminal_ax_identifier="$3"
+  local prefix="$4"
+  local focus_json_path="$gate_l_tmpdir/${prefix}-focus-state.json"
+  local post_focus_json_path="$gate_l_tmpdir/${prefix}-post-focus-state.json"
+  local baseline_viewport_json_path="$gate_l_tmpdir/${prefix}-baseline-viewport.json"
+  local final_viewport_json_path="$gate_l_tmpdir/${prefix}-final-viewport.json"
+  local bench_json_path="$gate_l_tmpdir/${prefix}-bench.json"
+  local bench_stderr_path="$gate_l_tmpdir/${prefix}-bench.stderr.log"
+  local post_scroll_telemetry_json_path="$gate_l_tmpdir/${prefix}-post-scroll-telemetry.json"
+  local viewport_sample_json_path="$gate_l_tmpdir/${prefix}-viewport-samples.json"
+  local viewport_metrics_json_path="$gate_l_tmpdir/${prefix}-viewport-metrics.json"
+  local send_json_path="$gate_l_tmpdir/${prefix}-send.json"
+  local summary_json_path="$gate_l_tmpdir/${prefix}-summary.json"
+  local focus_json=""
+  local baseline_viewport_json=""
+  local final_viewport_json=""
+  local post_focus_json=""
+  local post_scroll_telemetry_json=""
+
+  if focus_json="$(gate_l_send_bridge_json_command false 5 "__agtmux_dump_focus_state__" "$tile_id" 2>"$gate_l_tmpdir/${prefix}-focus-state.last-error.log")"; then
+    printf '%s\n' "$focus_json" >"$focus_json_path"
+  else
+    printf '%s\n' '{"terminalAccessibilityIdentifier":null}' >"$focus_json_path"
+  fi
+
+  if baseline_viewport_json="$(gate_l_send_bridge_json_command false 5 "__agtmux_dump_terminal_viewport_text__" "$tile_id" 2>"$gate_l_tmpdir/${prefix}-baseline-viewport.last-error.log")"; then
+    printf '%s\n' "$baseline_viewport_json" >"$baseline_viewport_json_path"
+  else
+    printf '%s\n' '{}' >"$baseline_viewport_json_path"
+  fi
+  mark_stage "${prefix}-baseline-viewport"
+
+  local sample_count
+  sample_count="$(viewport_sample_count)"
+  local sample_request_id
+  sample_request_id="$(gate_l_start_async_bridge_command false "__agtmux_sample_terminal_viewport_text__" "$tile_id" "$sample_count" "$sample_interval_ms")"
+  sleep_ms 20
+  if [[ "$use_scroll_identifier" == "1" ]]; then
+    "$SCRIPT_DIR/gate_l_ax_key_sender.sh" \
+      --app-pid "$gate_l_app_pid" \
+      --scroll-identifier "$terminal_ax_identifier" \
+      --x-frac "$scroll_x_frac" \
+      --y-frac "$scroll_y_frac" \
+      --scroll-pixels "$scroll_pixels_per_event" \
+      --scroll-repeat "$events_per_burst" \
+      --scroll-interval-ms "$scroll_interval_ms" \
+      --scroll-phase-mode "$scroll_phase_mode" >"$send_json_path" 2>"$bench_stderr_path"
+  else
+    "$SCRIPT_DIR/gate_l_ax_key_sender.sh" \
+      --app-pid "$gate_l_app_pid" \
+      --scroll-front-window \
+      --x-frac "$scroll_x_frac" \
+      --y-frac "$scroll_y_frac" \
+      --scroll-pixels "$scroll_pixels_per_event" \
+      --scroll-repeat "$events_per_burst" \
+      --scroll-interval-ms "$scroll_interval_ms" \
+      --scroll-phase-mode "$scroll_phase_mode" >"$send_json_path" 2>"$bench_stderr_path"
+  fi
+  mark_stage "${prefix}-bench-done"
+
+  local sample_timeout
+  sample_timeout="$(
+    awk -v count="$sample_count" -v interval="$sample_interval_ms" 'BEGIN {
+      printf "%.3f", ((count * interval) / 1000.0) + 5.0
+    }'
+  )"
+  if gate_l_wait_for_async_bridge_json_result "$sample_request_id" "$sample_timeout" >"$viewport_sample_json_path"; then
+    python3 "$STEP_METRICS_PY" "$viewport_sample_json_path" >"$viewport_metrics_json_path"
+  else
+    printf '%s\n' '{}' >"$viewport_sample_json_path"
+    printf '%s\n' '{}' >"$viewport_metrics_json_path"
+  fi
+  mark_stage "${prefix}-viewport-samples-done"
+
+  if final_viewport_json="$(gate_l_send_bridge_json_command false 5 "__agtmux_dump_terminal_viewport_text__" "$tile_id" 2>"$gate_l_tmpdir/${prefix}-final-viewport.last-error.log")"; then
+    printf '%s\n' "$final_viewport_json" >"$final_viewport_json_path"
+  else
+    printf '%s\n' '{}' >"$final_viewport_json_path"
+  fi
+
+  if post_focus_json="$(gate_l_send_bridge_json_command false 5 "__agtmux_dump_focus_state__" "$tile_id" 2>"$gate_l_tmpdir/${prefix}-post-focus-state.last-error.log")"; then
+    printf '%s\n' "$post_focus_json" >"$post_focus_json_path"
+  else
+    printf '%s\n' '{"terminalAccessibilityIdentifier":null}' >"$post_focus_json_path"
+  fi
+
+  if post_scroll_telemetry_json="$(gate_l_send_bridge_json_command false 5 "__agtmux_dump_scroll_telemetry__" "$tile_id" 2>"$gate_l_tmpdir/${prefix}-post-scroll-telemetry.last-error.log")"; then
+    printf '%s\n' "$post_scroll_telemetry_json" >"$post_scroll_telemetry_json_path"
+  else
+    printf '%s\n' '{}' >"$post_scroll_telemetry_json_path"
+  fi
+  mark_stage "${prefix}-post-scroll-telemetry"
+
+  jq -n \
+    --arg label "$label" \
+    --arg host_mode "$host_mode" \
+    --arg rendered_client_tty "$rendered_client_tty" \
+    --argjson events_per_burst "$events_per_burst" \
+    --argjson sample_interval_ms "$sample_interval_ms" \
+    --argjson sample_tail_ms "$sample_tail_ms" \
+    --argjson scroll_interval_ms "$scroll_interval_ms" \
+    --arg use_scroll_identifier "$use_scroll_identifier" \
+    --arg terminal_ax_identifier "$terminal_ax_identifier" \
+    --slurpfile focus "$focus_json_path" \
+    --slurpfile sender "$send_json_path" \
+    --slurpfile metrics "$viewport_metrics_json_path" \
+    --arg tmpdir "$gate_l_tmpdir" \
+    '{
+      label: $label,
+      hostMode: $host_mode,
+      clientTTY: (if $rendered_client_tty == "" then null else $rendered_client_tty end),
+      config: {
+        eventsPerBurst: $events_per_burst,
+        scrollIntervalMs: $scroll_interval_ms,
+        sampleIntervalMs: $sample_interval_ms,
+        sampleTailMs: $sample_tail_ms,
+        scrollTargetMode: (if $use_scroll_identifier == "1" then "identifier" else "front-window" end),
+        terminalAccessibilityIdentifier: (if $terminal_ax_identifier == "" then null else $terminal_ax_identifier end)
+      },
+      focus: $focus[0],
+      sender: $sender[0],
+      metrics: $metrics[0],
+      tmpdir: $tmpdir
+    }' >"$bench_json_path"
+
+  jq -n \
+    --arg label "$label" \
+    --slurpfile focus "$focus_json_path" \
+    --slurpfile postFocus "$post_focus_json_path" \
+    --slurpfile baselineViewport "$baseline_viewport_json_path" \
+    --slurpfile finalViewport "$final_viewport_json_path" \
+    --slurpfile bench "$bench_json_path" \
+    --slurpfile postScrollTelemetry "$post_scroll_telemetry_json_path" \
+    --slurpfile viewportSamples "$viewport_sample_json_path" \
+    --slurpfile viewportMetrics "$viewport_metrics_json_path" \
+    '{
+      label: $label,
+      focusState: $focus[0],
+      postFocusState: $postFocus[0],
+      baselineViewport: $baselineViewport[0],
+      finalViewport: $finalViewport[0],
+      bench: $bench[0],
+      postScrollTelemetry: $postScrollTelemetry[0],
+      viewportSamples: $viewportSamples[0],
+      viewportMetrics: $viewportMetrics[0]
+    }' >"$summary_json_path"
+
+  print -r -- "$summary_json_path"
 }
 
 function prepare_live_viewport() {
@@ -245,7 +481,7 @@ function open_terminal_for_live_pane() {
 
   while (( attempt <= open_retry_count )); do
     if raw_output="$(
-      gate_l_send_bridge_json_command false "$settle_timeout" "__agtmux_open_terminal_for_pane__" "$source" "$session_name" "$pane_id" \
+      gate_l_send_bridge_json_command "$refresh_inventory_before_open" "$settle_timeout" "__agtmux_open_terminal_for_pane__" "$source" "$session_name" "$pane_id" \
         2>"$gate_l_tmpdir/open-terminal.last-error.log"
     )"; then
       if normalized_output="$(extract_last_json_line "$raw_output")"; then
@@ -293,8 +529,12 @@ while (( $# > 0 )); do
       settle_timeout="$2"
       shift 2
       ;;
+    --switch-to-host-mode)
+      switch_to_host_mode="$2"
+      shift 2
+      ;;
     *)
-      echo "Usage: $0 [--host-mode legacy|next] [--session-name NAME] [--pane-id %id] [--timeout SECONDS]" >&2
+      echo "Usage: $0 [--host-mode legacy|next] [--session-name NAME] [--pane-id %id] [--timeout SECONDS] [--switch-to-host-mode legacy|next]" >&2
       exit 1
       ;;
   esac
@@ -308,6 +548,17 @@ case "$host_mode" in
     exit 1
     ;;
 esac
+
+if [[ -n "$switch_to_host_mode" ]]; then
+  case "$switch_to_host_mode" in
+    legacy|next)
+      ;;
+    *)
+      echo "Unsupported switch host mode: $switch_to_host_mode" >&2
+      exit 1
+      ;;
+  esac
+fi
 
 export AGTMUX_PERF_DAEMON_SOCKET_PATH_OVERRIDE="$HOME/Library/Application Support/AGTMUXDesktop/agtmuxd.sock"
 token="live-client-${host_mode}-$(uuidgen | tr '[:upper:]' '[:lower:]' | cut -c1-8)"
@@ -369,16 +620,14 @@ mark_stage resolve-pane-done
 
 open_json_path="$gate_l_tmpdir/open-terminal.json"
 active_json_path="$gate_l_tmpdir/active-target.json"
-focus_json_path="$gate_l_tmpdir/focus-state.json"
-post_focus_json_path="$gate_l_tmpdir/post-focus-state.json"
-baseline_viewport_json_path="$gate_l_tmpdir/baseline-viewport.json"
-final_viewport_json_path="$gate_l_tmpdir/final-viewport.json"
-bench_json_path="$gate_l_tmpdir/live-client-bench.json"
-bench_stderr_path="$gate_l_tmpdir/live-client-bench.stderr.log"
-post_scroll_telemetry_json_path="$gate_l_tmpdir/post-scroll-telemetry.json"
-viewport_sample_json_path="$gate_l_tmpdir/live-client-viewport-samples.json"
-viewport_metrics_json_path="$gate_l_tmpdir/live-client-viewport-metrics.json"
-send_json_path="$gate_l_tmpdir/live-client-send.json"
+retarget_json_path="$gate_l_tmpdir/retarget-rendered-target.json"
+switch_transition_json_path="$gate_l_tmpdir/switch-transition.json"
+initial_summary_json_path="$gate_l_tmpdir/initial-summary.json"
+switched_summary_json_path="$gate_l_tmpdir/switched-summary.json"
+
+printf '%s\n' 'null' >"$retarget_json_path"
+printf '%s\n' 'null' >"$switch_transition_json_path"
+printf '%s\n' 'null' >"$switched_summary_json_path"
 
 mark_stage open-terminal-start
 open_json="$(open_terminal_for_live_pane "local" "$session_name" "$pane_id")"
@@ -397,6 +646,7 @@ if [[ "$reported_host_mode" != "$host_mode" ]]; then
 fi
 
 wait_for_terminal_viewport_ready "$tile_id" "$settle_timeout"
+wait_for_rendered_terminal_target_ready "$tile_id" "$settle_timeout" >/dev/null
 mark_stage viewport-ready
 
 if [[ -n "$window_id" ]]; then
@@ -436,9 +686,13 @@ if [[ "$active_host_mode" != "$host_mode" ]]; then
   echo "Active target reported unexpected host mode: expected=$host_mode got=$active_host_mode" >&2
   exit 1
 fi
-if [[ -n "$pane_id" && -n "$rendered_client_pane_id" && "$rendered_client_pane_id" != "$pane_id" ]]; then
-  echo "Active target reported unexpected pane: expected=$pane_id got=$rendered_client_pane_id" >&2
-  exit 1
+if [[ -n "$pane_id" && "$rendered_client_pane_id" != "$pane_id" ]]; then
+  gate_l_send_bridge_command false 10 "__agtmux_focus_rendered_pane__" "$tile_id" "$pane_id" >/dev/null
+  if retarget_json="$(wait_for_rendered_client_pane "$tile_id" "$pane_id" "$settle_timeout")"; then
+    printf '%s\n' "$retarget_json" >"$retarget_json_path"
+  fi
+  sleep_ms "$focus_settle_ms"
+  mark_stage retarget-rendered-pane
 fi
 
 gate_l_send_bridge_command false 10 "__agtmux_focus_terminal_host__" "$tile_id" >/dev/null
@@ -448,113 +702,54 @@ mark_stage focus-host
 
 terminal_ax_identifier="workspace.terminalHost.${tile_id}"
 if focus_json="$(gate_l_send_bridge_json_command false 5 "__agtmux_dump_focus_state__" "$tile_id" 2>"$gate_l_tmpdir/focus-state.last-error.log")"; then
-  printf '%s\n' "$focus_json" >"$focus_json_path"
   focus_identifier="$(jq -r '.terminalAccessibilityIdentifier // empty' <<<"$focus_json")"
   if [[ -n "$focus_identifier" ]]; then
     terminal_ax_identifier="$focus_identifier"
   fi
-else
-  printf '%s\n' '{"terminalAccessibilityIdentifier":null}' >"$focus_json_path"
 fi
 
-if baseline_viewport_json="$(gate_l_send_bridge_json_command false 5 "__agtmux_dump_terminal_viewport_text__" "$tile_id" 2>"$gate_l_tmpdir/baseline-viewport.last-error.log")"; then
-  printf '%s\n' "$baseline_viewport_json" >"$baseline_viewport_json_path"
-else
-  printf '%s\n' '{}' >"$baseline_viewport_json_path"
+if ! prepare_live_viewport "$tile_id" "$terminal_ax_identifier" "$scroll_x_frac" "$scroll_y_frac"; then
+  exit 1
 fi
-mark_stage baseline-viewport
+mark_stage viewport-primed
 
-sample_count="$(viewport_sample_count)"
-sample_request_id="$(gate_l_start_async_bridge_command false "__agtmux_sample_terminal_viewport_text__" "$tile_id" "$sample_count" "$sample_interval_ms")"
-sleep_ms 20
-if [[ "$use_scroll_identifier" == "1" ]]; then
-  "$SCRIPT_DIR/gate_l_ax_key_sender.sh" \
-    --app-pid "$gate_l_app_pid" \
-    --scroll-identifier "$terminal_ax_identifier" \
-    --x-frac "$scroll_x_frac" \
-    --y-frac "$scroll_y_frac" \
-    --scroll-pixels "$scroll_pixels_per_event" \
-    --scroll-repeat "$events_per_burst" \
-    --scroll-interval-ms "$scroll_interval_ms" \
-    --scroll-phase-mode "$scroll_phase_mode" >"$send_json_path" 2>"$bench_stderr_path"
-else
-  "$SCRIPT_DIR/gate_l_ax_key_sender.sh" \
-    --app-pid "$gate_l_app_pid" \
-    --scroll-front-window \
-    --x-frac "$scroll_x_frac" \
-    --y-frac "$scroll_y_frac" \
-    --scroll-pixels "$scroll_pixels_per_event" \
-    --scroll-repeat "$events_per_burst" \
-    --scroll-interval-ms "$scroll_interval_ms" \
-    --scroll-phase-mode "$scroll_phase_mode" >"$send_json_path" 2>"$bench_stderr_path"
-fi
-mark_stage live-bench-done
+initial_summary_path="$(measure_live_scroll_burst "initial" "$tile_id" "$terminal_ax_identifier" "initial")"
+cp "$initial_summary_path" "$initial_summary_json_path"
 
-sample_timeout="$(
-  awk -v count="$sample_count" -v interval="$sample_interval_ms" 'BEGIN {
-    printf "%.3f", ((count * interval) / 1000.0) + 5.0
-  }'
-)"
-if gate_l_wait_for_async_bridge_json_result "$sample_request_id" "$sample_timeout" >"$viewport_sample_json_path"; then
-  python3 "$STEP_METRICS_PY" "$viewport_sample_json_path" >"$viewport_metrics_json_path"
-else
-  printf '%s\n' '{}' >"$viewport_sample_json_path"
-  printf '%s\n' '{}' >"$viewport_metrics_json_path"
+if [[ -n "$switch_to_host_mode" ]]; then
+  mark_stage switch-host-mode-start
+  switched_mode="$(gate_l_send_bridge_command false 10 "__agtmux_set_terminal_host_mode__" "$switch_to_host_mode")"
+  if [[ "$switched_mode" != "$switch_to_host_mode" ]]; then
+    echo "Bridge reported unexpected switched host mode: expected=$switch_to_host_mode got=$switched_mode" >&2
+    exit 1
+  fi
+  switched_target_json="$(wait_for_tile_host_mode "$tile_id" "$switch_to_host_mode" "$settle_timeout")"
+  printf '%s\n' "$switched_target_json" >"$switch_transition_json_path"
+  wait_for_terminal_viewport_ready "$tile_id" "$settle_timeout"
+  rendered_client_tty="$(jq -r '.renderedClientTTY // empty' "$switch_transition_json_path")"
+  gate_l_send_bridge_command false 10 "__agtmux_focus_terminal_host__" "$tile_id" >/dev/null
+  gate_l_activate_app
+  sleep_ms "$focus_settle_ms"
+  if focus_json="$(gate_l_send_bridge_json_command false 5 "__agtmux_dump_focus_state__" "$tile_id" 2>"$gate_l_tmpdir/switched-focus-state.last-error.log")"; then
+    focus_identifier="$(jq -r '.terminalAccessibilityIdentifier // empty' <<<"$focus_json")"
+    if [[ -n "$focus_identifier" ]]; then
+      terminal_ax_identifier="$focus_identifier"
+    fi
+  fi
+  if [[ "$reprime_after_switch" == "1" ]]; then
+    if ! prepare_live_viewport "$tile_id" "$terminal_ax_identifier" "$scroll_x_frac" "$scroll_y_frac"; then
+      exit 1
+    fi
+    mark_stage viewport-reprimed
+  fi
+  switched_summary_path="$(measure_live_scroll_burst "switched" "$tile_id" "$terminal_ax_identifier" "switched")"
+  cp "$switched_summary_path" "$switched_summary_json_path"
+  mark_stage switch-host-mode-done
 fi
-mark_stage viewport-samples-done
-
-if final_viewport_json="$(gate_l_send_bridge_json_command false 5 "__agtmux_dump_terminal_viewport_text__" "$tile_id" 2>"$gate_l_tmpdir/final-viewport.last-error.log")"; then
-  printf '%s\n' "$final_viewport_json" >"$final_viewport_json_path"
-else
-  printf '%s\n' '{}' >"$final_viewport_json_path"
-fi
-mark_stage final-viewport
-
-if post_focus_json="$(gate_l_send_bridge_json_command false 5 "__agtmux_dump_focus_state__" "$tile_id" 2>"$gate_l_tmpdir/post-focus-state.last-error.log")"; then
-  printf '%s\n' "$post_focus_json" >"$post_focus_json_path"
-else
-  printf '%s\n' '{"terminalAccessibilityIdentifier":null}' >"$post_focus_json_path"
-fi
-
-if post_scroll_telemetry_json="$(gate_l_send_bridge_json_command false 5 "__agtmux_dump_scroll_telemetry__" "$tile_id" 2>"$gate_l_tmpdir/post-scroll-telemetry.last-error.log")"; then
-  printf '%s\n' "$post_scroll_telemetry_json" >"$post_scroll_telemetry_json_path"
-else
-  printf '%s\n' '{}' >"$post_scroll_telemetry_json_path"
-fi
-mark_stage post-scroll-telemetry
 
 jq -n \
   --arg host_mode "$host_mode" \
-  --arg rendered_client_tty "$rendered_client_tty" \
-  --argjson events_per_burst "$events_per_burst" \
-  --argjson sample_interval_ms "$sample_interval_ms" \
-  --argjson sample_tail_ms "$sample_tail_ms" \
-  --argjson scroll_interval_ms "$scroll_interval_ms" \
-  --arg use_scroll_identifier "$use_scroll_identifier" \
-  --arg terminal_ax_identifier "$terminal_ax_identifier" \
-  --slurpfile focus "$focus_json_path" \
-  --slurpfile sender "$send_json_path" \
-  --slurpfile metrics "$viewport_metrics_json_path" \
-  --arg tmpdir "$gate_l_tmpdir" \
-  '{
-    hostMode: $host_mode,
-    clientTTY: (if $rendered_client_tty == "" then null else $rendered_client_tty end),
-    config: {
-      eventsPerBurst: $events_per_burst,
-      scrollIntervalMs: $scroll_interval_ms,
-      sampleIntervalMs: $sample_interval_ms,
-      sampleTailMs: $sample_tail_ms,
-      scrollTargetMode: (if $use_scroll_identifier == "1" then "identifier" else "front-window" end),
-      terminalAccessibilityIdentifier: (if $terminal_ax_identifier == "" then null else $terminal_ax_identifier end)
-    },
-    focus: $focus[0],
-    sender: $sender[0],
-    metrics: $metrics[0],
-    tmpdir: $tmpdir
-  }' >"$bench_json_path"
-
-jq -n \
-  --arg host_mode "$host_mode" \
+  --arg switched_host_mode "$switch_to_host_mode" \
   --arg session_name "$session_name" \
   --arg pane_id "$pane_id" \
   --arg window_id "$window_id" \
@@ -568,39 +763,41 @@ jq -n \
   --arg tmpdir "$gate_l_tmpdir" \
   --slurpfile open "$open_json_path" \
   --slurpfile active "$active_json_path" \
-  --slurpfile focus "$focus_json_path" \
-  --slurpfile postFocus "$post_focus_json_path" \
-  --slurpfile baselineViewport "$baseline_viewport_json_path" \
-  --slurpfile finalViewport "$final_viewport_json_path" \
-  --slurpfile bench "$bench_json_path" \
-  --slurpfile postScrollTelemetry "$post_scroll_telemetry_json_path" \
-  --slurpfile viewportSamples "$viewport_sample_json_path" \
-  --slurpfile viewportMetrics "$viewport_metrics_json_path" \
-  '{
-    hostMode: $host_mode,
-    sessionName: $session_name,
-    paneID: $pane_id,
-    windowID: $window_id,
-    requestedPaneID: ($requested_pane_id | if length > 0 then . else null end),
-    resolvedPane: {
-      sessionName: $resolved_session_name,
-      paneID: $pane_id,
-      windowID: $window_id,
-      paneActive: ($resolved_pane_active == "1"),
-      paneCurrentCommand: (if $resolved_pane_command == "" then null else $resolved_pane_command end),
-      paneTitle: (if $resolved_pane_title == "" then null else $resolved_pane_title end),
-      reason: $resolution_reason
-    },
-    appPID: ($app_pid | tonumber),
-    tmpdir: $tmpdir,
-    open: $open[0],
-    activeTarget: $active[0],
-    focusState: $focus[0],
-    postFocusState: $postFocus[0],
-    baselineViewport: $baselineViewport[0],
-    finalViewport: $finalViewport[0],
-    bench: $bench[0],
-    postScrollTelemetry: $postScrollTelemetry[0],
-    viewportSamples: $viewportSamples[0],
-    viewportMetrics: $viewportMetrics[0]
-  }'
+  --slurpfile retarget "$retarget_json_path" \
+  --slurpfile initial "$initial_summary_json_path" \
+  --slurpfile switched "$switched_summary_json_path" \
+  --slurpfile switchTransition "$switch_transition_json_path" \
+  '($initial[0]) as $initialMeasurement |
+   {
+     hostMode: $host_mode,
+     switchedHostMode: ($switched_host_mode | if length > 0 then . else null end),
+     sessionName: $session_name,
+     paneID: $pane_id,
+     windowID: $window_id,
+     requestedPaneID: ($requested_pane_id | if length > 0 then . else null end),
+     resolvedPane: {
+       sessionName: $resolved_session_name,
+       paneID: $pane_id,
+       windowID: $window_id,
+       paneActive: ($resolved_pane_active == "1"),
+       paneCurrentCommand: (if $resolved_pane_command == "" then null else $resolved_pane_command end),
+       paneTitle: (if $resolved_pane_title == "" then null else $resolved_pane_title end),
+       reason: $resolution_reason
+     },
+     appPID: ($app_pid | tonumber),
+     tmpdir: $tmpdir,
+     open: $open[0],
+     activeTarget: $active[0],
+     retargetedRenderedTarget: ($retarget[0] // null),
+     focusState: $initialMeasurement.focusState,
+     postFocusState: $initialMeasurement.postFocusState,
+     baselineViewport: $initialMeasurement.baselineViewport,
+     finalViewport: $initialMeasurement.finalViewport,
+     bench: $initialMeasurement.bench,
+     postScrollTelemetry: $initialMeasurement.postScrollTelemetry,
+     viewportSamples: $initialMeasurement.viewportSamples,
+     viewportMetrics: $initialMeasurement.viewportMetrics,
+     initialMeasurement: $initialMeasurement,
+     switchedMeasurement: ($switched[0] // null),
+     switchTransition: ($switchTransition[0] // null)
+   }'

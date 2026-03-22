@@ -125,6 +125,11 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         case down
     }
 
+    private enum ScrollCadenceMode: Equatable {
+        case legacyHybrid
+        case ghosttyOwned
+    }
+
     // MARK: - State
 
     private(set) var surface: ghostty_surface_t?
@@ -142,6 +147,7 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     private(set) var debugLastModifierFlagsRawValue: UInt?
     private(set) var debugLastSendKeyResult: Bool?
     private(set) var debugRecentInputEvents: [String] = []
+    private var scrollCadenceMode: ScrollCadenceMode = .legacyHybrid
     private var scrollPresentationDrawPending = false
     private var scrollPresentationContinuationScheduled = false
     private var scrollPresentationContinuationGeneration: UInt64 = 0
@@ -271,6 +277,19 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         setAccessibilityRole(.group)
         setAccessibilityIdentifier(identifier)
         setAccessibilityLabel(label)
+    }
+
+    @MainActor
+    func setTerminalHostMode(_ mode: TerminalHostMode) {
+        let nextMode: ScrollCadenceMode = switch mode {
+        case .legacy:
+            .legacyHybrid
+        case .next:
+            .ghosttyOwned
+        }
+        guard scrollCadenceMode != nextMode else { return }
+        scrollCadenceMode = nextMode
+        invalidateScrollPresentationDrawPump()
     }
 
     // MARK: - Layout
@@ -900,7 +919,10 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         let dispatchStartUptime = ProcessInfo.processInfo.systemUptime
         ghostty_surface_mouse_scroll(surface, x, y, scrollMods)
         let dispatchEndUptime = ProcessInfo.processInfo.systemUptime
-        let hostScrollPresentationEnabled = !(usesAlternateScroll && event.hasPreciseScrollingDeltas)
+        let hostScrollPresentationEnabled = shouldUseHostScrollPresentation(
+            usesAlternateScroll: usesAlternateScroll,
+            precision: event.hasPreciseScrollingDeltas
+        )
         if hostScrollPresentationEnabled {
             scheduleScrollPresentationDrawIfNeeded()
         }
@@ -1472,6 +1494,15 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     func performScrollPresentationDraw() {
         noteScrollPresentationDrawTelemetry()
         performImmediatePresentationDraw()
+    }
+
+    @MainActor
+    func shouldUseHostScrollPresentation(
+        usesAlternateScroll: Bool,
+        precision: Bool
+    ) -> Bool {
+        guard scrollCadenceMode == .legacyHybrid else { return false }
+        return !(usesAlternateScroll && precision)
     }
 
     @MainActor

@@ -6,11 +6,23 @@ final class TerminalHostModeRuntime: ObservableObject {
     static let shared = TerminalHostModeRuntime()
 
     @Published private(set) var overrideMode: TerminalHostMode?
+    private let userDefaults: UserDefaults
 
-    private init() {}
+    init(userDefaults: UserDefaults = .standard) {
+        self.userDefaults = userDefaults
+    }
 
     func resolved(environment: [String: String]) -> TerminalHostMode {
-        overrideMode ?? TerminalHostMode(environment: environment)
+        if let overrideMode {
+            return overrideMode
+        }
+        if let environmentMode = TerminalHostMode.parse(environment[TerminalHostMode.environmentKey]) {
+            return environmentMode
+        }
+        if let defaultsMode = TerminalHostMode.parse(userDefaults.string(forKey: TerminalHostMode.userDefaultsKey)) {
+            return defaultsMode
+        }
+        return .legacy
     }
 
     func setOverride(_ mode: TerminalHostMode?) {

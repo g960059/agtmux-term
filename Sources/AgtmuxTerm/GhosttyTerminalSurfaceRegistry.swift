@@ -7,6 +7,21 @@ struct GhosttyTerminalSurfaceContext: Equatable, Sendable {
     let tileID: UUID
     let surfaceKey: String
     let sessionRef: SessionRef
+    let terminalHostMode: TerminalHostMode
+
+    init(
+        workbenchID: UUID,
+        tileID: UUID,
+        surfaceKey: String,
+        sessionRef: SessionRef,
+        terminalHostMode: TerminalHostMode = .legacy
+    ) {
+        self.workbenchID = workbenchID
+        self.tileID = tileID
+        self.surfaceKey = surfaceKey
+        self.sessionRef = sessionRef
+        self.terminalHostMode = terminalHostMode
+    }
 
     var sourceTarget: TargetRef {
         sessionRef.target
