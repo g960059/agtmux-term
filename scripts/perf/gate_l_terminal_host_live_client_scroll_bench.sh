@@ -18,6 +18,7 @@ prime_max_rounds="${AGTMUX_PERF_LIVE_PRIME_MAX_ROUNDS:-6}"
 prime_min_rounds="${AGTMUX_PERF_LIVE_PRIME_MIN_ROUNDS:-1}"
 scroll_x_frac="${AGTMUX_PERF_SCROLL_X_FRAC:-0.5}"
 scroll_y_frac="${AGTMUX_PERF_SCROLL_Y_FRAC:-0.5}"
+use_scroll_identifier="${AGTMUX_PERF_LIVE_USE_SCROLL_IDENTIFIER:-1}"
 
 function extract_last_json_line() {
   local raw="$1"
@@ -222,8 +223,12 @@ gate_l_activate_app
 open_json_path="$gate_l_tmpdir/open-terminal.json"
 active_json_path="$gate_l_tmpdir/active-target.json"
 focus_json_path="$gate_l_tmpdir/focus-state.json"
+post_focus_json_path="$gate_l_tmpdir/post-focus-state.json"
+baseline_viewport_json_path="$gate_l_tmpdir/baseline-viewport.json"
+final_viewport_json_path="$gate_l_tmpdir/final-viewport.json"
 bench_json_path="$gate_l_tmpdir/live-client-bench.json"
 client_probe_json_path="$gate_l_tmpdir/client-command-probe.json"
+post_scroll_telemetry_json_path="$gate_l_tmpdir/post-scroll-telemetry.json"
 
 open_json="$(
   extract_last_json_line "$(
@@ -274,11 +279,42 @@ fi
 
 prepare_live_client "$rendered_client_tty"
 
+if baseline_viewport_json="$(gate_l_send_bridge_json_command false 5 "__agtmux_dump_terminal_viewport_text__" "$tile_id" 2>"$gate_l_tmpdir/baseline-viewport.last-error.log")"; then
+  printf '%s\n' "$baseline_viewport_json" >"$baseline_viewport_json_path"
+else
+  printf '%s\n' '{}' >"$baseline_viewport_json_path"
+fi
+
+frontmost_bench_args=(
+  --app-pid "$gate_l_app_pid"
+  --client-tty "$rendered_client_tty"
+  --label "$host_mode"
+)
+
+if [[ "$use_scroll_identifier" == "1" ]]; then
+  frontmost_bench_args+=(--scroll-identifier "$terminal_ax_identifier")
+fi
+
 "$SCRIPT_DIR/gate_l_frontmost_live_client_scroll_bench.sh" \
-  --app-pid "$gate_l_app_pid" \
-  --client-tty "$rendered_client_tty" \
-  --label "$host_mode" \
-  --scroll-identifier "$terminal_ax_identifier" >"$bench_json_path"
+  "${frontmost_bench_args[@]}" >"$bench_json_path"
+
+if final_viewport_json="$(gate_l_send_bridge_json_command false 5 "__agtmux_dump_terminal_viewport_text__" "$tile_id" 2>"$gate_l_tmpdir/final-viewport.last-error.log")"; then
+  printf '%s\n' "$final_viewport_json" >"$final_viewport_json_path"
+else
+  printf '%s\n' '{}' >"$final_viewport_json_path"
+fi
+
+if post_focus_json="$(gate_l_send_bridge_json_command false 5 "__agtmux_dump_focus_state__" "$tile_id" 2>"$gate_l_tmpdir/post-focus-state.last-error.log")"; then
+  printf '%s\n' "$post_focus_json" >"$post_focus_json_path"
+else
+  printf '%s\n' '{"terminalAccessibilityIdentifier":null}' >"$post_focus_json_path"
+fi
+
+if post_scroll_telemetry_json="$(gate_l_send_bridge_json_command false 5 "__agtmux_dump_scroll_telemetry__" "$tile_id" 2>"$gate_l_tmpdir/post-scroll-telemetry.last-error.log")"; then
+  printf '%s\n' "$post_scroll_telemetry_json" >"$post_scroll_telemetry_json_path"
+else
+  printf '%s\n' '{}' >"$post_scroll_telemetry_json_path"
+fi
 
 probe_client_scroll_command "$rendered_client_tty" >"$client_probe_json_path"
 
@@ -292,8 +328,12 @@ jq -n \
   --slurpfile open "$open_json_path" \
   --slurpfile active "$active_json_path" \
   --slurpfile focus "$focus_json_path" \
+  --slurpfile postFocus "$post_focus_json_path" \
+  --slurpfile baselineViewport "$baseline_viewport_json_path" \
+  --slurpfile finalViewport "$final_viewport_json_path" \
   --slurpfile bench "$bench_json_path" \
   --slurpfile clientProbe "$client_probe_json_path" \
+  --slurpfile postScrollTelemetry "$post_scroll_telemetry_json_path" \
   '{
     hostMode: $host_mode,
     sessionName: $session_name,
@@ -304,6 +344,10 @@ jq -n \
     open: $open[0],
     activeTarget: $active[0],
     focusState: $focus[0],
+    postFocusState: $postFocus[0],
+    baselineViewport: $baselineViewport[0],
+    finalViewport: $finalViewport[0],
     bench: $bench[0],
-    clientCommandProbe: $clientProbe[0]
+    clientCommandProbe: $clientProbe[0],
+    postScrollTelemetry: $postScrollTelemetry[0]
   }'

@@ -76,15 +76,41 @@ Latest durable finding:
 - the post-run `clientCommandProbe` moved the same fresh client again
   (`14 -> 28`)
 - the measured wheel burst still left `changed_sample_count = 0`
+- with `AGTMUX_SCROLL_TELEMETRY=1`, the same wheel burst still recorded
+  non-zero `scrollInputCount`, `scrollPresentationDrawCount`, and
+  `layerPresentCount`
+- the terminal viewport text snapshot before and after the wheel burst was
+  identical
 
 Interpretation:
 
 - the current blocker on the phase-1 host-mode wrapper is not "fresh client
   cannot scroll at all"
-- it is specifically "wheel-up on the fresh live client is not producing tmux
-  client scroll"
+- it is specifically "wheel-up on the fresh live client reaches the terminal
+  path, but changes neither tmux client scroll nor visible viewport state"
 - host-mode parity on this wrapper is therefore invalid until both sides show
   non-zero wheel-driven movement
+
+## Root Cause From Vendor Code
+
+`vendor/ghostty/src/Surface.zig:scrollCallback` makes the fresh-client result
+coherent:
+
+- when `uses_alternate_scroll` is false
+- and mouse reporting is off
+- wheel input does not become tmux copy-mode writes
+- it goes to Ghostty's local `terminal.scrollViewport(...)` path instead
+
+That means a fresh attached client with little or no loaded local scrollback
+can:
+
+- receive wheel events
+- queue renders
+- present frames
+- and still show no visible movement
+
+So the fresh host-mode wrapper is diagnostic for input-path ownership, but it
+is not the acceptance gate for the user's already-loaded live history path.
 
 ## Most Important Interpretation
 

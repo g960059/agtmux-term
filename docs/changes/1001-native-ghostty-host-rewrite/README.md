@@ -35,8 +35,20 @@ Current state:
     (`14 -> 28`)
   - the same fresh client still records `changed_sample_count = 0` for the
     injected wheel burst
+  - with `AGTMUX_SCROLL_TELEMETRY=1`, that same wheel burst still increments
+    `scrollInputCount`, `scrollPresentationDrawCount`, and `layerPresentCount`
+    while both the tmux client `scroll_position` and the terminal viewport text
+    stay unchanged
+  - vendor `Surface.scrollCallback` explains why: on a normal-screen pane with
+    `uses_alternate_scroll == false` and no mouse-reporting mode, wheel input
+    takes the local `scrollViewport` path rather than tmux copy-mode or
+    alternate-scroll writes
   - therefore the current phase-1 blocker is not "fresh client cannot scroll"
-    but "fresh live client wheel-up is not producing tmux client scroll"
+    but "fresh live client wheel-up reaches the terminal path without changing
+    either tmux client scroll or visible viewport state"
+  - as a result, the fresh host-mode live-client wrapper is diagnostic only and
+    cannot be the final rewrite acceptance gate for the user's loaded-pane
+    history complaint
 - the obsolete replay/frontmost-AX scroll gates are retired in favor of:
   - the live-captured `curses-history` proxy
   - the frontmost live client-scroll parity gate

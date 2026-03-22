@@ -123,10 +123,22 @@ scripts/perf/gate_l_ax_key_sender.sh --dry-run
   If `clientCommandProbe.moved == true` while `changed_sample_count == 0`,
   the fresh client is scrollable but wheel-up still is not producing tmux
   client scroll on that path.
+- the same wrapper now also emits `baselineViewport`, `finalViewport`, and
+  `postScrollTelemetry`.
+  - if `scrollInputCount > 0` but both `changed_sample_count == 0` and the
+    viewport snapshots are unchanged, the wheel burst reached the terminal
+    presentation path without changing visible state
 - `gate_l_terminal_host_live_client_scroll_parity.sh` is the phase-1/phase-2
   rewrite gate for `legacy` vs `next` host mode on the same live pane. Use it
   before native parity when the question is “does the rewrite path regress the
   real live-pane scroll path?”
+- after the 2026-03-22 fresh-client investigation, treat this wrapper as a
+  diagnostic gate, not the final acceptance gate:
+  - `Surface.scrollCallback` sends normal-screen wheel input to Ghostty's local
+    `scrollViewport` path when `uses_alternate_scroll == false`
+  - a fresh attached client may have little or no local scrollback loaded, so
+    wheel input can reach the terminal path without changing either tmux client
+    `scroll_position` or visible viewport text
 - the host-mode parity wrapper is only meaningful when both sides record at
   least one wheel-driven scroll change. If either side has
   `changed_sample_count == 0`, it now reports `valid: false` instead of a false
