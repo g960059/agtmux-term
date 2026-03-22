@@ -43,6 +43,8 @@ scripts/perf/gate_l_ax_key_sender.sh --dry-run
 - `scripts/perf/gate_l_trackpad_live_pane_bench.sh`
 - `scripts/perf/gate_l_frontmost_live_client_scroll_bench.sh`
 - `scripts/perf/gate_l_frontmost_live_client_scroll_parity.sh`
+- `scripts/perf/gate_l_terminal_host_live_client_scroll_bench.sh`
+- `scripts/perf/gate_l_terminal_host_live_client_scroll_parity.sh`
 - `scripts/perf/gate_l_keypress_bench.sh`
 - `scripts/perf/gate_l_native_ghostty_keypress_bench.sh`
 - `scripts/perf/gate_l_pane_switch_bench.sh`
@@ -112,6 +114,23 @@ scripts/perf/gate_l_ax_key_sender.sh --dry-run
 - `gate_l_frontmost_live_client_scroll_parity.sh` runs that same live-client
   bench twice, once for agtmux-term and once for native Ghostty, and compares
   `first_changed_elapsed_ms`, scroll delta, and coarse-step counts.
+- `gate_l_terminal_host_live_client_scroll_bench.sh` launches a fresh
+  UITest-enabled agtmux-term app on the default local tmux server, opens the
+  target live pane, and then runs the same frontmost live client-scroll bench
+  for a specific `AGTMUX_TERMINAL_HOST_MODE`.
+- that wrapper now primes the fresh client with a client-targeted `PageUp`
+  before the measured wheel burst and emits `clientCommandProbe` in the JSON.
+  If `clientCommandProbe.moved == true` while `changed_sample_count == 0`,
+  the fresh client is scrollable but wheel-up still is not producing tmux
+  client scroll on that path.
+- `gate_l_terminal_host_live_client_scroll_parity.sh` is the phase-1/phase-2
+  rewrite gate for `legacy` vs `next` host mode on the same live pane. Use it
+  before native parity when the question is “does the rewrite path regress the
+  real live-pane scroll path?”
+- the host-mode parity wrapper is only meaningful when both sides record at
+  least one wheel-driven scroll change. If either side has
+  `changed_sample_count == 0`, it now reports `valid: false` instead of a false
+  pass.
 - `gate_l_trackpad_live_pane_bench.sh` is the direct diagnostic seam for an
   actual local pane, for example a live Claude/Codex history pane. It launches
   a UITest-enabled app without a bootstrap tmux socket, opens the real pane on

@@ -60,6 +60,32 @@ Current limitation:
 - when both apps share the same live pane, preconditioning still needs careful
   handling so both runs start from the same baseline
 
+### Fresh host-mode live-client wrapper
+
+`scripts/perf/gate_l_terminal_host_live_client_scroll_bench.sh`
+`scripts/perf/gate_l_terminal_host_live_client_scroll_parity.sh`
+
+This wrapper is useful for the rewrite branch because it launches fresh
+`legacy` and `next` apps against the same live pane.
+
+Latest durable finding:
+
+- a fresh attached client can be primed into a scrollable state with a
+  client-targeted `PageUp`
+- on pane `%666`, the prime step moved `scroll_position` from `0 -> 14`
+- the post-run `clientCommandProbe` moved the same fresh client again
+  (`14 -> 28`)
+- the measured wheel burst still left `changed_sample_count = 0`
+
+Interpretation:
+
+- the current blocker on the phase-1 host-mode wrapper is not "fresh client
+  cannot scroll at all"
+- it is specifically "wheel-up on the fresh live client is not producing tmux
+  client scroll"
+- host-mode parity on this wrapper is therefore invalid until both sides show
+  non-zero wheel-driven movement
+
 ## Most Important Interpretation
 
 As of 2026-03-22, the realistic live-pane signal is no longer "embedded sends

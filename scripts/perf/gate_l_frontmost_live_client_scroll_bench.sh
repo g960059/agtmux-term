@@ -9,6 +9,7 @@ app_pid=""
 bundle_id=""
 client_tty=""
 label="${AGTMUX_PERF_LIVE_LABEL:-live}"
+scroll_identifier=""
 events_per_burst="${AGTMUX_PERF_UPSTEP_EVENTS_PER_BURST:-24}"
 scroll_pixels_per_event="${AGTMUX_PERF_UPSTEP_PIXELS_PER_EVENT:-10}"
 scroll_interval_ms="${AGTMUX_PERF_UPSTEP_SCROLL_INTERVAL_MS:-8}"
@@ -36,6 +37,10 @@ while (( $# > 0 )); do
       ;;
     --label)
       label="$2"
+      shift 2
+      ;;
+    --scroll-identifier)
+      scroll_identifier="$2"
       shift 2
       ;;
     *)
@@ -86,7 +91,12 @@ function sample_count_for_burst() {
     }'
 }
 
-focus_args=(--focus-scroll-front-window --x-frac "$scroll_x_frac" --y-frac "$scroll_y_frac")
+focus_args=(--x-frac "$scroll_x_frac" --y-frac "$scroll_y_frac")
+if [[ -n "$scroll_identifier" ]]; then
+  focus_args+=(--focus-scroll-identifier "$scroll_identifier")
+else
+  focus_args+=(--focus-scroll-front-window)
+fi
 append_app_target_args focus_args
 focus_json="$("$SCRIPT_DIR/gate_l_ax_key_sender.sh" "${focus_args[@]}")"
 if [[ "$(jq -r '.sent // false' <<<"$focus_json")" != "true" ]]; then
@@ -109,7 +119,11 @@ sample_count="$(sample_count_for_burst)"
 sample_json_path="$tmpdir/live-client-scroll-samples.json"
 metrics_path="$tmpdir/live-client-scroll-metrics.json"
 
-send_args=(--scroll-point --point-x "$scroll_point_x" --point-y "$scroll_point_y" --scroll-pixels "$scroll_pixels_per_event" --scroll-repeat "$events_per_burst" --scroll-interval-ms "$scroll_interval_ms" --scroll-phase-mode "$scroll_phase_mode")
+if [[ -n "$scroll_identifier" ]]; then
+  send_args=(--scroll-identifier "$scroll_identifier" --x-frac "$scroll_x_frac" --y-frac "$scroll_y_frac" --scroll-pixels "$scroll_pixels_per_event" --scroll-repeat "$events_per_burst" --scroll-interval-ms "$scroll_interval_ms" --scroll-phase-mode "$scroll_phase_mode")
+else
+  send_args=(--scroll-point --point-x "$scroll_point_x" --point-y "$scroll_point_y" --scroll-pixels "$scroll_pixels_per_event" --scroll-repeat "$events_per_burst" --scroll-interval-ms "$scroll_interval_ms" --scroll-phase-mode "$scroll_phase_mode")
+fi
 append_app_target_args send_args
 python3 "$SCROLL_AND_SEND_PY" \
   --client-tty "$client_tty" \
