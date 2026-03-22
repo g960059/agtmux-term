@@ -252,6 +252,10 @@ private struct WorkbenchTerminalTileViewV2: View {
         return env["AGTMUX_UITEST"] != "1"
     }
 
+    private var terminalHostMode: TerminalHostMode {
+        TerminalHostMode(environment: ProcessInfo.processInfo.environment)
+    }
+
     private var terminalState: WorkbenchV2TerminalTileState {
         // Derive state from the pre-computed snapshot (computed by WorkbenchTileViewV2)
         // to avoid subscribing to the full AppViewModel pane list.
@@ -480,22 +484,27 @@ private struct WorkbenchTerminalTileViewV2: View {
                 if !rendersGhosttySurface {
                     Color.clear
                 } else {
-                    GhosttyIslandRepresentable(
-                        surfaceID: tile.id,
-                        poolKey: plan.surfaceKey,
-                        attachCommand: plan.command,
-                        surfaceContext: GhosttyTerminalSurfaceContext(
-                            workbenchID: workbenchID,
-                            tileID: tile.id,
-                            surfaceKey: plan.surfaceKey,
-                            sessionRef: sessionRef
-                        ),
-                        visiblePaneIdentity: visiblePaneIdentity,
-                        isFocused: isFocused,
-                        focusRestoreNonce: focusRestoreNonce
+                    TerminalHostContainer(
+                        mode: terminalHostMode,
+                        model: TerminalHostRenderModel(
+                            surfaceID: tile.id,
+                            poolKey: plan.surfaceKey,
+                            attachCommand: plan.command,
+                            surfaceContext: GhosttyTerminalSurfaceContext(
+                                workbenchID: workbenchID,
+                                tileID: tile.id,
+                                surfaceKey: plan.surfaceKey,
+                                sessionRef: sessionRef
+                            ),
+                            visiblePaneIdentity: visiblePaneIdentity,
+                            isFocused: isFocused,
+                            focusRestoreNonce: focusRestoreNonce
+                        )
                     )
-                    .equatable()
-                    .id("ghostty-island:\(tile.id.uuidString)")
+                    .id(TerminalHostContainer.hostViewIdentity(
+                        surfaceID: tile.id,
+                        mode: terminalHostMode
+                    ))
                 }
 
             case .failure:

@@ -15,8 +15,10 @@ Current state:
   in the research note and perf runbook
 - completed packs for unsigned release fallback and sidebar daemon binding are
   retired from `docs/changes/`
-- phase 1 starts from the current `main` behavior but treats the legacy host as
-  fallback, not the target architecture
+- phase 1 now has an explicit `TerminalHostMode` boundary:
+  - `legacy` routes through `GhosttyIslandRepresentable`
+  - `next` routes through a separate next-host wrapper that still reuses the
+    legacy controller while later phases split ownership
 - the obsolete replay/frontmost-AX scroll gates are retired in favor of:
   - the live-captured `curses-history` proxy
   - the frontmost live client-scroll parity gate

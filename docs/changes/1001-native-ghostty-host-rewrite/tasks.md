@@ -1,7 +1,7 @@
 # Tasks
 
 - [x] phase-0 cleanup
-- [ ] phase-1 host-mode boundary
+- [x] phase-1 host-mode boundary
 - [ ] phase-1 persistent-surface ownership
 - [ ] realistic live-pane parity gate for the next host
 - [ ] durable-knowledge promotion
