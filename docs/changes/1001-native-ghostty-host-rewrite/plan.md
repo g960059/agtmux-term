@@ -6,7 +6,11 @@
    host and next host can coexist in the same app.
 3. Phase 1: create the next-host surface ownership layer with persistent pane
    surfaces and a dedicated AppKit controller boundary.
-4. Phase 2: route next-host history scroll through Ghostty-owned cadence and
-   delete host scroll-pump behavior from that path.
-5. Phase 3: compare next host against native Ghostty on live-pane gates and
+4. Phase 2: prove the next-host boundary on the deterministic loaded-TUI gate,
+   then stabilize repeatable `legacy` vs `next` parity there before widening
+   the acceptance surface.
+5. Phase 3: route next-host history scroll through Ghostty-owned cadence and
+   delete host scroll-pump behavior from that path on the loaded live-pane
+   acceptance gate.
+6. Phase 4: compare next host against native Ghostty on live-pane gates and
    cut over only after it wins on the relevant path.

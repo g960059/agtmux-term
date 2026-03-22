@@ -39,6 +39,22 @@ Unchanged in this wave:
   `GhosttyIslandViewController` internally; later phases replace that inner
   controller and move cadence ownership fully out of the legacy path
 
+## Current Phase-2 Acceptance Surface
+
+- fresh live-client wrappers remain diagnostic-only because normal-screen wheel
+  input can reach Ghostty's local `scrollViewport` path without changing tmux
+  client `scroll_position` or visible viewport state on a freshly attached
+  client
+- the current acceptance surface for `legacy` vs `next` is therefore the
+  deterministic loaded-TUI gate:
+  - launch a fresh app in a selected host mode
+  - open an isolated tmux session that runs the repo-local `curses-history`
+    viewer on a deterministic loaded fixture
+  - sample visible viewport movement through the bridge and compare
+    `first_changed_elapsed_ms`, changed sample count, and total upward rows
+- once `next` wins or matches `legacy` there, phase 3 can return to the more
+  variable loaded live-pane gate
+
 ## Failure Modes
 
 - next-host attach fails:

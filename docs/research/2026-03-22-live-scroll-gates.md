@@ -31,6 +31,40 @@ Reasons:
 
 ## Current Useful Gates
 
+### Deterministic loaded-TUI host-mode gate
+
+`scripts/perf/gate_l_terminal_host_loaded_viewport_bench.sh`
+`scripts/perf/gate_l_terminal_host_loaded_viewport_parity.sh`
+
+This is now the phase-2 acceptance surface for `legacy` vs `next`:
+
+- it launches a fresh UITest-enabled app in the selected host mode
+- it boots an isolated tmux session that runs the repo-local
+  `curses-history` viewer on a deterministic loaded fixture
+- it compares first visible movement latency and step metrics through the same
+  bridge viewport sampler used by the app-side perf harness
+
+Durable findings:
+
+- the original plain loaded-transcript version was diagnostic only because
+  `baselineViewport.usesAlternateScroll == true` and wheel-up just emitted
+  alternate-scroll cursor keys
+- moving the deterministic gate onto the repo-local `curses-history` viewer
+  made both `legacy` and `next` record real viewport movement
+- the `next` host initially failed because bridge lookup still used workbench
+  tile IDs; `TerminalHostActiveSurfaceRegistry` now resolves tile ID to the
+  active pane-owned leaf ID for viewport/focus snapshots
+- the first valid smoke run after that fix showed `legacy
+  first_changed_elapsed_ms = 348.8586` vs `next = 385.7792`, so `next`
+  initially trailed by about `36.9ms`
+- subsequent reruns on the same deterministic gate passed with `next`
+  leading instead:
+  - one pass recorded `first_changed_elapsed_delta_ms = -25.4354`
+  - another pass recorded `first_changed_elapsed_delta_ms = -41.8393`
+- durable conclusion: the deterministic host-mode gate is now valid, but
+  repeatability is the next problem to solve before returning to the loaded
+  live-pane acceptance path
+
 ### Live-captured `curses-history` proxy
 
 `scripts/perf/gate_l_trackpad_live_curses_history_step_parity.sh`
@@ -65,8 +99,7 @@ Current limitation:
 `scripts/perf/gate_l_terminal_host_live_client_scroll_bench.sh`
 `scripts/perf/gate_l_terminal_host_live_client_scroll_parity.sh`
 
-This wrapper is useful for the rewrite branch because it launches fresh
-`legacy` and `next` apps against the same live pane.
+This wrapper is useful for rewrite diagnostics, but not for acceptance.
 
 Latest durable finding:
 

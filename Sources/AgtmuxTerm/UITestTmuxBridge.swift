@@ -840,7 +840,8 @@ final class UITestTmuxBridge {
             )
         }
 
-        guard let terminalView = SurfacePool.shared.managedView(forLeafID: tileID) else {
+        let resolvedLeafID = resolvedTerminalLeafID(for: tileID)
+        guard let terminalView = SurfacePool.shared.managedView(forLeafID: resolvedLeafID) else {
             throw NSError(
                 domain: "UITestTmuxBridge",
                 code: 14,
@@ -949,7 +950,8 @@ final class UITestTmuxBridge {
     }
 
     func terminalViewportTextSnapshotForTesting(tileID: UUID) throws -> GhosttyTerminalView.ViewportTextSnapshot {
-        guard let terminalView = SurfacePool.shared.view(leafID: tileID) else {
+        let resolvedLeafID = resolvedTerminalLeafID(for: tileID)
+        guard let terminalView = SurfacePool.shared.view(leafID: resolvedLeafID) else {
             throw NSError(
                 domain: "UITestTmuxBridge",
                 code: 14,
@@ -1045,7 +1047,8 @@ final class UITestTmuxBridge {
     private func terminalView(for args: [String], command: String) throws -> GhosttyTerminalView {
         uiTestBridgeDebugLog("terminalView lookup command=\(command) args=\(args)")
         let tileID = try tileID(from: args, command: command)
-        guard let terminalView = SurfacePool.shared.view(leafID: tileID) else {
+        let resolvedLeafID = resolvedTerminalLeafID(for: tileID)
+        guard let terminalView = SurfacePool.shared.view(leafID: resolvedLeafID) else {
             throw NSError(
                 domain: "UITestTmuxBridge",
                 code: 14,
@@ -1058,6 +1061,10 @@ final class UITestTmuxBridge {
 
         uiTestBridgeDebugLog("terminalView resolved command=\(command) tileID=\(tileID.uuidString)")
         return terminalView
+    }
+
+    private func resolvedTerminalLeafID(for tileID: UUID) -> UUID {
+        TerminalHostActiveSurfaceRegistry.shared.activeLeafID(forTileID: tileID) ?? tileID
     }
 
     private func tileID(from args: [String], command: String) throws -> UUID {

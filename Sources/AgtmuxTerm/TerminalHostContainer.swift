@@ -1,5 +1,28 @@
 import SwiftUI
 
+@MainActor
+final class TerminalHostActiveSurfaceRegistry {
+    static let shared = TerminalHostActiveSurfaceRegistry()
+
+    private var activeLeafIDsByTileID: [UUID: UUID] = [:]
+
+    func setActiveLeafID(_ leafID: UUID, forTileID tileID: UUID) {
+        activeLeafIDsByTileID[tileID] = leafID
+    }
+
+    func activeLeafID(forTileID tileID: UUID) -> UUID? {
+        activeLeafIDsByTileID[tileID]
+    }
+
+    func clearActiveLeafID(forTileID tileID: UUID) {
+        activeLeafIDsByTileID.removeValue(forKey: tileID)
+    }
+
+    func resetForTesting() {
+        activeLeafIDsByTileID.removeAll()
+    }
+}
+
 struct TerminalHostRenderModel: Equatable {
     let surfaceID: UUID
     let poolKey: String
@@ -88,6 +111,7 @@ final class NextGhosttyIslandViewController: NSViewController {
     }
 
     private let maxRetainedPaneControllers = 4
+    private let tileID: UUID
     private var paneSurfaceIDs: [String: UUID] = [:]
     private var paneControllers: [String: GhosttyIslandViewController] = [:]
     private var paneModels: [String: TerminalHostRenderModel] = [:]
@@ -95,6 +119,7 @@ final class NextGhosttyIslandViewController: NSViewController {
     private var activePaneKey: String?
 
     init(model: TerminalHostRenderModel) {
+        self.tileID = model.surfaceID
         super.init(nibName: nil, bundle: nil)
         loadViewIfNeeded()
         update(model: model)
@@ -106,6 +131,14 @@ final class NextGhosttyIslandViewController: NSViewController {
 
     override func loadView() {
         view = NSView()
+    }
+
+    override func viewDidAppear() {
+        super.viewDidAppear()
+        guard let activePaneKey,
+              let controller = paneControllers[activePaneKey]
+        else { return }
+        controller.hostContainerDidAttachVisibleView()
     }
 
     func update(model: TerminalHostRenderModel) {
@@ -186,10 +219,17 @@ final class NextGhosttyIslandViewController: NSViewController {
     }
 
     private func activatePaneController(_ controller: GhosttyIslandViewController, paneKey: String) {
-        ensurePaneControllerIsVisible(controller)
         if children.contains(where: { $0 === controller }) == false {
             addChild(controller)
         }
+        ensurePaneControllerIsVisible(controller)
+        if let paneModel = paneModels[paneKey] {
+            TerminalHostActiveSurfaceRegistry.shared.setActiveLeafID(
+                paneModel.surfaceID,
+                forTileID: tileID
+            )
+        }
+        controller.hostContainerDidAttachVisibleView()
     }
 
     private func ensurePaneControllerIsVisible(_ controller: GhosttyIslandViewController) {
@@ -220,5 +260,12 @@ final class NextGhosttyIslandViewController: NSViewController {
             controller.removeFromParent()
         }
         paneRetentionOrder = paneRetentionOrder.filter { keptKeys.contains($0) }
+    }
+
+    deinit {
+        let capturedTileID = tileID
+        Task { @MainActor in
+            TerminalHostActiveSurfaceRegistry.shared.clearActiveLeafID(forTileID: capturedTileID)
+        }
     }
 }

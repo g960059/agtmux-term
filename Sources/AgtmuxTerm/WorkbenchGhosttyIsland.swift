@@ -211,6 +211,16 @@ final class GhosttyIslandViewController: NSViewController {
         }
     }
 
+    func hostContainerDidAttachVisibleView() {
+        guard let terminalView else { return }
+        guard terminalView.surface == nil else { return }
+        guard let command = pendingAttachCommand ?? currentCommand else { return }
+        applyCommandIfPossible(
+            command,
+            surfaceContext: pendingSurfaceContext ?? registeredSurfaceContext
+        )
+    }
+
     // MARK: - Update from SwiftUI
 
     func update(

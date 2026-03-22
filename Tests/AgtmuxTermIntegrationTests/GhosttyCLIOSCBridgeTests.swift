@@ -1903,7 +1903,9 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
     @MainActor
     func testUITestTmuxBridgeTerminalViewportTextSnapshotUsesRegisteredView() throws {
         SurfacePool.shared.resetForTesting()
+        TerminalHostActiveSurfaceRegistry.shared.resetForTesting()
         defer { SurfacePool.shared.resetForTesting() }
+        defer { TerminalHostActiveSurfaceRegistry.shared.resetForTesting() }
 
         let tileID = UUID()
         let view = GhosttyTerminalViewViewportTextSpy()
@@ -1921,6 +1923,43 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
             tmuxPaneID: "%31",
             surfaceHandle: GhosttySurfaceHandle(rawValue: 0x631)
         )
+
+        let bridge = UITestTmuxBridge(
+            viewModel: AppViewModel(
+                hostsConfig: HostsConfig(hosts: [])
+            ),
+            env: [:]
+        )
+
+        let snapshot = try bridge.terminalViewportTextSnapshotForTesting(tileID: tileID)
+        XCTAssertEqual(snapshot, expected)
+    }
+
+    @MainActor
+    func testUITestTmuxBridgeTerminalViewportTextSnapshotResolvesNextHostActiveLeafID() throws {
+        SurfacePool.shared.resetForTesting()
+        TerminalHostActiveSurfaceRegistry.shared.resetForTesting()
+        defer { SurfacePool.shared.resetForTesting() }
+        defer { TerminalHostActiveSurfaceRegistry.shared.resetForTesting() }
+
+        let tileID = UUID()
+        let leafID = UUID()
+        let view = GhosttyTerminalViewViewportTextSpy()
+        let expected = GhosttyTerminalView.ViewportTextSnapshot(
+            text: "next-host",
+            lineCount: 1,
+            characterCount: 9,
+            usesAlternateScroll: true
+        )
+        view.snapshots = [expected]
+
+        SurfacePool.shared.register(
+            view: view,
+            leafID: leafID,
+            tmuxPaneID: "%41",
+            surfaceHandle: GhosttySurfaceHandle(rawValue: 0x641)
+        )
+        TerminalHostActiveSurfaceRegistry.shared.setActiveLeafID(leafID, forTileID: tileID)
 
         let bridge = UITestTmuxBridge(
             viewModel: AppViewModel(

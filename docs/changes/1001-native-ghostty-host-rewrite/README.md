@@ -24,6 +24,28 @@ Current state:
 - the UITest tmux bridge and perf app launcher now surface
   `AGTMUX_TERMINAL_HOST_MODE`, so realistic live gates can target `legacy`
   and `next` explicitly instead of inferring host ownership from the app build
+- phase 2 now has a deterministic loaded-TUI host-mode gate:
+  - `gate_l_terminal_host_loaded_viewport_bench.sh` launches a fresh
+    UITest-enabled app in `legacy` or `next` mode against an isolated tmux
+    session that runs the repo-local `curses-history` viewer on a deterministic
+    loaded fixture
+  - `gate_l_terminal_host_loaded_viewport_parity.sh` compares `legacy` and
+    `next` on first visible movement latency and step metrics before the
+    rewrite is judged on the more variable live-pane path
+  - the gate is now valid on both sides; the first valid smoke run showed
+    `next` trailing `legacy` by about `36.9ms`, while subsequent reruns passed
+    with `next` leading by about `25-42ms`
+  - the immediate phase-2 task is therefore repeatability, not simply making
+    the gate valid
+- the next-host bridge/runtime now resolves workbench tile IDs to the active
+  pane leaf ID:
+  - `TerminalHostActiveSurfaceRegistry` records the active pane-owned surface
+    behind each workbench tile
+  - `UITestTmuxBridge` viewport/focus snapshots now use that mapping so `next`
+    host parity benches can target the active pane correctly
+  - `GhosttyIslandViewController.hostContainerDidAttachVisibleView()` retries
+    pending attach once the next-host container has actually made the child
+    visible
 - the realistic live client-scroll gate now has a host-mode wrapper:
   - `gate_l_terminal_host_live_client_scroll_bench.sh` launches a fresh app in
     either `legacy` or `next` mode and measures the live pane path
@@ -50,5 +72,7 @@ Current state:
     cannot be the final rewrite acceptance gate for the user's loaded-pane
     history complaint
 - the obsolete replay/frontmost-AX scroll gates are retired in favor of:
+  - the deterministic loaded-TUI host-mode gate for phase-2 `legacy` vs `next`
+    acceptance
   - the live-captured `curses-history` proxy
   - the frontmost live client-scroll parity gate

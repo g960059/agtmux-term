@@ -45,6 +45,8 @@ scripts/perf/gate_l_ax_key_sender.sh --dry-run
 - `scripts/perf/gate_l_frontmost_live_client_scroll_parity.sh`
 - `scripts/perf/gate_l_terminal_host_live_client_scroll_bench.sh`
 - `scripts/perf/gate_l_terminal_host_live_client_scroll_parity.sh`
+- `scripts/perf/gate_l_terminal_host_loaded_viewport_bench.sh`
+- `scripts/perf/gate_l_terminal_host_loaded_viewport_parity.sh`
 - `scripts/perf/gate_l_keypress_bench.sh`
 - `scripts/perf/gate_l_native_ghostty_keypress_bench.sh`
 - `scripts/perf/gate_l_pane_switch_bench.sh`
@@ -143,6 +145,26 @@ scripts/perf/gate_l_ax_key_sender.sh --dry-run
   least one wheel-driven scroll change. If either side has
   `changed_sample_count == 0`, it now reports `valid: false` instead of a false
   pass.
+- `gate_l_terminal_host_loaded_viewport_bench.sh` is the current phase-2
+  acceptance surface for `legacy` vs `next`:
+  - it launches a fresh UITest-enabled app in the selected host mode
+  - it runs the repo-local `curses-history` viewer on a deterministic loaded
+    fixture inside an isolated tmux session
+  - it waits for the loaded marker to enter the viewport, then measures first
+    visible movement latency and step metrics via the bridge viewport sampler
+- `gate_l_terminal_host_loaded_viewport_parity.sh` compares those two host
+  modes and currently fails if `next` exceeds `legacy` by more than:
+  - `25ms` on `first_changed_elapsed_ms`
+  - `0` on `max_step_rows`
+  - `2` fewer changed samples
+  - `2` fewer total upward rows
+- the first few valid smokes on this gate have mixed latency deltas, so treat
+  a single pass as a sanity check and run it repeatedly before concluding that
+  `next` is stably at parity
+- the earlier plain loaded-transcript variant is diagnostic-only:
+  - on that path `baselineViewport.usesAlternateScroll` can still be true
+  - wheel-up then becomes alternate-scroll cursor keys instead of a useful
+    deterministic acceptance surface
 - `gate_l_trackpad_live_pane_bench.sh` is the direct diagnostic seam for an
   actual local pane, for example a live Claude/Codex history pane. It launches
   a UITest-enabled app without a bootstrap tmux socket, opens the real pane on
