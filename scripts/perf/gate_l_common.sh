@@ -1,5 +1,6 @@
 #!/bin/zsh
 set -euo pipefail
+set +x 2>/dev/null || true
 
 zmodload zsh/datetime
 

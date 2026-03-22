@@ -64,6 +64,16 @@ Durable findings:
 - durable conclusion: the deterministic host-mode gate is now valid, but
   repeatability is the next problem to solve before returning to the loaded
   live-pane acceptance path
+- the gate now supports `--iterations` and aggregates medians across repeated
+  `legacy`/`next` pairs
+  - a `2`-iteration smoke passed with median
+    `first_changed_elapsed_delta_ms = +8.0781`
+  - the same aggregate still showed zero `islandRetryCountDelta` and zero
+    `islandApplyCommandCountDelta`, so next-host attach retries are not the
+    obvious source of remaining variance
+  - the harness now disables inherited shell xtrace because sporadic
+    `output=''` prefixes were corrupting machine-readable JSON during
+    repeatability runs
 
 ### Live-captured `curses-history` proxy
 

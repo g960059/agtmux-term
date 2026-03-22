@@ -120,6 +120,7 @@ export AGTMUX_PERF_UITEST_INVENTORY_ONLY=0
 fixture_file="$gate_l_tmpdir/loaded-history-fixture.txt"
 fixture_build_done_file="$gate_l_tmpdir/loaded-history-fixture.done"
 fixture_event_log_path="$gate_l_tmpdir/curses-history-events.json"
+fixture_event_summary_json_path="$gate_l_tmpdir/curses-history-events-summary.json"
 open_json_path="$gate_l_tmpdir/open-terminal.json"
 active_json_path="$gate_l_tmpdir/active-target.json"
 focus_json_path="$gate_l_tmpdir/focus-state.json"
@@ -248,6 +249,23 @@ final_viewport_json="$(gate_l_send_bridge_json_command false 10 "__agtmux_dump_t
 printf '%s\n' "$final_viewport_json" >"$final_viewport_json_path"
 scroll_telemetry_json="$(gate_l_send_bridge_json_command false 10 "__agtmux_dump_scroll_telemetry__" "$tile_id")"
 printf '%s\n' "$scroll_telemetry_json" >"$scroll_telemetry_json_path"
+jq -n \
+  --slurpfile payload "$fixture_event_log_path" \
+  '($payload[0].events // []) as $events |
+   {
+     eventCount: ($payload[0].eventCount // ($events | length)),
+     resizeCount: ($events | map(select(.kind == "resize")) | length),
+     keyUpCount: ($events | map(select(.kind == "key" and .keyName == "KEY_UP")) | length),
+     keyDownCount: ($events | map(select(.kind == "key" and .keyName == "KEY_DOWN")) | length),
+     firstKeyUpElapsedMs:
+       (($events | map(select(.kind == "key" and .keyName == "KEY_UP") | .elapsedMs) | first) // null),
+     firstKeyDownElapsedMs:
+       (($events | map(select(.kind == "key" and .keyName == "KEY_DOWN") | .elapsedMs) | first) // null),
+     lastKeyUpElapsedMs:
+       (($events | map(select(.kind == "key" and .keyName == "KEY_UP") | .elapsedMs) | last) // null),
+     finalTop:
+       (($events | map(select(.kind == "key") | .top) | last) // null)
+   }' >"$fixture_event_summary_json_path"
 
 jq -n \
   --arg host_mode "$host_mode" \
@@ -279,6 +297,7 @@ jq -n \
   --slurpfile metrics "$metrics_json_path" \
   --slurpfile send "$send_json_path" \
   --slurpfile scroll_telemetry "$scroll_telemetry_json_path" \
+  --slurpfile fixture_event_summary "$fixture_event_summary_json_path" \
   --arg tmpdir "$gate_l_tmpdir" \
   '{
     hostMode: $host_mode,
@@ -314,5 +333,6 @@ jq -n \
     metrics: $metrics[0],
     sender: $send[0],
     scrollTelemetry: $scroll_telemetry[0],
+    fixtureEventSummary: $fixture_event_summary[0],
     tmpdir: $tmpdir
   }'

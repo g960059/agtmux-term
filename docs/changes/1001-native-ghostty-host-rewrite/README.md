@@ -32,11 +32,16 @@ Current state:
   - `gate_l_terminal_host_loaded_viewport_parity.sh` compares `legacy` and
     `next` on first visible movement latency and step metrics before the
     rewrite is judged on the more variable live-pane path
+  - the parity wrapper now accepts `--iterations` and aggregates medians across
+    repeated `legacy`/`next` pairs because single-run `first_changed` is
+    quantized by the `16ms` sampler
   - the gate is now valid on both sides; the first valid smoke run showed
     `next` trailing `legacy` by about `36.9ms`, while subsequent reruns passed
     with `next` leading by about `25-42ms`
-  - the immediate phase-2 task is therefore repeatability, not simply making
-    the gate valid
+  - with `--iterations 2`, the current aggregate smoke passed at about
+    `+8.1ms` on median `first_changed_elapsed_ms`
+  - the immediate phase-2 task remains repeatability on loaded TUI, not simply
+    making the gate valid once
 - the next-host bridge/runtime now resolves workbench tile IDs to the active
   pane leaf ID:
   - `TerminalHostActiveSurfaceRegistry` records the active pane-owned surface
@@ -46,6 +51,9 @@ Current state:
   - `GhosttyIslandViewController.hostContainerDidAttachVisibleView()` retries
     pending attach once the next-host container has actually made the child
     visible
+- the perf harness now disables inherited shell xtrace when sourcing
+  `gate_l_common.sh`, because machine-readable JSON payloads such as
+  `active-target.json` were occasionally polluted by stray `output=''` prefixes
 - the realistic live client-scroll gate now has a host-mode wrapper:
   - `gate_l_terminal_host_live_client_scroll_bench.sh` launches a fresh app in
     either `legacy` or `next` mode and measures the live pane path

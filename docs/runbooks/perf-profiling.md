@@ -158,9 +158,12 @@ scripts/perf/gate_l_ax_key_sender.sh --dry-run
   - `0` on `max_step_rows`
   - `2` fewer changed samples
   - `2` fewer total upward rows
-- the first few valid smokes on this gate have mixed latency deltas, so treat
-  a single pass as a sanity check and run it repeatedly before concluding that
-  `next` is stably at parity
+- pass `--iterations N` or `AGTMUX_PERF_HOST_MODE_PARITY_ITERATIONS=N` when you
+  want the parity wrapper to aggregate medians across repeated `legacy`/`next`
+  pairs
+- the first few valid smokes on this gate have mixed latency deltas, so treat a
+  single pass as a sanity check and prefer median aggregate runs before
+  concluding that `next` is stably at parity
 - the earlier plain loaded-transcript variant is diagnostic-only:
   - on that path `baselineViewport.usesAlternateScroll` can still be true
   - wheel-up then becomes alternate-scroll cursor keys instead of a useful
