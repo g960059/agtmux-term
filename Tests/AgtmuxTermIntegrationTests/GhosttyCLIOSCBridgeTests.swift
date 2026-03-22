@@ -2290,6 +2290,70 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
         )
     }
 
+    @MainActor
+    func testUITestTmuxBridgeOpenTerminalForPaneCanUseLocalPaneIDInventoryFallback() async throws {
+        SurfacePool.shared.resetForTesting()
+        defer { SurfacePool.shared.resetForTesting() }
+
+        let viewModel = AppViewModel(
+            hostsConfig: HostsConfig(hosts: [])
+        )
+        let pane = AgtmuxPane(
+            source: "local",
+            paneId: "%657",
+            sessionName: "different-session",
+            windowId: "@42",
+            currentCmd: "claude"
+        )
+        viewModel.panes = [pane]
+
+        let workbenchStore = WorkbenchStoreV2(
+            workbenches: [.empty()],
+            activeWorkbenchIndex: 0,
+            persistence: nil
+        )
+        let bridge = UITestTmuxBridge(
+            viewModel: viewModel,
+            workbenchStore: workbenchStore,
+            resolveDirectLocalPane: { _, _ in
+                XCTFail("pane-id inventory fallback should skip direct pane resolution")
+                return nil
+            },
+            env: ["AGTMUX_UITEST_ALLOW_SESSION_ONLY_OPEN_FALLBACK": "1"]
+        )
+
+        let view = GhosttyTerminalViewViewportTextSpy()
+        view.snapshots = [
+            .init(text: "ready", lineCount: 1, characterCount: 5, usesAlternateScroll: false)
+        ]
+        Task { @MainActor in
+            let deadline = ContinuousClock.now + .milliseconds(500)
+            while ContinuousClock.now < deadline {
+                if let tileID = workbenchStore.activeWorkbench?.tiles.first?.id {
+                    SurfacePool.shared.register(
+                        view: view,
+                        leafID: tileID,
+                        tmuxPaneID: pane.paneId,
+                        surfaceHandle: GhosttySurfaceHandle(rawValue: 0x658)
+                    )
+                    return
+                }
+                try? await Task.sleep(for: .milliseconds(20))
+            }
+        }
+
+        let opened = try await bridge.openTerminalForPaneForTesting(
+            source: "local",
+            sessionName: "vm agtmux-term",
+            paneID: pane.paneId
+        )
+
+        XCTAssertEqual(opened.disposition, "opened")
+        XCTAssertEqual(workbenchStore.activePaneContext?.activePaneRef.windowID, pane.windowId)
+        XCTAssertEqual(workbenchStore.activePaneContext?.activePaneRef.paneID, pane.paneId)
+        XCTAssertEqual(workbenchStore.activePaneContext?.activePaneRef.sessionName, pane.sessionName)
+    }
+
     private func assertDecodeError(
         payload: String,
         expected: GhosttyCLIOSCBridgeError,

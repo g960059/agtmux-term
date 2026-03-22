@@ -47,4 +47,28 @@ final class TerminalHostModeTests: XCTestCase {
         )
         XCTAssertEqual(trimmed, ["pane-b", "pane-c", "pane-d", "pane-e"])
     }
+
+    @MainActor
+    func testRuntimeOverrideWinsOverEnvironmentUntilCleared() {
+        let runtime = TerminalHostModeRuntime.shared
+        runtime.resetForTesting()
+        defer { runtime.resetForTesting() }
+
+        XCTAssertEqual(
+            runtime.resolved(environment: [TerminalHostMode.environmentKey: "legacy"]),
+            .legacy
+        )
+
+        runtime.setOverride(.next)
+        XCTAssertEqual(
+            runtime.resolved(environment: [TerminalHostMode.environmentKey: "legacy"]),
+            .next
+        )
+
+        runtime.setOverride(nil)
+        XCTAssertEqual(
+            runtime.resolved(environment: [TerminalHostMode.environmentKey: "legacy"]),
+            .legacy
+        )
+    }
 }

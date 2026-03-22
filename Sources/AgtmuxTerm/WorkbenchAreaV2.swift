@@ -239,6 +239,7 @@ private struct WorkbenchTerminalTileViewV2: View {
 
     @Environment(WorkbenchStoreV2.self) private var store
     @Environment(TerminalRuntimeStore.self) private var runtimeStore
+    @ObservedObject private var terminalHostModeRuntime = TerminalHostModeRuntime.shared
     @State private var isPresentingRebindSheet = false
     @State private var navigationActor = WorkbenchFocusedNavigationActor()
     @State private var navigationSyncErrorMessage: String?
@@ -253,7 +254,7 @@ private struct WorkbenchTerminalTileViewV2: View {
     }
 
     private var terminalHostMode: TerminalHostMode {
-        TerminalHostMode(environment: ProcessInfo.processInfo.environment)
+        terminalHostModeRuntime.resolved(environment: ProcessInfo.processInfo.environment)
     }
 
     private var terminalState: WorkbenchV2TerminalTileState {

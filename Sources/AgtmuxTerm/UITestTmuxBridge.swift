@@ -151,6 +151,7 @@ final class UITestTmuxBridge {
     private let openTerminalForPaneCommand = "__agtmux_open_terminal_for_pane__"
     private let focusTerminalHostCommand = "__agtmux_focus_terminal_host__"
     private let renderedTerminalTargetCommand = "__agtmux_dump_rendered_terminal_target__"
+    private let setTerminalHostModeCommand = "__agtmux_set_terminal_host_mode__"
     private let sendTmuxNextPaneKeysCommand = "__agtmux_send_tmux_next_pane_keys__"
     private let resetScrollTelemetryCommand = "__agtmux_reset_scroll_telemetry__"
     private let dumpScrollTelemetryCommand = "__agtmux_dump_scroll_telemetry__"
@@ -167,7 +168,7 @@ final class UITestTmuxBridge {
     }
 
     private var terminalHostMode: TerminalHostMode {
-        TerminalHostMode(environment: env)
+        TerminalHostModeRuntime.shared.resolved(environment: env)
     }
 
     private var allowSessionOnlyOpenFallback: Bool {
@@ -456,6 +457,9 @@ final class UITestTmuxBridge {
                 let snapshot = try await renderedTerminalTargetSnapshot(for: request.args)
                 let data = try JSONEncoder().encode(snapshot)
                 stdout = String(decoding: data, as: UTF8.self)
+            case setTerminalHostModeCommand:
+                let mode = try setTerminalHostMode(request.args)
+                stdout = mode.rawValue
             case sendTmuxNextPaneKeysCommand:
                 try sendTmuxNextPaneKeys(request.args)
                 stdout = "ok"
@@ -714,6 +718,32 @@ final class UITestTmuxBridge {
         )
     }
 
+    private func setTerminalHostMode(_ args: [String]) throws -> TerminalHostMode {
+        guard args.count >= 2 else {
+            throw NSError(
+                domain: "UITestTmuxBridge",
+                code: 46,
+                userInfo: [NSLocalizedDescriptionKey: "\(setTerminalHostModeCommand) requires <legacy|next|default>"]
+            )
+        }
+
+        let rawValue = args[1].trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        switch rawValue {
+        case "default", "clear", "reset":
+            TerminalHostModeRuntime.shared.setOverride(nil)
+        default:
+            guard let mode = TerminalHostMode.parse(rawValue) else {
+                throw NSError(
+                    domain: "UITestTmuxBridge",
+                    code: 47,
+                    userInfo: [NSLocalizedDescriptionKey: "Unsupported terminal host mode: \(args[1])"]
+                )
+            }
+            TerminalHostModeRuntime.shared.setOverride(mode)
+        }
+        return terminalHostMode
+    }
+
     private func activeDocumentTileSnapshot() throws -> ActiveDocumentTileSnapshot {
         guard let workbench = workbenchStore.activeWorkbench else {
             throw NSError(
@@ -795,6 +825,15 @@ final class UITestTmuxBridge {
             usedSessionOnlyFallback = false
             uiTestBridgeDebugLog(
                 "openTerminalForPaneForTesting inventory-hit panes=\(viewModel.panes.count)"
+            )
+        } else if source == "local",
+                  let localPane = viewModel.panes.first(where: {
+                      $0.source == "local" && $0.paneId == paneID
+                  }) {
+            pane = localPane
+            usedSessionOnlyFallback = false
+            uiTestBridgeDebugLog(
+                "openTerminalForPaneForTesting inventory-paneid-fallback requestedSession=\(sessionName) resolvedSession=\(localPane.sessionName)"
             )
         } else if source == "local" && allowSessionOnlyOpenFallback {
             uiTestBridgeDebugLog(

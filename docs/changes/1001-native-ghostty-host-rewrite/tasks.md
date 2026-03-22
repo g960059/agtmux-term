@@ -15,6 +15,9 @@
   and stale pane IDs
 - [x] remove measured-run dependence on tmux client scroll probes from the live
   host-mode wrapper
+- [x] add local pane-id inventory fallback before session-only live open
+- [x] add runtime terminal-host-mode override groundwork for same-app live
+  parity
 - [ ] realistic loaded live-pane parity gate for the next host
 - [ ] durable-knowledge promotion
 - [ ] remove `docs/changes/1001-native-ghostty-host-rewrite/` before merge

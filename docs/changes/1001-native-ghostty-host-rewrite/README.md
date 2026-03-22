@@ -75,6 +75,9 @@ Current state:
     tmux server can block those commands
   - the measured run now uses the bridge viewport sampler as ground truth and
     sends the wheel burst directly with `gate_l_ax_key_sender.sh`
+  - the bridge now also has a local `paneID` inventory fallback before
+    session-only open, because the daemon/live side can lose `session_name`
+    while still keeping a usable local pane inventory entry
 - fresh live-client investigation has now isolated a stricter boundary:
   - the fresh host-mode wrapper now completes on both `legacy` and `next`
     using viewport-only truth
@@ -94,6 +97,10 @@ Current state:
     before returning, because otherwise fresh live gates can fail with
     `No terminal view registered for tileID ...` before the tile is actually
     mounted
+  - the next structural step is now in place: terminal host mode can be
+    overridden at runtime for UITest/bench flows instead of being fixed only
+    at app launch, which is the foundation for measuring `legacy` and `next`
+    against the same already-loaded app state
   - as a result, the fresh host-mode live-client wrapper is diagnostic only and
     cannot be the final rewrite acceptance gate for the user's loaded-pane
     history complaint

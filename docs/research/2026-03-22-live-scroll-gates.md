@@ -143,6 +143,12 @@ Latest durable finding:
   `layerPresentCount`
 - the terminal viewport text snapshot before and after the wheel burst remains
   identical on both `legacy` and `next`
+- adding a local `paneID` inventory fallback in the bridge did not change that
+  conclusion; the fresh wrapper still lands on the new-login shell path rather
+  than the user's already-loaded live history path
+- therefore the next useful step is not more fresh-wrapper tuning but same-app
+  live parity, which now has groundwork via a runtime terminal-host-mode
+  override inside the app
 
 Interpretation:
 
