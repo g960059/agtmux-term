@@ -185,6 +185,15 @@ scripts/perf/gate_l_ax_key_sender.sh --dry-run
   `scrollPresentationDrawCount`, and `layerPresentCount`, but
   `changed_transition_count` stayed `0`, which showed that a fresh direct
   attach still does not represent the existing app's loaded scrollback history.
+- For the host-mode live wrapper, prefer session-aware pane selection over a
+  hard-coded `%pane` whenever the user's workflow is churning panes:
+  - `AGTMUX_PERF_LIVE_PANE_TITLE_CONTAINS='Claude Code'`
+  - `AGTMUX_PERF_LIVE_PANE_COMMAND=node`
+  - if the requested pane disappears, the wrapper now falls back to
+    title/command/active-pane resolution inside the target session
+- The fresh/live host-mode scripts now force `env -u TMUX -u TMUX_PANE tmux`
+  for all default-local tmux sampling so they do not inherit a stale caller
+  socket.
 - The step-granularity gate uses the same momentum-aware injector as the
   history bench (`AGTMUX_PERF_UPSTEP_PHASE_MODE=trackpad-burst-momentum` by
   default) and samples every `16ms`.

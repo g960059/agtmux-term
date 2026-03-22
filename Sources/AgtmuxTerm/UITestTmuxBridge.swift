@@ -752,6 +752,7 @@ final class UITestTmuxBridge {
         uiTestBridgeDebugLog(
             "openTerminalForPaneForTesting store-opened tile=\(result.tileID.uuidString)"
         )
+        try await waitForTerminalViewRegistration(tileID: result.tileID)
         let disposition: String
         let workbenchID: UUID
         switch result {
@@ -1044,6 +1045,16 @@ final class UITestTmuxBridge {
         )
     }
 
+    func waitForTerminalViewRegistrationForTesting(
+        tileID: UUID,
+        timeoutMilliseconds: Int = 5_000
+    ) async throws {
+        try await waitForTerminalViewRegistration(
+            tileID: tileID,
+            timeoutMilliseconds: timeoutMilliseconds
+        )
+    }
+
     private func terminalView(for args: [String], command: String) throws -> GhosttyTerminalView {
         uiTestBridgeDebugLog("terminalView lookup command=\(command) args=\(args)")
         let tileID = try tileID(from: args, command: command)
@@ -1065,6 +1076,29 @@ final class UITestTmuxBridge {
 
     private func resolvedTerminalLeafID(for tileID: UUID) -> UUID {
         TerminalHostActiveSurfaceRegistry.shared.activeLeafID(forTileID: tileID) ?? tileID
+    }
+
+    private func waitForTerminalViewRegistration(
+        tileID: UUID,
+        timeoutMilliseconds: Int = 5_000
+    ) async throws {
+        let deadline = ContinuousClock.now + .milliseconds(timeoutMilliseconds)
+        while ContinuousClock.now < deadline {
+            let resolvedLeafID = resolvedTerminalLeafID(for: tileID)
+            if SurfacePool.shared.view(leafID: resolvedLeafID) != nil {
+                return
+            }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+
+        throw NSError(
+            domain: "UITestTmuxBridge",
+            code: 41,
+            userInfo: [
+                NSLocalizedDescriptionKey:
+                    "Timed out waiting for terminal view registration for tileID \(tileID.uuidString)"
+            ]
+        )
     }
 
     private func tileID(from args: [String], command: String) throws -> UUID {

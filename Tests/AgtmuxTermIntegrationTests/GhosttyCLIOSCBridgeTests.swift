@@ -2014,6 +2014,43 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
     }
 
     @MainActor
+    func testUITestTmuxBridgeWaitsForTerminalViewRegistration() async throws {
+        SurfacePool.shared.resetForTesting()
+        defer { SurfacePool.shared.resetForTesting() }
+
+        let tileID = UUID()
+        let view = GhosttyTerminalViewViewportTextSpy()
+        view.snapshots = [
+            .init(text: "ready", lineCount: 1, characterCount: 5, usesAlternateScroll: false)
+        ]
+
+        let bridge = UITestTmuxBridge(
+            viewModel: AppViewModel(
+                hostsConfig: HostsConfig(hosts: [])
+            ),
+            env: [:]
+        )
+
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(40))
+            SurfacePool.shared.register(
+                view: view,
+                leafID: tileID,
+                tmuxPaneID: "%77",
+                surfaceHandle: GhosttySurfaceHandle(rawValue: 0x677)
+            )
+        }
+
+        try await bridge.waitForTerminalViewRegistrationForTesting(
+            tileID: tileID,
+            timeoutMilliseconds: 500
+        )
+
+        let snapshot = try bridge.terminalViewportTextSnapshotForTesting(tileID: tileID)
+        XCTAssertEqual(snapshot.text, "ready")
+    }
+
+    @MainActor
     func testUITestTmuxBridgeOpenTerminalForPaneReturnsOpenedThenRevealedExisting() async throws {
         let pane = AgtmuxPane(
             source: "local",

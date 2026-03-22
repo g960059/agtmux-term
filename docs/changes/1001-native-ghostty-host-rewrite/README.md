@@ -63,6 +63,16 @@ Current state:
     either `legacy` or `next` mode and measures the live pane path
   - `gate_l_terminal_host_live_client_scroll_parity.sh` compares those two
     modes on the same live pane before the rewrite is judged against native
+  - the wrapper now resolves the pane target dynamically inside the tmux
+    session, so a stale `%pane` can fall back to title/command/active-pane
+    matching instead of failing outright
+  - it now talks to the default local tmux server with `env -u TMUX -u
+    TMUX_PANE tmux`, both in the shell wrapper and in the client-scroll
+    sampler, so the gate no longer depends on the invoking shell's stale tmux
+    environment
+  - it now samples the terminal viewport text in parallel with tmux client
+    `scroll_position`, because client scroll alone is insufficient to prove
+    that wheel input moved the loaded live viewport
 - fresh live-client investigation has now isolated a stricter boundary:
   - client-targeted `PageUp` successfully primes a fresh attached client from
     `scroll_position 0 -> 14` and a post-run probe can move it again
@@ -80,6 +90,10 @@ Current state:
   - therefore the current phase-1 blocker is not "fresh client cannot scroll"
     but "fresh live client wheel-up reaches the terminal path without changing
     either tmux client scroll or visible viewport state"
+  - bridge `open_terminal_for_pane` now waits for terminal view registration
+    before returning, because otherwise fresh live gates can fail with
+    `No terminal view registered for tileID ...` before the tile is actually
+    mounted
   - as a result, the fresh host-mode live-client wrapper is diagnostic only and
     cannot be the final rewrite acceptance gate for the user's loaded-pane
     history complaint

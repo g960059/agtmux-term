@@ -110,6 +110,17 @@ Current limitation:
 
 - when both apps share the same live pane, preconditioning still needs careful
   handling so both runs start from the same baseline
+- the host-mode live wrapper itself needed more hardening before it was usable:
+  - stale `%pane` IDs can disappear during the user's normal workflow, so the
+    wrapper now resolves the target pane dynamically from the session using
+    title/command/active-pane fallback
+  - plain `tmux` calls were reading the invoking shell's `TMUX` environment;
+    the wrapper and sampler now force `env -u TMUX -u TMUX_PANE tmux` so they
+    always talk to the default local server
+  - `open_terminal_for_pane` could return before the tile registered a terminal
+    view; the bridge now waits for view registration before returning
+  - even after those fixes, the fresh/live wrapper is still diagnostic only
+    until the loaded-pane viewport sampler produces stable, non-zero movement
 
 ### Fresh host-mode live-client wrapper
 

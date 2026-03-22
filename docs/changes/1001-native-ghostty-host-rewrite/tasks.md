@@ -11,6 +11,8 @@
 - [x] fresh live-client wheel-up diagnosis; keep the wrapper as diagnostic-only
 - [x] prove deterministic loaded-TUI parity repeatability across repeated
   `legacy` vs `next` runs
+- [x] harden the fresh/live host-mode wrapper against stale tmux environment
+  and stale pane IDs
 - [ ] realistic loaded live-pane parity gate for the next host
 - [ ] durable-knowledge promotion
 - [ ] remove `docs/changes/1001-native-ghostty-host-rewrite/` before merge

@@ -71,6 +71,10 @@ jq -n \
   def metric($payload; $path): ($payload | getpath($path));
   def summary($payload; $key): metric($payload; ["bench", "metrics", "summary", $key]);
   def wheelMoved($payload): ((summary($payload; "changed_sample_count") // 0) > 0);
+  def sameResolvedPane($legacy; $next):
+    (($legacy.resolvedPane.sessionName // null) == ($next.resolvedPane.sessionName // null) and
+     ($legacy.resolvedPane.windowID // null) == ($next.resolvedPane.windowID // null) and
+     ($legacy.resolvedPane.paneID // null) == ($next.resolvedPane.paneID // null));
   def comparison($legacy; $next): {
     first_changed_elapsed_delta_ms:
       ((summary($next; "first_changed_elapsed_ms") // 0) - (summary($legacy; "first_changed_elapsed_ms") // 0)),
@@ -88,7 +92,8 @@ jq -n \
   (comparison($legacyPayload; $nextPayload)) as $comparison |
   (wheelMoved($legacyPayload)) as $legacyWheelMoved |
   (wheelMoved($nextPayload)) as $nextWheelMoved |
-  (($legacyWheelMoved and $nextWheelMoved)) as $valid |
+  (sameResolvedPane($legacyPayload; $nextPayload)) as $sameResolvedPane |
+  (($legacyWheelMoved and $nextWheelMoved and $sameResolvedPane)) as $valid |
   {
     sessionName: $session_name,
     paneID: $pane_id,
@@ -101,6 +106,7 @@ jq -n \
     next: $nextPayload,
     valid: $valid,
     validity: {
+      sameResolvedPane: $sameResolvedPane,
       legacyWheelMoved: $legacyWheelMoved,
       nextWheelMoved: $nextWheelMoved
     },

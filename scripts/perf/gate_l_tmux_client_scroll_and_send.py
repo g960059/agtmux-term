@@ -9,6 +9,11 @@ import time
 
 def capture_client_scroll(client_tty: str) -> dict[str, object]:
     command = [
+        "env",
+        "-u",
+        "TMUX",
+        "-u",
+        "TMUX_PANE",
         "tmux",
         "display-message",
         "-p",
