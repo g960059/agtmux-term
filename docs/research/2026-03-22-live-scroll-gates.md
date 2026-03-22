@@ -74,6 +74,13 @@ Durable findings:
   - the harness now disables inherited shell xtrace because sporadic
     `output=''` prefixes were corrupting machine-readable JSON during
     repeatability runs
+  - sender targeting is now part of the repeatability story:
+    - `identifier + point` passed a `3`-iteration aggregate at about
+      `-14.036ms`
+    - `front-window + point` lost at about `+60.225ms`
+  - durable conclusion: keep the deterministic gate on
+    `focusMode=identifier` and `scrollMode=point`; `front-window` delivery is
+    diagnostic-only for loaded-TUI repeatability
 
 ### Live-captured `curses-history` proxy
 

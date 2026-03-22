@@ -40,8 +40,12 @@ Current state:
     with `next` leading by about `25-42ms`
   - with `--iterations 2`, the current aggregate smoke passed at about
     `+8.1ms` on median `first_changed_elapsed_ms`
-  - the immediate phase-2 task remains repeatability on loaded TUI, not simply
-    making the gate valid once
+  - with `--iterations 3`, `identifier + point` targeting passed at about
+    `-14.0ms`, while `front-window + point` lost by about `+60.2ms`
+  - the acceptance default therefore remains `focusMode=identifier` and
+    `scrollMode=point`; `front-window` targeting stays diagnostic-only
+  - phase 2 has now cleared repeatability enough to move back to the loaded
+    live-pane gate
 - the next-host bridge/runtime now resolves workbench tile IDs to the active
   pane leaf ID:
   - `TerminalHostActiveSurfaceRegistry` records the active pane-owned surface

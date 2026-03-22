@@ -164,6 +164,12 @@ scripts/perf/gate_l_ax_key_sender.sh --dry-run
 - the first few valid smokes on this gate have mixed latency deltas, so treat a
   single pass as a sanity check and prefer median aggregate runs before
   concluding that `next` is stably at parity
+- keep the deterministic gate on the default sender path unless you are
+  explicitly diagnosing targeting:
+  - `AGTMUX_PERF_LOADED_FOCUS_MODE=identifier`
+  - `AGTMUX_PERF_LOADED_SCROLL_MODE=point`
+  - a `3`-iteration aggregate on 2026-03-22 passed at about `-14.0ms` with
+    that path, while `front-window + point` lost by about `+60.2ms`
 - the earlier plain loaded-transcript variant is diagnostic-only:
   - on that path `baselineViewport.usesAlternateScroll` can still be true
   - wheel-up then becomes alternate-scroll cursor keys instead of a useful

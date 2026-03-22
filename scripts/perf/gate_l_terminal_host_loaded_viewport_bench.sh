@@ -17,6 +17,8 @@ fixture_marker="${AGTMUX_PERF_LOADED_FIXTURE_MARKER:-AGTMUX_LOADED_HISTORY_DONE}
 fixture_idle_seconds="${AGTMUX_PERF_LOADED_FIXTURE_IDLE_SECONDS:-600}"
 fixture_settle_ms="${AGTMUX_PERF_LOADED_FIXTURE_SETTLE_MS:-350}"
 focus_settle_ms="${AGTMUX_PERF_LOADED_FOCUS_SETTLE_MS:-120}"
+focus_mode="${AGTMUX_PERF_LOADED_FOCUS_MODE:-identifier}"
+scroll_mode="${AGTMUX_PERF_LOADED_SCROLL_MODE:-point}"
 events_per_burst="${AGTMUX_PERF_UPSTEP_EVENTS_PER_BURST:-24}"
 scroll_pixels_per_event="${AGTMUX_PERF_UPSTEP_PIXELS_PER_EVENT:-10}"
 scroll_interval_ms="${AGTMUX_PERF_UPSTEP_SCROLL_INTERVAL_MS:-8}"
@@ -106,6 +108,24 @@ case "$host_mode" in
     ;;
   *)
     echo "Unsupported host mode: $host_mode" >&2
+    exit 1
+    ;;
+esac
+
+case "$focus_mode" in
+  identifier|front-window)
+    ;;
+  *)
+    echo "Unsupported loaded viewport focus mode: $focus_mode" >&2
+    exit 1
+    ;;
+esac
+
+case "$scroll_mode" in
+  point|front-window)
+    ;;
+  *)
+    echo "Unsupported loaded viewport scroll mode: $scroll_mode" >&2
     exit 1
     ;;
 esac
@@ -205,34 +225,56 @@ printf '%s\n' "$baseline_viewport_json" >"$baseline_viewport_json_path"
 gate_l_send_bridge_command false 10 "__agtmux_reset_scroll_telemetry__" "$tile_id" >/dev/null
 
 gate_l_activate_app
-focus_sender_json="$("$SCRIPT_DIR/gate_l_ax_key_sender.sh" \
-  --app-pid "$gate_l_app_pid" \
-  --focus-scroll-identifier "$resolved_terminal_ax_identifier" \
-  --x-frac "$scroll_x_frac" \
-  --y-frac "$scroll_y_frac")"
+if [[ "$focus_mode" == "identifier" ]]; then
+  focus_sender_json="$("$SCRIPT_DIR/gate_l_ax_key_sender.sh" \
+    --app-pid "$gate_l_app_pid" \
+    --focus-scroll-identifier "$resolved_terminal_ax_identifier" \
+    --x-frac "$scroll_x_frac" \
+    --y-frac "$scroll_y_frac")"
+else
+  focus_sender_json="$("$SCRIPT_DIR/gate_l_ax_key_sender.sh" \
+    --app-pid "$gate_l_app_pid" \
+    --focus-scroll-front-window \
+    --x-frac "$scroll_x_frac" \
+    --y-frac "$scroll_y_frac")"
+fi
 if [[ "$(jq -r '.sent // false' <<<"$focus_sender_json")" != "true" ]]; then
   echo "Failed to focus loaded viewport scroll target: $focus_sender_json" >&2
   exit 1
 fi
 scroll_point_x="$(jq -r '.clickPoint.x // empty' <<<"$focus_sender_json")"
 scroll_point_y="$(jq -r '.clickPoint.y // empty' <<<"$focus_sender_json")"
-if [[ -z "$scroll_point_x" || -z "$scroll_point_y" ]]; then
-  echo "Loaded viewport focus did not report a click point: $focus_sender_json" >&2
-  exit 1
+if [[ "$scroll_mode" == "point" ]]; then
+  if [[ -z "$scroll_point_x" || -z "$scroll_point_y" ]]; then
+    echo "Loaded viewport focus did not report a click point: $focus_sender_json" >&2
+    exit 1
+  fi
 fi
 sleep_ms "$focus_settle_ms"
 sample_count="$(viewport_sample_count)"
 sample_request_id="$(gate_l_start_async_bridge_command false "__agtmux_sample_terminal_viewport_text__" "$tile_id" "$sample_count" "$sample_interval_ms")"
 sleep_ms 20
-"$SCRIPT_DIR/gate_l_ax_key_sender.sh" \
-  --app-pid "$gate_l_app_pid" \
-  --scroll-point \
-  --point-x "$scroll_point_x" \
-  --point-y "$scroll_point_y" \
-  --scroll-pixels "$scroll_pixels_per_event" \
-  --scroll-repeat "$events_per_burst" \
-  --scroll-interval-ms "$scroll_interval_ms" \
-  --scroll-phase-mode "$scroll_phase_mode" >"$send_json_path"
+if [[ "$scroll_mode" == "point" ]]; then
+  "$SCRIPT_DIR/gate_l_ax_key_sender.sh" \
+    --app-pid "$gate_l_app_pid" \
+    --scroll-point \
+    --point-x "$scroll_point_x" \
+    --point-y "$scroll_point_y" \
+    --scroll-pixels "$scroll_pixels_per_event" \
+    --scroll-repeat "$events_per_burst" \
+    --scroll-interval-ms "$scroll_interval_ms" \
+    --scroll-phase-mode "$scroll_phase_mode" >"$send_json_path"
+else
+  "$SCRIPT_DIR/gate_l_ax_key_sender.sh" \
+    --app-pid "$gate_l_app_pid" \
+    --scroll-front-window \
+    --x-frac "$scroll_x_frac" \
+    --y-frac "$scroll_y_frac" \
+    --scroll-pixels "$scroll_pixels_per_event" \
+    --scroll-repeat "$events_per_burst" \
+    --scroll-interval-ms "$scroll_interval_ms" \
+    --scroll-phase-mode "$scroll_phase_mode" >"$send_json_path"
+fi
 
 sample_timeout="$(
   awk -v count="$sample_count" -v interval="$sample_interval_ms" 'BEGIN {
@@ -286,6 +328,8 @@ jq -n \
   --argjson sample_interval_ms "$sample_interval_ms" \
   --argjson sample_tail_ms "$sample_tail_ms" \
   --argjson focus_settle_ms "$focus_settle_ms" \
+  --arg focus_mode "$focus_mode" \
+  --arg scroll_mode "$scroll_mode" \
   --arg scroll_phase_mode "$scroll_phase_mode" \
   --arg resolved_terminal_ax_identifier "$resolved_terminal_ax_identifier" \
   --slurpfile open "$open_json_path" \
@@ -321,6 +365,8 @@ jq -n \
       sampleIntervalMs: $sample_interval_ms,
       sampleTailMs: $sample_tail_ms,
       focusSettleMs: $focus_settle_ms,
+      focusMode: $focus_mode,
+      scrollMode: $scroll_mode,
       scrollPhaseMode: $scroll_phase_mode,
       terminalAccessibilityIdentifier: $resolved_terminal_ax_identifier
     },

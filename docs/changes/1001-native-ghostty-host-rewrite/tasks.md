@@ -9,7 +9,7 @@
 - [x] deterministic loaded-TUI host-mode acceptance gate for `legacy` vs `next`
 - [x] machine-readable harness hardening for deterministic gate JSON output
 - [x] fresh live-client wheel-up diagnosis; keep the wrapper as diagnostic-only
-- [ ] prove deterministic loaded-TUI parity repeatability across repeated
+- [x] prove deterministic loaded-TUI parity repeatability across repeated
   `legacy` vs `next` runs
 - [ ] realistic loaded live-pane parity gate for the next host
 - [ ] durable-knowledge promotion
