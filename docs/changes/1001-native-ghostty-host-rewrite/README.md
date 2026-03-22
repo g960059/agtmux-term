@@ -17,8 +17,10 @@ Current state:
   retired from `docs/changes/`
 - phase 1 now has an explicit `TerminalHostMode` boundary:
   - `legacy` routes through `GhosttyIslandRepresentable`
-  - `next` routes through a separate next-host wrapper that still reuses the
-    legacy controller while later phases split ownership
+  - `next` routes through a separate next-host controller boundary
+- phase 1 next-host ownership now keeps pane-keyed child controllers with a
+  capped retention set, so same-tile pane switches can move toward controller
+  swap instead of same-surface reattach
 - the obsolete replay/frontmost-AX scroll gates are retired in favor of:
   - the live-captured `curses-history` proxy
   - the frontmost live client-scroll parity gate

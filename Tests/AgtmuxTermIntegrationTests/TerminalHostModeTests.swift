@@ -20,4 +20,31 @@ final class TerminalHostModeTests: XCTestCase {
             TerminalHostContainer.hostViewIdentity(surfaceID: surfaceID, mode: .next)
         )
     }
+
+    func testNextHostPaneCacheKeyFallsBackToTileIdentity() {
+        let surfaceID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
+        XCTAssertEqual(
+            NextGhosttyIslandViewController.paneCacheKey(
+                visiblePaneIdentity: nil,
+                fallbackSurfaceID: surfaceID
+            ),
+            "__tile:\(surfaceID.uuidString)"
+        )
+        XCTAssertEqual(
+            NextGhosttyIslandViewController.paneCacheKey(
+                visiblePaneIdentity: "shared|@1|%1|",
+                fallbackSurfaceID: surfaceID
+            ),
+            "shared|@1|%1|"
+        )
+    }
+
+    func testNextHostRetentionPolicyKeepsActivePaneAndMostRecentInactivePanes() {
+        let trimmed = NextGhosttyIslandViewController.trimmedRetentionOrder(
+            ["pane-a", "pane-b", "pane-c", "pane-d", "pane-e"],
+            activePaneKey: "pane-c",
+            limit: 4
+        )
+        XCTAssertEqual(trimmed, ["pane-b", "pane-c", "pane-d", "pane-e"])
+    }
 }

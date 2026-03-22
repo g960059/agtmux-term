@@ -28,6 +28,17 @@ Unchanged in this wave:
 - release packaging and app identity
 - existing legacy host path while migration is in progress
 
+## Current Phase-1 Shape
+
+- `TerminalHostMode` selects `legacy` or `next`
+- `legacy` keeps the current single-controller `GhosttyIslandRepresentable`
+- `next` now goes through a dedicated `NextGhosttyIslandViewController`
+  boundary that retains pane-keyed child controllers with a small recent-pane
+  cache
+- the retained next-host controllers still reuse the current single-pane
+  `GhosttyIslandViewController` internally; later phases replace that inner
+  controller and move cadence ownership fully out of the legacy path
+
 ## Failure Modes
 
 - next-host attach fails:
