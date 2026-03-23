@@ -228,11 +228,21 @@ final class GhosttyApp {
 
         @MainActor
         func applyRenderCallback() {
-            let isDrawable = SurfacePool.shared.markDirtyForDirectDraw(surfaceHandle: surfaceHandle)
             let view = SurfacePool.shared.view(forSurfaceHandle: surfaceHandle)
             view?.noteRenderRequestTelemetry()
+            let now = ProcessInfo.processInfo.systemUptime
+
+            if let view, view.prefersRendererOwnedRenderCallbackDispatch(now: now) {
+                if SurfacePool.shared.isDrawable(surfaceHandle: surfaceHandle) {
+                    view.triggerRendererOwnedRenderCallback(now: now)
+                } else {
+                    _ = SurfacePool.shared.markDirtyForDirectDraw(surfaceHandle: surfaceHandle)
+                }
+                return
+            }
+
+            let isDrawable = SurfacePool.shared.markDirtyForDirectDraw(surfaceHandle: surfaceHandle)
             if isDrawable {
-                let now = ProcessInfo.processInfo.systemUptime
                 if view?.prefersImmediateDirtyDrawForRenderCallback(now: now) == true {
                     _ = runDirectDrawPassImmediatelyIfPossible()
                 } else {

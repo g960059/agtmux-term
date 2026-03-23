@@ -736,8 +736,10 @@ final class WorkbenchFocusedNavigationActor {
 
         guard runtimeContext.workbenchID == snapshot.workbenchID else { return false }
         guard runtimeContext.tileID == snapshot.tileID else { return false }
-        return runtimeContext.desiredPaneRef == snapshot.desiredPaneRef
-            && runtimeContext.observedPaneRef == snapshot.observedPaneRef
+        // Store-driven desired/observed transitions are expected while a focused
+        // navigation task is running. Let the loop continue and refresh from the
+        // latest store state instead of self-canceling between polling samples.
+        return true
     }
 
     private func navCommand(to paneID: String, tileID: UUID) -> String {

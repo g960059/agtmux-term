@@ -109,6 +109,30 @@ final class WorkbenchV2TerminalAttachTests: XCTestCase {
         )
     }
 
+    func testAttachCommandFallsBackToSessionOnlyWhenCanonicalPaneCoordinatesAreBlank() throws {
+        let sessionRef = SessionRef(target: .local, sessionName: "feature branch")
+        let activePaneRef = ActivePaneRef(
+            target: .local,
+            sessionName: "feature branch",
+            windowID: "",
+            paneID: ""
+        )
+
+        let plan = try XCTUnwrap(
+            try? WorkbenchV2TerminalAttachResolver.resolve(
+                sessionRef: sessionRef,
+                activePaneRef: activePaneRef,
+                hostsConfig: .empty,
+                env: ["AGTMUX_TMUX_SOCKET_NAME": "workbench-v2-test"]
+            ).get()
+        )
+
+        assertTelemetryWrappedCommand(
+            plan.command,
+            baseCommand: "env -u TMUX -u TMUX_PANE tmux -L workbench-v2-test attach-session -t 'feature branch'"
+        )
+    }
+
     func testLocalAttachCommandHonorsUITestTmuxConfigPath() throws {
         let sessionRef = SessionRef(target: .local, sessionName: "feature branch")
         let expectedBaseCommand =

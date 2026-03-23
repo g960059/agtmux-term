@@ -85,6 +85,9 @@ Durable findings:
     - `next` host threads `terminalHostMode` into `GhosttyTerminalView`
     - normal-screen wheel input on `next` disables the legacy host
       scroll-presentation pump and leaves cadence to Ghostty
+    - recent precise normal-screen render callbacks on `next` now stay on the
+      renderer-owned refresh path instead of re-entering the direct-draw
+      scheduler
     - a fresh `--iterations 2` deterministic parity run passed with median
       `first_changed_elapsed_delta_ms = -18.8639`
     - the same run still showed zero `islandRetryCountDelta` and zero
@@ -206,3 +209,22 @@ As of 2026-03-22, the realistic live-pane signal is no longer "embedded sends
 coarser input." The more consistent remaining signal is delayed first visible
 movement on the embedded path, which points at terminal host / presentation
 latency rather than at tmux step batching alone.
+
+## Rewrite Branch Test Boundary
+
+While the rewrite branch is in flight, the durable app-level safety boundary is
+now:
+
+- full `AgtmuxTermUITests` remains green on the branch
+- those UI launches pin `AGTMUX_TERMINAL_HOST_MODE=legacy`
+- `legacy` vs `next` acceptance lives in the dedicated host-mode parity gates
+
+Reason:
+
+- the rewrite branch can set `TerminalHostMode=next` through runtime overrides
+  and app defaults for installed-app trials
+- allowing the broad UI suite to inherit that state would mix structural host
+  experiments with unrelated product regressions
+- the branch therefore uses two complementary surfaces:
+  - legacy full-suite coverage for product safety
+  - host-mode parity gates for rewrite progress

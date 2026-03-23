@@ -282,6 +282,15 @@ final class SurfacePool {
         return pool[leafID]?.view
     }
 
+    func isDrawable(surfaceHandle: GhosttySurfaceHandle) -> Bool {
+        guard let leafID = leafIDsBySurfaceHandle[surfaceHandle],
+              let managed = pool[leafID]
+        else {
+            return false
+        }
+        return activeSurfaceViewIDs.contains(ObjectIdentifier(managed.view))
+    }
+
     func resetForTesting() {
         gcTimer?.invalidate()
         gcTimer = nil

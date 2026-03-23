@@ -3,8 +3,27 @@ import AppKit
 import AgtmuxTermCore
 
 private func uiTestBridgeDebugLog(_ message: @autoclosure () -> String) {
-    guard ProcessInfo.processInfo.environment["AGTMUX_UITEST_BRIDGE_DEBUG"] == "1" else { return }
-    FileHandle.standardError.write(Data(("[ui-test-bridge] " + message() + "\n").utf8))
+    let line = "[ui-test-bridge] " + message() + "\n"
+    if let debugPath = UserDefaults.standard.string(forKey: "UITestBridgeDebugLogPath"),
+       !debugPath.isEmpty {
+        let data = Data(line.utf8)
+        if FileManager.default.fileExists(atPath: debugPath) == false {
+            FileManager.default.createFile(atPath: debugPath, contents: data)
+            return
+        }
+        if let handle = FileHandle(forWritingAtPath: debugPath) {
+            defer { try? handle.close() }
+            _ = try? handle.seekToEnd()
+            try? handle.write(contentsOf: data)
+            return
+        }
+    }
+    guard ProcessInfo.processInfo.environment["AGTMUX_UITEST_BRIDGE_DEBUG"] == "1"
+        || UserDefaults.standard.bool(forKey: "UITestBridgeDebugEnabled")
+    else {
+        return
+    }
+    FileHandle.standardError.write(Data(line.utf8))
 }
 
 /// UITest-only tmux bridge.
@@ -17,6 +36,31 @@ private func uiTestBridgeDebugLog(_ message: @autoclosure () -> String) {
 /// Enabled only when `AGTMUX_UITEST=1`.
 @MainActor
 final class UITestTmuxBridge {
+    static let bridgeEnabledDefaultsKey = "UITestBridgeEnabled"
+    static let commandPathDefaultsKey = "UITestTmuxCommandPath"
+    static let commandResultPathDefaultsKey = "UITestTmuxCommandResultPath"
+    static let bootstrapResultPathDefaultsKey = "UITestTmuxResultPath"
+    static let registrationTimeoutDefaultsKey = "UITestTerminalViewRegistrationTimeoutMS"
+    static let sessionOnlyFallbackDefaultsKey = "UITestAllowSessionOnlyOpenFallback"
+
+    nonisolated static func bridgeRequested(
+        environment: [String: String],
+        userDefaults: UserDefaults = .standard
+    ) -> Bool {
+        let bridgeEnabledKey = "UITestBridgeEnabled"
+        let commandPathKey = "UITestTmuxCommandPath"
+        let commandResultPathKey = "UITestTmuxCommandResultPath"
+        if environment["AGTMUX_UITEST"] == "1" {
+            return true
+        }
+        if userDefaults.bool(forKey: bridgeEnabledKey) {
+            return true
+        }
+        let commandPath = userDefaults.string(forKey: commandPathKey)
+        let commandResultPath = userDefaults.string(forKey: commandResultPathKey)
+        return (commandPath?.isEmpty == false) && (commandResultPath?.isEmpty == false)
+    }
+
     private struct BootstrapScenario: Decodable {
         let sessionName: String
         let windowName: String?
@@ -136,6 +180,13 @@ final class UITestTmuxBridge {
         let samples: [TerminalViewportTextSampleSnapshot]
     }
 
+    struct FocusExistingTerminalTileSnapshot: Codable, Equatable {
+        let terminalHostMode: String
+        let workbenchID: String
+        let tileID: String
+        let sessionName: String
+    }
+
     private let viewModel: AppViewModel
     private let workbenchStore: WorkbenchStoreV2
     private let enableMetadataMode: @MainActor () async -> Void
@@ -143,6 +194,7 @@ final class UITestTmuxBridge {
     private let applyNavigationIntent: @Sendable (_ activePaneRef: ActivePaneRef, _ renderedClientTTY: String, _ hostsConfig: HostsConfig) async throws -> Void
     private let resolveRenderedLiveTarget: @Sendable (_ renderedClientTTY: String, _ target: TargetRef, _ hostsConfig: HostsConfig) async throws -> WorkbenchV2TerminalLiveTarget
     private let env: [String: String]
+    private let userDefaults: UserDefaults
     private var commandLoopTask: Task<Void, Never>?
     private var createdSessions: Set<String> = []
     private let activeTerminalTargetCommand = "__agtmux_dump_active_terminal_target__"
@@ -153,6 +205,7 @@ final class UITestTmuxBridge {
     private let enableMetadataCommand = "__agtmux_enable_metadata__"
     private let openTerminalForPaneCommand = "__agtmux_open_terminal_for_pane__"
     private let focusTerminalHostCommand = "__agtmux_focus_terminal_host__"
+    private let focusExistingTerminalTileCommand = "__agtmux_focus_existing_terminal_tile__"
     private let focusRenderedPaneCommand = "__agtmux_focus_rendered_pane__"
     private let renderedTerminalTargetCommand = "__agtmux_dump_rendered_terminal_target__"
     private let setTerminalHostModeCommand = "__agtmux_set_terminal_host_mode__"
@@ -166,7 +219,8 @@ final class UITestTmuxBridge {
         guard let raw = env["AGTMUX_UITEST_TERMINAL_VIEW_REGISTRATION_TIMEOUT_MS"],
               let value = Int(raw),
               value > 0 else {
-            return 5_000
+            let defaultsValue = userDefaults.integer(forKey: Self.registrationTimeoutDefaultsKey)
+            return defaultsValue > 0 ? defaultsValue : 5_000
         }
         return value
     }
@@ -176,7 +230,20 @@ final class UITestTmuxBridge {
     }
 
     private var allowSessionOnlyOpenFallback: Bool {
-        env["AGTMUX_UITEST_ALLOW_SESSION_ONLY_OPEN_FALLBACK"] == "1"
+        if let raw = env["AGTMUX_UITEST_ALLOW_SESSION_ONLY_OPEN_FALLBACK"] {
+            return raw == "1"
+        }
+        return userDefaults.bool(forKey: Self.sessionOnlyFallbackDefaultsKey)
+    }
+
+    private var bridgeEnabled: Bool {
+        if env["AGTMUX_UITEST"] == "1" {
+            return true
+        }
+        if userDefaults.bool(forKey: Self.bridgeEnabledDefaultsKey) {
+            return true
+        }
+        return commandURL != nil && commandResponseURL != nil
     }
 
     init(
@@ -205,7 +272,8 @@ final class UITestTmuxBridge {
                 hostsConfig: hostsConfig
             )
         },
-        env: [String: String] = ProcessInfo.processInfo.environment
+        env: [String: String] = ProcessInfo.processInfo.environment,
+        userDefaults: UserDefaults = .standard
     ) {
         self.viewModel = viewModel
         self.workbenchStore = workbenchStore
@@ -214,10 +282,14 @@ final class UITestTmuxBridge {
         self.applyNavigationIntent = applyNavigationIntent
         self.resolveRenderedLiveTarget = resolveRenderedLiveTarget
         self.env = env
+        self.userDefaults = userDefaults
     }
 
     func startIfNeeded() async {
-        guard env["AGTMUX_UITEST"] == "1" else { return }
+        uiTestBridgeDebugLog(
+            "startIfNeeded bridgeEnabled=\(bridgeEnabled) commandURL=\(commandURL?.path ?? "<nil>") commandResponseURL=\(commandResponseURL?.path ?? "<nil>") envUITest=\(env["AGTMUX_UITEST"] ?? "<nil>")"
+        )
+        guard bridgeEnabled else { return }
         AgtmuxManagedDaemonRuntime.setBootstrapResolvedTmuxSocketPath(nil)
 
         startCommandLoopIfNeeded()
@@ -355,7 +427,11 @@ final class UITestTmuxBridge {
 
     private func startCommandLoopIfNeeded() {
         guard commandLoopTask == nil else { return }
-        guard let commandURL = commandURL, let responseURL = commandResponseURL else { return }
+        guard let commandURL = commandURL, let responseURL = commandResponseURL else {
+            uiTestBridgeDebugLog("startCommandLoopIfNeeded missing command paths")
+            return
+        }
+        uiTestBridgeDebugLog("startCommandLoopIfNeeded commandURL=\(commandURL.path) responseURL=\(responseURL.path)")
 
         commandLoopTask = Task { [weak self] in
             guard let self else { return }
@@ -424,17 +500,23 @@ final class UITestTmuxBridge {
     }
 
     private var bootstrapResultURL: URL? {
-        guard let path = env["AGTMUX_UITEST_TMUX_RESULT_PATH"], !path.isEmpty else { return nil }
+        let path = env["AGTMUX_UITEST_TMUX_RESULT_PATH"]
+            ?? userDefaults.string(forKey: Self.bootstrapResultPathDefaultsKey)
+        guard let path, !path.isEmpty else { return nil }
         return URL(fileURLWithPath: path)
     }
 
     private var commandURL: URL? {
-        guard let path = env["AGTMUX_UITEST_TMUX_COMMAND_PATH"], !path.isEmpty else { return nil }
+        let path = env["AGTMUX_UITEST_TMUX_COMMAND_PATH"]
+            ?? userDefaults.string(forKey: Self.commandPathDefaultsKey)
+        guard let path, !path.isEmpty else { return nil }
         return URL(fileURLWithPath: path)
     }
 
     private var commandResponseURL: URL? {
-        guard let path = env["AGTMUX_UITEST_TMUX_COMMAND_RESULT_PATH"], !path.isEmpty else { return nil }
+        let path = env["AGTMUX_UITEST_TMUX_COMMAND_RESULT_PATH"]
+            ?? userDefaults.string(forKey: Self.commandResultPathDefaultsKey)
+        guard let path, !path.isEmpty else { return nil }
         return URL(fileURLWithPath: path)
     }
 
@@ -473,6 +555,10 @@ final class UITestTmuxBridge {
             case focusTerminalHostCommand:
                 try focusTerminalHost(request.args)
                 stdout = "ok"
+            case focusExistingTerminalTileCommand:
+                let snapshot = try focusExistingTerminalTile(request.args)
+                let data = try JSONEncoder().encode(snapshot)
+                stdout = String(decoding: data, as: UTF8.self)
             case focusRenderedPaneCommand:
                 try await focusRenderedPane(request.args)
                 stdout = "ok"
@@ -806,6 +892,68 @@ final class UITestTmuxBridge {
         )
     }
 
+    @MainActor
+    private func focusExistingTerminalTile(_ args: [String]) throws -> FocusExistingTerminalTileSnapshot {
+        let requestedSessionName = args.dropFirst().first?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let requestedSession = requestedSessionName?.isEmpty == false ? requestedSessionName : nil
+
+        func matchingTile(
+            in workbench: Workbench
+        ) -> WorkbenchTile? {
+            workbench.tiles.first { tile in
+                guard case .terminal(let sessionRef) = tile.kind else { return false }
+                guard let requestedSession else { return true }
+                return sessionRef.sessionName == requestedSession
+            }
+        }
+
+        let activeIndex = workbenchStore.activeWorkbenchIndex
+        let candidate: (index: Int, workbench: Workbench, tile: WorkbenchTile)? = {
+            if workbenchStore.workbenches.indices.contains(activeIndex) {
+                let workbench = workbenchStore.workbenches[activeIndex]
+                if let tile = matchingTile(in: workbench) {
+                    return (activeIndex, workbench, tile)
+                }
+            }
+            for (index, workbench) in workbenchStore.workbenches.enumerated() where index != activeIndex {
+                if let tile = matchingTile(in: workbench) {
+                    return (index, workbench, tile)
+                }
+            }
+            return nil
+        }()
+
+        guard let candidate else {
+            throw NSError(
+                domain: "UITestTmuxBridge",
+                code: 48,
+                userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "No existing terminal tile found\(requestedSession.map { " for session \($0)" } ?? "")"
+                ]
+            )
+        }
+        guard case .terminal(let sessionRef) = candidate.tile.kind else {
+            throw NSError(
+                domain: "UITestTmuxBridge",
+                code: 49,
+                userInfo: [NSLocalizedDescriptionKey: "Matched tile is not terminal"]
+            )
+        }
+
+        if workbenchStore.activeWorkbenchIndex != candidate.index {
+            workbenchStore.activeWorkbenchIndex = candidate.index
+        }
+        workbenchStore.focusTile(id: candidate.tile.id)
+
+        return FocusExistingTerminalTileSnapshot(
+            terminalHostMode: terminalHostMode.rawValue,
+            workbenchID: candidate.workbench.id.uuidString,
+            tileID: candidate.tile.id.uuidString,
+            sessionName: sessionRef.sessionName
+        )
+    }
+
     private func replaceFocusedText(_ args: [String]) throws {
         guard args.count >= 2 else {
             throw NSError(
@@ -846,6 +994,12 @@ final class UITestTmuxBridge {
         )
         let pane: AgtmuxPane
         let usedSessionOnlyFallback: Bool
+        let hasExistingLocalTerminalTile = source == "local" && workbenchStore.workbenches.contains { workbench in
+            workbench.tiles.contains { tile in
+                guard case .terminal(let sessionRef) = tile.kind else { return false }
+                return sessionRef.target == .local && sessionRef.sessionName == sessionName
+            }
+        }
         if let inventoryPane = viewModel.panes.first(where: {
             $0.source == source && $0.sessionName == sessionName && $0.paneId == paneID
         }) {
@@ -862,6 +1016,41 @@ final class UITestTmuxBridge {
             usedSessionOnlyFallback = false
             uiTestBridgeDebugLog(
                 "openTerminalForPaneForTesting inventory-paneid-fallback requestedSession=\(sessionName) resolvedSession=\(localPane.sessionName)"
+            )
+        } else if source == "local" && allowSessionOnlyOpenFallback && !hasExistingLocalTerminalTile {
+            uiTestBridgeDebugLog(
+                "openTerminalForPaneForTesting session-only-fallback session=\(sessionName) pane=\(paneID)"
+            )
+            prepareDirectLocalSessionForRendering(sessionName)
+            let result = workbenchStore.openTerminal(
+                sessionRef: SessionRef(target: .local, sessionName: sessionName)
+            )
+            uiTestBridgeDebugLog(
+                "openTerminalForPaneForTesting session-only-opened tile=\(result.tileID.uuidString)"
+            )
+            try await waitForTerminalViewRegistration(
+                tileID: result.tileID,
+                timeoutMilliseconds: terminalViewRegistrationTimeoutMilliseconds
+            )
+            let disposition: String
+            let workbenchID: UUID
+            switch result {
+            case .opened(let resolvedWorkbenchID, _):
+                disposition = "opened"
+                workbenchID = resolvedWorkbenchID
+            case .revealedExisting(let resolvedWorkbenchID, _):
+                disposition = "revealedExisting"
+                workbenchID = resolvedWorkbenchID
+            }
+            return OpenTerminalForPaneSnapshot(
+                terminalHostMode: terminalHostMode.rawValue,
+                workbenchID: workbenchID.uuidString,
+                tileID: result.tileID.uuidString,
+                disposition: disposition,
+                usedSessionOnlyFallback: true,
+                source: source,
+                sessionName: sessionName,
+                paneID: paneID
             )
         } else if source == "local",
                   let directPane = try await resolveDirectLocalPane(sessionName, paneID) {
@@ -1258,6 +1447,17 @@ final class UITestTmuxBridge {
 
     func focusRenderedPaneForTesting(tileID: UUID, paneID: String) async throws {
         try await focusRenderedPane([focusRenderedPaneCommand, tileID.uuidString, paneID])
+    }
+
+    @MainActor
+    func focusExistingTerminalTileForTesting(
+        sessionName: String? = nil
+    ) throws -> FocusExistingTerminalTileSnapshot {
+        var args = [focusExistingTerminalTileCommand]
+        if let sessionName, sessionName.isEmpty == false {
+            args.append(sessionName)
+        }
+        return try focusExistingTerminalTile(args)
     }
 
     func sampleTerminalViewportTextForTesting(

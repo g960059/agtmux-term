@@ -78,6 +78,95 @@ final class WorkbenchFocusedNavigationActorTests: XCTestCase {
     }
 
     @MainActor
+    func testPollingRunContinuesAcrossObservedPaneUpdatesAndAcceptsReverseSync() async throws {
+        let firstPane = AgtmuxPane(
+            source: "local",
+            paneId: "%0",
+            sessionName: "shared",
+            windowId: "@0"
+        )
+        let secondPane = AgtmuxPane(
+            source: "local",
+            paneId: "%1",
+            sessionName: "shared",
+            windowId: "@0"
+        )
+        let store = WorkbenchStoreV2()
+        let runtimeStore = TerminalRuntimeStore()
+        let openResult = store.openTerminal(for: firstPane, hostsConfig: .empty)
+        let workbenchID = try XCTUnwrap(store.activeWorkbench?.id)
+        var liveTargetReadCount = 0
+        var applyCalls: [String] = []
+        let actor = WorkbenchFocusedNavigationActor(
+            dependencies: WorkbenchFocusedNavigationActorDependencies(
+                renderedState: { tileID in
+                    GhosttyRenderedTerminalSurfaceState(
+                        context: self.makeSurfaceContext(
+                            workbenchID: workbenchID,
+                            tileID: tileID,
+                            sessionName: "shared"
+                        ),
+                        attachCommand: "tmux attach-session -t shared",
+                        clientTTY: "/dev/ttys001",
+                        generation: 1
+                    )
+                },
+                resolveControlMode: { _ in nil },
+                liveTarget: { _, _, _ in
+                    liveTargetReadCount += 1
+                    if liveTargetReadCount == 1 {
+                        return WorkbenchV2TerminalLiveTarget(
+                            sessionName: "shared",
+                            windowID: firstPane.windowId,
+                            paneID: firstPane.paneId
+                        )
+                    }
+                    return WorkbenchV2TerminalLiveTarget(
+                        sessionName: "shared",
+                        windowID: secondPane.windowId,
+                        paneID: secondPane.paneId
+                    )
+                },
+                applyNavigationIntent: { activePaneRef, _, _ in
+                    applyCalls.append(activePaneRef.paneID)
+                },
+                sleep: { _ in await Task.yield() }
+            )
+        )
+        defer { actor.stop() }
+
+        actor.update(
+            snapshot: makeSnapshot(
+                store: store,
+                tileID: openResult.tileID,
+                sessionRef: SessionRef(target: .local, sessionName: "shared"),
+                hostsConfig: .empty
+            ),
+            store: store,
+            runtimeStore: runtimeStore
+        ) { _ in }
+
+        await waitUntil {
+            store.activePaneRuntimeContext?.desiredPaneRef == nil
+                && store.activePaneRuntimeContext?.observedPaneRef?.paneID == secondPane.paneId
+                && store.activePaneContext?.activePaneRef.paneID == secondPane.paneId
+        }
+
+        XCTAssertGreaterThanOrEqual(
+            liveTargetReadCount,
+            2,
+            "polling loop must continue after the first observed-pane update"
+        )
+        XCTAssertTrue(
+            applyCalls.isEmpty,
+            "authoritative reverse sync must not steer the rendered client back to the stale desired pane"
+        )
+        XCTAssertEqual(store.activePaneRuntimeContext?.observedPaneRef?.paneID, secondPane.paneId)
+        XCTAssertNil(store.activePaneRuntimeContext?.desiredPaneRef)
+        XCTAssertEqual(store.activePaneContext?.activePaneRef.paneID, secondPane.paneId)
+    }
+
+    @MainActor
     func testControlModeSendReReadsLatestRenderedTTYOnEachRetry() async throws {
         let targetPane = AgtmuxPane(
             source: "local",

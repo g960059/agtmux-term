@@ -22,8 +22,12 @@
   `client_name` before `switch-client`
 - [x] phase-3 next-host scroll cadence wiring on the deterministic loaded-TUI
   gate
+- [x] keep recent precise normal-screen render callbacks on the renderer-owned
+  refresh path in `next`
 - [x] installed-app host-mode override via app defaults for rewrite-branch
   trials
+- [x] keep the rewrite branch full UI suite green while `next` host work is in
+  flight
 - [ ] realistic loaded live-pane parity gate for the next host
 - [ ] durable-knowledge promotion
 - [ ] remove `docs/changes/1001-native-ghostty-host-rewrite/` before merge

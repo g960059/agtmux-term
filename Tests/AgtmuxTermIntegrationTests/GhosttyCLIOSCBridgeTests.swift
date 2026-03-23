@@ -965,6 +965,57 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
     }
 
     @MainActor
+    func testHandleActionRenderForNextHostBypassesDirectDrawScheduler() async {
+        SurfacePool.shared.resetForTesting()
+        defer { SurfacePool.shared.resetForTesting() }
+        GhosttyApp.resetSurfaceDrawTelemetryForTesting()
+        defer { GhosttyApp.resetSurfaceDrawTelemetryForTesting() }
+
+        let view = GhosttyTerminalViewDrawSpy()
+        view.setTerminalHostMode(.next)
+        let handle = GhosttySurfaceHandle(rawValue: 0x627)
+        var scheduledDirectDraws = 0
+
+        await GhosttyApp.withTestDirectDrawScheduleObserver({
+            scheduledDirectDraws += 1
+        }) {
+            SurfacePool.shared.register(
+                view: view,
+                leafID: UUID(),
+                tmuxPaneID: "%26",
+                surfaceHandle: handle
+            )
+
+            GhosttyApp.runDirtyDrawPassForTesting()
+            view.resetDrawTracking()
+            scheduledDirectDraws = 0
+            view.setRendererOwnedRenderCallbackEligibilityForTesting(
+                usesAlternateScroll: false,
+                precision: true,
+                verticalDelta: 10,
+                now: ProcessInfo.processInfo.systemUptime
+            )
+
+            XCTAssertTrue(
+                GhosttyApp.handleAction(
+                    nil,
+                    target: makeSurfaceTarget(handle),
+                    action: makeRenderAction()
+                )
+            )
+
+            let drew = await waitUntil {
+                view.triggerDrawCallCount == 1
+            }
+            XCTAssertTrue(drew)
+            XCTAssertEqual(scheduledDirectDraws, 0)
+
+            GhosttyApp.runDirtyDrawPassForTesting()
+            XCTAssertEqual(view.triggerDrawCallCount, 1)
+        }
+    }
+
+    @MainActor
     func testHandleActionRenderDuringTickDoesNotScheduleFollowUpTick() {
         SurfacePool.shared.resetForTesting()
         defer { SurfacePool.shared.resetForTesting() }
@@ -2226,6 +2277,146 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
 
         let snapshot = try bridge.terminalViewportTextSnapshotForTesting(tileID: tileID)
         XCTAssertEqual(snapshot.text, "ready")
+    }
+
+    @MainActor
+    func testUITestTmuxBridgeStartsCommandLoopFromUserDefaultsConfiguration() async throws {
+        let tmpdir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("uitest-bridge-defaults-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tmpdir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmpdir) }
+
+        let commandURL = tmpdir.appendingPathComponent("command.json")
+        let resultURL = tmpdir.appendingPathComponent("result.json")
+        let suiteName = "UITestTmuxBridgeDefaults-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        defaults.set(true, forKey: "UITestBridgeEnabled")
+        defaults.set(commandURL.path, forKey: "UITestTmuxCommandPath")
+        defaults.set(resultURL.path, forKey: "UITestTmuxCommandResultPath")
+
+        let bridge = UITestTmuxBridge(
+            viewModel: AppViewModel(hostsConfig: HostsConfig(hosts: [])),
+            env: [:],
+            userDefaults: defaults
+        )
+
+        await bridge.startIfNeeded()
+
+        let requestID = UUID().uuidString
+        let request = """
+        {"id":"\(requestID)","args":["__agtmux_tmux_bridge_ready__"],"refreshInventory":false}
+        """
+        try request.write(to: commandURL, atomically: true, encoding: .utf8)
+
+        let deadline = ContinuousClock.now + .seconds(2)
+        var responseData: Data?
+        while ContinuousClock.now < deadline {
+            if let data = try? Data(contentsOf: resultURL), !data.isEmpty {
+                responseData = data
+                break
+            }
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+
+        let data = try XCTUnwrap(responseData)
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(json["id"] as? String, requestID)
+        XCTAssertEqual(json["ok"] as? Bool, true)
+        XCTAssertEqual(json["stdout"] as? String, "ready")
+
+        await bridge.shutdown()
+    }
+
+    func testUITestTmuxBridgeRequestedIsTrueForUserDefaultsConfiguration() throws {
+        let suiteName = "UITestTmuxBridgeRequested-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        XCTAssertFalse(UITestTmuxBridge.bridgeRequested(environment: [:], userDefaults: defaults))
+
+        defaults.set(true, forKey: "UITestBridgeEnabled")
+        XCTAssertTrue(UITestTmuxBridge.bridgeRequested(environment: [:], userDefaults: defaults))
+
+        defaults.removeObject(forKey: "UITestBridgeEnabled")
+        defaults.set("/tmp/command.json", forKey: "UITestTmuxCommandPath")
+        defaults.set("/tmp/result.json", forKey: "UITestTmuxCommandResultPath")
+        XCTAssertTrue(UITestTmuxBridge.bridgeRequested(environment: [:], userDefaults: defaults))
+    }
+
+    @MainActor
+    func testUITestTmuxBridgeCanFocusExistingTerminalTileInActiveWorkbench() throws {
+        let terminalTileID = UUID()
+        let documentTileID = UUID()
+        let workbench = Workbench(
+            title: "Main",
+            root: .split(
+                WorkbenchSplit(
+                    axis: .horizontal,
+                    first: .tile(WorkbenchTile(id: documentTileID, kind: .document(ref: .init(target: .local, path: "/tmp/doc.txt")))),
+                    second: .tile(WorkbenchTile(id: terminalTileID, kind: .terminal(sessionRef: SessionRef(target: .local, sessionName: "vm agtmux-term"))))
+                )
+            ),
+            focusedTileID: documentTileID
+        )
+        let store = WorkbenchStoreV2(
+            workbenches: [workbench],
+            activeWorkbenchIndex: 0,
+            persistence: nil
+        )
+        let bridge = UITestTmuxBridge(
+            viewModel: AppViewModel(hostsConfig: HostsConfig(hosts: [])),
+            workbenchStore: store,
+            env: [:]
+        )
+
+        let snapshot = try bridge.focusExistingTerminalTileForTesting(sessionName: "vm agtmux-term")
+
+        XCTAssertEqual(snapshot.terminalHostMode, "legacy")
+        XCTAssertEqual(snapshot.tileID, terminalTileID.uuidString)
+        XCTAssertEqual(snapshot.workbenchID, workbench.id.uuidString)
+        XCTAssertEqual(snapshot.sessionName, "vm agtmux-term")
+        XCTAssertEqual(store.activeWorkbench?.focusedTileID, terminalTileID)
+        XCTAssertEqual(store.focusedTerminalTileContext?.tileID, terminalTileID)
+        XCTAssertEqual(store.focusedTerminalTileContext?.sessionRef.sessionName, "vm agtmux-term")
+    }
+
+    @MainActor
+    func testUITestTmuxBridgeCanFocusExistingTerminalTileAcrossWorkbenches() throws {
+        let documentWorkbench = Workbench(
+            title: "Docs",
+            root: .tile(WorkbenchTile(kind: .document(ref: .init(target: .local, path: "/tmp/doc.txt"))))
+        )
+        let terminalTileID = UUID()
+        let terminalWorkbench = Workbench(
+            title: "Live",
+            root: .tile(
+                WorkbenchTile(
+                    id: terminalTileID,
+                    kind: .terminal(sessionRef: SessionRef(target: .local, sessionName: "vm agtmux-term"))
+                )
+            ),
+            focusedTileID: terminalTileID
+        )
+        let store = WorkbenchStoreV2(
+            workbenches: [documentWorkbench, terminalWorkbench],
+            activeWorkbenchIndex: 0,
+            persistence: nil
+        )
+        let bridge = UITestTmuxBridge(
+            viewModel: AppViewModel(hostsConfig: HostsConfig(hosts: [])),
+            workbenchStore: store,
+            env: [TerminalHostMode.environmentKey: "next"]
+        )
+
+        let snapshot = try bridge.focusExistingTerminalTileForTesting(sessionName: "vm agtmux-term")
+
+        XCTAssertEqual(snapshot.terminalHostMode, "next")
+        XCTAssertEqual(snapshot.tileID, terminalTileID.uuidString)
+        XCTAssertEqual(snapshot.workbenchID, terminalWorkbench.id.uuidString)
+        XCTAssertEqual(store.activeWorkbenchIndex, 1)
+        XCTAssertEqual(store.activeWorkbench?.focusedTileID, terminalTileID)
     }
 
     @MainActor

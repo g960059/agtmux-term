@@ -8,7 +8,7 @@ source "$SCRIPT_DIR/gate_l_common.sh"
 STEP_METRICS_PY="$SCRIPT_DIR/gate_l_step_metrics.py"
 
 host_mode="${AGTMUX_PERF_TERMINAL_HOST_MODE:-legacy}"
-session_name="${AGTMUX_PERF_LIVE_SESSION_NAME:-vm agtmux-term}"
+session_name="${AGTMUX_PERF_LIVE_SESSION_NAME:-}"
 pane_id="${AGTMUX_PERF_LIVE_PANE_ID:-}"
 pane_title_contains="${AGTMUX_PERF_LIVE_PANE_TITLE_CONTAINS:-}"
 pane_command="${AGTMUX_PERF_LIVE_PANE_COMMAND:-}"
@@ -37,6 +37,32 @@ refresh_inventory_before_open="${AGTMUX_PERF_LIVE_REFRESH_INVENTORY_BEFORE_OPEN:
 agtmux_cli_bin="${AGTMUX_PERF_AGTMUX_BIN:-${AGTMUX_BIN:-$GATE_L_ROOT/../agtmux/target/release/agtmux}}"
 switch_to_host_mode="${AGTMUX_PERF_LIVE_SWITCH_TO_HOST_MODE:-}"
 reprime_after_switch="${AGTMUX_PERF_LIVE_REPRIME_AFTER_SWITCH:-0}"
+use_active_target="${AGTMUX_PERF_LIVE_USE_ACTIVE_TARGET:-0}"
+
+if [[ "$use_active_target" == "1" ]] && [[ -z "${AGTMUX_UITEST_ALLOW_SESSION_ONLY_OPEN_FALLBACK:-}" ]]; then
+  export AGTMUX_UITEST_ALLOW_SESSION_ONLY_OPEN_FALLBACK=1
+fi
+
+if [[ "${AGTMUX_PERF_USE_DEFAULT_LOCAL_TMUX:-0}" == "1" ]] \
+  && [[ -z "${AGTMUX_TMUX_SOCKET_PATH:-}" ]] \
+  && [[ -n "${TMUX:-}" ]]; then
+  current_tmux_socket_path="${TMUX%%,*}"
+  if [[ -n "$current_tmux_socket_path" && -S "$current_tmux_socket_path" ]]; then
+    export AGTMUX_TMUX_SOCKET_PATH="$current_tmux_socket_path"
+  fi
+fi
+
+if [[ -z "$session_name" ]]; then
+  if [[ -n "${AGTMUX_TMUX_SOCKET_PATH:-}" ]]; then
+    session_name="$(tmux -S "$AGTMUX_TMUX_SOCKET_PATH" display-message -p '#S' 2>/dev/null || true)"
+  elif [[ -n "${TMUX:-}" ]]; then
+    session_name="$(tmux display-message -p '#S' 2>/dev/null || true)"
+  fi
+fi
+
+if [[ -z "$session_name" ]]; then
+  session_name="vm agtmux-term"
+fi
 
 function extract_last_json_line() {
   local raw="$1"
@@ -511,6 +537,47 @@ function open_terminal_for_live_pane() {
   return 1
 }
 
+function wait_for_live_active_target() {
+  local session_name="$1"
+  local requested_pane_id="$2"
+  local timeout="${3:-15}"
+  local deadline=$((EPOCHREALTIME + timeout))
+  local output=""
+
+  while (( EPOCHREALTIME < deadline )); do
+    if output="$(gate_l_send_bridge_json_command false 5 "__agtmux_dump_active_terminal_target__" 2>"$gate_l_tmpdir/live-active-target.last-error.log")"; then
+      local got_session got_tile got_rendered_pane got_selected_pane
+      got_session="$(jq -r '.sessionName // empty' <<<"$output")"
+      got_tile="$(jq -r '.tileID // empty' <<<"$output")"
+      got_rendered_pane="$(jq -r '.renderedClientPaneID // empty' <<<"$output")"
+      got_selected_pane="$(jq -r '.paneID // empty' <<<"$output")"
+      if [[ -z "$got_tile" ]]; then
+        sleep 0.05
+        continue
+      fi
+      if [[ -n "$session_name" && "$got_session" != "$session_name" ]]; then
+        sleep 0.05
+        continue
+      fi
+      if [[ -n "$requested_pane_id" && "$got_rendered_pane" != "$requested_pane_id" && "$got_selected_pane" != "$requested_pane_id" ]]; then
+        sleep 0.05
+        continue
+      fi
+      print -r -- "$output"
+      return 0
+    fi
+    sleep 0.05
+  done
+
+  echo "Timed out waiting for active terminal target for session=$session_name pane=${requested_pane_id:-<any>}" >&2
+  if [[ -n "$output" ]]; then
+    echo "$output" >&2
+  elif [[ -s "$gate_l_tmpdir/live-active-target.last-error.log" ]]; then
+    cat "$gate_l_tmpdir/live-active-target.last-error.log" >&2
+  fi
+  return 1
+}
+
 while (( $# > 0 )); do
   case "$1" in
     --host-mode)
@@ -591,32 +658,13 @@ gate_l_launch_app_without_bootstrap "agtmux-gate-l-$token" 0
 gate_l_wait_for_bridge_ready "$settle_timeout"
 gate_l_activate_app
 mark_stage app-ready
-
-mark_stage resolve-pane-start
-resolved_pane_target="$(resolve_live_pane_target_via_daemon_cli "$session_name" "$pane_id" "$settle_timeout" || true)"
-if [[ -z "$resolved_pane_target" ]]; then
-  echo "Failed to resolve pane target in session $session_name via daemon json" >&2
+initial_runtime_host_mode="$(gate_l_send_bridge_command false 10 "__agtmux_set_terminal_host_mode__" "$host_mode")"
+if [[ "$initial_runtime_host_mode" != "$host_mode" ]]; then
+  echo "Bridge reported unexpected initial host mode: expected=$host_mode got=$initial_runtime_host_mode" >&2
   exit 1
 fi
-resolved_session_name="${resolved_pane_target%%|*}"
-remaining_target="${resolved_pane_target#*|}"
-resolved_pane_id="${remaining_target%%|*}"
-remaining_target="${remaining_target#*|}"
-window_id="${remaining_target%%|*}"
-remaining_target="${remaining_target#*|}"
-resolved_pane_active="${remaining_target%%|*}"
-remaining_target="${remaining_target#*|}"
-resolved_pane_command="${remaining_target%%|*}"
-remaining_target="${remaining_target#*|}"
-resolved_pane_title="${remaining_target%%|*}"
-resolution_reason="${resolved_pane_target##*|}"
-[[ "$resolved_session_name" == "null" ]] && resolved_session_name="$session_name"
-[[ "$window_id" == "null" ]] && window_id=""
-[[ "$resolved_pane_active" == "null" ]] && resolved_pane_active=""
-[[ "$resolved_pane_command" == "null" ]] && resolved_pane_command=""
-[[ "$resolved_pane_title" == "null" ]] && resolved_pane_title=""
-pane_id="$resolved_pane_id"
-mark_stage resolve-pane-done
+sleep_ms "$focus_settle_ms"
+mark_stage host-mode-set
 
 open_json_path="$gate_l_tmpdir/open-terminal.json"
 active_json_path="$gate_l_tmpdir/active-target.json"
@@ -629,70 +677,161 @@ printf '%s\n' 'null' >"$retarget_json_path"
 printf '%s\n' 'null' >"$switch_transition_json_path"
 printf '%s\n' 'null' >"$switched_summary_json_path"
 
-mark_stage open-terminal-start
-open_json="$(open_terminal_for_live_pane "local" "$session_name" "$pane_id")"
-printf '%s\n' "$open_json" >"$open_json_path"
-mark_stage open-terminal-done
+if [[ "$use_active_target" == "1" ]]; then
+  mark_stage active-target-start
+  focus_existing_json=""
+  open_json=""
+  if ! active_json="$(wait_for_live_active_target "$session_name" "$pane_id" 2)"; then
+    if open_json="$(gate_l_send_bridge_json_command false 10 "__agtmux_open_terminal_for_pane__" "local" "$session_name" "${pane_id:-}" 2>"$gate_l_tmpdir/open-terminal.last-error.log")"; then
+      printf '%s\n' "$open_json" >"$open_json_path"
+      tile_id="$(jq -r '.tileID // empty' <<<"$open_json")"
+      resolved_session_name="$(jq -r '.sessionName // empty' <<<"$open_json")"
+      resolution_reason="open-terminal-session-fallback"
+      if [[ -n "$tile_id" ]]; then
+        wait_for_terminal_viewport_ready "$tile_id" "$settle_timeout"
+        active_json="$(wait_for_rendered_terminal_target_ready "$tile_id" "$settle_timeout")"
+      else
+        echo "open_terminal_for_pane did not return a tileID" >&2
+        exit 1
+      fi
+    elif gate_l_send_bridge_json_command false 5 "__agtmux_focus_existing_terminal_tile__" "$session_name" \
+      >"$gate_l_tmpdir/focus-existing-terminal-tile.json" 2>"$gate_l_tmpdir/focus-existing-terminal-tile.last-error.log"; then
+      focus_existing_json="$(cat "$gate_l_tmpdir/focus-existing-terminal-tile.json")"
+      gate_l_activate_app
+      sleep_ms "$focus_settle_ms"
+      if [[ -n "$focus_existing_json" ]]; then
+        printf '%s\n' 'null' >"$open_json_path"
+        resolved_session_name="$(jq -r '.sessionName // empty' <<<"$focus_existing_json")"
+        tile_id="$(jq -r '.tileID // empty' <<<"$focus_existing_json")"
+        resolution_reason="focus-existing-terminal-tile"
+        if [[ -z "$tile_id" ]]; then
+          echo "focus_existing_terminal_tile did not return a tileID" >&2
+          exit 1
+        fi
+        wait_for_terminal_viewport_ready "$tile_id" "$settle_timeout"
+        active_json="$(wait_for_rendered_terminal_target_ready "$tile_id" "$settle_timeout")"
+      fi
+    fi
+    if [[ -z "$focus_existing_json" && -z "$open_json" ]]; then
+      active_json="$(wait_for_live_active_target "$session_name" "$pane_id" "$settle_timeout")"
+      resolution_reason="active-target"
+    fi
+  else
+    resolution_reason="active-target"
+  fi
+  printf '%s\n' "$active_json" >"$active_json_path"
+  if [[ -z "$open_json" ]]; then
+    printf '%s\n' 'null' >"$open_json_path"
+  fi
+  if [[ -z "${resolved_session_name:-}" ]]; then
+    resolved_session_name="$(jq -r '.sessionName // empty' <<<"$active_json")"
+  fi
+  if [[ -z "${tile_id:-}" ]]; then
+    tile_id="$(jq -r '.tileID // empty' <<<"$active_json")"
+  fi
+  window_id="$(jq -r '.renderedClientWindowID // .windowID // empty' <<<"$active_json")"
+  pane_id="$(jq -r '.renderedClientPaneID // .paneID // empty' <<<"$active_json")"
+  resolved_pane_active="1"
+  resolved_pane_command=""
+  resolved_pane_title=""
+  mark_stage active-target-ready
+else
+  mark_stage resolve-pane-start
+  resolved_pane_target="$(resolve_live_pane_target_via_daemon_cli "$session_name" "$pane_id" "$settle_timeout" || true)"
+  if [[ -z "$resolved_pane_target" ]]; then
+    echo "Failed to resolve pane target in session $session_name via daemon json" >&2
+    exit 1
+  fi
+  resolved_session_name="${resolved_pane_target%%|*}"
+  remaining_target="${resolved_pane_target#*|}"
+  resolved_pane_id="${remaining_target%%|*}"
+  remaining_target="${remaining_target#*|}"
+  window_id="${remaining_target%%|*}"
+  remaining_target="${remaining_target#*|}"
+  resolved_pane_active="${remaining_target%%|*}"
+  remaining_target="${remaining_target#*|}"
+  resolved_pane_command="${remaining_target%%|*}"
+  remaining_target="${remaining_target#*|}"
+  resolved_pane_title="${remaining_target%%|*}"
+  resolution_reason="${resolved_pane_target##*|}"
+  [[ "$resolved_session_name" == "null" ]] && resolved_session_name="$session_name"
+  [[ "$window_id" == "null" ]] && window_id=""
+  [[ "$resolved_pane_active" == "null" ]] && resolved_pane_active=""
+  [[ "$resolved_pane_command" == "null" ]] && resolved_pane_command=""
+  [[ "$resolved_pane_title" == "null" ]] && resolved_pane_title=""
+  pane_id="$resolved_pane_id"
+  mark_stage resolve-pane-done
 
-reported_host_mode="$(jq -r '.terminalHostMode // empty' <<<"$open_json")"
-tile_id="$(jq -r '.tileID // empty' <<<"$open_json")"
-if [[ -z "$tile_id" ]]; then
-  echo "Failed to open pane $session_name $pane_id for host mode $host_mode: $open_json" >&2
-  exit 1
-fi
-if [[ "$reported_host_mode" != "$host_mode" ]]; then
-  echo "Opened pane with unexpected host mode: expected=$host_mode got=$reported_host_mode" >&2
-  exit 1
+  mark_stage open-terminal-start
+  open_json="$(open_terminal_for_live_pane "local" "$session_name" "$pane_id")"
+  printf '%s\n' "$open_json" >"$open_json_path"
+  mark_stage open-terminal-done
+
+  reported_host_mode="$(jq -r '.terminalHostMode // empty' <<<"$open_json")"
+  tile_id="$(jq -r '.tileID // empty' <<<"$open_json")"
+  if [[ -z "$tile_id" ]]; then
+    echo "Failed to open pane $session_name $pane_id for host mode $host_mode: $open_json" >&2
+    exit 1
+  fi
+  if [[ "$reported_host_mode" != "$host_mode" ]]; then
+    echo "Opened pane with unexpected host mode: expected=$host_mode got=$reported_host_mode" >&2
+    exit 1
+  fi
+
+  wait_for_terminal_viewport_ready "$tile_id" "$settle_timeout"
+  wait_for_rendered_terminal_target_ready "$tile_id" "$settle_timeout" >/dev/null
+  mark_stage viewport-ready
+
+  if [[ -n "$window_id" ]]; then
+    if active_json="$(
+      extract_last_json_line "$(
+        gate_l_wait_for_active_target "$session_name" "$window_id" "$pane_id" "$settle_timeout"
+      )"
+    )"; then
+      :
+    elif active_json="$(
+      extract_last_json_line "$(
+        gate_l_wait_for_rendered_target "$session_name" "$window_id" "$pane_id" "$settle_timeout"
+      )"
+    )"; then
+      :
+    else
+      active_json="$(
+        extract_last_json_line "$(
+          gate_l_wait_for_active_snapshot "$session_name" "$settle_timeout"
+        )"
+      )"
+    fi
+  else
+    active_json="$(gate_l_send_bridge_json_command false 5 "__agtmux_dump_rendered_terminal_target__" "$tile_id")"
+  fi
+  printf '%s\n' "$active_json" >"$active_json_path"
+  mark_stage active-target-ready
+
+  rendered_client_pane_id="$(jq -r '.renderedClientPaneID // empty' <<<"$active_json")"
+  if [[ -n "$pane_id" && "$rendered_client_pane_id" != "$pane_id" ]]; then
+    gate_l_send_bridge_command false 10 "__agtmux_focus_rendered_pane__" "$tile_id" "$pane_id" >/dev/null
+    if retarget_json="$(wait_for_rendered_client_pane "$tile_id" "$pane_id" "$settle_timeout")"; then
+      printf '%s\n' "$retarget_json" >"$retarget_json_path"
+    fi
+    sleep_ms "$focus_settle_ms"
+    mark_stage retarget-rendered-pane
+  fi
 fi
 
 wait_for_terminal_viewport_ready "$tile_id" "$settle_timeout"
 wait_for_rendered_terminal_target_ready "$tile_id" "$settle_timeout" >/dev/null
 mark_stage viewport-ready
 
-if [[ -n "$window_id" ]]; then
-  if active_json="$(
-    extract_last_json_line "$(
-      gate_l_wait_for_active_target "$session_name" "$window_id" "$pane_id" "$settle_timeout"
-    )"
-  )"; then
-    :
-  elif active_json="$(
-    extract_last_json_line "$(
-      gate_l_wait_for_rendered_target "$session_name" "$window_id" "$pane_id" "$settle_timeout"
-    )"
-  )"; then
-    :
-  else
-    active_json="$(
-      extract_last_json_line "$(
-        gate_l_wait_for_active_snapshot "$session_name" "$settle_timeout"
-      )"
-    )"
-  fi
-else
-  active_json="$(gate_l_send_bridge_json_command false 5 "__agtmux_dump_rendered_terminal_target__" "$tile_id")"
-fi
-printf '%s\n' "$active_json" >"$active_json_path"
-mark_stage active-target-ready
-
 active_host_mode="$(jq -r '.terminalHostMode // empty' <<<"$active_json")"
 rendered_client_tty="$(jq -r '.renderedClientTTY // empty' <<<"$active_json")"
-rendered_client_pane_id="$(jq -r '.renderedClientPaneID // empty' <<<"$active_json")"
 if [[ -z "$rendered_client_tty" ]]; then
-  echo "Failed to resolve rendered client tty for $session_name $pane_id ($host_mode)" >&2
+  echo "Failed to resolve rendered client tty for $resolved_session_name $pane_id ($host_mode)" >&2
   exit 1
 fi
 if [[ "$active_host_mode" != "$host_mode" ]]; then
   echo "Active target reported unexpected host mode: expected=$host_mode got=$active_host_mode" >&2
   exit 1
-fi
-if [[ -n "$pane_id" && "$rendered_client_pane_id" != "$pane_id" ]]; then
-  gate_l_send_bridge_command false 10 "__agtmux_focus_rendered_pane__" "$tile_id" "$pane_id" >/dev/null
-  if retarget_json="$(wait_for_rendered_client_pane "$tile_id" "$pane_id" "$settle_timeout")"; then
-    printf '%s\n' "$retarget_json" >"$retarget_json_path"
-  fi
-  sleep_ms "$focus_settle_ms"
-  mark_stage retarget-rendered-pane
 fi
 
 gate_l_send_bridge_command false 10 "__agtmux_focus_terminal_host__" "$tile_id" >/dev/null

@@ -901,6 +901,62 @@ final class WorkbenchStoreV2Tests: XCTestCase {
     }
 
     @MainActor
+    func testPersistedActivePaneRuntimeSeedsSessionOnlyUntilLiveObservationReturns() throws {
+        let tile = WorkbenchTile(
+            kind: .terminal(
+                sessionRef: SessionRef(
+                    target: .local,
+                    sessionName: "shared"
+                )
+            )
+        )
+        let store = WorkbenchStoreV2(
+            workbenches: [
+                Workbench(
+                    title: "Main",
+                    root: .tile(tile),
+                    focusedTileID: tile.id,
+                    activePaneRef: ActivePaneRef(
+                        target: .local,
+                        sessionName: "shared",
+                        windowID: "@473",
+                        paneID: "%666"
+                    )
+                )
+            ]
+        )
+
+        let snapshot = WorkbenchStoreV2Persistence.Snapshot(
+            workbenches: store.workbenches,
+            activeWorkbenchIndex: store.activeWorkbenchIndex
+        )
+        let storedData = try JSONEncoder().encode(snapshot)
+        let persistence = WorkbenchStoreV2Persistence(
+            snapshotURL: URL(fileURLWithPath: "/tmp/\(UUID().uuidString)-workbench-v2.json"),
+            loadData: { storedData },
+            saveData: { _ in }
+        )
+
+        let reloadedStore = try WorkbenchStoreV2(
+            env: [:],
+            persistence: persistence
+        )
+
+        let context = try XCTUnwrap(reloadedStore.activePaneContext)
+        XCTAssertEqual(context.activePaneRef.sessionName, "shared")
+        XCTAssertEqual(
+            context.activePaneRef.windowID,
+            "",
+            "persisted pane coordinates should not survive relaunch before live observation"
+        )
+        XCTAssertEqual(
+            context.activePaneRef.paneID,
+            "",
+            "persisted pane coordinates should not survive relaunch before live observation"
+        )
+    }
+
+    @MainActor
     func testFixtureBootstrapLoadsSeededWorkbench() throws {
         let seeded = Workbench(
             title: "Seeded",

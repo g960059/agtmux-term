@@ -123,6 +123,9 @@ Current state:
     `GhosttyTerminalView`
   - `next` host disables the legacy host scroll-presentation pump and relies on
     Ghostty-owned cadence for normal-screen wheel input
+  - `next` host now also keeps recent precise normal-screen render callbacks on
+    the renderer-owned refresh path instead of feeding them back into the
+    legacy direct-draw scheduler
   - the deterministic loaded-TUI parity gate currently passes with this phase-3
     wiring; a fresh `--iterations 2` run recorded median
     `first_changed_elapsed_delta_ms = -18.8639`, with zero
@@ -130,3 +133,17 @@ Current state:
   - runtime host-mode selection now also honors the app default
     `TerminalHostMode`, so an installed rewrite-branch build can be switched to
     `next` without launch-time env injection
+- the rewrite branch now keeps the existing UI safety net green while `next`
+  host work continues:
+  - the full `AgtmuxTermUITests` suite currently passes on this branch at
+    `36 tests, 7 skipped, 0 failures`
+  - the suite is pinned to `AGTMUX_TERMINAL_HOST_MODE=legacy` so rewrite
+    experiments do not inherit a developer-local runtime override and create
+    unrelated failures
+  - `WorkbenchFocusedNavigationActor` polling now tolerates store-driven
+    desired/observed pane updates during a live reverse-sync run instead of
+    self-canceling when the snapshot no longer exactly matches the original
+    pane refs
+  - durable conclusion: rewrite validation should use the dedicated host-mode
+    parity gates, while the app-wide UI suite stays on the proven legacy path
+    until the loaded live-pane gate is acceptance-ready

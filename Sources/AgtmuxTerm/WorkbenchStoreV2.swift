@@ -123,7 +123,7 @@ final class WorkbenchStoreV2 {
             )
         } else if let snapshot = try persistence?.load() {
             self.init(
-                workbenches: snapshot.workbenches,
+                workbenches: Self.sanitizePersistedWorkbenchSnapshot(snapshot.workbenches),
                 activeWorkbenchIndex: snapshot.activeWorkbenchIndex,
                 persistence: persistence
             )
@@ -1020,6 +1020,23 @@ final class WorkbenchStoreV2 {
                 )
             )
         })
+    }
+
+    private static func sanitizePersistedWorkbenchSnapshot(
+        _ workbenches: [Workbench]
+    ) -> [Workbench] {
+        workbenches.map { workbench in
+            guard let activePaneRef = workbench.activePaneRef else { return workbench }
+            var sanitized = workbench
+            sanitized.activePaneRef = ActivePaneRef(
+                target: activePaneRef.target,
+                sessionName: activePaneRef.sessionName,
+                windowID: "",
+                paneID: "",
+                paneInstanceID: nil
+            )
+            return sanitized
+        }
     }
 
     private static func paneRefsMatchForRuntime(

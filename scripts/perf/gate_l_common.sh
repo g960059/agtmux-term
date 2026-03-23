@@ -10,6 +10,85 @@ if [[ -z "${GATE_L_APP_BIN:-}" ]]; then
   GATE_L_APP_BIN="${AGTMUX_PERF_APP_BIN:-$GATE_L_ROOT/.build/arm64-apple-macosx/debug/AgtmuxTerm}"
 fi
 
+gate_l_bridge_defaults_active=0
+
+function gate_l_app_bundle_path() {
+  if [[ "$GATE_L_APP_BIN" == *.app/Contents/MacOS/* ]]; then
+    print -r -- "${GATE_L_APP_BIN%/Contents/MacOS/*}"
+    return 0
+  fi
+  return 1
+}
+
+function gate_l_configure_bridge_defaults() {
+  defaults write com.g960059.agtmux.term UITestBridgeEnabled -bool true
+  defaults write com.g960059.agtmux.term UITestBridgeDebugEnabled -bool true
+  defaults write com.g960059.agtmux.term UITestBridgeDebugLogPath -string "$gate_l_tmpdir/bridge-debug.log"
+  defaults write com.g960059.agtmux.term UITestTmuxCommandPath -string "$gate_l_command_path"
+  defaults write com.g960059.agtmux.term UITestTmuxCommandResultPath -string "$gate_l_command_result_path"
+  defaults write com.g960059.agtmux.term UITestTmuxResultPath -string "$gate_l_bootstrap_result_path"
+  if [[ -n "${AGTMUX_UITEST_TERMINAL_VIEW_REGISTRATION_TIMEOUT_MS:-}" ]]; then
+    defaults write com.g960059.agtmux.term UITestTerminalViewRegistrationTimeoutMS -int "${AGTMUX_UITEST_TERMINAL_VIEW_REGISTRATION_TIMEOUT_MS}"
+  fi
+  if [[ -n "${AGTMUX_UITEST_ALLOW_SESSION_ONLY_OPEN_FALLBACK:-}" ]]; then
+    if [[ "${AGTMUX_UITEST_ALLOW_SESSION_ONLY_OPEN_FALLBACK}" == "1" ]]; then
+      defaults write com.g960059.agtmux.term UITestAllowSessionOnlyOpenFallback -bool true
+    else
+      defaults write com.g960059.agtmux.term UITestAllowSessionOnlyOpenFallback -bool false
+    fi
+  fi
+  killall cfprefsd >/dev/null 2>&1 || true
+  sleep 0.2
+  gate_l_bridge_defaults_active=1
+}
+
+function gate_l_clear_bridge_defaults() {
+  defaults delete com.g960059.agtmux.term UITestBridgeEnabled >/dev/null 2>&1 || true
+  defaults delete com.g960059.agtmux.term UITestBridgeDebugEnabled >/dev/null 2>&1 || true
+  defaults delete com.g960059.agtmux.term UITestBridgeDebugLogPath >/dev/null 2>&1 || true
+  defaults delete com.g960059.agtmux.term UITestTmuxCommandPath >/dev/null 2>&1 || true
+  defaults delete com.g960059.agtmux.term UITestTmuxCommandResultPath >/dev/null 2>&1 || true
+  defaults delete com.g960059.agtmux.term UITestTmuxResultPath >/dev/null 2>&1 || true
+  defaults delete com.g960059.agtmux.term UITestTerminalViewRegistrationTimeoutMS >/dev/null 2>&1 || true
+  defaults delete com.g960059.agtmux.term UITestAllowSessionOnlyOpenFallback >/dev/null 2>&1 || true
+  gate_l_bridge_defaults_active=0
+}
+
+function gate_l_launch_app_via_bundle() {
+  local app_bundle=""
+  app_bundle="$(gate_l_app_bundle_path)" || {
+    echo "Cannot derive app bundle path from GATE_L_APP_BIN: $GATE_L_APP_BIN" >&2
+    return 1
+  }
+
+  local app_exec="$GATE_L_APP_BIN"
+  local before after new_pid
+  pkill -f "$app_exec" >/dev/null 2>&1 || true
+  local kill_deadline=$((EPOCHREALTIME + 5))
+  while (( EPOCHREALTIME < kill_deadline )); do
+    if ! pgrep -f "$app_exec" >/dev/null 2>&1; then
+      break
+    fi
+    sleep 0.1
+  done
+  before="$(pgrep -f "$app_exec" || true)"
+  open -na "$app_bundle" >/dev/null
+
+  local deadline=$((EPOCHREALTIME + 15))
+  while (( EPOCHREALTIME < deadline )); do
+    after="$(pgrep -f "$app_exec" || true)"
+    new_pid="$(comm -13 <(printf '%s\n' $before | sed '/^$/d' | sort -n) <(printf '%s\n' $after | sed '/^$/d' | sort -n) | tail -n 1)"
+    if [[ -n "$new_pid" ]]; then
+      gate_l_app_pid="$new_pid"
+      return 0
+    fi
+    sleep 0.1
+  done
+
+  echo "Timed out waiting for app bundle launch: $app_bundle" >&2
+  return 1
+}
+
 function gate_l_require_app_bin() {
   if [[ ! -x "$GATE_L_APP_BIN" ]]; then
     echo "Gate-L perf app binary is not executable: $GATE_L_APP_BIN" >&2
@@ -104,6 +183,7 @@ function gate_l_launch_app() {
   local inventory_only="${AGTMUX_PERF_UITEST_INVENTORY_ONLY:-1}"
   local use_default_local_tmux="${AGTMUX_PERF_USE_DEFAULT_LOCAL_TMUX:-0}"
   local terminal_host_mode="${AGTMUX_PERF_TERMINAL_HOST_MODE:-}"
+  local disable_app_state_restore="${AGTMUX_PERF_DISABLE_APP_STATE_RESTORE:-1}"
   local scenario_json
   local -a tmux_socket_env host_mode_env extra_uitest_env
 
@@ -142,6 +222,7 @@ function gate_l_launch_app() {
     AGTMUX_UITEST=1 \
     AGTMUX_UITEST_INVENTORY_ONLY="$inventory_only" \
     AGTMUX_UITEST_ENABLE_GHOSTTY_SURFACES=1 \
+    AGTMUX_PERF_DISABLE_APP_STATE_RESTORE="$disable_app_state_restore" \
     "${tmux_socket_env[@]}" \
     "${host_mode_env[@]}" \
     "${extra_uitest_env[@]}" \
@@ -162,9 +243,13 @@ import subprocess
 import sys
 
 app_bin, stdout_path, stderr_path = sys.argv[1:]
+disable_app_state_restore = os.environ.get("AGTMUX_PERF_DISABLE_APP_STATE_RESTORE", "1") == "1"
+argv = [app_bin]
+if disable_app_state_restore:
+    argv += ["-ApplePersistenceIgnoreState", "YES", "-NSQuitAlwaysKeepsWindows", "NO"]
 with open(stdout_path, "wb") as stdout, open(stderr_path, "wb") as stderr:
     process = subprocess.Popen(
-        [app_bin, "-ApplePersistenceIgnoreState", "YES", "-NSQuitAlwaysKeepsWindows", "NO"],
+        argv,
         stdout=stdout,
         stderr=stderr,
         env=os.environ.copy(),
@@ -180,6 +265,8 @@ function gate_l_launch_app_without_bootstrap() {
   local inventory_only="${2:-0}"
   local use_default_local_tmux="${AGTMUX_PERF_USE_DEFAULT_LOCAL_TMUX:-0}"
   local terminal_host_mode="${AGTMUX_PERF_TERMINAL_HOST_MODE:-}"
+  local disable_app_state_restore="${AGTMUX_PERF_DISABLE_APP_STATE_RESTORE:-1}"
+  local bridge_config_mode="${AGTMUX_PERF_BRIDGE_CONFIG_MODE:-env}"
   local -a tmux_socket_env host_mode_env extra_uitest_env
 
   gate_l_socket_name="$socket_name"
@@ -205,11 +292,18 @@ function gate_l_launch_app_without_bootstrap() {
     )
   fi
 
+  if [[ "$bridge_config_mode" == "defaults" ]]; then
+    gate_l_configure_bridge_defaults
+    gate_l_launch_app_via_bundle
+    return 0
+  fi
+
   gate_l_app_pid="$(
   env \
     AGTMUX_UITEST=1 \
     AGTMUX_UITEST_INVENTORY_ONLY="$inventory_only" \
     AGTMUX_UITEST_ENABLE_GHOSTTY_SURFACES=1 \
+    AGTMUX_PERF_DISABLE_APP_STATE_RESTORE="$disable_app_state_restore" \
     "${tmux_socket_env[@]}" \
     "${host_mode_env[@]}" \
     "${extra_uitest_env[@]}" \
@@ -229,9 +323,13 @@ import subprocess
 import sys
 
 app_bin, stdout_path, stderr_path = sys.argv[1:]
+disable_app_state_restore = os.environ.get("AGTMUX_PERF_DISABLE_APP_STATE_RESTORE", "1") == "1"
+argv = [app_bin]
+if disable_app_state_restore:
+    argv += ["-ApplePersistenceIgnoreState", "YES", "-NSQuitAlwaysKeepsWindows", "NO"]
 with open(stdout_path, "wb") as stdout, open(stderr_path, "wb") as stderr:
     process = subprocess.Popen(
-        [app_bin, "-ApplePersistenceIgnoreState", "YES", "-NSQuitAlwaysKeepsWindows", "NO"],
+        argv,
         stdout=stdout,
         stderr=stderr,
         env=os.environ.copy(),
@@ -579,6 +677,9 @@ function gate_l_terminate_app() {
     if kill -0 "$gate_l_app_pid" 2>/dev/null; then
       kill -9 "$gate_l_app_pid" 2>/dev/null || true
     fi
+  fi
+  if [[ "$gate_l_bridge_defaults_active" == "1" ]]; then
+    gate_l_clear_bridge_defaults
   fi
 }
 

@@ -76,6 +76,10 @@ extension XCUIApplication {
             }
         }
         launchEnvironment["AGTMUX_UITEST"] = "1"
+        // UI suite must not inherit a developer's persistent runtime host-mode
+        // override from UserDefaults. Keep the suite on the stable legacy host
+        // path unless an individual test explicitly overrides it.
+        launchEnvironment["AGTMUX_TERMINAL_HOST_MODE"] = "legacy"
         if inventoryOnly {
             // Avoid `agtmux json` metadata subprocess during UI tests: inventory-only is
             // enough for sidebar/session/window/pane contracts and keeps launch responsive.

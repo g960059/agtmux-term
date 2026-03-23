@@ -15,6 +15,7 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     private static let scrollPresentationDrawPumpTailSeconds = 0.18
     private static let scrollPresentationDrawRecoveryProbeDelaySeconds = 1.0 / 180.0
     private static let preciseAlternateScrollDirtyDrawFastPathTailSeconds = 0.18
+    private static let rendererOwnedRenderCallbackTailSeconds = 0.18
     private static let scrollDirectionFlipEpsilon = 0.001
     struct SurfaceMetrics: Equatable {
         let pixelWidth: UInt32
@@ -202,6 +203,7 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     private var lastHostDrawUptime: TimeInterval?
     private var lastScrollInputEventUptime: TimeInterval?
     private var preciseAlternateScrollDirtyDrawEligibleUntilUptime: TimeInterval?
+    private var rendererOwnedRenderCallbackEligibleUntilUptime: TimeInterval?
     private var lastScrollPresentationDrawTelemetryUptime: TimeInterval?
     private var lastLayerPresentUptime: TimeInterval?
 
@@ -290,6 +292,21 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         guard scrollCadenceMode != nextMode else { return }
         scrollCadenceMode = nextMode
         invalidateScrollPresentationDrawPump()
+    }
+
+    @MainActor
+    func prefersRendererOwnedRenderCallbackDispatch(now: TimeInterval) -> Bool {
+        guard scrollCadenceMode == .ghosttyOwned,
+              let rendererOwnedRenderCallbackEligibleUntilUptime
+        else {
+            return false
+        }
+        return now <= rendererOwnedRenderCallbackEligibleUntilUptime
+    }
+
+    @MainActor
+    func triggerRendererOwnedRenderCallback(now: TimeInterval) {
+        triggerDirtyDrawForRenderCallback(now: now)
     }
 
     // MARK: - Layout
@@ -912,6 +929,12 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
             precision: event.hasPreciseScrollingDeltas,
             phase: event.phase,
             momentumPhase: event.momentumPhase,
+            verticalDelta: y,
+            now: handlerStartUptime
+        )
+        updateRendererOwnedRenderCallbackEligibility(
+            usesAlternateScroll: usesAlternateScroll,
+            precision: event.hasPreciseScrollingDeltas,
             verticalDelta: y,
             now: handlerStartUptime
         )
@@ -1790,6 +1813,7 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         lastScrollPresentationDrawUptime = nil
         lastPaneRetargetPresentationDrawUptime = nil
         preciseAlternateScrollDirtyDrawEligibleUntilUptime = nil
+        rendererOwnedRenderCallbackEligibleUntilUptime = nil
         scrollPresentationDirectGestureActive = false
         lastPreciseScrollVerticalDirection = nil
         scrollPresentationContinuationGeneration &+= 1
@@ -1887,6 +1911,41 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         if Self.isTerminalScrollPhase(phase), Self.isTerminalScrollPhase(momentumPhase) {
             preciseAlternateScrollDirtyDrawEligibleUntilUptime = nil
         }
+    }
+
+    @MainActor
+    private func updateRendererOwnedRenderCallbackEligibility(
+        usesAlternateScroll: Bool,
+        precision: Bool,
+        verticalDelta: Double,
+        now: TimeInterval
+    ) {
+        guard scrollCadenceMode == .ghosttyOwned,
+              precision,
+              usesAlternateScroll == false,
+              abs(verticalDelta) > Self.scrollDirectionFlipEpsilon
+        else {
+            rendererOwnedRenderCallbackEligibleUntilUptime = nil
+            return
+        }
+
+        rendererOwnedRenderCallbackEligibleUntilUptime =
+            now + Self.rendererOwnedRenderCallbackTailSeconds
+    }
+
+    @MainActor
+    func setRendererOwnedRenderCallbackEligibilityForTesting(
+        usesAlternateScroll: Bool,
+        precision: Bool,
+        verticalDelta: Double,
+        now: TimeInterval
+    ) {
+        updateRendererOwnedRenderCallbackEligibility(
+            usesAlternateScroll: usesAlternateScroll,
+            precision: precision,
+            verticalDelta: verticalDelta,
+            now: now
+        )
     }
 
     private static func verticalScrollDirection(for deltaY: Double) -> ScrollVerticalDirection? {
