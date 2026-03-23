@@ -30,10 +30,14 @@
   accepting stale tile-level views
 - [x] treat host-mode remounts as new rendered generations in the surface
   registry
+- [x] allow defaults-based bundle launches to activate the UITest bridge for
+  same-app rewrite diagnostics
 - [x] ignore blank persisted pane refs when deriving next-host visible-pane
   identity at startup
 - [x] let next-host persisted local terminal tiles attach during bootstrap
   before the first inventory sync completes
+- [x] promote the next-host bootstrap fallback controller to the first real
+  pane identity instead of tearing it down during startup
 - [x] keep the rewrite branch full UI suite green while `next` host work is in
   flight
 - [x] forbid destructive default-local tmux bootstrap in live perf harnesses

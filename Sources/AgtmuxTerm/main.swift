@@ -27,9 +27,6 @@ final class NonDraggableHostingView<Content: View>: NSHostingView<Content> {
 // The handler also terminates the daemon child process owned by this app instance.
 let isUITest = CommandLine.arguments.contains { $0.hasPrefix("-XCTest") }
     || ProcessInfo.processInfo.environment["AGTMUX_UITEST"] == "1"
-let isUITestBridgeRequested = UITestTmuxBridge.bridgeRequested(
-    environment: ProcessInfo.processInfo.environment
-)
 let enableUITestGhosttySurfaces = ProcessInfo.processInfo.environment["AGTMUX_UITEST_ENABLE_GHOSTTY_SURFACES"] == "1"
 let enableUITestPolling = isUITest
     && ProcessInfo.processInfo.environment["AGTMUX_UITEST_INVENTORY_ONLY"] != "1"
@@ -215,7 +212,6 @@ let workbenchStoreV2: WorkbenchStoreV2 = MainActor.assumeIsolated {
 }
 
 let uiTestTmuxBridge: UITestTmuxBridge? = MainActor.assumeIsolated {
-    guard isUITest || isUITestBridgeRequested else { return nil }
     return UITestTmuxBridge(
         viewModel: viewModel,
         workbenchStore: workbenchStoreV2,

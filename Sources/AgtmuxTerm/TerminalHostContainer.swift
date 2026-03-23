@@ -110,6 +110,25 @@ final class NextGhosttyIslandViewController: NSViewController {
         return kept.reversed()
     }
 
+    nonisolated static func bootstrapPromotionSourcePaneKey(
+        activePaneKey: String?,
+        nextPaneKey: String,
+        visiblePaneIdentity: String?,
+        fallbackSurfaceID: UUID,
+        existingPaneKeys: Set<String>
+    ) -> String? {
+        guard visiblePaneIdentity != nil else { return nil }
+        let bootstrapKey = paneCacheKey(
+            visiblePaneIdentity: nil,
+            fallbackSurfaceID: fallbackSurfaceID
+        )
+        guard activePaneKey == bootstrapKey else { return nil }
+        guard nextPaneKey != bootstrapKey else { return nil }
+        guard existingPaneKeys.contains(bootstrapKey) else { return nil }
+        guard existingPaneKeys.contains(nextPaneKey) == false else { return nil }
+        return bootstrapKey
+    }
+
     private let maxRetainedPaneControllers = 4
     private let tileID: UUID
     private var paneSurfaceIDs: [String: UUID] = [:]
@@ -146,6 +165,18 @@ final class NextGhosttyIslandViewController: NSViewController {
             visiblePaneIdentity: model.visiblePaneIdentity,
             fallbackSurfaceID: model.surfaceID
         )
+        let existingPaneKeys = Set(paneControllers.keys)
+            .union(paneSurfaceIDs.keys)
+            .union(paneModels.keys)
+        if let bootstrapSourceKey = Self.bootstrapPromotionSourcePaneKey(
+            activePaneKey: activePaneKey,
+            nextPaneKey: paneKey,
+            visiblePaneIdentity: model.visiblePaneIdentity,
+            fallbackSurfaceID: tileID,
+            existingPaneKeys: existingPaneKeys
+        ) {
+            promotePaneController(from: bootstrapSourceKey, to: paneKey)
+        }
         let paneSurfaceID = paneSurfaceIDs[paneKey] ?? UUID()
         paneSurfaceIDs[paneKey] = paneSurfaceID
 
@@ -181,6 +212,25 @@ final class NextGhosttyIslandViewController: NSViewController {
         paneRetentionOrder.removeAll { $0 == paneKey }
         paneRetentionOrder.append(paneKey)
         evictInactivePaneControllersIfNeeded(activePaneKey: paneKey)
+    }
+
+    private func promotePaneController(from sourceKey: String, to targetKey: String) {
+        if let surfaceID = paneSurfaceIDs.removeValue(forKey: sourceKey) {
+            paneSurfaceIDs[targetKey] = surfaceID
+        }
+        if let controller = paneControllers.removeValue(forKey: sourceKey) {
+            paneControllers[targetKey] = controller
+        }
+        if let model = paneModels.removeValue(forKey: sourceKey) {
+            paneModels[targetKey] = model
+        }
+        paneRetentionOrder = paneRetentionOrder.map { $0 == sourceKey ? targetKey : $0 }
+        if activePaneKey == sourceKey {
+            activePaneKey = targetKey
+            if let surfaceID = paneSurfaceIDs[targetKey] {
+                TerminalHostActiveSurfaceRegistry.shared.setActiveLeafID(surfaceID, forTileID: tileID)
+            }
+        }
     }
 
     private func makePaneController(model: TerminalHostRenderModel) -> GhosttyIslandViewController {

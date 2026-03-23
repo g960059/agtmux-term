@@ -197,6 +197,14 @@ Interpretation:
   - durable conclusion: loaded-tile host-mode switches cannot be evaluated
     correctly unless the bridge and registry distinguish tile-level legacy
     views from pane-owned next-host leaves
+- two additional rewrite preconditions are now in place:
+  - defaults-based bundle launches now instantiate `UITestTmuxBridge`, so the
+    same-app live host-mode experiments no longer depend on env-driven UITest
+    startup to create the bridge object
+  - persisted local tiles on `next` now promote the bootstrap fallback
+    controller to the first real pane key instead of tearing down the fallback
+    and mounting a second controller, removing one startup blanking seam from
+    loaded local workbenches
 
 ## Root Cause From Vendor Code
 

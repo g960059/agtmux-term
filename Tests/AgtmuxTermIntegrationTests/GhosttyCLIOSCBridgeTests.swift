@@ -21,6 +21,48 @@ private actor UITestNavigationIntentRecorder {
 }
 
 final class GhosttyCLIOSCBridgeTests: XCTestCase {
+    private var savedTerminalHostModeDefaultsValue: String?
+    private var savedTerminalHostModeDefaultsExisted = false
+
+    private func resetTerminalHostModeRuntimeSynchronously() {
+        if Thread.isMainThread {
+            MainActor.assumeIsolated {
+                TerminalHostModeRuntime.shared.resetForTesting()
+                TerminalHostActiveSurfaceRegistry.shared.resetForTesting()
+                GhosttyTerminalSurfaceRegistry.shared.resetForTesting()
+            }
+            return
+        }
+        let semaphore = DispatchSemaphore(value: 0)
+        Task { @MainActor in
+            TerminalHostModeRuntime.shared.resetForTesting()
+            TerminalHostActiveSurfaceRegistry.shared.resetForTesting()
+            GhosttyTerminalSurfaceRegistry.shared.resetForTesting()
+            semaphore.signal()
+        }
+        _ = semaphore.wait(timeout: .now() + 1)
+    }
+
+    override func setUp() {
+        super.setUp()
+        let defaults = UserDefaults.standard
+        savedTerminalHostModeDefaultsExisted = defaults.object(forKey: TerminalHostMode.userDefaultsKey) != nil
+        savedTerminalHostModeDefaultsValue = defaults.string(forKey: TerminalHostMode.userDefaultsKey)
+        defaults.removeObject(forKey: TerminalHostMode.userDefaultsKey)
+        resetTerminalHostModeRuntimeSynchronously()
+    }
+
+    override func tearDown() {
+        let defaults = UserDefaults.standard
+        if savedTerminalHostModeDefaultsExisted {
+            defaults.set(savedTerminalHostModeDefaultsValue, forKey: TerminalHostMode.userDefaultsKey)
+        } else {
+            defaults.removeObject(forKey: TerminalHostMode.userDefaultsKey)
+        }
+        resetTerminalHostModeRuntimeSynchronously()
+        super.tearDown()
+    }
+
     func testDecodeRequestRejectsMalformedJSONPayload() {
         XCTAssertThrowsError(
             try GhosttyCLIOSCBridge.decodeRequest(from: Data("{".utf8))
@@ -2606,7 +2648,8 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
         let opened = try await bridge.openTerminalForPaneForTesting(
             source: "local",
             sessionName: pane.sessionName,
-            paneID: pane.paneId
+            paneID: pane.paneId,
+            waitForRegistration: false
         )
         XCTAssertEqual(opened.terminalHostMode, "legacy")
         XCTAssertEqual(opened.disposition, "opened")
@@ -2683,17 +2726,35 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
         view.snapshots = [
             .init(text: "ready", lineCount: 1, characterCount: 5, usesAlternateScroll: false)
         ]
-        SurfacePool.shared.register(
-            view: view,
-            leafID: tileID,
-            tmuxPaneID: pane.paneId,
-            surfaceHandle: GhosttySurfaceHandle(rawValue: 0x691)
-        )
+        Task { @MainActor in
+            let deadline = ContinuousClock.now + .seconds(5)
+            while ContinuousClock.now < deadline {
+                let candidateTileIDs = workbenchStore.workbenches
+                    .flatMap(\.tiles)
+                    .compactMap { tile -> UUID? in
+                        guard case .terminal(let sessionRef) = tile.kind else { return nil }
+                        guard sessionRef.target == .local else { return nil }
+                        return tile.id
+                    }
+                if !candidateTileIDs.isEmpty {
+                    for candidateTileID in candidateTileIDs {
+                        SurfacePool.shared.register(
+                            view: view,
+                            leafID: candidateTileID,
+                            tmuxPaneID: pane.paneId,
+                            surfaceHandle: GhosttySurfaceHandle(rawValue: 0x691)
+                        )
+                    }
+                }
+                try? await Task.sleep(for: .milliseconds(20))
+            }
+        }
 
         let opened = try await bridge.openTerminalForPaneForTesting(
             source: "local",
             sessionName: pane.sessionName,
-            paneID: pane.paneId
+            paneID: pane.paneId,
+            waitForRegistration: false
         )
 
         XCTAssertEqual(opened.terminalHostMode, "legacy")
@@ -2748,7 +2809,8 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
         let nextOpened = try await nextBridge.openTerminalForPaneForTesting(
             source: "local",
             sessionName: pane.sessionName,
-            paneID: pane.paneId
+            paneID: pane.paneId,
+            waitForRegistration: false
         )
 
         XCTAssertEqual(nextOpened.terminalHostMode, "next")

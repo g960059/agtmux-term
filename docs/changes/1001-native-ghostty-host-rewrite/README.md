@@ -181,3 +181,13 @@ Current state:
   - durable conclusion: rewrite validation should use the dedicated host-mode
     parity gates, while the app-wide UI suite stays on the proven legacy path
     until the loaded live-pane gate is acceptance-ready
+- phase 3 startup/render ownership is now less lossy on real local tiles:
+  - the app always instantiates `UITestTmuxBridge`, and `startIfNeeded()` now
+    decides whether bundle/defaults launches should activate the command loop
+  - this makes same-app rewrite diagnostics possible on a normal app bundle
+    launch instead of only env-driven UITest startup
+  - `next` host no longer tears down the bootstrap fallback controller when
+    the first real `visiblePaneIdentity` arrives for a persisted local tile
+  - instead it promotes the existing fallback controller/surface to the real
+    pane key, removing one blank handoff during bootstrap on loaded local
+    workbenches

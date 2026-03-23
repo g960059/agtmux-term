@@ -99,6 +99,45 @@ final class TerminalHostModeTests: XCTestCase {
         XCTAssertEqual(trimmed, ["pane-b", "pane-c", "pane-d", "pane-e"])
     }
 
+    func testBootstrapPromotionSourcePaneKeyPromotesActiveFallbackToFirstRealPane() {
+        let surfaceID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
+        let bootstrapKey = NextGhosttyIslandViewController.paneCacheKey(
+            visiblePaneIdentity: nil,
+            fallbackSurfaceID: surfaceID
+        )
+        let realPaneKey = "main|@0|%0|"
+
+        XCTAssertEqual(
+            NextGhosttyIslandViewController.bootstrapPromotionSourcePaneKey(
+                activePaneKey: bootstrapKey,
+                nextPaneKey: realPaneKey,
+                visiblePaneIdentity: realPaneKey,
+                fallbackSurfaceID: surfaceID,
+                existingPaneKeys: [bootstrapKey]
+            ),
+            bootstrapKey
+        )
+    }
+
+    func testBootstrapPromotionSourcePaneKeyDoesNotPromoteWhenRealPaneControllerAlreadyExists() {
+        let surfaceID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
+        let bootstrapKey = NextGhosttyIslandViewController.paneCacheKey(
+            visiblePaneIdentity: nil,
+            fallbackSurfaceID: surfaceID
+        )
+        let realPaneKey = "main|@0|%0|"
+
+        XCTAssertNil(
+            NextGhosttyIslandViewController.bootstrapPromotionSourcePaneKey(
+                activePaneKey: bootstrapKey,
+                nextPaneKey: realPaneKey,
+                visiblePaneIdentity: realPaneKey,
+                fallbackSurfaceID: surfaceID,
+                existingPaneKeys: [bootstrapKey, realPaneKey]
+            )
+        )
+    }
+
     func testBootstrapRenderPolicyAllowsNextHostLocalTerminalWithResolvedAttachPlan() {
         let attachPlan = WorkbenchV2TerminalAttachPlan(
             command: "tmux attach-session -t main",

@@ -223,4 +223,11 @@ final class GhosttyTerminalSurfaceRegistry {
     func unregister(surface: ghostty_surface_t) {
         unregister(surfaceHandle: GhosttySurfaceHandle(surface: surface))
     }
+
+    func resetForTesting() {
+        statesBySurfaceHandle.removeAll()
+        surfaceHandlesByTileID.removeAll()
+        latestGenerationByTileID.removeAll()
+        stagedClientTTYBySurfaceHandle.removeAll()
+    }
 }

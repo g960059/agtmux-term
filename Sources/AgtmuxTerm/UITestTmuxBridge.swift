@@ -1048,7 +1048,8 @@ final class UITestTmuxBridge {
     func openTerminalForPaneForTesting(
         source: String,
         sessionName: String,
-        paneID: String
+        paneID: String,
+        waitForRegistration: Bool = true
     ) async throws -> OpenTerminalForPaneSnapshot {
         uiTestBridgeDebugLog(
             "openTerminalForPaneForTesting start source=\(source) session=\(sessionName) pane=\(paneID)"
@@ -1089,10 +1090,12 @@ final class UITestTmuxBridge {
             uiTestBridgeDebugLog(
                 "openTerminalForPaneForTesting session-only-opened tile=\(result.tileID.uuidString)"
             )
-            try await waitForTerminalViewRegistration(
-                tileID: result.tileID,
-                timeoutMilliseconds: terminalViewRegistrationTimeoutMilliseconds
-            )
+            if waitForRegistration {
+                try await waitForTerminalViewRegistration(
+                    tileID: result.tileID,
+                    timeoutMilliseconds: terminalViewRegistrationTimeoutMilliseconds
+                )
+            }
             let disposition: String
             let workbenchID: UUID
             switch result {
@@ -1132,10 +1135,12 @@ final class UITestTmuxBridge {
             uiTestBridgeDebugLog(
                 "openTerminalForPaneForTesting session-only-opened tile=\(result.tileID.uuidString)"
             )
-            try await waitForTerminalViewRegistration(
-                tileID: result.tileID,
-                timeoutMilliseconds: terminalViewRegistrationTimeoutMilliseconds
-            )
+            if waitForRegistration {
+                try await waitForTerminalViewRegistration(
+                    tileID: result.tileID,
+                    timeoutMilliseconds: terminalViewRegistrationTimeoutMilliseconds
+                )
+            }
             let disposition: String
             let workbenchID: UUID
             switch result {
@@ -1180,10 +1185,12 @@ final class UITestTmuxBridge {
         uiTestBridgeDebugLog(
             "openTerminalForPaneForTesting store-opened tile=\(result.tileID.uuidString)"
         )
-        try await waitForTerminalViewRegistration(
-            tileID: result.tileID,
-            timeoutMilliseconds: terminalViewRegistrationTimeoutMilliseconds
-        )
+        if waitForRegistration {
+            try await waitForTerminalViewRegistration(
+                tileID: result.tileID,
+                timeoutMilliseconds: terminalViewRegistrationTimeoutMilliseconds
+            )
+        }
         let disposition: String
         let workbenchID: UUID
         switch result {
