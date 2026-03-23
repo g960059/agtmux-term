@@ -11,6 +11,12 @@ actor TmuxCommandRunner {
 
     private init() {}
 
+    nonisolated static func normalizedLocalEnvironment(
+        from env: [String: String] = ProcessInfo.processInfo.environment
+    ) -> [String: String] {
+        ManagedDaemonLaunchEnvironment.normalized(from: env)
+    }
+
     private func resolveLocalTmuxURL() -> URL? {
         if let cachedLocalTmuxURL { return cachedLocalTmuxURL }
         if resolvedLocalTmuxURLOnce { return nil }
@@ -129,19 +135,17 @@ actor TmuxCommandRunner {
 
         if source == "local" || source == "local-default" {
             let originalEnv = ProcessInfo.processInfo.environment
+            let normalizedEnv = Self.normalizedLocalEnvironment(from: originalEnv)
             guard let tmuxURL = resolveLocalTmuxURL() else {
                 throw TmuxCommandError.tmuxNotFound(source: source)
             }
             process.executableURL = tmuxURL
-            let configArgs = tmuxConfigArguments(from: originalEnv)
+            let configArgs = tmuxConfigArguments(from: normalizedEnv)
             let socketArgs = source == "local"
-                ? LocalTmuxTarget.socketArguments(from: originalEnv)
+                ? LocalTmuxTarget.socketArguments(from: normalizedEnv)
                 : []
             process.arguments = configArgs + socketArgs + args
-            var env = originalEnv
-            env["TMUX"] = nil
-            env["TMUX_PANE"] = nil
-            process.environment = env
+            process.environment = normalizedEnv
         } else {
             // Use sshTarget (user@host) when provided; fall back to source (hostname only).
             // StrictHostKeyChecking=accept-new: silently accept new host keys instead of
@@ -195,14 +199,6 @@ actor TmuxCommandRunner {
         stderrPipe: Pipe,
         timeout: TimeInterval
     ) throws -> ProcessResult {
-        var stdoutData = Data()
-        var stderrData = Data()
-
-        let stdoutRead = DispatchSemaphore(value: 0)
-        let stderrRead = DispatchSemaphore(value: 0)
-        let terminated = DispatchSemaphore(value: 0)
-        process.terminationHandler = { _ in terminated.signal() }
-
         do {
             try process.run()
         } catch {
@@ -213,28 +209,27 @@ actor TmuxCommandRunner {
             )
         }
 
-        DispatchQueue.global(qos: .utility).async {
-            stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-            stdoutRead.signal()
-        }
-        DispatchQueue.global(qos: .utility).async {
-            stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-            stderrRead.signal()
+        let deadline = Date().addingTimeInterval(timeout)
+        while process.isRunning, Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.01)
         }
 
-        if terminated.wait(timeout: .now() + timeout) == .timedOut {
+        if process.isRunning {
             process.terminate()
-            if terminated.wait(timeout: .now() + 0.5) == .timedOut {
+            let terminateDeadline = Date().addingTimeInterval(0.5)
+            while process.isRunning, Date() < terminateDeadline {
+                Thread.sleep(forTimeInterval: 0.01)
+            }
+            if process.isRunning {
                 kill(process.processIdentifier, SIGKILL)
             }
-            _ = stdoutRead.wait(timeout: .now() + 0.5)
-            _ = stderrRead.wait(timeout: .now() + 0.5)
+            _ = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+            _ = stderrPipe.fileHandleForReading.readDataToEndOfFile()
             throw TmuxCommandError.timeout(args: process.arguments ?? [])
         }
 
-        _ = stdoutRead.wait(timeout: .now() + 1.0)
-        _ = stderrRead.wait(timeout: .now() + 1.0)
-
+        let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+        let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
         let stdout = String(data: stdoutData, encoding: .utf8) ?? ""
         let stderr = String(data: stderrData, encoding: .utf8) ?? ""
         return ProcessResult(exitCode: process.terminationStatus, stdout: stdout, stderr: stderr)

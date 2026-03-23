@@ -43,6 +43,7 @@
 - [x] forbid destructive default-local tmux bootstrap in live perf harnesses
 - [x] add bridge-internal scroll burst measurement for same-app live diagnostics
 - [x] rebind UITest bridge command-loop paths after runtime defaults changes
+- [x] restore same-running app local tmux bridge stdout for live diagnostics
 - [ ] realistic loaded live-pane parity gate for the next host
 - [ ] durable-knowledge promotion
 - [ ] remove `docs/changes/1001-native-ghostty-host-rewrite/` before merge

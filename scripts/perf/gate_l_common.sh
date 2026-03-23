@@ -11,6 +11,7 @@ if [[ -z "${GATE_L_APP_BIN:-}" ]]; then
 fi
 
 gate_l_bridge_defaults_active=0
+gate_l_attach_enabled_path=""
 
 function gate_l_app_bundle_path() {
   if [[ "$GATE_L_APP_BIN" == *.app/Contents/MacOS/* ]]; then
@@ -51,6 +52,11 @@ function gate_l_clear_bridge_defaults() {
   defaults delete com.g960059.agtmux.term UITestTmuxResultPath >/dev/null 2>&1 || true
   defaults delete com.g960059.agtmux.term UITestTerminalViewRegistrationTimeoutMS >/dev/null 2>&1 || true
   defaults delete com.g960059.agtmux.term UITestAllowSessionOnlyOpenFallback >/dev/null 2>&1 || true
+  if [[ -n "$gate_l_attach_enabled_path" ]]; then
+    rm -f "$gate_l_attach_enabled_path"
+  else
+    rm -f "${AGTMUX_PERF_ATTACH_BRIDGE_DIR:-$HOME/Library/Caches/agtmux-term/gate-l-attach}/enabled"
+  fi
   gate_l_bridge_defaults_active=0
 }
 
@@ -151,6 +157,16 @@ function gate_l_setup_paths() {
   gate_l_app_stdout_path="$gate_l_tmpdir/app.stdout.log"
   gate_l_app_stderr_path="$gate_l_tmpdir/app.stderr.log"
   gate_l_daemon_socket_path="${AGTMUX_PERF_DAEMON_SOCKET_PATH_OVERRIDE:-$HOME/.agt/perf-${token}.sock}"
+}
+
+function gate_l_configure_stable_attach_bridge_paths() {
+  local attach_dir="${AGTMUX_PERF_ATTACH_BRIDGE_DIR:-$HOME/Library/Caches/agtmux-term/gate-l-attach}"
+  mkdir -p "$attach_dir"
+  gate_l_attach_enabled_path="$attach_dir/enabled"
+  gate_l_command_path="$attach_dir/tmux-command.json"
+  gate_l_command_result_path="$attach_dir/tmux-command-result.json"
+  gate_l_bootstrap_result_path="$attach_dir/tmux-bootstrap-result.json"
+  : >"$gate_l_attach_enabled_path"
 }
 
 function gate_l_cleanup_stale_perf_processes() {
@@ -272,6 +288,30 @@ PY
   )"
 }
 
+function gate_l_attach_to_running_app() {
+  gate_l_require_app_bin
+  gate_l_configure_stable_attach_bridge_paths
+  gate_l_configure_bridge_defaults
+
+  local app_exec="$GATE_L_APP_BIN"
+  local installed_app_exec="/Applications/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm"
+  local matched_pids=""
+
+  matched_pids="$(pgrep -f "$app_exec" || true)"
+  if [[ -z "$matched_pids" && "$app_exec" != "$installed_app_exec" && -x "$installed_app_exec" ]]; then
+    app_exec="$installed_app_exec"
+    GATE_L_APP_BIN="$installed_app_exec"
+    matched_pids="$(pgrep -f "$app_exec" || true)"
+  fi
+
+  if [[ -z "$matched_pids" ]]; then
+    echo "No running app matches GATE_L_APP_BIN: $app_exec" >&2
+    return 1
+  fi
+
+  gate_l_app_pid="$(printf '%s\n' "$matched_pids" | tail -n 1)"
+}
+
 function gate_l_launch_app_without_bootstrap() {
   local socket_name="$1"
   local inventory_only="${2:-0}"
@@ -359,7 +399,10 @@ function gate_l_activate_app() {
       return 0
     fi
   fi
-  osascript -e 'tell application id "com.g960059.agtmux.term" to activate' >/dev/null
+  perl -e 'alarm shift @ARGV; exec @ARGV' 2 \
+    osascript -e 'tell application id "com.g960059.agtmux.term" to activate' >/dev/null 2>&1 || true
+  perl -e 'alarm shift @ARGV; exec @ARGV' 2 \
+    open -b com.g960059.agtmux.term >/dev/null 2>&1 || true
 }
 
 function gate_l_wait_for_bootstrap() {

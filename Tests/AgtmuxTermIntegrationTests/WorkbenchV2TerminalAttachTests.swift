@@ -152,7 +152,7 @@ final class WorkbenchV2TerminalAttachTests: XCTestCase {
         assertTelemetryWrappedCommand(plan.command, baseCommand: expectedBaseCommand)
     }
 
-    func testNavigationCommandTargetsExactRenderedClientTTY() {
+    func testNavigationCommandTargetsExactTmuxClientName() {
         let activePaneRef = ActivePaneRef(
             target: .local,
             sessionName: "feature branch",
@@ -163,9 +163,9 @@ final class WorkbenchV2TerminalAttachTests: XCTestCase {
         XCTAssertEqual(
             WorkbenchV2TerminalNavigationResolver.navigationCommand(
                 for: activePaneRef,
-                renderedClientTTY: "/dev/ttys008"
+                tmuxClientName: "client-8"
             ),
-            ["switch-client", "-c", "/dev/ttys008", "-t", "%34"]
+            ["switch-client", "-c", "client-8", "-t", "%34"]
         )
     }
 
@@ -211,6 +211,21 @@ final class WorkbenchV2TerminalAttachTests: XCTestCase {
                 paneID: "%35"
             )
         )
+    }
+
+    func testParseClientNameResolvesExactRenderedClientTTY() throws {
+        let output = """
+        client-0|/dev/ttys000
+        client-8|/dev/ttys008
+        client-10|/dev/ttys010
+        """
+
+        let clientName = try WorkbenchV2TerminalNavigationResolver.parseClientName(
+            output: output,
+            expectedClientTTY: "/dev/ttys008"
+        )
+
+        XCTAssertEqual(clientName, "client-8")
     }
 
     func testMoshAttachCommandUsesConfiguredHostIDAndPreservesExactSessionName() throws {

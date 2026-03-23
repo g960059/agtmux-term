@@ -207,6 +207,26 @@ Latest durable finding:
     - focused regression coverage and a rebuilt installed-app attach check both
       confirm that the bridge can answer `__agtmux_tmux_bridge_ready__` on the
       new path without relaunching the app
+  - same-running app tmux passthrough had a second root cause:
+    - the bridge could answer `__agtmux_tmux_bridge_ready__`, but generic tmux
+      passthrough commands still returned `ok=true` with `stdout=""`
+    - this blocked same-app live gates from resolving the default local tmux
+      socket and the real rendered client on the already-loaded pane
+    - the durable fix was twofold:
+      - normalize local subprocess env through
+        `ManagedDaemonLaunchEnvironment`
+      - stop draining stdout/stderr through unsynchronized mutable `Data`
+        captured by background queues in `TmuxCommandRunner.runProcess`
+    - after that fix, installed rewrite builds return real stdout for
+      `display-message`, `list-sessions`, and `list-clients`, including the
+      loaded `gate-normal-scroll` client on `/dev/ttys026`
+    - this let the same-running live gate reach the actual current pane text
+      instead of stalling earlier on client resolution
+    - current blocker after that fix:
+      - bridge-internal wheel bursts on the already-loaded pane still record
+        `changed_sample_count = 0`
+      - runtime `__agtmux_set_terminal_host_mode__` switching is still flaky
+        in same-app live runs
 
 Interpretation:
 

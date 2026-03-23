@@ -37,10 +37,15 @@ open_retry_sleep_ms="${AGTMUX_PERF_LIVE_OPEN_RETRY_SLEEP_MS:-400}"
 refresh_inventory_before_open="${AGTMUX_PERF_LIVE_REFRESH_INVENTORY_BEFORE_OPEN:-0}"
 skip_bridge_host_mode_set="${AGTMUX_PERF_LIVE_SKIP_BRIDGE_HOST_MODE_SET:-0}"
 use_internal_scroll_measurement="${AGTMUX_PERF_LIVE_USE_INTERNAL_SCROLL_MEASUREMENT:-1}"
+attach_running_app="${AGTMUX_PERF_LIVE_ATTACH_RUNNING_APP:-0}"
 agtmux_cli_bin="${AGTMUX_PERF_AGTMUX_BIN:-${AGTMUX_BIN:-$GATE_L_ROOT/../agtmux/target/release/agtmux}}"
 switch_to_host_mode="${AGTMUX_PERF_LIVE_SWITCH_TO_HOST_MODE:-}"
 reprime_after_switch="${AGTMUX_PERF_LIVE_REPRIME_AFTER_SWITCH:-0}"
 use_active_target="${AGTMUX_PERF_LIVE_USE_ACTIVE_TARGET:-0}"
+
+if [[ "$attach_running_app" == "1" && -z "${AGTMUX_PERF_LIVE_USE_ACTIVE_TARGET:-}" ]]; then
+  use_active_target=1
+fi
 
 if [[ "$use_active_target" == "1" ]] && [[ -z "${AGTMUX_UITEST_ALLOW_SESSION_ONLY_OPEN_FALLBACK:-}" ]]; then
   export AGTMUX_UITEST_ALLOW_SESSION_ONLY_OPEN_FALLBACK=1
@@ -366,6 +371,10 @@ function measure_live_scroll_burst() {
   local post_focus_json=""
   local post_scroll_telemetry_json=""
 
+  if ! wait_for_terminal_viewport_ready "$tile_id" "$settle_timeout"; then
+    return 1
+  fi
+
   if focus_json="$(gate_l_send_bridge_json_command false 5 "__agtmux_dump_focus_state__" "$tile_id" 2>"$gate_l_tmpdir/${prefix}-focus-state.last-error.log")"; then
     printf '%s\n' "$focus_json" >"$focus_json_path"
   else
@@ -528,6 +537,10 @@ function prepare_live_viewport() {
   local prime_metrics_json_path=""
   local prime_measurement_json_path=""
   local changed_sample_count=0
+
+  if ! wait_for_terminal_viewport_ready "$tile_id" "$settle_timeout"; then
+    return 1
+  fi
 
   prime_sample_count="$(viewport_sample_count "$prime_scroll_repeat" "$prime_scroll_interval_ms" "$sample_tail_ms" "$sample_interval_ms")"
   sample_timeout="$(viewport_sample_timeout "$prime_sample_count" "$sample_interval_ms")"
@@ -722,7 +735,13 @@ export AGTMUX_UITEST_ALLOW_SESSION_ONLY_OPEN_FALLBACK=1
 
 cleanup() {
   local exit_status=$?
-  gate_l_terminate_app
+  if [[ "$attach_running_app" == "1" ]]; then
+    if [[ "$gate_l_bridge_defaults_active" == "1" ]]; then
+      gate_l_clear_bridge_defaults
+    fi
+  else
+    gate_l_terminate_app
+  fi
   if (( exit_status == 0 )) && [[ "${AGTMUX_PERF_KEEP_TMP:-0}" != "1" ]]; then
     rm -rf "$gate_l_tmpdir"
   else
@@ -732,8 +751,18 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-gate_l_launch_app_without_bootstrap "agtmux-gate-l-$token" 0
+if [[ "$attach_running_app" == "1" ]]; then
+  mark_stage attach-running-start
+  gate_l_attach_to_running_app
+  mark_stage attach-running-done
+else
+  mark_stage launch-app-start
+  gate_l_launch_app_without_bootstrap "agtmux-gate-l-$token" 0
+  mark_stage launch-app-done
+fi
+mark_stage bridge-ready-wait-start
 gate_l_wait_for_bridge_ready "$settle_timeout"
+mark_stage bridge-ready-wait-done
 gate_l_activate_app
 mark_stage app-ready
 if [[ "$skip_bridge_host_mode_set" == "1" ]]; then
@@ -804,6 +833,10 @@ if [[ "$use_active_target" == "1" ]]; then
     resolution_reason="active-target"
   fi
   printf '%s\n' "$active_json" >"$active_json_path"
+  active_tile_id="$(jq -r '.tileID // empty' <<<"$active_json")"
+  if [[ -n "$active_tile_id" ]]; then
+    tile_id="$active_tile_id"
+  fi
   if [[ -z "$open_json" ]]; then
     printf '%s\n' 'null' >"$open_json_path"
   fi
@@ -890,6 +923,10 @@ else
     active_json="$(gate_l_send_bridge_json_command false 5 "__agtmux_dump_rendered_terminal_target__" "$tile_id")"
   fi
   printf '%s\n' "$active_json" >"$active_json_path"
+  active_tile_id="$(jq -r '.tileID // empty' <<<"$active_json")"
+  if [[ -n "$active_tile_id" ]]; then
+    tile_id="$active_tile_id"
+  fi
   mark_stage active-target-ready
 
   rendered_client_pane_id="$(jq -r '.renderedClientPaneID // empty' <<<"$active_json")"
@@ -959,6 +996,10 @@ if [[ -n "$switch_to_host_mode" ]]; then
   fi
   switched_target_json="$(wait_for_tile_host_mode "$tile_id" "$switch_to_host_mode" "$settle_timeout")"
   printf '%s\n' "$switched_target_json" >"$switch_transition_json_path"
+  switched_tile_id="$(jq -r '.tileID // empty' "$switch_transition_json_path")"
+  if [[ -n "$switched_tile_id" ]]; then
+    tile_id="$switched_tile_id"
+  fi
   wait_for_terminal_viewport_ready "$tile_id" "$settle_timeout"
   rendered_client_tty="$(jq -r '.renderedClientTTY // empty' "$switch_transition_json_path")"
   rendered_client_pane_id="$(jq -r '.renderedClientPaneID // empty' "$switch_transition_json_path")"

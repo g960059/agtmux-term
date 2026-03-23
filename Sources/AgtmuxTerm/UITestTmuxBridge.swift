@@ -42,6 +42,20 @@ final class UITestTmuxBridge {
     static let bootstrapResultPathDefaultsKey = "UITestTmuxResultPath"
     static let registrationTimeoutDefaultsKey = "UITestTerminalViewRegistrationTimeoutMS"
     static let sessionOnlyFallbackDefaultsKey = "UITestAllowSessionOnlyOpenFallback"
+    nonisolated static let stableAttachEnabledRelativePath = "agtmux-term/gate-l-attach/enabled"
+    nonisolated static let stableAttachCommandRelativePath = "agtmux-term/gate-l-attach/tmux-command.json"
+    nonisolated static let stableAttachCommandResultRelativePath = "agtmux-term/gate-l-attach/tmux-command-result.json"
+    nonisolated static let stableAttachBootstrapResultRelativePath = "agtmux-term/gate-l-attach/tmux-bootstrap-result.json"
+
+    nonisolated static func stableAttachURL(relativePath: String) -> URL {
+        let cachesURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Caches", isDirectory: true)
+        return cachesURL.appendingPathComponent(relativePath, isDirectory: false)
+    }
+
+    nonisolated static var stableAttachEnabledURL: URL {
+        stableAttachURL(relativePath: stableAttachEnabledRelativePath)
+    }
 
     nonisolated static func bridgeRequested(
         environment: [String: String],
@@ -58,6 +72,9 @@ final class UITestTmuxBridge {
         }
         let commandPath = userDefaults.string(forKey: commandPathKey)
         let commandResultPath = userDefaults.string(forKey: commandResultPathKey)
+        if FileManager.default.fileExists(atPath: stableAttachEnabledURL.path) {
+            return true
+        }
         return (commandPath?.isEmpty == false) && (commandResultPath?.isEmpty == false)
     }
 
@@ -203,6 +220,7 @@ final class UITestTmuxBridge {
     private var bridgeActivationMonitorTask: Task<Void, Never>?
     private var activeCommandLoopPaths: (command: String, response: String)?
     private var commandLoopTask: Task<Void, Never>?
+    private var lastProcessedCommandID: String?
     private var createdSessions: Set<String> = []
     private let activeTerminalTargetCommand = "__agtmux_dump_active_terminal_target__"
     private let focusStateCommand = "__agtmux_dump_focus_state__"
@@ -251,7 +269,9 @@ final class UITestTmuxBridge {
         if userDefaults.bool(forKey: Self.bridgeEnabledDefaultsKey) {
             return true
         }
-        return commandURL != nil && commandResponseURL != nil
+        let commandPath = userDefaults.string(forKey: Self.commandPathDefaultsKey)
+        let commandResultPath = userDefaults.string(forKey: Self.commandResultPathDefaultsKey)
+        return (commandPath?.isEmpty == false) && (commandResultPath?.isEmpty == false)
     }
 
     init(
@@ -316,10 +336,8 @@ final class UITestTmuxBridge {
         bridgeActivationMonitorTask?.cancel()
         _ = await bridgeActivationMonitorTask?.value
         bridgeActivationMonitorTask = nil
-        commandLoopTask?.cancel()
-        _ = await commandLoopTask?.value
-        commandLoopTask = nil
         activeCommandLoopPaths = nil
+        lastProcessedCommandID = nil
         AgtmuxManagedDaemonRuntime.setBootstrapResolvedTmuxSocketPath(nil)
 
         guard env["AGTMUX_UITEST"] == "1" else { return }
@@ -460,91 +478,77 @@ final class UITestTmuxBridge {
             return
         }
         let requestedPaths = (command: commandURL.path, response: responseURL.path)
-        if commandLoopTask != nil,
-           let activeCommandLoopPaths,
-           activeCommandLoopPaths.command == requestedPaths.command,
-           activeCommandLoopPaths.response == requestedPaths.response {
-            return
-        }
-        if commandLoopTask != nil {
+        if activeCommandLoopPaths?.command != requestedPaths.command
+            || activeCommandLoopPaths?.response != requestedPaths.response {
             uiTestBridgeDebugLog(
-                "startCommandLoopIfNeeded restarting command loop for new paths commandURL=\(commandURL.path) responseURL=\(responseURL.path)"
+                "startCommandLoopIfNeeded commandURL=\(commandURL.path) responseURL=\(responseURL.path)"
             )
-            commandLoopTask?.cancel()
-            commandLoopTask = nil
+            activeCommandLoopPaths = requestedPaths
+            lastProcessedCommandID = nil
         }
-        activeCommandLoopPaths = requestedPaths
-        uiTestBridgeDebugLog("startCommandLoopIfNeeded commandURL=\(commandURL.path) responseURL=\(responseURL.path)")
 
-        commandLoopTask = Task.detached(priority: .userInitiated) { [weak self] in
+        Task { @MainActor [weak self] in
             guard let self else { return }
+            _ = await self.processCommandFileIfNeeded(
+                commandURL: commandURL,
+                responseURL: responseURL
+            )
+        }
+    }
 
-            let decoder = JSONDecoder()
-            let encoder = JSONEncoder()
-            var lastCommandID: String?
-            var idlePollCount = 0
+    private func processCommandFileIfNeeded(
+        commandURL: URL,
+        responseURL: URL
+    ) async -> Bool {
+        let decoder = JSONDecoder()
+        let encoder = JSONEncoder()
 
-            while !Task.isCancelled {
-                guard let data = try? Data(contentsOf: commandURL), !data.isEmpty else {
-                    idlePollCount += 1
-                    if idlePollCount.isMultiple(of: 50) {
-                        uiTestBridgeDebugLog("commandLoop idle waiting-for-command")
-                    }
-                    try? await Task.sleep(for: .milliseconds(80))
-                    continue
-                }
-                guard let request = try? decoder.decode(CommandRequest.self, from: data) else {
-                    idlePollCount += 1
-                    if idlePollCount.isMultiple(of: 50) {
-                        uiTestBridgeDebugLog("commandLoop idle invalid-request-payload")
-                    }
-                    try? await Task.sleep(for: .milliseconds(80))
-                    continue
-                }
-                idlePollCount = 0
-                uiTestBridgeDebugLog("commandLoop request id=\(request.id) args=\(request.args)")
-                if request.id == lastCommandID {
-                    try? await Task.sleep(for: .milliseconds(80))
-                    continue
-                }
-                lastCommandID = request.id
+        guard let data = try? Data(contentsOf: commandURL), !data.isEmpty else {
+            return false
+        }
+        guard let request = try? decoder.decode(CommandRequest.self, from: data) else {
+            return false
+        }
+        guard request.id != lastProcessedCommandID else {
+            return true
+        }
+        lastProcessedCommandID = request.id
+        uiTestBridgeDebugLog("commandLoop request id=\(request.id) args=\(request.args)")
 
-                var response = CommandResponse(
+        var response = CommandResponse(
+            id: request.id,
+            ok: false,
+            stdout: "",
+            error: "unknown error"
+        )
+
+        if let internalResponse = await handleInternalCommand(request) {
+            response = internalResponse
+        } else {
+            do {
+                let stdout = try await TmuxCommandRunner.shared.run(request.args, source: "local")
+                if request.refreshInventory ?? true {
+                    await viewModel.fetchAll()
+                }
+                response = CommandResponse(id: request.id, ok: true, stdout: stdout, error: nil)
+
+                recordCommandLoopSessionSideEffects(for: request.args)
+            } catch {
+                response = CommandResponse(
                     id: request.id,
                     ok: false,
                     stdout: "",
-                    error: "unknown error"
+                    error: error.localizedDescription
                 )
-
-                if let internalResponse = await handleInternalCommand(request) {
-                    response = internalResponse
-                } else {
-                    do {
-                        let stdout = try await TmuxCommandRunner.shared.run(request.args, source: "local")
-                        if request.refreshInventory ?? true {
-                            await self.viewModel.fetchAll()
-                        }
-                        response = CommandResponse(id: request.id, ok: true, stdout: stdout, error: nil)
-
-                        await self.recordCommandLoopSessionSideEffects(for: request.args)
-                    } catch {
-                        response = CommandResponse(
-                            id: request.id,
-                            ok: false,
-                            stdout: "",
-                            error: error.localizedDescription
-                        )
-                    }
-                }
-
-                if let payload = try? encoder.encode(response) {
-                    try? payload.write(to: responseURL, options: .atomic)
-                    uiTestBridgeDebugLog("commandLoop response id=\(response.id) ok=\(response.ok) args=\(request.args)")
-                }
-
-                try? await Task.sleep(for: .milliseconds(80))
             }
         }
+
+        if let payload = try? encoder.encode(response) {
+            try? payload.write(to: responseURL, options: .atomic)
+            uiTestBridgeDebugLog("commandLoop response id=\(response.id) ok=\(response.ok) args=\(request.args)")
+        }
+
+        return true
     }
 
     private func recordCommandLoopSessionSideEffects(for args: [String]) {
@@ -559,22 +563,43 @@ final class UITestTmuxBridge {
     private var bootstrapResultURL: URL? {
         let path = env["AGTMUX_UITEST_TMUX_RESULT_PATH"]
             ?? userDefaults.string(forKey: Self.bootstrapResultPathDefaultsKey)
-        guard let path, !path.isEmpty else { return nil }
-        return URL(fileURLWithPath: path)
+        if let path, !path.isEmpty {
+            return URL(fileURLWithPath: path)
+        }
+        guard env["AGTMUX_UITEST"] == "1"
+            || userDefaults.bool(forKey: Self.bridgeEnabledDefaultsKey)
+            || FileManager.default.fileExists(atPath: Self.stableAttachEnabledURL.path) else {
+            return nil
+        }
+        return Self.stableAttachURL(relativePath: Self.stableAttachBootstrapResultRelativePath)
     }
 
     private var commandURL: URL? {
         let path = env["AGTMUX_UITEST_TMUX_COMMAND_PATH"]
             ?? userDefaults.string(forKey: Self.commandPathDefaultsKey)
-        guard let path, !path.isEmpty else { return nil }
-        return URL(fileURLWithPath: path)
+        if let path, !path.isEmpty {
+            return URL(fileURLWithPath: path)
+        }
+        guard env["AGTMUX_UITEST"] == "1"
+            || userDefaults.bool(forKey: Self.bridgeEnabledDefaultsKey)
+            || FileManager.default.fileExists(atPath: Self.stableAttachEnabledURL.path) else {
+            return nil
+        }
+        return Self.stableAttachURL(relativePath: Self.stableAttachCommandRelativePath)
     }
 
     private var commandResponseURL: URL? {
         let path = env["AGTMUX_UITEST_TMUX_COMMAND_RESULT_PATH"]
             ?? userDefaults.string(forKey: Self.commandResultPathDefaultsKey)
-        guard let path, !path.isEmpty else { return nil }
-        return URL(fileURLWithPath: path)
+        if let path, !path.isEmpty {
+            return URL(fileURLWithPath: path)
+        }
+        guard env["AGTMUX_UITEST"] == "1"
+            || userDefaults.bool(forKey: Self.bridgeEnabledDefaultsKey)
+            || FileManager.default.fileExists(atPath: Self.stableAttachEnabledURL.path) else {
+            return nil
+        }
+        return Self.stableAttachURL(relativePath: Self.stableAttachCommandResultRelativePath)
     }
 
     private func handleInternalCommand(_ request: CommandRequest) async -> CommandResponse? {
@@ -637,7 +662,7 @@ final class UITestTmuxBridge {
                 let data = try JSONEncoder().encode(snapshot)
                 stdout = String(decoding: data, as: UTF8.self)
             case dumpTerminalViewportTextCommand:
-                let snapshot = try dumpTerminalViewportText(request.args)
+                let snapshot = try await dumpTerminalViewportText(request.args)
                 let data = try JSONEncoder().encode(snapshot)
                 stdout = String(decoding: data, as: UTF8.self)
             case sampleTerminalViewportTextCommand:
@@ -1147,6 +1172,14 @@ final class UITestTmuxBridge {
             uiTestBridgeDebugLog(
                 "openTerminalForPaneForTesting inventory-paneid-fallback requestedSession=\(sessionName) resolvedSession=\(localPane.sessionName)"
             )
+        } else if source == "local",
+                  let directPane = try await resolveDirectLocalPane(sessionName, paneID) {
+            uiTestBridgeDebugLog(
+                "openTerminalForPaneForTesting default-socket-fallback session=\(sessionName) pane=\(paneID)"
+            )
+            pane = directPane
+            usedSessionOnlyFallback = false
+            prepareDirectLocalPaneForRendering(directPane)
         } else if source == "local" && allowSessionOnlyOpenFallback && !hasExistingLocalTerminalTile {
             uiTestBridgeDebugLog(
                 "openTerminalForPaneForTesting session-only-fallback session=\(sessionName) pane=\(paneID)"
@@ -1184,14 +1217,6 @@ final class UITestTmuxBridge {
                 sessionName: sessionName,
                 paneID: paneID
             )
-        } else if source == "local",
-                  let directPane = try await resolveDirectLocalPane(sessionName, paneID) {
-            uiTestBridgeDebugLog(
-                "openTerminalForPaneForTesting default-socket-fallback session=\(sessionName) pane=\(paneID)"
-            )
-            pane = directPane
-            usedSessionOnlyFallback = false
-            prepareDirectLocalPaneForRendering(directPane)
         } else if source == "local" && allowSessionOnlyOpenFallback {
             uiTestBridgeDebugLog(
                 "openTerminalForPaneForTesting session-only-fallback session=\(sessionName) pane=\(paneID)"
@@ -1466,40 +1491,20 @@ final class UITestTmuxBridge {
         hostsConfig: HostsConfig
     ) async throws {
         let source = try tmuxSource(for: activePaneRef.target, hostsConfig: hostsConfig)
-        let clientName = try await resolveClientName(
+        let clientName = try await WorkbenchV2TerminalNavigationResolver.resolveRenderedClientName(
             renderedClientTTY: renderedClientTTY,
-            source: source
+            target: activePaneRef.target,
+            hostsConfig: hostsConfig
         )
         uiTestBridgeDebugLog(
             "applyRenderedPaneNavigation clientName=\(clientName) tty=\(renderedClientTTY) pane=\(activePaneRef.paneID)"
         )
         _ = try await TmuxCommandRunner.shared.run(
-            ["switch-client", "-c", clientName, "-t", activePaneRef.paneID],
+            WorkbenchV2TerminalNavigationResolver.navigationCommand(
+                for: activePaneRef,
+                tmuxClientName: clientName
+            ),
             source: source
-        )
-    }
-
-    private static func resolveClientName(
-        renderedClientTTY: String,
-        source: String
-    ) async throws -> String {
-        let output = try await TmuxCommandRunner.shared.run(
-            ["list-clients", "-F", "#{client_name}|#{client_tty}"],
-            source: source
-        )
-
-        for line in output.split(separator: "\n") {
-            let fields = line.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
-            guard fields.count == 2 else { continue }
-            guard fields[1] == renderedClientTTY else { continue }
-            guard !fields[0].isEmpty else { continue }
-            return fields[0]
-        }
-
-        throw NSError(
-            domain: "UITestTmuxBridge",
-            code: 52,
-            userInfo: [NSLocalizedDescriptionKey: "No tmux client name found for rendered tty \(renderedClientTTY)"]
         )
     }
 
@@ -1705,10 +1710,7 @@ final class UITestTmuxBridge {
             )
         }
 
-        let terminalView = try terminalView(
-            for: [measureTerminalScrollBurstCommand, tileID.uuidString],
-            command: measureTerminalScrollBurstCommand
-        )
+        let terminalView = try await measuredTerminalViewForTesting(tileID: tileID)
         let syntheticEvents = TrackpadScrollPhaseProfile.syntheticSequence(
             repeatCount: repeatCount,
             mode: phaseMode
@@ -1718,7 +1720,7 @@ final class UITestTmuxBridge {
                 partialResult += 1
             }
         }
-        let initialViewport = try terminalViewportTextSnapshotForTesting(tileID: tileID)
+        let initialViewport = try await terminalViewportTextSnapshotAfterRegistrationForTesting(tileID: tileID)
         let sender = GhosttyTerminalView.InternalScrollInjectionSnapshot(
             mode: "bridge-internal",
             sent: true,
@@ -1775,7 +1777,7 @@ final class UITestTmuxBridge {
             while nextSampleIndex < sampleCount {
                 let sampleDue = start + .milliseconds(nextSampleIndex * sampleIntervalMilliseconds)
                 guard currentInstant >= sampleDue else { break }
-                let snapshot = try terminalViewportTextSnapshotForTesting(tileID: tileID)
+                let snapshot = try await terminalViewportTextSnapshotAfterRegistrationForTesting(tileID: tileID)
                 let elapsedMs = (ProcessInfo.processInfo.systemUptime - startUptime) * 1000.0
                 samples.append(
                     TerminalViewportTextSampleSnapshot(
@@ -1794,9 +1796,9 @@ final class UITestTmuxBridge {
         )
     }
 
-    private func dumpTerminalViewportText(_ args: [String]) throws -> GhosttyTerminalView.ViewportTextSnapshot {
+    private func dumpTerminalViewportText(_ args: [String]) async throws -> GhosttyTerminalView.ViewportTextSnapshot {
         let tileID = try tileID(from: args, command: dumpTerminalViewportTextCommand)
-        return try terminalViewportTextSnapshotForTesting(tileID: tileID)
+        return try await terminalViewportTextSnapshotAfterRegistrationForTesting(tileID: tileID)
     }
 
     private func sampleTerminalViewportText(_ args: [String]) async throws -> TerminalViewportTextSamplingSnapshot {
@@ -1911,6 +1913,27 @@ final class UITestTmuxBridge {
         )
     }
 
+    private func measuredTerminalViewForTesting(tileID: UUID) async throws -> GhosttyTerminalView {
+        try await waitForTerminalViewRegistration(
+            tileID: tileID,
+            timeoutMilliseconds: terminalViewRegistrationTimeoutMilliseconds
+        )
+        return try terminalView(
+            for: [measureTerminalScrollBurstCommand, tileID.uuidString],
+            command: measureTerminalScrollBurstCommand
+        )
+    }
+
+    private func terminalViewportTextSnapshotAfterRegistrationForTesting(
+        tileID: UUID
+    ) async throws -> GhosttyTerminalView.ViewportTextSnapshot {
+        try await waitForTerminalViewRegistration(
+            tileID: tileID,
+            timeoutMilliseconds: terminalViewRegistrationTimeoutMilliseconds
+        )
+        return try terminalViewportTextSnapshotForTesting(tileID: tileID)
+    }
+
     private func terminalView(for args: [String], command: String) throws -> GhosttyTerminalView {
         uiTestBridgeDebugLog("terminalView lookup command=\(command) args=\(args)")
         let tileID = try tileID(from: args, command: command)
@@ -1979,8 +2002,15 @@ final class UITestTmuxBridge {
     ) async throws {
         let deadline = ContinuousClock.now + .milliseconds(timeoutMilliseconds)
         while ContinuousClock.now < deadline {
+            let renderedMode = GhosttyTerminalSurfaceRegistry.shared
+                .renderedState(forTileID: tileID)?
+                .context
+                .terminalHostMode
+            let expectedMode = renderedMode ?? terminalHostMode
+            let hasRenderedState = GhosttyTerminalSurfaceRegistry.shared.renderedState(forTileID: tileID) != nil
             if let resolvedLeafID = resolvedTerminalLeafID(for: tileID),
-               SurfacePool.shared.view(leafID: resolvedLeafID) != nil {
+               SurfacePool.shared.view(leafID: resolvedLeafID) != nil,
+               (expectedMode != .next || hasRenderedState) {
                 return
             }
             try await Task.sleep(for: .milliseconds(20))

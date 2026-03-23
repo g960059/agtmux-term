@@ -219,3 +219,21 @@ Current state:
   - a focused regression now covers that rebind behavior, and a rebuilt
     installed app responds on both the first and second temp command paths in
     a same-running attach check
+  - same-running app tmux passthrough now returns real stdout on installed
+    rewrite builds:
+    - `TmuxCommandRunner` local subprocesses now normalize their launch
+      environment via `ManagedDaemonLaunchEnvironment`
+    - the runner also stopped draining stdout/stderr through unsynchronized
+      mutable `Data` captured by background queues; it now waits for process
+      exit and reads both pipes on one thread
+    - before this fix, the running app could answer bridge commands with
+      `ok=true` and `stdout=""` for `display-message`, `list-sessions`, and
+      `list-clients`, which left same-app live gates unable to resolve the
+      real rendered client on the default local tmux server
+    - after the fix, same-running bridge commands return the default tmux
+      socket, session inventory, and client list, including the loaded
+      `gate-normal-scroll` client on `/dev/ttys026`
+    - this moved the blocker forward: the live gate now samples the actual
+      current pane text, but bridge-internal wheel bursts on that already-
+      loaded pane still record zero viewport change, and same-app runtime
+      host-mode switching remains flaky

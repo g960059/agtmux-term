@@ -19,6 +19,9 @@ enum WorkbenchV2TerminalNavigationError: LocalizedError, Equatable {
         case .activePaneUnavailable(let sessionName, let output):
             return "Navigation sync failed: active pane unavailable for session '\(sessionName)' (\(output))"
         case .renderedClientUnavailable(let sessionName, let clientTTY, let output):
+            if sessionName.isEmpty {
+                return "Navigation sync failed: rendered client '\(clientTTY)' unavailable (\(output))"
+            }
             return "Navigation sync failed: rendered client '\(clientTTY)' unavailable for session '\(sessionName)' (\(output))"
         }
     }
@@ -27,11 +30,11 @@ enum WorkbenchV2TerminalNavigationError: LocalizedError, Equatable {
 enum WorkbenchV2TerminalNavigationResolver {
     static func navigationCommand(
         for activePaneRef: ActivePaneRef,
-        renderedClientTTY: String
+        tmuxClientName: String
     ) -> [String] {
         [
             "switch-client",
-            "-c", renderedClientTTY,
+            "-c", tmuxClientName,
             "-t", activePaneRef.paneID,
         ]
     }
@@ -42,8 +45,13 @@ enum WorkbenchV2TerminalNavigationResolver {
         hostsConfig: HostsConfig
     ) async throws {
         let source = try tmuxSource(for: activePaneRef.target, hostsConfig: hostsConfig)
+        let tmuxClientName = try await resolveRenderedClientName(
+            renderedClientTTY: renderedClientTTY,
+            target: activePaneRef.target,
+            hostsConfig: hostsConfig
+        )
         _ = try await TmuxCommandRunner.shared.run(
-            navigationCommand(for: activePaneRef, renderedClientTTY: renderedClientTTY),
+            navigationCommand(for: activePaneRef, tmuxClientName: tmuxClientName),
             source: source
         )
     }
@@ -78,6 +86,25 @@ enum WorkbenchV2TerminalNavigationResolver {
             source: source
         )
         return try parseLiveTarget(
+            output: output,
+            expectedClientTTY: renderedClientTTY
+        )
+    }
+
+    static func resolveRenderedClientName(
+        renderedClientTTY: String,
+        target: TargetRef,
+        hostsConfig: HostsConfig
+    ) async throws -> String {
+        let source = try tmuxSource(for: target, hostsConfig: hostsConfig)
+        let output = try await TmuxCommandRunner.shared.run(
+            [
+                "list-clients",
+                "-F", "#{client_name}|#{client_tty}"
+            ],
+            source: source
+        )
+        return try parseClientName(
             output: output,
             expectedClientTTY: renderedClientTTY
         )
@@ -118,6 +145,25 @@ enum WorkbenchV2TerminalNavigationResolver {
                 windowID: fields[2],
                 paneID: fields[3]
             )
+        }
+
+        throw WorkbenchV2TerminalNavigationError.renderedClientUnavailable(
+            sessionName: "",
+            clientTTY: expectedClientTTY,
+            output: output
+        )
+    }
+
+    static func parseClientName(
+        output: String,
+        expectedClientTTY: String
+    ) throws -> String {
+        for line in output.split(separator: "\n") {
+            let fields = line.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+            guard fields.count == 2 else { continue }
+            guard fields[1] == expectedClientTTY else { continue }
+            guard fields[0].isEmpty == false else { continue }
+            return fields[0]
         }
 
         throw WorkbenchV2TerminalNavigationError.renderedClientUnavailable(
