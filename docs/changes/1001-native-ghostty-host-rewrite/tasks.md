@@ -28,6 +28,8 @@
   trials
 - [x] ignore blank persisted pane refs when deriving next-host visible-pane
   identity at startup
+- [x] let next-host persisted local terminal tiles attach during bootstrap
+  before the first inventory sync completes
 - [x] keep the rewrite branch full UI suite green while `next` host work is in
   flight
 - [ ] realistic loaded live-pane parity gate for the next host

@@ -99,6 +99,60 @@ final class TerminalHostModeTests: XCTestCase {
         XCTAssertEqual(trimmed, ["pane-b", "pane-c", "pane-d", "pane-e"])
     }
 
+    func testBootstrapRenderPolicyAllowsNextHostLocalTerminalWithResolvedAttachPlan() {
+        let attachPlan = WorkbenchV2TerminalAttachPlan(
+            command: "tmux attach-session -t main",
+            surfaceKey: "local:main:%0",
+            transport: .local,
+            displayTarget: "local"
+        )
+
+        XCTAssertTrue(
+            WorkbenchTerminalBootstrapRenderPolicy.shouldRenderSurface(
+                terminalState: .bootstrapping,
+                attachResolution: .success(attachPlan),
+                sessionTarget: .local,
+                terminalHostMode: .next
+            )
+        )
+    }
+
+    func testBootstrapRenderPolicyKeepsLegacyHostAndRemoteBootstrapsDeferred() {
+        let attachPlan = WorkbenchV2TerminalAttachPlan(
+            command: "tmux attach-session -t main",
+            surfaceKey: "local:main:%0",
+            transport: .local,
+            displayTarget: "local"
+        )
+
+        XCTAssertFalse(
+            WorkbenchTerminalBootstrapRenderPolicy.shouldRenderSurface(
+                terminalState: .bootstrapping,
+                attachResolution: .success(attachPlan),
+                sessionTarget: .local,
+                terminalHostMode: .legacy
+            )
+        )
+
+        XCTAssertFalse(
+            WorkbenchTerminalBootstrapRenderPolicy.shouldRenderSurface(
+                terminalState: .bootstrapping,
+                attachResolution: .success(attachPlan),
+                sessionTarget: .remote(hostKey: "prod"),
+                terminalHostMode: .next
+            )
+        )
+
+        XCTAssertFalse(
+            WorkbenchTerminalBootstrapRenderPolicy.shouldRenderSurface(
+                terminalState: .ready,
+                attachResolution: .success(attachPlan),
+                sessionTarget: .local,
+                terminalHostMode: .next
+            )
+        )
+    }
+
     @MainActor
     func testRuntimeOverrideWinsOverEnvironmentUntilCleared() {
         let defaults = UserDefaults.standard

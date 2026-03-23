@@ -67,6 +67,12 @@ Unchanged in this wave:
 - runtime selection is no longer launch-env only; the app also honors the
   `TerminalHostMode` user default so rewrite-branch installs can be switched to
   `next` without changing the default branch behavior
+- startup bootstrap no longer blocks persisted local terminal tiles from
+  drawing in `next`:
+  - during the pre-inventory `bootstrapping` state, `next` can optimistically
+    render a local terminal tile if its persisted attach plan already resolves
+  - this keeps startup pane visibility moving forward without changing the
+    broken-state semantics that still wait for inventory truth
 
 ## Failure Modes
 

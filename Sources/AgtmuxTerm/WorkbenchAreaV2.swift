@@ -211,6 +211,21 @@ enum WorkbenchTerminalAttachPlanFreezeIdentity {
     }
 }
 
+enum WorkbenchTerminalBootstrapRenderPolicy {
+    static func shouldRenderSurface(
+        terminalState: WorkbenchV2TerminalTileState,
+        attachResolution: Result<WorkbenchV2TerminalAttachPlan, WorkbenchV2TerminalAttachError>,
+        sessionTarget: TargetRef,
+        terminalHostMode: TerminalHostMode
+    ) -> Bool {
+        guard case .bootstrapping = terminalState else { return false }
+        guard terminalHostMode == .next else { return false }
+        guard case .local = sessionTarget else { return false }
+        guard case .success = attachResolution else { return false }
+        return true
+    }
+}
+
 private struct WorkbenchTileViewV2: View {
     let workbenchID: UUID
     let tile: WorkbenchTile
@@ -397,6 +412,15 @@ private struct WorkbenchTerminalTileViewV2: View {
         activePaneRuntimeContext?.focusRequestNonce ?? 0
     }
 
+    private var shouldOptimisticallyRenderSurfaceDuringBootstrap: Bool {
+        WorkbenchTerminalBootstrapRenderPolicy.shouldRenderSurface(
+            terminalState: terminalState,
+            attachResolution: attachResolution,
+            sessionTarget: sessionRef.target,
+            terminalHostMode: terminalHostMode
+        )
+    }
+
     var body: some View {
         ZStack(alignment: .topLeading) {
             tileBackground
@@ -480,14 +504,18 @@ private struct WorkbenchTerminalTileViewV2: View {
     private var terminalBody: some View {
         switch terminalState {
         case .bootstrapping:
-            LinearGradient(
-                colors: [
-                    Color.white.opacity(0.04),
-                    Color.black.opacity(0.18)
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
+            if shouldOptimisticallyRenderSurfaceDuringBootstrap {
+                optimisticTerminalHostBody
+            } else {
+                LinearGradient(
+                    colors: [
+                        Color.white.opacity(0.04),
+                        Color.black.opacity(0.18)
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            }
 
         case .broken:
             LinearGradient(
@@ -539,6 +567,41 @@ private struct WorkbenchTerminalTileViewV2: View {
                     endPoint: .bottomTrailing
                 )
             }
+        }
+    }
+
+    @ViewBuilder
+    private var optimisticTerminalHostBody: some View {
+        switch attachResolution {
+        case .success(let plan):
+            if !rendersGhosttySurface {
+                Color.clear
+            } else {
+                TerminalHostContainer(
+                    mode: terminalHostMode,
+                    model: TerminalHostRenderModel(
+                        surfaceID: tile.id,
+                        poolKey: plan.surfaceKey,
+                        attachCommand: plan.command,
+                        surfaceContext: GhosttyTerminalSurfaceContext(
+                            workbenchID: workbenchID,
+                            tileID: tile.id,
+                            surfaceKey: plan.surfaceKey,
+                            sessionRef: sessionRef,
+                            terminalHostMode: terminalHostMode
+                        ),
+                        visiblePaneIdentity: visiblePaneIdentity,
+                        isFocused: isFocused,
+                        focusRestoreNonce: focusRestoreNonce
+                    )
+                )
+                .id(TerminalHostContainer.hostViewIdentity(
+                    surfaceID: tile.id,
+                    mode: terminalHostMode
+                ))
+            }
+        case .failure:
+            Color.clear
         }
     }
 

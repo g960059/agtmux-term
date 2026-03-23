@@ -138,6 +138,13 @@ Current state:
   - startup mounts therefore stay on the tile-fallback controller until live
     pane observation resolves an actual pane target, instead of creating a
     pane-keyed child from an invalid blank identity
+  - persisted local terminal tiles in `next` no longer stay blank until the
+    first inventory sync completes:
+    - while the tile is still in `bootstrapping`, `next` now allows an
+      optimistic local attach when the persisted attach plan already resolves
+    - a fresh rewrite build now shows the persisted startup tile's rendered
+      target and viewport text at `T0`, before `activePaneSelection` becomes
+      queryable through the bridge
 - the rewrite branch now keeps the existing UI safety net green while `next`
   host work continues:
   - the full `AgtmuxTermUITests` suite currently passes on this branch at
