@@ -1058,6 +1058,57 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
     }
 
     @MainActor
+    func testHandleActionRenderForNextHostAlternateScrollBypassesDirectDrawScheduler() async {
+        SurfacePool.shared.resetForTesting()
+        defer { SurfacePool.shared.resetForTesting() }
+        GhosttyApp.resetSurfaceDrawTelemetryForTesting()
+        defer { GhosttyApp.resetSurfaceDrawTelemetryForTesting() }
+
+        let view = GhosttyTerminalViewDrawSpy()
+        view.setTerminalHostMode(.next)
+        let handle = GhosttySurfaceHandle(rawValue: 0x628)
+        var scheduledDirectDraws = 0
+
+        await GhosttyApp.withTestDirectDrawScheduleObserver({
+            scheduledDirectDraws += 1
+        }) {
+            SurfacePool.shared.register(
+                view: view,
+                leafID: UUID(),
+                tmuxPaneID: "%27",
+                surfaceHandle: handle
+            )
+
+            GhosttyApp.runDirtyDrawPassForTesting()
+            view.resetDrawTracking()
+            scheduledDirectDraws = 0
+            view.setRendererOwnedRenderCallbackEligibilityForTesting(
+                usesAlternateScroll: true,
+                precision: true,
+                verticalDelta: 10,
+                now: ProcessInfo.processInfo.systemUptime
+            )
+
+            XCTAssertTrue(
+                GhosttyApp.handleAction(
+                    nil,
+                    target: makeSurfaceTarget(handle),
+                    action: makeRenderAction()
+                )
+            )
+
+            let drew = await waitUntil {
+                view.triggerDrawCallCount == 1
+            }
+            XCTAssertTrue(drew)
+            XCTAssertEqual(scheduledDirectDraws, 0)
+
+            GhosttyApp.runDirtyDrawPassForTesting()
+            XCTAssertEqual(view.triggerDrawCallCount, 1)
+        }
+    }
+
+    @MainActor
     func testHandleActionRenderDuringTickDoesNotScheduleFollowUpTick() {
         SurfacePool.shared.resetForTesting()
         defer { SurfacePool.shared.resetForTesting() }

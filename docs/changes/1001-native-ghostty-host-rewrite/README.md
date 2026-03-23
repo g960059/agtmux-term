@@ -148,10 +148,22 @@ Current state:
   - `next` host now also keeps recent precise normal-screen render callbacks on
     the renderer-owned refresh path instead of feeding them back into the
     legacy direct-draw scheduler
+  - the same renderer-owned callback fast path now also covers recent precise
+    alternate-scroll bursts on `next`, so the deterministic loaded-TUI gate no
+    longer special-cases them back onto the legacy direct-draw scheduler
   - the deterministic loaded-TUI parity gate currently passes with this phase-3
     wiring; a fresh `--iterations 2` run recorded median
     `first_changed_elapsed_delta_ms = -18.8639`, with zero
     `islandRetryCountDelta` and zero `islandApplyCommandCountDelta`
+  - after broadening the render-callback fast path and hardening bridge command
+    delivery, a fresh `--iterations 3` deterministic parity run still passed
+    with median `first_changed_elapsed_delta_ms = +0.0699`,
+    `scrollFirstInputElapsedDeltaMs = +5.2475`, and
+    `scrollToLayerPresentP50DeltaMs = -5.8036`
+  - the same hardening removed a real live-wrapper blocker:
+    `refreshInventory` bridge commands are now emitted as JSON booleans via
+    atomic command-file swaps, so the bridge no longer spins on
+    `invalid-request-payload` during rewrite diagnostics
   - runtime host-mode selection now also honors the app default
     `TerminalHostMode`, so an installed rewrite-branch build can be switched to
     `next` without launch-time env injection

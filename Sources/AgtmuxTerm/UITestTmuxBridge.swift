@@ -433,22 +433,32 @@ final class UITestTmuxBridge {
         }
         uiTestBridgeDebugLog("startCommandLoopIfNeeded commandURL=\(commandURL.path) responseURL=\(responseURL.path)")
 
-        commandLoopTask = Task { [weak self] in
+        commandLoopTask = Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
 
             let decoder = JSONDecoder()
             let encoder = JSONEncoder()
             var lastCommandID: String?
+            var idlePollCount = 0
 
             while !Task.isCancelled {
                 guard let data = try? Data(contentsOf: commandURL), !data.isEmpty else {
+                    idlePollCount += 1
+                    if idlePollCount.isMultiple(of: 50) {
+                        uiTestBridgeDebugLog("commandLoop idle waiting-for-command")
+                    }
                     try? await Task.sleep(for: .milliseconds(80))
                     continue
                 }
                 guard let request = try? decoder.decode(CommandRequest.self, from: data) else {
+                    idlePollCount += 1
+                    if idlePollCount.isMultiple(of: 50) {
+                        uiTestBridgeDebugLog("commandLoop idle invalid-request-payload")
+                    }
                     try? await Task.sleep(for: .milliseconds(80))
                     continue
                 }
+                idlePollCount = 0
                 uiTestBridgeDebugLog("commandLoop request id=\(request.id) args=\(request.args)")
                 if request.id == lastCommandID {
                     try? await Task.sleep(for: .milliseconds(80))
@@ -469,16 +479,11 @@ final class UITestTmuxBridge {
                     do {
                         let stdout = try await TmuxCommandRunner.shared.run(request.args, source: "local")
                         if request.refreshInventory ?? true {
-                            await viewModel.fetchAll()
+                            await self.viewModel.fetchAll()
                         }
                         response = CommandResponse(id: request.id, ok: true, stdout: stdout, error: nil)
 
-                        if let session = sessionNameFromNewSessionArgs(request.args) {
-                            createdSessions.insert(session)
-                        }
-                        if let killedSession = sessionNameFromKillSessionArgs(request.args) {
-                            createdSessions.remove(killedSession)
-                        }
+                        await self.recordCommandLoopSessionSideEffects(for: request.args)
                     } catch {
                         response = CommandResponse(
                             id: request.id,
@@ -496,6 +501,15 @@ final class UITestTmuxBridge {
 
                 try? await Task.sleep(for: .milliseconds(80))
             }
+        }
+    }
+
+    private func recordCommandLoopSessionSideEffects(for args: [String]) {
+        if let session = sessionNameFromNewSessionArgs(args) {
+            createdSessions.insert(session)
+        }
+        if let killedSession = sessionNameFromKillSessionArgs(args) {
+            createdSessions.remove(killedSession)
         }
     }
 
@@ -567,7 +581,7 @@ final class UITestTmuxBridge {
                 let data = try JSONEncoder().encode(snapshot)
                 stdout = String(decoding: data, as: UTF8.self)
             case setTerminalHostModeCommand:
-                let mode = try setTerminalHostMode(request.args)
+                let mode = try await setTerminalHostMode(request.args)
                 stdout = mode.rawValue
             case sendTmuxNextPaneKeysCommand:
                 try sendTmuxNextPaneKeys(request.args)
@@ -893,7 +907,7 @@ final class UITestTmuxBridge {
         )
     }
 
-    private func setTerminalHostMode(_ args: [String]) throws -> TerminalHostMode {
+    private func setTerminalHostMode(_ args: [String]) async throws -> TerminalHostMode {
         guard args.count >= 2 else {
             throw NSError(
                 domain: "UITestTmuxBridge",
@@ -902,6 +916,7 @@ final class UITestTmuxBridge {
             )
         }
 
+        let priorMode = terminalHostMode
         let rawValue = args[1].trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         switch rawValue {
         case "default", "clear", "reset":
@@ -915,6 +930,12 @@ final class UITestTmuxBridge {
                 )
             }
             TerminalHostModeRuntime.shared.setOverride(mode)
+        }
+        if terminalHostMode != priorMode {
+            // Let the host-mode remount settle before the next bridge command tries to
+            // resolve a pane or viewport from the freshly switched terminal subtree.
+            await viewModel.fetchAll()
+            try? await Task.sleep(for: .milliseconds(250))
         }
         return terminalHostMode
     }

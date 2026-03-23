@@ -1915,14 +1915,13 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
 
     @MainActor
     private func updateRendererOwnedRenderCallbackEligibility(
-        usesAlternateScroll: Bool,
+        usesAlternateScroll _: Bool,
         precision: Bool,
         verticalDelta: Double,
         now: TimeInterval
     ) {
         guard scrollCadenceMode == .ghosttyOwned,
               precision,
-              usesAlternateScroll == false,
               abs(verticalDelta) > Self.scrollDirectionFlipEpsilon
         else {
             rendererOwnedRenderCallbackEligibleUntilUptime = nil

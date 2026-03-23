@@ -88,10 +88,22 @@ Durable findings:
     - recent precise normal-screen render callbacks on `next` now stay on the
       renderer-owned refresh path instead of re-entering the direct-draw
       scheduler
+    - recent precise alternate-scroll bursts on `next` now stay on that same
+      renderer-owned render-callback fast path, instead of falling back to the
+      legacy direct-draw scheduler
     - a fresh `--iterations 2` deterministic parity run passed with median
       `first_changed_elapsed_delta_ms = -18.8639`
     - the same run still showed zero `islandRetryCountDelta` and zero
       `islandApplyCommandCountDelta`
+    - after widening the fast path and fixing bridge command serialization, a
+      fresh `--iterations 3` deterministic parity run still passed with median
+      `first_changed_elapsed_delta_ms = +0.0699`,
+      `scrollFirstInputElapsedDeltaMs = +5.2475`, and
+      `scrollToLayerPresentP50DeltaMs = -5.8036`
+    - the bridge/harness fix was real root-cause work, not noise reduction:
+      `refreshInventory` had been emitted as numeric JSON in some live-wrapper
+      commands, which caused `CommandRequest` decode failures and surfaced as
+      repeated `invalid-request-payload` idle loops
   - durable conclusion: phase-3 next-host cadence wiring is at least not a
     regression on the deterministic gate and is ready for installed-app trials
 

@@ -25,6 +25,7 @@ scroll_pixels_per_event="${AGTMUX_PERF_UPSTEP_PIXELS_PER_EVENT:-10}"
 scroll_interval_ms="${AGTMUX_PERF_UPSTEP_SCROLL_INTERVAL_MS:-8}"
 sample_interval_ms="${AGTMUX_PERF_UPSTEP_SAMPLE_INTERVAL_MS:-16}"
 sample_tail_ms="${AGTMUX_PERF_UPSTEP_SAMPLE_TAIL_MS:-180}"
+scroll_phase_mode="${AGTMUX_PERF_UPSTEP_PHASE_MODE:-trackpad-burst-momentum}"
 scroll_x_frac="${AGTMUX_PERF_SCROLL_X_FRAC:-0.5}"
 scroll_y_frac="${AGTMUX_PERF_SCROLL_Y_FRAC:-0.5}"
 use_scroll_identifier="${AGTMUX_PERF_LIVE_USE_SCROLL_IDENTIFIER:-1}"
@@ -34,6 +35,7 @@ frontmost_timeout_ms="${AGTMUX_PERF_LIVE_FRONTMOST_TIMEOUT_MS:-20000}"
 open_retry_count="${AGTMUX_PERF_LIVE_OPEN_RETRY_COUNT:-3}"
 open_retry_sleep_ms="${AGTMUX_PERF_LIVE_OPEN_RETRY_SLEEP_MS:-400}"
 refresh_inventory_before_open="${AGTMUX_PERF_LIVE_REFRESH_INVENTORY_BEFORE_OPEN:-0}"
+skip_bridge_host_mode_set="${AGTMUX_PERF_LIVE_SKIP_BRIDGE_HOST_MODE_SET:-0}"
 agtmux_cli_bin="${AGTMUX_PERF_AGTMUX_BIN:-${AGTMUX_BIN:-$GATE_L_ROOT/../agtmux/target/release/agtmux}}"
 switch_to_host_mode="${AGTMUX_PERF_LIVE_SWITCH_TO_HOST_MODE:-}"
 reprime_after_switch="${AGTMUX_PERF_LIVE_REPRIME_AFTER_SWITCH:-0}"
@@ -658,10 +660,14 @@ gate_l_launch_app_without_bootstrap "agtmux-gate-l-$token" 0
 gate_l_wait_for_bridge_ready "$settle_timeout"
 gate_l_activate_app
 mark_stage app-ready
-initial_runtime_host_mode="$(gate_l_send_bridge_command false 10 "__agtmux_set_terminal_host_mode__" "$host_mode")"
-if [[ "$initial_runtime_host_mode" != "$host_mode" ]]; then
-  echo "Bridge reported unexpected initial host mode: expected=$host_mode got=$initial_runtime_host_mode" >&2
-  exit 1
+if [[ "$skip_bridge_host_mode_set" == "1" ]]; then
+  initial_runtime_host_mode="$host_mode"
+else
+  initial_runtime_host_mode="$(gate_l_send_bridge_command false 10 "__agtmux_set_terminal_host_mode__" "$host_mode")"
+  if [[ "$initial_runtime_host_mode" != "$host_mode" ]]; then
+    echo "Bridge reported unexpected initial host mode: expected=$host_mode got=$initial_runtime_host_mode" >&2
+    exit 1
+  fi
 fi
 sleep_ms "$focus_settle_ms"
 mark_stage host-mode-set
@@ -855,7 +861,9 @@ fi
 mark_stage viewport-primed
 
 initial_summary_path="$(measure_live_scroll_burst "initial" "$tile_id" "$terminal_ax_identifier" "initial")"
-cp "$initial_summary_path" "$initial_summary_json_path"
+if [[ "$initial_summary_path" != "$initial_summary_json_path" ]]; then
+  cp "$initial_summary_path" "$initial_summary_json_path"
+fi
 
 if [[ -n "$switch_to_host_mode" ]]; then
   mark_stage switch-host-mode-start
@@ -899,7 +907,9 @@ if [[ -n "$switch_to_host_mode" ]]; then
     mark_stage viewport-reprimed
   fi
   switched_summary_path="$(measure_live_scroll_burst "switched" "$tile_id" "$terminal_ax_identifier" "switched")"
-  cp "$switched_summary_path" "$switched_summary_json_path"
+  if [[ "$switched_summary_path" != "$switched_summary_json_path" ]]; then
+    cp "$switched_summary_path" "$switched_summary_json_path"
+  fi
   mark_stage switch-host-mode-done
 fi
 

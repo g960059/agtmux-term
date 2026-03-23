@@ -56,6 +56,7 @@ function gate_l_clear_bridge_defaults() {
 
 function gate_l_launch_app_via_bundle() {
   local app_bundle=""
+  local disable_app_state_restore="${AGTMUX_PERF_DISABLE_APP_STATE_RESTORE:-1}"
   app_bundle="$(gate_l_app_bundle_path)" || {
     echo "Cannot derive app bundle path from GATE_L_APP_BIN: $GATE_L_APP_BIN" >&2
     return 1
@@ -72,7 +73,11 @@ function gate_l_launch_app_via_bundle() {
     sleep 0.1
   done
   before="$(pgrep -f "$app_exec" || true)"
-  open -na "$app_bundle" >/dev/null
+  if [[ "$disable_app_state_restore" == "1" ]]; then
+    open -na "$app_bundle" --args -ApplePersistenceIgnoreState YES -NSQuitAlwaysKeepsWindows NO >/dev/null
+  else
+    open -na "$app_bundle" >/dev/null
+  fi
 
   local deadline=$((EPOCHREALTIME + 15))
   while (( EPOCHREALTIME < deadline )); do
@@ -406,15 +411,22 @@ function gate_l_send_bridge_command() {
   shift 2
 
   local request_id
+  local tmp_command_path
+  local refresh_json="false"
   request_id="$(uuidgen)"
+  tmp_command_path="${gate_l_command_path}.tmp.$$"
+  if [[ "$refresh" == "1" || "$refresh" == "true" ]]; then
+    refresh_json="true"
+  fi
 
   rm -f "$gate_l_command_path" "$gate_l_command_result_path"
   jq -n \
     --arg id "$request_id" \
-    --argjson refresh "$refresh" \
+    --argjson refresh "$refresh_json" \
     '{id:$id, args:$ARGS.positional, refreshInventory:$refresh}' \
     --args -- "$@" \
-    >"$gate_l_command_path"
+    >"$tmp_command_path"
+  mv "$tmp_command_path" "$gate_l_command_path"
 
   local deadline=$((EPOCHREALTIME + timeout))
   while (( EPOCHREALTIME < deadline )); do
@@ -464,15 +476,22 @@ function gate_l_start_async_bridge_command() {
   shift
 
   local request_id
+  local tmp_command_path
+  local refresh_json="false"
   request_id="$(uuidgen)"
+  tmp_command_path="${gate_l_command_path}.tmp.$$"
+  if [[ "$refresh" == "1" || "$refresh" == "true" ]]; then
+    refresh_json="true"
+  fi
 
   rm -f "$gate_l_command_path" "$gate_l_command_result_path"
   jq -n \
     --arg id "$request_id" \
-    --argjson refresh "$refresh" \
+    --argjson refresh "$refresh_json" \
     '{id:$id, args:$ARGS.positional, refreshInventory:$refresh}' \
     --args -- "$@" \
-    >"$gate_l_command_path"
+    >"$tmp_command_path"
+  mv "$tmp_command_path" "$gate_l_command_path"
 
   print -r -- "$request_id"
 }
