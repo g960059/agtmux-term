@@ -23,7 +23,23 @@ import Darwin
 /// The XCUITest runner bundle has `com.apple.security.app-sandbox = true`.
 /// The app itself has App Sandbox disabled (tmux / daemon socket access).
 final class AgtmuxTermUITests: XCTestCase {
+    private struct LiveRunningScrollConfig: Decodable {
+        let attachRunningApp: Bool?
+        let terminalIdentifier: String?
+        let bundleIdentifier: String?
+        let repeatCount: Int?
+        let intervalMilliseconds: Int?
+        let deltaX: Double?
+        let deltaY: Double?
+        let xFraction: Double?
+        let yFraction: Double?
+        let readyPath: String?
+        let goPath: String?
+        let goTimeoutMilliseconds: Int?
+    }
+
     private static let allowLockedSessionSentinelPath = "/tmp/agtmux-uitest-allow-locked-session"
+    private static let liveRunningScrollConfigPath = "/tmp/agtmux-live-ui-scroll-config.json"
     private static let appTmuxBridgeReadyCommand = "__agtmux_tmux_bridge_ready__"
     private static let activeDocumentTileCommand = "__agtmux_dump_active_document_tile__"
     private static let replaceFocusedTextCommand = "__agtmux_replace_focused_text__"
@@ -3975,5 +3991,232 @@ final class AgtmuxTermUITests: XCTestCase {
         }
         env["PATH"] = mergedSegments.joined(separator: ":")
         return env
+    }
+
+    func testRunningAppTrackpadScrollBurst() throws {
+        let env = ProcessInfo.processInfo.environment
+        let config = loadLiveRunningScrollConfig()
+        guard env["AGTMUX_UI_ATTACH_RUNNING_APP"] == "1" || config?.attachRunningApp == true else {
+            throw XCTSkip("Set AGTMUX_UI_ATTACH_RUNNING_APP=1 to enable the live same-running scroll test.")
+        }
+
+        // This test attaches to an already-running app instance; avoid terminating it in tearDown.
+        app = nil
+
+        let terminalIdentifier = try XCTUnwrap(
+            env["AGTMUX_UI_SCROLL_IDENTIFIER"] ?? config?.terminalIdentifier,
+            "AGTMUX_UI_SCROLL_IDENTIFIER is required."
+        )
+        let bundleIdentifier = env["AGTMUX_UI_ATTACH_BUNDLE_ID"]
+            ?? config?.bundleIdentifier
+            ?? "com.g960059.agtmux.term"
+        let repeatCount = max(
+            1,
+            Int(env["AGTMUX_UI_SCROLL_REPEAT"] ?? "") ?? config?.repeatCount ?? 24
+        )
+        let intervalMilliseconds = max(
+            0,
+            Int(env["AGTMUX_UI_SCROLL_INTERVAL_MS"] ?? "") ?? config?.intervalMilliseconds ?? 8
+        )
+        let deltaX = CGFloat(
+            Double(env["AGTMUX_UI_SCROLL_DELTA_X"] ?? "") ?? config?.deltaX ?? 0
+        )
+        let deltaY = CGFloat(
+            Double(env["AGTMUX_UI_SCROLL_DELTA_Y"] ?? "") ?? config?.deltaY ?? -10
+        )
+        let xFraction = CGFloat(
+            Double(env["AGTMUX_UI_SCROLL_X_FRAC"] ?? "") ?? config?.xFraction ?? 0.5
+        )
+        let yFraction = CGFloat(
+            Double(env["AGTMUX_UI_SCROLL_Y_FRAC"] ?? "") ?? config?.yFraction ?? 0.5
+        )
+        let readyPath = env["AGTMUX_UI_SCROLL_READY_PATH"] ?? config?.readyPath
+        let goPath = env["AGTMUX_UI_SCROLL_GO_PATH"] ?? config?.goPath
+        let goTimeoutMilliseconds = max(
+            1,
+            Int(env["AGTMUX_UI_SCROLL_GO_TIMEOUT_MS"] ?? "") ?? config?.goTimeoutMilliseconds ?? 20_000
+        )
+
+        let runningApp = XCUIApplication(bundleIdentifier: bundleIdentifier)
+        runningApp.activate()
+
+        let terminal = runningApp.descendants(matching: .any)
+            .matching(identifier: terminalIdentifier)
+            .firstMatch
+        XCTAssertTrue(
+            terminal.waitForExistence(timeout: 20),
+            "Terminal host did not appear for identifier \(terminalIdentifier)"
+        )
+
+        let target = terminal.coordinate(withNormalizedOffset: CGVector(dx: xFraction, dy: yFraction))
+        target.click()
+
+        if let readyPath, readyPath.isEmpty == false {
+            let readyURL = URL(fileURLWithPath: readyPath)
+            try? FileManager.default.removeItem(at: readyURL)
+            let payload = """
+            {"ready":true,"terminalIdentifier":"\(terminalIdentifier)"}
+            """
+            try Data(payload.utf8).write(to: readyURL, options: .atomic)
+        }
+
+        if let goPath, goPath.isEmpty == false {
+            let goURL = URL(fileURLWithPath: goPath)
+            let deadline = Date().addingTimeInterval(Double(goTimeoutMilliseconds) / 1000.0)
+            while Date() < deadline {
+                if FileManager.default.fileExists(atPath: goURL.path) {
+                    break
+                }
+                RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+            }
+            XCTAssertTrue(
+                FileManager.default.fileExists(atPath: goURL.path),
+                "Timed out waiting for go signal at \(goURL.path)"
+            )
+        }
+
+        for index in 0..<repeatCount {
+            target.scroll(byDeltaX: deltaX, deltaY: deltaY)
+            if index + 1 < repeatCount, intervalMilliseconds > 0 {
+                usleep(useconds_t(intervalMilliseconds * 1_000))
+            }
+        }
+    }
+
+    private func loadLiveRunningScrollConfig() -> LiveRunningScrollConfig? {
+        let env = ProcessInfo.processInfo.environment
+        let configPath = env["AGTMUX_UI_SCROLL_CONFIG_PATH"] ?? Self.liveRunningScrollConfigPath
+        guard let data = FileManager.default.contents(atPath: configPath) else {
+            return nil
+        }
+        return try? JSONDecoder().decode(LiveRunningScrollConfig.self, from: data)
+    }
+}
+
+final class LiveRunningAppScrollUITests: XCTestCase {
+    private struct Config: Decodable {
+        let attachRunningApp: Bool?
+        let terminalIdentifier: String?
+        let bundleIdentifier: String?
+        let repeatCount: Int?
+        let intervalMilliseconds: Int?
+        let deltaX: Double?
+        let deltaY: Double?
+        let xFraction: Double?
+        let yFraction: Double?
+        let readyPath: String?
+        let goPath: String?
+        let goTimeoutMilliseconds: Int?
+    }
+
+    private static let configPath = "/tmp/agtmux-live-ui-scroll-config.json"
+
+    override func setUpWithError() throws {
+        continueAfterFailure = false
+
+        let env = ProcessInfo.processInfo.environment
+        if env["SSH_CONNECTION"] != nil, env["AGTMUX_UITEST_ALLOW_SSH"] != "1" {
+            throw XCTSkip(
+                "XCUITest needs an interactive console session. " +
+                "Current runner is an SSH session. " +
+                "Set AGTMUX_UITEST_ALLOW_SSH=1 to force-run."
+            )
+        }
+    }
+
+    func testTrackpadScrollBurstAgainstRunningApp() throws {
+        let env = ProcessInfo.processInfo.environment
+        let config = loadConfig()
+        guard env["AGTMUX_UI_ATTACH_RUNNING_APP"] == "1" || config?.attachRunningApp == true else {
+            throw XCTSkip("Set AGTMUX_UI_ATTACH_RUNNING_APP=1 to enable the live same-running scroll test.")
+        }
+
+        let terminalIdentifier = try XCTUnwrap(
+            env["AGTMUX_UI_SCROLL_IDENTIFIER"] ?? config?.terminalIdentifier,
+            "AGTMUX_UI_SCROLL_IDENTIFIER is required."
+        )
+        let bundleIdentifier = env["AGTMUX_UI_ATTACH_BUNDLE_ID"]
+            ?? config?.bundleIdentifier
+            ?? "com.g960059.agtmux.term"
+        let repeatCount = max(
+            1,
+            Int(env["AGTMUX_UI_SCROLL_REPEAT"] ?? "") ?? config?.repeatCount ?? 24
+        )
+        let intervalMilliseconds = max(
+            0,
+            Int(env["AGTMUX_UI_SCROLL_INTERVAL_MS"] ?? "") ?? config?.intervalMilliseconds ?? 8
+        )
+        let deltaX = CGFloat(
+            Double(env["AGTMUX_UI_SCROLL_DELTA_X"] ?? "") ?? config?.deltaX ?? 0
+        )
+        let deltaY = CGFloat(
+            Double(env["AGTMUX_UI_SCROLL_DELTA_Y"] ?? "") ?? config?.deltaY ?? -10
+        )
+        let xFraction = CGFloat(
+            Double(env["AGTMUX_UI_SCROLL_X_FRAC"] ?? "") ?? config?.xFraction ?? 0.5
+        )
+        let yFraction = CGFloat(
+            Double(env["AGTMUX_UI_SCROLL_Y_FRAC"] ?? "") ?? config?.yFraction ?? 0.5
+        )
+        let readyPath = env["AGTMUX_UI_SCROLL_READY_PATH"] ?? config?.readyPath
+        let goPath = env["AGTMUX_UI_SCROLL_GO_PATH"] ?? config?.goPath
+        let goTimeoutMilliseconds = max(
+            1,
+            Int(env["AGTMUX_UI_SCROLL_GO_TIMEOUT_MS"] ?? "") ?? config?.goTimeoutMilliseconds ?? 20_000
+        )
+
+        let runningApp = XCUIApplication(bundleIdentifier: bundleIdentifier)
+        runningApp.activate()
+
+        let terminal = runningApp.descendants(matching: .any)
+            .matching(identifier: terminalIdentifier)
+            .firstMatch
+        XCTAssertTrue(
+            terminal.waitForExistence(timeout: 20),
+            "Terminal host did not appear for identifier \(terminalIdentifier)"
+        )
+
+        let target = terminal.coordinate(withNormalizedOffset: CGVector(dx: xFraction, dy: yFraction))
+        target.click()
+
+        if let readyPath, readyPath.isEmpty == false {
+            let readyURL = URL(fileURLWithPath: readyPath)
+            try? FileManager.default.removeItem(at: readyURL)
+            let payload = """
+            {"ready":true,"terminalIdentifier":"\(terminalIdentifier)"}
+            """
+            try Data(payload.utf8).write(to: readyURL, options: .atomic)
+        }
+
+        if let goPath, goPath.isEmpty == false {
+            let goURL = URL(fileURLWithPath: goPath)
+            let deadline = Date().addingTimeInterval(Double(goTimeoutMilliseconds) / 1000.0)
+            while Date() < deadline {
+                if FileManager.default.fileExists(atPath: goURL.path) {
+                    break
+                }
+                RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+            }
+            XCTAssertTrue(
+                FileManager.default.fileExists(atPath: goURL.path),
+                "Timed out waiting for go signal at \(goURL.path)"
+            )
+        }
+
+        for index in 0..<repeatCount {
+            target.scroll(byDeltaX: deltaX, deltaY: deltaY)
+            if index + 1 < repeatCount, intervalMilliseconds > 0 {
+                usleep(useconds_t(intervalMilliseconds * 1_000))
+            }
+        }
+    }
+
+    private func loadConfig() -> Config? {
+        let env = ProcessInfo.processInfo.environment
+        let configPath = env["AGTMUX_UI_SCROLL_CONFIG_PATH"] ?? Self.configPath
+        guard let data = FileManager.default.contents(atPath: configPath) else {
+            return nil
+        }
+        return try? JSONDecoder().decode(Config.self, from: data)
     }
 }

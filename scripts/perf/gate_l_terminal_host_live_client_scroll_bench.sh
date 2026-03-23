@@ -42,9 +42,27 @@ agtmux_cli_bin="${AGTMUX_PERF_AGTMUX_BIN:-${AGTMUX_BIN:-$GATE_L_ROOT/../agtmux/t
 switch_to_host_mode="${AGTMUX_PERF_LIVE_SWITCH_TO_HOST_MODE:-}"
 reprime_after_switch="${AGTMUX_PERF_LIVE_REPRIME_AFTER_SWITCH:-0}"
 use_active_target="${AGTMUX_PERF_LIVE_USE_ACTIVE_TARGET:-0}"
+external_scroll_sender="${AGTMUX_PERF_LIVE_EXTERNAL_SCROLL_SENDER:-}"
+ui_scroll_ready_timeout_ms="${AGTMUX_PERF_LIVE_UI_SCROLL_READY_TIMEOUT_MS:-30000}"
+ui_scroll_derived_data_path="${AGTMUX_PERF_LIVE_UI_SCROLL_DERIVED_DATA_PATH:-$HOME/Library/Developer/Xcode/DerivedData/AgtmuxTerm-fceaqdlhjyreqtdcfsbnupqgkkjc}"
+ui_scroll_sender_lead_ms="${AGTMUX_PERF_LIVE_UI_SCROLL_LEAD_MS:-25000}"
+internal_measurement_retry_count="${AGTMUX_PERF_LIVE_INTERNAL_MEASUREMENT_RETRY_COUNT:-3}"
+internal_measurement_retry_sleep_ms="${AGTMUX_PERF_LIVE_INTERNAL_MEASUREMENT_RETRY_SLEEP_MS:-120}"
 
 if [[ "$attach_running_app" == "1" && -z "${AGTMUX_PERF_LIVE_USE_ACTIVE_TARGET:-}" ]]; then
   use_active_target=1
+fi
+
+if [[ "$attach_running_app" == "1" && -z "${AGTMUX_PERF_LIVE_USE_INTERNAL_SCROLL_MEASUREMENT:-}" ]]; then
+  use_internal_scroll_measurement=0
+fi
+
+if [[ -z "$external_scroll_sender" ]]; then
+  if [[ "$attach_running_app" == "1" ]]; then
+    external_scroll_sender="xcuitest"
+  else
+    external_scroll_sender="ax"
+  fi
 fi
 
 if [[ "$use_active_target" == "1" ]] && [[ -z "${AGTMUX_UITEST_ALLOW_SESSION_ONLY_OPEN_FALLBACK:-}" ]]; then
@@ -191,7 +209,9 @@ function viewport_sample_timeout() {
   local sample_count="$1"
   local interval_ms="$2"
   awk -v count="$sample_count" -v interval="$interval_ms" 'BEGIN {
-    printf "%.3f", ((count * interval) / 1000.0) + 5.0
+    timeout = ((count * interval) / 1000.0) + 10.0
+    if (timeout < 10.0) timeout = 10.0
+    printf "%.3f", timeout
   }'
 }
 
@@ -206,7 +226,7 @@ function wait_for_terminal_viewport_ready() {
   local deadline=$((EPOCHREALTIME + timeout))
 
   while (( EPOCHREALTIME < deadline )); do
-    if gate_l_send_bridge_json_command false 2 "__agtmux_dump_terminal_viewport_text__" "$tile_id" \
+    if gate_l_send_bridge_json_command false 8 "__agtmux_dump_terminal_viewport_text__" "$tile_id" \
       >/dev/null 2>"$gate_l_tmpdir/viewport-ready.last-error.log"; then
       return 0
     fi
@@ -327,6 +347,279 @@ function send_prime_scroll() {
   fi
 }
 
+xcuitest_scroll_sender_pid=""
+xcuitest_scroll_sender_config_path=""
+xcuitest_scroll_sender_log_path=""
+xcuitest_scroll_sender_result_bundle_path=""
+xcuitest_scroll_sender_status_path=""
+xcuitest_scroll_sender_repeat="0"
+xcuitest_scroll_sender_delta_y="0"
+xcuitest_scroll_sender_identifier=""
+xcuitest_scroll_sender_xctestrun_path=""
+
+function ensure_xcuitest_scroll_test_artifacts() {
+  if [[ -n "$xcuitest_scroll_sender_xctestrun_path" && -f "$xcuitest_scroll_sender_xctestrun_path" ]]; then
+    return 0
+  fi
+
+  local xctestrun_path=""
+  xctestrun_path="$(find "$ui_scroll_derived_data_path/Build/Products" -name 'AgtmuxTerm_*.xctestrun' -print -quit 2>/dev/null || true)"
+  if [[ -z "$xctestrun_path" || ! -f "$xctestrun_path" || "$GATE_L_ROOT/Tests/AgtmuxTermUITests/AgtmuxTermUITests.swift" -nt "$xctestrun_path" ]]; then
+    local build_log_path="$gate_l_tmpdir/ui-scroll-build-for-testing.log"
+    (
+      cd "$GATE_L_ROOT"
+      AGTMUX_UITEST_ALLOW_SSH=1 \
+      xcodebuild build-for-testing \
+        -project AgtmuxTerm.xcodeproj \
+        -scheme AgtmuxTerm \
+        -configuration Debug \
+        -destination 'platform=macOS' \
+        -parallel-testing-enabled NO \
+        -derivedDataPath "$ui_scroll_derived_data_path" \
+        CODE_SIGN_IDENTITY='-' \
+        CODE_SIGNING_REQUIRED=NO
+    ) >"$build_log_path" 2>&1
+    xctestrun_path="$(find "$ui_scroll_derived_data_path/Build/Products" -name 'AgtmuxTerm_*.xctestrun' -print -quit 2>/dev/null || true)"
+  fi
+
+  if [[ -z "$xctestrun_path" || ! -f "$xctestrun_path" ]]; then
+    echo "Failed to prepare XCUITest artifacts for running-app scroll sender" >&2
+    return 1
+  fi
+
+  xcuitest_scroll_sender_xctestrun_path="$xctestrun_path"
+}
+
+function launch_xcuitest_scroll_sender() {
+  local prefix="$1"
+  local terminal_ax_identifier="$2"
+  local repeat_count="$3"
+  local interval_ms="$4"
+  local delta_y="$5"
+
+  ensure_xcuitest_scroll_test_artifacts
+
+  xcuitest_scroll_sender_config_path="$gate_l_tmpdir/${prefix}-ui-scroll-config.json"
+  xcuitest_scroll_sender_log_path="$gate_l_tmpdir/${prefix}-ui-scroll-xcodebuild.log"
+  xcuitest_scroll_sender_result_bundle_path="$gate_l_tmpdir/${prefix}-ui-scroll.xcresult"
+  xcuitest_scroll_sender_status_path="$gate_l_tmpdir/${prefix}-ui-scroll-exit-status.txt"
+  xcuitest_scroll_sender_repeat="$repeat_count"
+  xcuitest_scroll_sender_delta_y="$delta_y"
+  xcuitest_scroll_sender_identifier="$terminal_ax_identifier"
+
+  rm -f "$xcuitest_scroll_sender_log_path" "$xcuitest_scroll_sender_status_path"
+  rm -rf "$xcuitest_scroll_sender_result_bundle_path"
+
+  jq -n \
+    --argjson attachRunningApp true \
+    --arg terminalIdentifier "$terminal_ax_identifier" \
+    --arg bundleIdentifier "com.g960059.agtmux.term" \
+    --argjson repeatCount "$repeat_count" \
+    --argjson intervalMilliseconds "$interval_ms" \
+    --argjson deltaX 0 \
+    --argjson deltaY "$delta_y" \
+    --argjson xFraction "$scroll_x_frac" \
+    --argjson yFraction "$scroll_y_frac" \
+    '{
+      attachRunningApp: $attachRunningApp,
+      terminalIdentifier: $terminalIdentifier,
+      bundleIdentifier: $bundleIdentifier,
+      repeatCount: $repeatCount,
+      intervalMilliseconds: $intervalMilliseconds,
+      deltaX: $deltaX,
+      deltaY: $deltaY,
+      xFraction: $xFraction,
+      yFraction: $yFraction
+    }' >"$xcuitest_scroll_sender_config_path"
+
+  xcuitest_scroll_sender_pid="$(
+    python3 - <<'PY' \
+      "$GATE_L_ROOT" \
+      "$xcuitest_scroll_sender_log_path" \
+      "$xcuitest_scroll_sender_status_path" \
+      "$xcuitest_scroll_sender_xctestrun_path" \
+      "$xcuitest_scroll_sender_result_bundle_path" \
+      "$xcuitest_scroll_sender_config_path"
+import os
+import subprocess
+import sys
+
+repo_root, log_path, status_path, xctestrun_path, result_bundle_path, config_path = sys.argv[1:]
+env = os.environ.copy()
+env["AGTMUX_UI_ATTACH_RUNNING_APP"] = "1"
+env["AGTMUX_UI_SCROLL_CONFIG_PATH"] = config_path
+env["AGTMUX_UITEST_ALLOW_SSH"] = "1"
+runner = [
+    sys.executable,
+    "-c",
+    """
+import os
+import subprocess
+import sys
+
+repo_root, log_path, status_path, xctestrun_path, result_bundle_path, config_path = sys.argv[1:]
+env = os.environ.copy()
+env["AGTMUX_UI_ATTACH_RUNNING_APP"] = "1"
+env["AGTMUX_UI_SCROLL_CONFIG_PATH"] = config_path
+env["AGTMUX_UITEST_ALLOW_SSH"] = "1"
+argv = [
+    "xcodebuild",
+    "test-without-building",
+    "-xctestrun", xctestrun_path,
+    "-destination", "platform=macOS",
+    "-only-testing:AgtmuxTermUITests/LiveRunningAppScrollUITests/testTrackpadScrollBurstAgainstRunningApp",
+    "-resultBundlePath", result_bundle_path,
+    "CODE_SIGN_IDENTITY=-",
+    "CODE_SIGNING_REQUIRED=NO",
+]
+with open(log_path, "wb") as log:
+    completed = subprocess.run(argv, cwd=repo_root, env=env, stdout=log, stderr=subprocess.STDOUT)
+with open(status_path, "w", encoding="utf-8") as handle:
+    handle.write(str(completed.returncode))
+""",
+    repo_root,
+    log_path,
+    status_path,
+    xctestrun_path,
+    result_bundle_path,
+    config_path,
+]
+with open(log_path, "ab"):
+    process = subprocess.Popen(
+        runner,
+        start_new_session=True,
+    )
+print(process.pid)
+PY
+  )"
+}
+
+function finalize_xcuitest_scroll_sender() {
+  local send_json_path="$1"
+  local exit_status=0
+  local deadline=$(( EPOCHREALTIME + 90 ))
+
+  while (( EPOCHREALTIME < deadline )); do
+    if [[ -f "$xcuitest_scroll_sender_status_path" ]]; then
+      exit_status="$(<"$xcuitest_scroll_sender_status_path")"
+      break
+    fi
+    if [[ -n "$xcuitest_scroll_sender_pid" ]] && ! kill -0 "$xcuitest_scroll_sender_pid" 2>/dev/null; then
+      break
+    fi
+    sleep 0.05
+  done
+
+  if [[ ! -f "$xcuitest_scroll_sender_status_path" ]]; then
+    exit_status=124
+  fi
+
+  jq -n \
+    --arg senderMode "xcuitest-running-app" \
+    --arg targetIdentifier "$xcuitest_scroll_sender_identifier" \
+    --arg logPath "$xcuitest_scroll_sender_log_path" \
+    --arg resultBundlePath "$xcuitest_scroll_sender_result_bundle_path" \
+    --arg configPath "$xcuitest_scroll_sender_config_path" \
+    --argjson repeatCount "$xcuitest_scroll_sender_repeat" \
+    --argjson deltaY "$xcuitest_scroll_sender_delta_y" \
+    --argjson exitStatus "$exit_status" \
+    '{
+      sent: ($exitStatus == 0),
+      dryRun: false,
+      action: "scroll",
+      senderMode: $senderMode,
+      targetIdentifier: $targetIdentifier,
+      scrollRepeat: $repeatCount,
+      scrollPixels: ($deltaY | if . < 0 then - . else . end),
+      logPath: $logPath,
+      resultBundlePath: $resultBundlePath,
+      configPath: $configPath,
+      exitStatus: $exitStatus,
+      error: (if $exitStatus == 0 then null else "xcodebuild scroll sender failed" end)
+    }' >"$send_json_path"
+
+  if (( exit_status != 0 )); then
+    echo "XCUITest scroll sender failed" >&2
+    cat "$send_json_path" >&2
+    if [[ -s "$xcuitest_scroll_sender_log_path" ]]; then
+      cat "$xcuitest_scroll_sender_log_path" >&2
+    fi
+    return 1
+  fi
+}
+
+function collect_external_scroll_samples() {
+  local prefix="$1"
+  local tile_id="$2"
+  local terminal_ax_identifier="$3"
+  local scroll_pixels="$4"
+  local repeat_count="$5"
+  local interval_ms="$6"
+  local phase_mode="$7"
+  local sample_count="$8"
+  local sample_timeout="$9"
+  local send_json_path="${10}"
+  local viewport_sample_json_path="${11}"
+  local stderr_path="${12}"
+  local sample_request_id=""
+  local effective_sample_count="$sample_count"
+  local effective_sample_timeout="$sample_timeout"
+
+  if [[ "$external_scroll_sender" == "xcuitest" ]]; then
+    if [[ -z "$terminal_ax_identifier" ]]; then
+      echo "XCUITest live scroll sender requires a terminal accessibility identifier" >&2
+      return 1
+    fi
+    effective_sample_count="$(
+      awk -v count="$sample_count" -v lead="$ui_scroll_sender_lead_ms" -v interval="$sample_interval_ms" 'BEGIN {
+        extra = int((lead / interval) + 0.999999)
+        if (extra < 0) extra = 0
+        print count + extra
+      }'
+    )"
+    effective_sample_timeout="$(
+      awk -v timeout="$sample_timeout" -v lead="$ui_scroll_sender_lead_ms" 'BEGIN {
+        printf "%.3f", timeout + (lead / 1000.0)
+      }'
+    )"
+    sample_request_id="$(gate_l_start_async_bridge_command false "__agtmux_sample_terminal_viewport_text__" "$tile_id" "$effective_sample_count" "$sample_interval_ms")"
+    sleep_ms 20
+    launch_xcuitest_scroll_sender "$prefix" "$terminal_ax_identifier" "$repeat_count" "$interval_ms" "-$scroll_pixels"
+    finalize_xcuitest_scroll_sender "$send_json_path"
+  else
+    sample_request_id="$(gate_l_start_async_bridge_command false "__agtmux_sample_terminal_viewport_text__" "$tile_id" "$sample_count" "$sample_interval_ms")"
+    sleep_ms 20
+    if [[ "$use_scroll_identifier" == "1" ]]; then
+      "$SCRIPT_DIR/gate_l_ax_key_sender.sh" \
+        --app-pid "$gate_l_app_pid" \
+        --scroll-identifier "$terminal_ax_identifier" \
+        --x-frac "$scroll_x_frac" \
+        --y-frac "$scroll_y_frac" \
+        --scroll-pixels "$scroll_pixels" \
+        --scroll-repeat "$repeat_count" \
+        --scroll-interval-ms "$interval_ms" \
+        --scroll-phase-mode "$phase_mode" >"$send_json_path" 2>"$stderr_path"
+    else
+      "$SCRIPT_DIR/gate_l_ax_key_sender.sh" \
+        --app-pid "$gate_l_app_pid" \
+        --scroll-front-window \
+        --x-frac "$scroll_x_frac" \
+        --y-frac "$scroll_y_frac" \
+        --scroll-pixels "$scroll_pixels" \
+        --scroll-repeat "$repeat_count" \
+        --scroll-interval-ms "$interval_ms" \
+        --scroll-phase-mode "$phase_mode" >"$send_json_path" 2>"$stderr_path"
+    fi
+  fi
+
+  assert_sender_succeeded "$send_json_path" "${prefix}-external-sender"
+  if ! gate_l_wait_for_async_bridge_json_result "$sample_request_id" "$effective_sample_timeout" >"$viewport_sample_json_path"; then
+    printf '%s\n' '{}' >"$viewport_sample_json_path"
+    echo "Failed to collect viewport samples for $prefix" >&2
+    return 1
+  fi
+}
+
 function measure_internal_scroll_burst() {
   local tile_id="$1"
   local scroll_pixels="$2"
@@ -346,6 +639,57 @@ function measure_internal_scroll_burst() {
     "$sample_count" \
     "$sample_interval" \
     "$phase_mode"
+}
+
+function collect_internal_scroll_samples() {
+  local tile_id="$1"
+  local scroll_pixels="$2"
+  local scroll_repeat="$3"
+  local scroll_interval="$4"
+  local sample_count="$5"
+  local sample_interval="$6"
+  local phase_mode="$7"
+  local timeout="$8"
+  local measurement_json_path="$9"
+  local send_json_path="${10}"
+  local viewport_sample_json_path="${11}"
+  local context="${12}"
+  local measurement_error_path="$gate_l_tmpdir/${context}.last-error.log"
+  local attempt=1
+
+  while (( attempt <= internal_measurement_retry_count )); do
+    rm -f "$measurement_json_path" "$send_json_path" "$viewport_sample_json_path" "$measurement_error_path"
+
+    if measure_internal_scroll_burst \
+      "$tile_id" \
+      "$scroll_pixels" \
+      "$scroll_repeat" \
+      "$scroll_interval" \
+      "$sample_count" \
+      "$sample_interval" \
+      "$phase_mode" \
+      "$timeout" >"$measurement_json_path" 2>"$measurement_error_path" \
+      && [[ -s "$measurement_json_path" ]] \
+      && jq -e '(.sender? | type == "object") and (.sampling? | type == "object")' "$measurement_json_path" >/dev/null 2>&1 \
+      && jq '.sender' "$measurement_json_path" >"$send_json_path" \
+      && jq '.sampling' "$measurement_json_path" >"$viewport_sample_json_path" \
+      && assert_sender_succeeded "$send_json_path" "$context-attempt-$attempt"; then
+      return 0
+    fi
+
+    if (( attempt >= internal_measurement_retry_count )); then
+      break
+    fi
+
+    sleep_ms "$internal_measurement_retry_sleep_ms"
+    attempt=$((attempt + 1))
+  done
+
+  echo "Failed to collect internal viewport samples for $context after $internal_measurement_retry_count attempts" >&2
+  if [[ -s "$measurement_error_path" ]]; then
+    cat "$measurement_error_path" >&2
+  fi
+  return 1
 }
 
 function measure_live_scroll_burst() {
@@ -391,13 +735,9 @@ function measure_live_scroll_burst() {
   local sample_count
   sample_count="$(viewport_sample_count)"
   local sample_timeout
-  sample_timeout="$(
-    awk -v count="$sample_count" -v interval="$sample_interval_ms" 'BEGIN {
-      printf "%.3f", ((count * interval) / 1000.0) + 5.0
-    }'
-  )"
+  sample_timeout="$(viewport_sample_timeout "$sample_count" "$sample_interval_ms")"
   if [[ "$use_internal_scroll_measurement" == "1" ]]; then
-    measure_internal_scroll_burst \
+    if ! collect_internal_scroll_samples \
       "$tile_id" \
       "$scroll_pixels_per_event" \
       "$events_per_burst" \
@@ -405,46 +745,38 @@ function measure_live_scroll_burst() {
       "$sample_count" \
       "$sample_interval_ms" \
       "$scroll_phase_mode" \
-      "$sample_timeout" >"$measurement_json_path"
-    jq '.sender' "$measurement_json_path" >"$send_json_path"
-    jq '.sampling' "$measurement_json_path" >"$viewport_sample_json_path"
-    assert_sender_succeeded "$send_json_path" "${prefix}-internal-measurement"
-  else
-    local sample_request_id
-    sample_request_id="$(gate_l_start_async_bridge_command false "__agtmux_sample_terminal_viewport_text__" "$tile_id" "$sample_count" "$sample_interval_ms")"
-    sleep_ms 20
-    if [[ "$use_scroll_identifier" == "1" ]]; then
-      "$SCRIPT_DIR/gate_l_ax_key_sender.sh" \
-        --app-pid "$gate_l_app_pid" \
-        --scroll-identifier "$terminal_ax_identifier" \
-        --x-frac "$scroll_x_frac" \
-        --y-frac "$scroll_y_frac" \
-        --scroll-pixels "$scroll_pixels_per_event" \
-        --scroll-repeat "$events_per_burst" \
-        --scroll-interval-ms "$scroll_interval_ms" \
-        --scroll-phase-mode "$scroll_phase_mode" >"$send_json_path" 2>"$bench_stderr_path"
-    else
-      "$SCRIPT_DIR/gate_l_ax_key_sender.sh" \
-        --app-pid "$gate_l_app_pid" \
-        --scroll-front-window \
-        --x-frac "$scroll_x_frac" \
-        --y-frac "$scroll_y_frac" \
-        --scroll-pixels "$scroll_pixels_per_event" \
-        --scroll-repeat "$events_per_burst" \
-        --scroll-interval-ms "$scroll_interval_ms" \
-        --scroll-phase-mode "$scroll_phase_mode" >"$send_json_path" 2>"$bench_stderr_path"
-    fi
-    assert_sender_succeeded "$send_json_path" "${prefix}-ax-sender"
-    if ! gate_l_wait_for_async_bridge_json_result "$sample_request_id" "$sample_timeout" >"$viewport_sample_json_path"; then
-      printf '%s\n' '{}' >"$viewport_sample_json_path"
+      "$sample_timeout" \
+      "$measurement_json_path" \
+      "$send_json_path" \
+      "$viewport_sample_json_path" \
+      "${prefix}-internal-measurement"; then
       printf '%s\n' '{}' >"$viewport_metrics_json_path"
-      echo "Failed to collect viewport samples for $prefix" >&2
+      return 1
+    fi
+  else
+    if ! collect_external_scroll_samples \
+      "$prefix" \
+      "$tile_id" \
+      "$terminal_ax_identifier" \
+      "$scroll_pixels_per_event" \
+      "$events_per_burst" \
+      "$scroll_interval_ms" \
+      "$scroll_phase_mode" \
+      "$sample_count" \
+      "$sample_timeout" \
+      "$send_json_path" \
+      "$viewport_sample_json_path" \
+      "$bench_stderr_path"; then
+      printf '%s\n' '{}' >"$viewport_metrics_json_path"
       return 1
     fi
   fi
   mark_stage "${prefix}-bench-done"
 
-  python3 "$STEP_METRICS_PY" "$viewport_sample_json_path" >"$viewport_metrics_json_path"
+  if ! python3 "$STEP_METRICS_PY" "$viewport_sample_json_path" >"$viewport_metrics_json_path"; then
+    printf '%s\n' '{}' >"$viewport_metrics_json_path"
+    return 1
+  fi
   mark_stage "${prefix}-viewport-samples-done"
 
   if final_viewport_json="$(gate_l_send_bridge_json_command false 5 "__agtmux_dump_terminal_viewport_text__" "$tile_id" 2>"$gate_l_tmpdir/${prefix}-final-viewport.last-error.log")"; then
@@ -532,7 +864,6 @@ function prepare_live_viewport() {
   local round=0
   local prime_sample_count
   local sample_timeout
-  local sample_request_id
   local prime_sample_json_path=""
   local prime_metrics_json_path=""
   local prime_measurement_json_path=""
@@ -551,7 +882,7 @@ function prepare_live_viewport() {
     prime_metrics_json_path="$gate_l_tmpdir/prime-viewport-metrics.$round.json"
     if [[ "$use_internal_scroll_measurement" == "1" ]]; then
       prime_measurement_json_path="$gate_l_tmpdir/prime-measurement.$round.json"
-      measure_internal_scroll_burst \
+      if ! collect_internal_scroll_samples \
         "$tile_id" \
         "$prime_scroll_pixels" \
         "$prime_scroll_repeat" \
@@ -559,21 +890,36 @@ function prepare_live_viewport() {
         "$prime_sample_count" \
         "$sample_interval_ms" \
         "$prime_scroll_phase_mode" \
-        "$sample_timeout" >"$prime_measurement_json_path"
-      jq '.sender' "$prime_measurement_json_path" >"$gate_l_tmpdir/prime-send.$round.json"
-      jq '.sampling' "$prime_measurement_json_path" >"$prime_sample_json_path"
-      assert_sender_succeeded "$gate_l_tmpdir/prime-send.$round.json" "prime-round-$round"
+        "$sample_timeout" \
+        "$prime_measurement_json_path" \
+        "$gate_l_tmpdir/prime-send.$round.json" \
+        "$prime_sample_json_path" \
+        "prime-round-$round"; then
+        echo "Failed to collect prime viewport samples for host mode $host_mode" >&2
+        return 1
+      fi
     else
-      sample_request_id="$(gate_l_start_async_bridge_command false "__agtmux_sample_terminal_viewport_text__" "$tile_id" "$prime_sample_count" "$sample_interval_ms")"
-      sleep_ms 20
-      send_prime_scroll "$terminal_ax_identifier" "$scroll_point_x" "$scroll_point_y" >"$gate_l_tmpdir/prime-send.$round.json"
-      assert_sender_succeeded "$gate_l_tmpdir/prime-send.$round.json" "prime-round-$round"
-      if ! gate_l_wait_for_async_bridge_json_result "$sample_request_id" "$sample_timeout" >"$prime_sample_json_path"; then
+      if ! collect_external_scroll_samples \
+        "prime-$round" \
+        "$tile_id" \
+        "$terminal_ax_identifier" \
+        "$prime_scroll_pixels" \
+        "$prime_scroll_repeat" \
+        "$prime_scroll_interval_ms" \
+        "$prime_scroll_phase_mode" \
+        "$prime_sample_count" \
+        "$sample_timeout" \
+        "$gate_l_tmpdir/prime-send.$round.json" \
+        "$prime_sample_json_path" \
+        "$gate_l_tmpdir/prime-send.$round.stderr.log"; then
         echo "Failed to collect prime viewport samples for host mode $host_mode" >&2
         return 1
       fi
     fi
-    python3 "$STEP_METRICS_PY" "$prime_sample_json_path" >"$prime_metrics_json_path"
+    if ! python3 "$STEP_METRICS_PY" "$prime_sample_json_path" >"$prime_metrics_json_path"; then
+      echo "Failed to summarize prime viewport samples for host mode $host_mode" >&2
+      return 1
+    fi
     changed_sample_count="$(jq -r '.summary.changed_sample_count // 0' "$prime_metrics_json_path")"
     if (( round >= prime_min_rounds )) && (( changed_sample_count > 0 )); then
       return 0
@@ -706,6 +1052,17 @@ case "$host_mode" in
     exit 1
     ;;
 esac
+
+if [[ "$use_internal_scroll_measurement" != "1" ]]; then
+  case "$external_scroll_sender" in
+    ax|xcuitest)
+      ;;
+    *)
+      echo "Unsupported external scroll sender: $external_scroll_sender" >&2
+      exit 1
+      ;;
+  esac
+fi
 
 if [[ -n "$switch_to_host_mode" ]]; then
   case "$switch_to_host_mode" in
@@ -896,7 +1253,9 @@ else
   fi
 
   wait_for_terminal_viewport_ready "$tile_id" "$settle_timeout"
-  wait_for_rendered_terminal_target_ready "$tile_id" "$settle_timeout" >/dev/null
+  if [[ "$use_internal_scroll_measurement" != "1" ]]; then
+    wait_for_rendered_terminal_target_ready "$tile_id" "$settle_timeout" >/dev/null
+  fi
   mark_stage viewport-ready
 
   if [[ -n "$window_id" ]]; then
@@ -920,7 +1279,11 @@ else
       )"
     fi
   else
-    active_json="$(gate_l_send_bridge_json_command false 5 "__agtmux_dump_rendered_terminal_target__" "$tile_id")"
+    if [[ "$use_internal_scroll_measurement" == "1" ]]; then
+      active_json="$open_json"
+    else
+      active_json="$(gate_l_send_bridge_json_command false 5 "__agtmux_dump_rendered_terminal_target__" "$tile_id")"
+    fi
   fi
   printf '%s\n' "$active_json" >"$active_json_path"
   active_tile_id="$(jq -r '.tileID // empty' <<<"$active_json")"
@@ -930,7 +1293,7 @@ else
   mark_stage active-target-ready
 
   rendered_client_pane_id="$(jq -r '.renderedClientPaneID // empty' <<<"$active_json")"
-  if [[ -n "$pane_id" && "$rendered_client_pane_id" != "$pane_id" ]]; then
+  if [[ -n "$pane_id" && -n "$rendered_client_pane_id" && "$rendered_client_pane_id" != "$pane_id" ]]; then
     gate_l_send_bridge_command false 10 "__agtmux_focus_rendered_pane__" "$tile_id" "$pane_id" >/dev/null
     if retarget_json="$(wait_for_rendered_client_pane "$tile_id" "$pane_id" "$settle_timeout")"; then
       printf '%s\n' "$retarget_json" >"$retarget_json_path"
@@ -941,12 +1304,28 @@ else
 fi
 
 wait_for_terminal_viewport_ready "$tile_id" "$settle_timeout"
-wait_for_rendered_terminal_target_ready "$tile_id" "$settle_timeout" >/dev/null
+if [[ "$use_internal_scroll_measurement" != "1" ]]; then
+  wait_for_rendered_terminal_target_ready "$tile_id" "$settle_timeout" >/dev/null
+fi
 mark_stage viewport-ready
 
 active_host_mode="$(jq -r '.terminalHostMode // empty' <<<"$active_json")"
 rendered_client_tty="$(jq -r '.renderedClientTTY // empty' <<<"$active_json")"
-if [[ -z "$rendered_client_tty" ]]; then
+if [[ "$use_internal_scroll_measurement" != "1" && -z "$rendered_client_tty" ]]; then
+  echo "Failed to resolve rendered client tty for $resolved_session_name $pane_id ($host_mode)" >&2
+  exit 1
+fi
+if [[ "$active_host_mode" != "$host_mode" ]]; then
+  if [[ -n "$tile_id" ]] && wait_for_tile_host_mode "$tile_id" "$host_mode" "$settle_timeout" >/dev/null 2>"$gate_l_tmpdir/host-mode-ready.last-error.log"; then
+    if refreshed_active_json="$(gate_l_send_bridge_json_command false 5 "__agtmux_dump_active_terminal_target__" 2>"$gate_l_tmpdir/active-target-refresh.last-error.log")"; then
+      active_json="$refreshed_active_json"
+      printf '%s\n' "$active_json" >"$active_json_path"
+      active_host_mode="$(jq -r '.terminalHostMode // empty' <<<"$active_json")"
+      rendered_client_tty="$(jq -r '.renderedClientTTY // empty' <<<"$active_json")"
+    fi
+  fi
+fi
+if [[ "$use_internal_scroll_measurement" != "1" && -z "$rendered_client_tty" ]]; then
   echo "Failed to resolve rendered client tty for $resolved_session_name $pane_id ($host_mode)" >&2
   exit 1
 fi
@@ -1003,7 +1382,7 @@ if [[ -n "$switch_to_host_mode" ]]; then
   wait_for_terminal_viewport_ready "$tile_id" "$settle_timeout"
   rendered_client_tty="$(jq -r '.renderedClientTTY // empty' "$switch_transition_json_path")"
   rendered_client_pane_id="$(jq -r '.renderedClientPaneID // empty' "$switch_transition_json_path")"
-  if [[ -n "$pane_id" && "$rendered_client_pane_id" != "$pane_id" ]]; then
+  if [[ -n "$pane_id" && -n "$rendered_client_pane_id" && "$rendered_client_pane_id" != "$pane_id" ]]; then
     gate_l_send_bridge_command false 10 "__agtmux_focus_rendered_pane__" "$tile_id" "$pane_id" >/dev/null
     wait_for_rendered_client_pane "$tile_id" "$pane_id" "$settle_timeout" >"$gate_l_tmpdir/switch-retarget-rendered-target.json"
     rendered_client_tty="$(jq -r '.renderedClientTTY // empty' "$gate_l_tmpdir/switch-retarget-rendered-target.json")"

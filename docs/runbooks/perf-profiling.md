@@ -120,6 +120,34 @@ scripts/perf/gate_l_ax_key_sender.sh --dry-run
   UITest-enabled agtmux-term app on the default local tmux server, opens the
   target live pane, and then runs the same frontmost live client-scroll bench
   for a specific `AGTMUX_TERMINAL_HOST_MODE`.
+- for the current rewrite/live-host path, prefer a matching app bundle over a
+  stale installed app:
+  ```bash
+  xcodebuild build -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm \
+    -configuration Debug -destination 'platform=macOS' \
+    -derivedDataPath build-live-direct-debug CODE_SIGN_IDENTITY='-' \
+    CODE_SIGNING_REQUIRED=NO
+  export GATE_L_APP_BIN="$PWD/build-live-direct-debug/Build/Products/Debug/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm"
+  ```
+- the currently reliable same-bundle live host-mode path is:
+  ```bash
+  AGTMUX_PERF_LIVE_ATTACH_RUNNING_APP=0 \
+  AGTMUX_PERF_LIVE_USE_INTERNAL_SCROLL_MEASUREMENT=1 \
+  AGTMUX_PERF_LIVE_USE_ACTIVE_TARGET=1 \
+  AGTMUX_PERF_LIVE_SESSION_NAME='gate-normal-scroll' \
+  AGTMUX_PERF_LIVE_PANE_ID='%2' \
+  scripts/perf/gate_l_terminal_host_live_client_scroll_bench.sh --host-mode next --timeout 25
+  ```
+- if you need the host-mode comparison on that same pane, run:
+  ```bash
+  AGTMUX_PERF_LIVE_ATTACH_RUNNING_APP=0 \
+  AGTMUX_PERF_LIVE_USE_INTERNAL_SCROLL_MEASUREMENT=1 \
+  AGTMUX_PERF_LIVE_USE_ACTIVE_TARGET=1 \
+  AGTMUX_PERF_LIVE_SESSION_NAME='gate-normal-scroll' \
+  AGTMUX_PERF_LIVE_PANE_ID='%2' \
+  scripts/perf/gate_l_terminal_host_live_client_scroll_parity.sh \
+    --session-name 'gate-normal-scroll' --pane-id '%2' --timeout 25
+  ```
 - do not bootstrap tmux scenarios on the default local server:
   - `gate_l_launch_app` now refuses that path unless you explicitly set
     `AGTMUX_PERF_ALLOW_DEFAULT_LOCAL_TMUX_SCENARIO=1`
@@ -139,16 +167,20 @@ scripts/perf/gate_l_ax_key_sender.sh --dry-run
   rewrite gate for `legacy` vs `next` host mode on the same live pane. Use it
   before native parity when the question is “does the rewrite path regress the
   real live-pane scroll path?”
-- after the 2026-03-22 fresh-client investigation, treat this wrapper as a
-  diagnostic gate, not the final acceptance gate:
-  - `Surface.scrollCallback` sends normal-screen wheel input to Ghostty's local
-    `scrollViewport` path when `uses_alternate_scroll == false`
-  - a fresh attached client may have little or no local scrollback loaded, so
-    wheel input can reach the terminal path without changing either tmux client
-    `scroll_position` or visible viewport text
-- the host-mode parity wrapper is only meaningful when both sides record at
-  least one wheel-driven scroll change. If either side has
-  `changed_sample_count == 0`, it now reports `valid: false` instead of a false
+- the current durable requirement for this wrapper is a matching bundle plus
+  bridge-internal measurement:
+  - on 2026-03-23 the matching-debug-bundle path completed on both `legacy`
+    and `next`
+  - the same run also produced a valid parity payload with
+    `sameResolvedPane: true`, `legacyWheelMoved: true`, and
+    `nextWheelMoved: true`
+  - one recorded payload reported:
+    - `legacy.changed_sample_count = 16`
+    - `next.changed_sample_count = 17`
+    - `first_changed_elapsed_delta_ms = -357.9162`
+- the host-mode parity wrapper is still only meaningful when both sides record
+  at least one wheel-driven scroll change. If either side has
+  `changed_sample_count == 0`, it reports `valid: false` instead of a false
   pass.
 - `gate_l_terminal_host_loaded_viewport_bench.sh` is the current phase-2
   acceptance surface for `legacy` vs `next`:

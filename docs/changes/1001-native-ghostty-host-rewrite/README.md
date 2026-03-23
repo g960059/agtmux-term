@@ -218,6 +218,36 @@ Current state:
     `UITestTmuxCommandPath` / `UITestTmuxCommandResultPath` after launch
   - a focused regression now covers that rebind behavior, and a rebuilt
     installed app responds on both the first and second temp command paths in
+  - the bridge command loop now consumes the command file after decoding a
+    request, which stops expensive internal scroll measurements from being
+    re-executed with the same request ID during command-loop polling
+  - `gate_l_step_metrics.py` now treats movement below a stable header and
+    line-number-only upward motion as real viewport change instead of a false
+    zero-step result
+  - `gate_l_terminal_host_live_client_scroll_bench.sh` now gives measured
+    bridge-internal bursts the same timeout budget as prime bursts, so the
+    same matching debug bundle can complete the full `next` live wrapper path
+  - a fresh matching-debug-bundle run now exits `0` on the `next` host-mode
+    live wrapper with visible movement recorded:
+    - temp dir:
+      `/var/folders/pm/qr6qn8mn1n5cwkgk82yn3cnh0000gn/T//agtmux-gate-l-live-client-next-6636d5f0.MAlrzy`
+    - stage log reached `viewport-primed`, `initial-baseline-viewport`,
+      `initial-bench-done`, `initial-viewport-samples-done`, and
+      `initial-post-scroll-telemetry`
+    - the measured summary recorded non-zero `changed_sample_count` instead of
+      the earlier false-zero blocker
+  - the same matching debug bundle now also completes the `legacy` live
+    wrapper and a full `legacy` vs `next` live parity comparison:
+    - `legacy` temp dir:
+      `/var/folders/pm/qr6qn8mn1n5cwkgk82yn3cnh0000gn/T//agtmux-gate-l-live-client-legacy-d0fc7551.nBM6qf`
+    - parity payload:
+      `/tmp/gate-l-live-parity.XXXXXX.json`
+    - the parity result is currently `passed: true` and `valid: true`, with
+      `sameResolvedPane: true`, `legacyWheelMoved: true`, and
+      `nextWheelMoved: true`
+    - the current payload records `legacy.changed_sample_count = 16`,
+      `next.changed_sample_count = 17`, and
+      `comparison.first_changed_elapsed_delta_ms = -357.9162`
     a same-running attach check
   - same-running app tmux passthrough now returns real stdout on installed
     rewrite builds:
@@ -226,7 +256,7 @@ Current state:
     - the runner also stopped draining stdout/stderr through unsynchronized
       mutable `Data` captured by background queues; it now waits for process
       exit and reads both pipes on one thread
-    - before this fix, the running app could answer bridge commands with
+  - before this fix, the running app could answer bridge commands with
       `ok=true` and `stdout=""` for `display-message`, `list-sessions`, and
       `list-clients`, which left same-app live gates unable to resolve the
       real rendered client on the default local tmux server
@@ -237,3 +267,15 @@ Current state:
       current pane text, but bridge-internal wheel bursts on that already-
       loaded pane still record zero viewport change, and same-app runtime
       host-mode switching remains flaky
+- the same-running bridge-internal live wrapper is now less coupled to
+  rendered-target metadata:
+  - when `AGTMUX_PERF_LIVE_USE_INTERNAL_SCROLL_MEASUREMENT=1`, the live bench
+    no longer blocks on `__agtmux_dump_rendered_terminal_target__` before it
+    can focus the host and measure a burst
+  - the perf common bridge helper now normalizes the last JSON payload line
+    when wrapper noise appears ahead of the real bridge response, so repeated
+    same-app measurement rounds keep producing machine-readable JSON
+  - a fresh same-running `next` run now reaches the real priming failure
+    boundary instead of hanging in rendered-target resolution:
+    `changed_sample_count = 0` across all prime rounds while the viewport text
+    stays unchanged

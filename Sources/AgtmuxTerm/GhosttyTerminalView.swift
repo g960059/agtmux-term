@@ -135,6 +135,18 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         let usesAlternateScroll: Bool
     }
 
+    struct SurfaceMetricsSnapshot: Codable, Equatable {
+        let boundsWidth: Double
+        let boundsHeight: Double
+        let frameWidth: Double
+        let frameHeight: Double
+        let pixelWidth: UInt32?
+        let pixelHeight: UInt32?
+        let xScale: Double?
+        let yScale: Double?
+        let displayID: UInt32?
+    }
+
     private enum ScrollVerticalDirection: Equatable {
         case up
         case down
@@ -935,6 +947,108 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         )
     }
 
+    @MainActor
+    func dispatchInternalTrackpadScrollStepForTesting(
+        horizontalDelta: Double = 0,
+        verticalDelta: Double,
+        precision: Bool = true,
+        phase: NSEvent.Phase,
+        momentumPhase: NSEvent.Phase
+    ) {
+        // Same-running diagnostics should exercise the registered terminal view
+        // directly instead of depending on global HID event routing.
+        if surface != nil {
+            injectTrackpadScrollStepForTesting(
+                horizontalDelta: horizontalDelta,
+                verticalDelta: verticalDelta,
+                precision: precision,
+                phase: phase,
+                momentumPhase: momentumPhase
+            )
+            return
+        }
+        _ = sendSyntheticScrollWheelEventForTesting(
+            horizontalDelta: horizontalDelta,
+            verticalDelta: verticalDelta,
+            precision: precision,
+            phase: phase,
+            momentumPhase: momentumPhase
+        )
+    }
+
+    @MainActor
+    func prepareForInternalTrackpadScrollInjectionForTesting() {
+        guard let surface else { return }
+        if NSApp.isActive == false {
+            NSApp.activate(ignoringOtherApps: true)
+        }
+        if let window {
+            window.makeKeyAndOrderFront(nil)
+            _ = window.makeFirstResponder(self)
+            desiredSurfaceFocus = (window.firstResponder === self)
+            syncSurfaceMetrics(shouldMarkDirty: false, force: true)
+        } else {
+            desiredSurfaceFocus = true
+        }
+        applySurfaceFocusIfNeeded(force: true)
+        let center = NSPoint(x: bounds.midX, y: bounds.midY)
+        ghostty_surface_mouse_pos(
+            surface,
+            center.x,
+            bounds.height - center.y,
+            GhosttyInput.toMods([])
+        )
+    }
+
+    @MainActor
+    private func sendSyntheticScrollWheelEventForTesting(
+        horizontalDelta: Double,
+        verticalDelta: Double,
+        precision: Bool,
+        phase: NSEvent.Phase,
+        momentumPhase: NSEvent.Phase
+    ) -> Bool {
+        guard let window,
+              let source = CGEventSource(stateID: .hidSystemState)
+        else {
+            return false
+        }
+
+        let unit: CGScrollEventUnit = precision ? .pixel : .line
+        let deltaY = Int32(verticalDelta.rounded())
+        let deltaX = Int32(horizontalDelta.rounded())
+        let wheelCount: UInt32 = horizontalDelta == 0 ? 1 : 2
+        guard let cgEvent = CGEvent(
+            scrollWheelEvent2Source: source,
+            units: unit,
+            wheelCount: wheelCount,
+            wheel1: deltaY,
+            wheel2: deltaX,
+            wheel3: 0
+        ) else {
+            return false
+        }
+
+        if precision {
+            cgEvent.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)
+            cgEvent.setIntegerValueField(.scrollWheelEventPointDeltaAxis1, value: Int64(deltaY))
+            cgEvent.setIntegerValueField(.scrollWheelEventFixedPtDeltaAxis1, value: Int64(deltaY) * 65_536)
+            if horizontalDelta != 0 {
+                cgEvent.setIntegerValueField(.scrollWheelEventPointDeltaAxis2, value: Int64(deltaX))
+                cgEvent.setIntegerValueField(.scrollWheelEventFixedPtDeltaAxis2, value: Int64(deltaX) * 65_536)
+            }
+            cgEvent.setIntegerValueField(.scrollWheelEventScrollPhase, value: Int64(phase.rawValue))
+            cgEvent.setIntegerValueField(.scrollWheelEventMomentumPhase, value: Int64(momentumPhase.rawValue))
+        }
+
+        let localPoint = NSPoint(x: bounds.midX, y: bounds.midY)
+        let windowPoint = convert(localPoint, to: nil)
+        cgEvent.location = window.convertPoint(toScreen: windowPoint)
+
+        cgEvent.post(tap: .cghidEventTap)
+        return true
+    }
+
     private func dispatchScrollInput(
         horizontalDelta rawHorizontalDelta: Double,
         verticalDelta rawVerticalDelta: Double,
@@ -1405,6 +1519,21 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         defer { ghostty_surface_free_text(surface, &text) }
         guard let rawText = text.text else { return "" }
         return String(cString: rawText)
+    }
+
+    func surfaceMetricsSnapshotForTesting() -> SurfaceMetricsSnapshot {
+        let metrics = currentSurfaceMetrics()
+        return SurfaceMetricsSnapshot(
+            boundsWidth: bounds.width,
+            boundsHeight: bounds.height,
+            frameWidth: frame.width,
+            frameHeight: frame.height,
+            pixelWidth: metrics?.pixelWidth,
+            pixelHeight: metrics?.pixelHeight,
+            xScale: metrics?.xScale,
+            yScale: metrics?.yScale,
+            displayID: metrics?.displayID
+        )
     }
 
     private func alternateScrollTelemetrySnapshot() -> AlternateScrollTelemetrySnapshot {

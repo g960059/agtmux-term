@@ -159,7 +159,9 @@ Current limitation:
 `scripts/perf/gate_l_terminal_host_live_client_scroll_bench.sh`
 `scripts/perf/gate_l_terminal_host_live_client_scroll_parity.sh`
 
-This wrapper is useful for rewrite diagnostics, but not for acceptance.
+This wrapper started as rewrite diagnostics, but the matching-bundle
+same-app/live-pane path is now valid enough to serve as the host-mode parity
+gate before native comparison.
 
 Latest durable finding:
 
@@ -190,6 +192,33 @@ Latest durable finding:
 - therefore the next useful step is not more fresh-wrapper tuning but same-app
   live parity, which now has groundwork via a runtime terminal-host-mode
   override inside the app
+- the next round of fixes converted that groundwork into a valid live gate:
+  - use a matching app bundle, not a stale installed build, so the runtime
+    bridge and internal scroll path reflect the current tree
+  - the bridge command loop now consumes the command file after decoding a
+    request, which stops expensive `__agtmux_measure_terminal_scroll_burst__`
+    requests from being re-run during poll-driven command-loop reconciliation
+  - the live step-metrics helper now counts motion below stable headers and
+    line-number-only upward movement as real change instead of a false
+    `changed_sample_count = 0`
+  - the measured bridge-internal burst now uses the same timeout budget as the
+    prime burst, which removed another false timeout during full live runs
+  - the live wrapper now waits for initial host-mode convergence before
+    rejecting a just-switched `legacy`/`next` target, which removed an
+    immediate false failure on `legacy`
+  - with those fixes plus a matching debug bundle, a 2026-03-23 run completed
+    on both host modes and a full parity wrapper reported:
+    - `passed: true`
+    - `valid: true`
+    - `sameResolvedPane: true`
+    - `legacyWheelMoved: true`
+    - `nextWheelMoved: true`
+    - `legacy.changed_sample_count = 16`
+    - `next.changed_sample_count = 17`
+    - `first_changed_elapsed_delta_ms = -357.9162`
+  - durable conclusion: the host-mode live wrapper is no longer blocked on
+    zero-movement false negatives and is now useful as the rewrite branch's
+    real live-pane `legacy` vs `next` gate
 - while hardening that wrapper, a separate tmux targeting bug surfaced:
   - the bridge was trying `switch-client -c <renderedClientTTY> -t %pane`
   - tmux rejects that form with `can't find client`, so `client_tty` is not a
@@ -230,13 +259,16 @@ Latest durable finding:
 
 Interpretation:
 
-- the current blocker on the phase-2 host-mode wrapper is not "the live gate
-  hangs on tmux client probes"
-- it is now specifically "fresh app mounting does not reproduce the already
-  loaded live history path, so wheel-up reaches the terminal path without
-  changing visible viewport state"
-- host-mode parity on this wrapper is therefore still invalid until the gate
-  can observe a genuinely loaded live pane
+- the earlier blocker was not the user-visible scroll path itself but a stack
+  of harness false negatives:
+  - repeated command-loop re-execution of the same measurement request
+  - line-number-only motion being treated as zero movement
+  - measured-burst timeout budgets being shorter than prime-burst budgets
+  - immediate host-mode checks observing a stale rendered target before
+    convergence
+- once those were fixed and the wrapper was run against a matching app bundle,
+  the live pane path produced valid `legacy` vs `next` movement instead of a
+  false zero-scroll conclusion
 - the bridge and rendered-surface registry also needed stricter host-mode
   semantics for rewrite work:
   - `next` host terminal-view lookups now require a published active leaf

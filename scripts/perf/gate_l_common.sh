@@ -455,38 +455,43 @@ function gate_l_send_bridge_command() {
 
   local request_id
   local tmp_command_path
+  local response_path
   local refresh_json="false"
   request_id="$(uuidgen)"
   tmp_command_path="${gate_l_command_path}.tmp.$$"
+  response_path="${gate_l_tmpdir}/tmux-command-result.${request_id}.json"
   if [[ "$refresh" == "1" || "$refresh" == "true" ]]; then
     refresh_json="true"
   fi
 
-  rm -f "$gate_l_command_path" "$gate_l_command_result_path"
+  rm -f "$gate_l_command_path" "$gate_l_command_result_path" "$response_path"
   jq -n \
     --arg id "$request_id" \
+    --arg responsePath "$response_path" \
     --argjson refresh "$refresh_json" \
-    '{id:$id, args:$ARGS.positional, refreshInventory:$refresh}' \
+    '{id:$id, args:$ARGS.positional, refreshInventory:$refresh, responsePath:$responsePath}' \
     --args -- "$@" \
     >"$tmp_command_path"
   mv "$tmp_command_path" "$gate_l_command_path"
 
   local deadline=$((EPOCHREALTIME + timeout))
   while (( EPOCHREALTIME < deadline )); do
-    if [[ -s "$gate_l_command_result_path" ]]; then
+    if [[ -s "$response_path" ]]; then
       local response_id
-      response_id="$(jq -r '.id // empty' "$gate_l_command_result_path")"
+      response_id="$(jq -r '.id // empty' "$response_path")"
       if [[ "$response_id" == "$request_id" ]]; then
         local ok
-        ok="$(jq -r '.ok' "$gate_l_command_result_path")"
+        ok="$(jq -r '.ok' "$response_path")"
         if [[ "$ok" == "true" ]]; then
-          jq -r '.stdout' "$gate_l_command_result_path"
+          jq -r '.stdout' "$response_path"
+          rm -f "$response_path"
           return 0
         fi
 
         local error_message
-        error_message="$(jq -r '.error // "unknown error"' "$gate_l_command_result_path")"
+        error_message="$(jq -r '.error // "unknown error"' "$response_path")"
         echo "App-side tmux command failed: $error_message" >&2
+        rm -f "$response_path"
         return 1
       fi
     fi
@@ -497,11 +502,29 @@ function gate_l_send_bridge_command() {
   return 1
 }
 
+function gate_l_normalize_bridge_json_stdout() {
+  local raw="$1"
+  if jq -e . >/dev/null 2>&1 <<<"$raw"; then
+    print -r -- "$raw"
+    return 0
+  fi
+
+  local json_line
+  json_line="$(printf '%s\n' "$raw" | awk '/^[[:space:]]*[{[]/ { line = $0 } END { if (line != "") print line }')"
+  if [[ -n "$json_line" ]] && jq -e . >/dev/null 2>&1 <<<"$json_line"; then
+    print -r -- "$json_line"
+    return 0
+  fi
+
+  return 1
+}
+
 function gate_l_send_bridge_json_command() {
   local output=""
   output="$(gate_l_send_bridge_command "$@")" || return 1
 
-  if ! jq -e . >/dev/null 2>&1 <<<"$output"; then
+  local normalized_output=""
+  if ! normalized_output="$(gate_l_normalize_bridge_json_stdout "$output")"; then
     echo "App-side tmux command returned non-JSON stdout: $*" >&2
     if [[ -n "$output" ]]; then
       print -r -- "$output" >&2
@@ -511,7 +534,7 @@ function gate_l_send_bridge_json_command() {
     return 1
   fi
 
-  print -r -- "$output"
+  print -r -- "$normalized_output"
 }
 
 function gate_l_start_async_bridge_command() {
@@ -520,41 +543,47 @@ function gate_l_start_async_bridge_command() {
 
   local request_id
   local tmp_command_path
+  local response_path
   local refresh_json="false"
   request_id="$(uuidgen)"
   tmp_command_path="${gate_l_command_path}.tmp.$$"
+  response_path="${gate_l_tmpdir}/tmux-command-result.${request_id}.json"
   if [[ "$refresh" == "1" || "$refresh" == "true" ]]; then
     refresh_json="true"
   fi
 
-  rm -f "$gate_l_command_path" "$gate_l_command_result_path"
+  rm -f "$gate_l_command_path" "$gate_l_command_result_path" "$response_path"
   jq -n \
     --arg id "$request_id" \
+    --arg responsePath "$response_path" \
     --argjson refresh "$refresh_json" \
-    '{id:$id, args:$ARGS.positional, refreshInventory:$refresh}' \
+    '{id:$id, args:$ARGS.positional, refreshInventory:$refresh, responsePath:$responsePath}' \
     --args -- "$@" \
     >"$tmp_command_path"
   mv "$tmp_command_path" "$gate_l_command_path"
 
-  print -r -- "$request_id"
+  print -r -- "${request_id}|${response_path}"
 }
 
 function gate_l_wait_for_async_bridge_json_result() {
-  local request_id="$1"
+  local async_request="$1"
   local timeout="$2"
+  local request_id="${async_request%%|*}"
+  local response_path="${async_request#*|}"
   local deadline=$((EPOCHREALTIME + timeout))
 
   while (( EPOCHREALTIME < deadline )); do
-    if [[ -s "$gate_l_command_result_path" ]]; then
+    if [[ -s "$response_path" ]]; then
       local response_id
-      response_id="$(jq -r '.id // empty' "$gate_l_command_result_path" 2>/dev/null || true)"
+      response_id="$(jq -r '.id // empty' "$response_path" 2>/dev/null || true)"
       if [[ "$response_id" == "$request_id" ]]; then
         local ok
-        ok="$(jq -r '.ok' "$gate_l_command_result_path")"
+        ok="$(jq -r '.ok' "$response_path")"
         if [[ "$ok" == "true" ]]; then
           local output
-          output="$(jq -r '.stdout' "$gate_l_command_result_path")"
-          if ! jq -e . >/dev/null 2>&1 <<<"$output"; then
+          output="$(jq -r '.stdout' "$response_path")"
+          local normalized_output=""
+          if ! normalized_output="$(gate_l_normalize_bridge_json_stdout "$output")"; then
             echo "App-side tmux command returned non-JSON stdout for request $request_id" >&2
             if [[ -n "$output" ]]; then
               print -r -- "$output" >&2
@@ -563,13 +592,15 @@ function gate_l_wait_for_async_bridge_json_result() {
             fi
             return 1
           fi
-          print -r -- "$output"
+          print -r -- "$normalized_output"
+          rm -f "$response_path"
           return 0
         fi
 
         local error_message
-        error_message="$(jq -r '.error // "unknown error"' "$gate_l_command_result_path")"
+        error_message="$(jq -r '.error // "unknown error"' "$response_path")"
         echo "App-side tmux command failed: $error_message" >&2
+        rm -f "$response_path"
         return 1
       fi
     fi

@@ -44,6 +44,14 @@
 - [x] add bridge-internal scroll burst measurement for same-app live diagnostics
 - [x] rebind UITest bridge command-loop paths after runtime defaults changes
 - [x] restore same-running app local tmux bridge stdout for live diagnostics
-- [ ] realistic loaded live-pane parity gate for the next host
-- [ ] durable-knowledge promotion
+- [x] remove rendered-target readiness as a blocker for bridge-internal
+  same-running live measurement
+- [x] harden perf bridge JSON parsing against wrapper noise during repeated
+  same-app measurement rounds
+- [x] consume UITest bridge command files after processing so same request IDs
+  are not re-executed during polling
+- [x] count line-number/live movement under stable headers in step metrics so
+  same-app live gates stop reporting false zero-step scrolls
+- [x] realistic loaded live-pane parity gate for the next host
+- [x] durable-knowledge promotion
 - [ ] remove `docs/changes/1001-native-ghostty-host-rewrite/` before merge

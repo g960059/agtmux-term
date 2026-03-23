@@ -7,6 +7,7 @@ from pathlib import Path
 
 
 LINE_NUMBER_RE = re.compile(r"^\s*(\d+)\s")
+LINE_NUMBER_GUTTER_RE = re.compile(r"^\s*\d+\s+[+\- ]?\s*")
 
 
 def first_visible_line_number(text: str):
@@ -17,30 +18,44 @@ def first_visible_line_number(text: str):
     return None
 
 
+def normalize_row_for_shift(row: str) -> str:
+    return LINE_NUMBER_GUTTER_RE.sub("", row.rstrip())
+
+
 def physical_row_shift(previous_text: str, current_text: str) -> int:
     previous_rows = previous_text.splitlines()
     current_rows = current_text.splitlines()
 
     if not previous_rows or not current_rows:
         return 0
-    if previous_rows[0] == current_rows[0]:
-        return 0
 
-    max_shift = min(12, len(previous_rows) - 1)
+    first_diff_index = None
+    for index, (previous_row, current_row) in enumerate(zip(previous_rows, current_rows)):
+        if normalize_row_for_shift(previous_row) != normalize_row_for_shift(current_row):
+            first_diff_index = index
+            break
+
+    if first_diff_index is None:
+        if len(previous_rows) == len(current_rows):
+            return 0
+        first_diff_index = min(len(previous_rows), len(current_rows))
+
+    max_shift = min(12, len(previous_rows) - first_diff_index - 1)
     max_probe = 3
 
     for shift in range(1, max_shift + 1):
-        if shift >= len(previous_rows):
+        previous_start = first_diff_index + shift
+        if previous_start >= len(previous_rows) or first_diff_index >= len(current_rows):
             break
-        if previous_rows[shift] != current_rows[0]:
+        if normalize_row_for_shift(previous_rows[previous_start]) != normalize_row_for_shift(current_rows[first_diff_index]):
             continue
         matched = True
         for probe in range(1, max_probe + 1):
-            previous_index = shift + probe
-            current_index = probe
+            previous_index = previous_start + probe
+            current_index = first_diff_index + probe
             if previous_index >= len(previous_rows) or current_index >= len(current_rows):
                 break
-            if previous_rows[previous_index] != current_rows[current_index]:
+            if normalize_row_for_shift(previous_rows[previous_index]) != normalize_row_for_shift(current_rows[current_index]):
                 matched = False
                 break
         if matched:
@@ -54,7 +69,22 @@ def main() -> int:
         print("usage: gate_l_step_metrics.py <samples-json>", file=sys.stderr)
         return 2
 
-    payload = json.loads(Path(sys.argv[1]).read_text())
+    try:
+        raw = Path(sys.argv[1]).read_text()
+    except OSError as exc:
+        print(f"failed to read samples json: {exc}", file=sys.stderr)
+        return 1
+
+    if not raw.strip():
+        print("invalid samples json: empty input", file=sys.stderr)
+        return 1
+
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        print(f"invalid samples json: {exc}", file=sys.stderr)
+        return 1
+
     samples = payload.get("samples", [])
 
     sample_metrics = []
@@ -96,15 +126,16 @@ def main() -> int:
             line_number_step_rows = 0
             if previous_line is not None and current_line is not None and current_line < previous_line:
                 line_number_step_rows = previous_line - current_line
+            counted_step_rows = step_rows if step_rows > 0 else (1 if line_number_step_rows > 0 else 0)
 
-            if step_rows > 0:
+            if counted_step_rows > 0:
                 changed_sample_count += 1
-                upward_total_rows += step_rows
-                if step_rows >= 2:
+                upward_total_rows += counted_step_rows
+                if counted_step_rows >= 2:
                     coarse_step_count_ge_2 += 1
-                if step_rows >= 3:
+                if counted_step_rows >= 3:
                     coarse_step_count_ge_3 += 1
-                max_step_rows = max(max_step_rows, step_rows)
+                max_step_rows = max(max_step_rows, counted_step_rows)
                 if first_changed_text is None:
                     first_changed_text = current_text
                     first_changed_elapsed_ms = sample.get("elapsedMs")
