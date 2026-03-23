@@ -178,6 +178,15 @@ Latest durable finding:
 - adding a local `paneID` inventory fallback in the bridge did not change that
   conclusion; the fresh wrapper still lands on the new-login shell path rather
   than the user's already-loaded live history path
+- the same conclusion still holds when the wheel burst is injected entirely
+  inside the app process:
+  - `UITestTmuxBridge.__agtmux_measure_terminal_scroll_burst__` now samples the
+    viewport and dispatches synthetic trackpad phases directly to the
+    registered `GhosttyTerminalView`
+  - on a fresh-mounted normal-screen pane, that in-process path still records
+    zero viewport movement
+  - durable conclusion: external AX trust / hit-testing is not the primary
+    blocker for this wrapper
 - therefore the next useful step is not more fresh-wrapper tuning but same-app
   live parity, which now has groundwork via a runtime terminal-host-mode
   override inside the app
@@ -190,6 +199,14 @@ Latest durable finding:
   - this fixes one false blocker in the wrapper, but the overall gate is still
     diagnostic-only because fresh mounts can stall before `open_terminal` or
     before reaching the already-loaded live pane path
+  - same-running app diagnostics also needed bridge path rebinding:
+    - runtime defaults can now rotate `UITestTmuxCommandPath` and
+      `UITestTmuxCommandResultPath` after launch
+    - the bridge activation monitor reconciles those paths continuously and
+      restarts the command loop when they change
+    - focused regression coverage and a rebuilt installed-app attach check both
+      confirm that the bridge can answer `__agtmux_tmux_bridge_ready__` on the
+      new path without relaunching the app
 
 Interpretation:
 

@@ -180,6 +180,11 @@ final class UITestTmuxBridge {
         let samples: [TerminalViewportTextSampleSnapshot]
     }
 
+    struct TerminalScrollBurstMeasurementSnapshot: Codable, Equatable {
+        let sender: GhosttyTerminalView.InternalScrollInjectionSnapshot
+        let sampling: TerminalViewportTextSamplingSnapshot
+    }
+
     struct FocusExistingTerminalTileSnapshot: Codable, Equatable {
         let terminalHostMode: String
         let workbenchID: String
@@ -195,6 +200,8 @@ final class UITestTmuxBridge {
     private let resolveRenderedLiveTarget: @Sendable (_ renderedClientTTY: String, _ target: TargetRef, _ hostsConfig: HostsConfig) async throws -> WorkbenchV2TerminalLiveTarget
     private let env: [String: String]
     private let userDefaults: UserDefaults
+    private var bridgeActivationMonitorTask: Task<Void, Never>?
+    private var activeCommandLoopPaths: (command: String, response: String)?
     private var commandLoopTask: Task<Void, Never>?
     private var createdSessions: Set<String> = []
     private let activeTerminalTargetCommand = "__agtmux_dump_active_terminal_target__"
@@ -214,6 +221,7 @@ final class UITestTmuxBridge {
     private let dumpScrollTelemetryCommand = "__agtmux_dump_scroll_telemetry__"
     private let dumpTerminalViewportTextCommand = "__agtmux_dump_terminal_viewport_text__"
     private let sampleTerminalViewportTextCommand = "__agtmux_sample_terminal_viewport_text__"
+    private let measureTerminalScrollBurstCommand = "__agtmux_measure_terminal_scroll_burst__"
     private let bridgeReadyCommand = "__agtmux_tmux_bridge_ready__"
     private var terminalViewRegistrationTimeoutMilliseconds: Int {
         guard let raw = env["AGTMUX_UITEST_TERMINAL_VIEW_REGISTRATION_TIMEOUT_MS"],
@@ -286,6 +294,7 @@ final class UITestTmuxBridge {
     }
 
     func startIfNeeded() async {
+        startBridgeActivationMonitorIfNeeded()
         uiTestBridgeDebugLog(
             "startIfNeeded bridgeEnabled=\(bridgeEnabled) commandURL=\(commandURL?.path ?? "<nil>") commandResponseURL=\(commandResponseURL?.path ?? "<nil>") envUITest=\(env["AGTMUX_UITEST"] ?? "<nil>")"
         )
@@ -304,9 +313,13 @@ final class UITestTmuxBridge {
     }
 
     func shutdown() async {
+        bridgeActivationMonitorTask?.cancel()
+        _ = await bridgeActivationMonitorTask?.value
+        bridgeActivationMonitorTask = nil
         commandLoopTask?.cancel()
         _ = await commandLoopTask?.value
         commandLoopTask = nil
+        activeCommandLoopPaths = nil
         AgtmuxManagedDaemonRuntime.setBootstrapResolvedTmuxSocketPath(nil)
 
         guard env["AGTMUX_UITEST"] == "1" else { return }
@@ -325,6 +338,22 @@ final class UITestTmuxBridge {
                 ["kill-server"],
                 source: "local"
             )
+        }
+    }
+
+    private func startBridgeActivationMonitorIfNeeded() {
+        guard bridgeActivationMonitorTask == nil else { return }
+
+        bridgeActivationMonitorTask = Task.detached(priority: .background) { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                await MainActor.run {
+                    guard self.bridgeEnabled else { return }
+                    uiTestBridgeDebugLog("bridgeActivationMonitor reconciling command loop after runtime config update")
+                    self.startCommandLoopIfNeeded()
+                }
+                try? await Task.sleep(for: .milliseconds(250))
+            }
         }
     }
 
@@ -426,11 +455,25 @@ final class UITestTmuxBridge {
     }
 
     private func startCommandLoopIfNeeded() {
-        guard commandLoopTask == nil else { return }
         guard let commandURL = commandURL, let responseURL = commandResponseURL else {
             uiTestBridgeDebugLog("startCommandLoopIfNeeded missing command paths")
             return
         }
+        let requestedPaths = (command: commandURL.path, response: responseURL.path)
+        if commandLoopTask != nil,
+           let activeCommandLoopPaths,
+           activeCommandLoopPaths.command == requestedPaths.command,
+           activeCommandLoopPaths.response == requestedPaths.response {
+            return
+        }
+        if commandLoopTask != nil {
+            uiTestBridgeDebugLog(
+                "startCommandLoopIfNeeded restarting command loop for new paths commandURL=\(commandURL.path) responseURL=\(responseURL.path)"
+            )
+            commandLoopTask?.cancel()
+            commandLoopTask = nil
+        }
+        activeCommandLoopPaths = requestedPaths
         uiTestBridgeDebugLog("startCommandLoopIfNeeded commandURL=\(commandURL.path) responseURL=\(responseURL.path)")
 
         commandLoopTask = Task.detached(priority: .userInitiated) { [weak self] in
@@ -599,6 +642,10 @@ final class UITestTmuxBridge {
                 stdout = String(decoding: data, as: UTF8.self)
             case sampleTerminalViewportTextCommand:
                 let snapshot = try await sampleTerminalViewportText(request.args)
+                let data = try JSONEncoder().encode(snapshot)
+                stdout = String(decoding: data, as: UTF8.self)
+            case measureTerminalScrollBurstCommand:
+                let snapshot = try await measureTerminalScrollBurst(request.args)
                 let data = try JSONEncoder().encode(snapshot)
                 stdout = String(decoding: data, as: UTF8.self)
             case bridgeReadyCommand:
@@ -1620,6 +1667,133 @@ final class UITestTmuxBridge {
         return TerminalViewportTextSamplingSnapshot(samples: samples)
     }
 
+    func measureTerminalScrollBurstForTesting(
+        tileID: UUID,
+        verticalDelta: Double,
+        repeatCount: Int,
+        intervalMilliseconds: Int,
+        sampleCount: Int,
+        sampleIntervalMilliseconds: Int,
+        phaseMode: TrackpadScrollPhaseMode
+    ) async throws -> TerminalScrollBurstMeasurementSnapshot {
+        guard repeatCount > 0 else {
+            throw NSError(
+                domain: "UITestTmuxBridge",
+                code: 53,
+                userInfo: [NSLocalizedDescriptionKey: "repeatCount must be greater than zero"]
+            )
+        }
+        guard intervalMilliseconds >= 0 else {
+            throw NSError(
+                domain: "UITestTmuxBridge",
+                code: 54,
+                userInfo: [NSLocalizedDescriptionKey: "intervalMilliseconds must be non-negative"]
+            )
+        }
+        guard sampleCount > 0 else {
+            throw NSError(
+                domain: "UITestTmuxBridge",
+                code: 55,
+                userInfo: [NSLocalizedDescriptionKey: "sampleCount must be greater than zero"]
+            )
+        }
+        guard sampleIntervalMilliseconds >= 0 else {
+            throw NSError(
+                domain: "UITestTmuxBridge",
+                code: 56,
+                userInfo: [NSLocalizedDescriptionKey: "sampleIntervalMilliseconds must be non-negative"]
+            )
+        }
+
+        let terminalView = try terminalView(
+            for: [measureTerminalScrollBurstCommand, tileID.uuidString],
+            command: measureTerminalScrollBurstCommand
+        )
+        let syntheticEvents = TrackpadScrollPhaseProfile.syntheticSequence(
+            repeatCount: repeatCount,
+            mode: phaseMode
+        )
+        let deliveredDeltaEventCount = syntheticEvents.reduce(into: 0) { partialResult, event in
+            if event.deliversDelta {
+                partialResult += 1
+            }
+        }
+        let initialViewport = try terminalViewportTextSnapshotForTesting(tileID: tileID)
+        let sender = GhosttyTerminalView.InternalScrollInjectionSnapshot(
+            mode: "bridge-internal",
+            sent: true,
+            trusted: true,
+            precision: true,
+            phaseMode: phaseMode.rawValue,
+            scrollPixels: verticalDelta,
+            scrollRepeat: repeatCount,
+            scrollIntervalMs: intervalMilliseconds,
+            deliveredEventCount: syntheticEvents.count,
+            deliveredDeltaEventCount: deliveredDeltaEventCount,
+            usesAlternateScroll: initialViewport.usesAlternateScroll
+        )
+
+        let clock = ContinuousClock()
+        let start = clock.now
+        let injectionStart = start + .milliseconds(20)
+        let startUptime = ProcessInfo.processInfo.systemUptime
+        var samples: [TerminalViewportTextSampleSnapshot] = []
+        samples.reserveCapacity(sampleCount)
+
+        var nextEventIndex = 0
+        var nextSampleIndex = 0
+
+        while nextEventIndex < syntheticEvents.count || nextSampleIndex < sampleCount {
+            let nextEventDue: ContinuousClock.Instant? = if nextEventIndex < syntheticEvents.count {
+                injectionStart + .milliseconds(nextEventIndex * intervalMilliseconds)
+            } else {
+                nil
+            }
+            let nextSampleDue: ContinuousClock.Instant? = if nextSampleIndex < sampleCount {
+                start + .milliseconds(nextSampleIndex * sampleIntervalMilliseconds)
+            } else {
+                nil
+            }
+            let nextDue = [nextEventDue, nextSampleDue].compactMap { $0 }.min()
+            if let nextDue, clock.now < nextDue {
+                try await Task.sleep(until: nextDue, tolerance: .milliseconds(1), clock: clock)
+            }
+
+            let currentInstant = clock.now
+            while nextEventIndex < syntheticEvents.count {
+                let eventDue = injectionStart + .milliseconds(nextEventIndex * intervalMilliseconds)
+                guard currentInstant >= eventDue else { break }
+                let event = syntheticEvents[nextEventIndex]
+                terminalView.injectTrackpadScrollStepForTesting(
+                    verticalDelta: event.deliversDelta ? verticalDelta : 0,
+                    phase: event.phase,
+                    momentumPhase: event.momentumPhase
+                )
+                nextEventIndex += 1
+            }
+
+            while nextSampleIndex < sampleCount {
+                let sampleDue = start + .milliseconds(nextSampleIndex * sampleIntervalMilliseconds)
+                guard currentInstant >= sampleDue else { break }
+                let snapshot = try terminalViewportTextSnapshotForTesting(tileID: tileID)
+                let elapsedMs = (ProcessInfo.processInfo.systemUptime - startUptime) * 1000.0
+                samples.append(
+                    TerminalViewportTextSampleSnapshot(
+                        sampleIndex: nextSampleIndex,
+                        elapsedMs: elapsedMs,
+                        snapshot: snapshot
+                    )
+                )
+                nextSampleIndex += 1
+            }
+        }
+
+        return TerminalScrollBurstMeasurementSnapshot(
+            sender: sender,
+            sampling: TerminalViewportTextSamplingSnapshot(samples: samples)
+        )
+    }
+
     private func dumpTerminalViewportText(_ args: [String]) throws -> GhosttyTerminalView.ViewportTextSnapshot {
         let tileID = try tileID(from: args, command: dumpTerminalViewportTextCommand)
         return try terminalViewportTextSnapshotForTesting(tileID: tileID)
@@ -1657,6 +1831,73 @@ final class UITestTmuxBridge {
             tileID: tileID,
             sampleCount: sampleCount,
             intervalMilliseconds: intervalMs
+        )
+    }
+
+    private func measureTerminalScrollBurst(_ args: [String]) async throws -> TerminalScrollBurstMeasurementSnapshot {
+        guard args.count >= 8 else {
+            throw NSError(
+                domain: "UITestTmuxBridge",
+                code: 57,
+                userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "\(measureTerminalScrollBurstCommand) requires <tileID> <verticalDelta> <repeatCount> <intervalMs> <sampleCount> <sampleIntervalMs> <phaseMode>"
+                ]
+            )
+        }
+
+        let tileID = try tileID(from: args, command: measureTerminalScrollBurstCommand)
+        guard let verticalDelta = Double(args[2]) else {
+            throw NSError(
+                domain: "UITestTmuxBridge",
+                code: 58,
+                userInfo: [NSLocalizedDescriptionKey: "Invalid verticalDelta: \(args[2])"]
+            )
+        }
+        guard let repeatCount = Int(args[3]) else {
+            throw NSError(
+                domain: "UITestTmuxBridge",
+                code: 59,
+                userInfo: [NSLocalizedDescriptionKey: "Invalid repeatCount: \(args[3])"]
+            )
+        }
+        guard let intervalMs = Int(args[4]) else {
+            throw NSError(
+                domain: "UITestTmuxBridge",
+                code: 60,
+                userInfo: [NSLocalizedDescriptionKey: "Invalid intervalMs: \(args[4])"]
+            )
+        }
+        guard let sampleCount = Int(args[5]) else {
+            throw NSError(
+                domain: "UITestTmuxBridge",
+                code: 61,
+                userInfo: [NSLocalizedDescriptionKey: "Invalid sampleCount: \(args[5])"]
+            )
+        }
+        guard let sampleIntervalMs = Int(args[6]) else {
+            throw NSError(
+                domain: "UITestTmuxBridge",
+                code: 62,
+                userInfo: [NSLocalizedDescriptionKey: "Invalid sampleIntervalMs: \(args[6])"]
+            )
+        }
+        guard let phaseMode = TrackpadScrollPhaseMode(rawValue: args[7]) else {
+            throw NSError(
+                domain: "UITestTmuxBridge",
+                code: 63,
+                userInfo: [NSLocalizedDescriptionKey: "Invalid phaseMode: \(args[7])"]
+            )
+        }
+
+        return try await measureTerminalScrollBurstForTesting(
+            tileID: tileID,
+            verticalDelta: verticalDelta,
+            repeatCount: repeatCount,
+            intervalMilliseconds: intervalMs,
+            sampleCount: sampleCount,
+            sampleIntervalMilliseconds: sampleIntervalMs,
+            phaseMode: phaseMode
         )
     }
 

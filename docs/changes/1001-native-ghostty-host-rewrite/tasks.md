@@ -41,6 +41,8 @@
 - [x] keep the rewrite branch full UI suite green while `next` host work is in
   flight
 - [x] forbid destructive default-local tmux bootstrap in live perf harnesses
+- [x] add bridge-internal scroll burst measurement for same-app live diagnostics
+- [x] rebind UITest bridge command-loop paths after runtime defaults changes
 - [ ] realistic loaded live-pane parity gate for the next host
 - [ ] durable-knowledge promotion
 - [ ] remove `docs/changes/1001-native-ghostty-host-rewrite/` before merge

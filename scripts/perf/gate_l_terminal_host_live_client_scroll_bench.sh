@@ -36,6 +36,7 @@ open_retry_count="${AGTMUX_PERF_LIVE_OPEN_RETRY_COUNT:-3}"
 open_retry_sleep_ms="${AGTMUX_PERF_LIVE_OPEN_RETRY_SLEEP_MS:-400}"
 refresh_inventory_before_open="${AGTMUX_PERF_LIVE_REFRESH_INVENTORY_BEFORE_OPEN:-0}"
 skip_bridge_host_mode_set="${AGTMUX_PERF_LIVE_SKIP_BRIDGE_HOST_MODE_SET:-0}"
+use_internal_scroll_measurement="${AGTMUX_PERF_LIVE_USE_INTERNAL_SCROLL_MEASUREMENT:-1}"
 agtmux_cli_bin="${AGTMUX_PERF_AGTMUX_BIN:-${AGTMUX_BIN:-$GATE_L_ROOT/../agtmux/target/release/agtmux}}"
 switch_to_host_mode="${AGTMUX_PERF_LIVE_SWITCH_TO_HOST_MODE:-}"
 reprime_after_switch="${AGTMUX_PERF_LIVE_REPRIME_AFTER_SWITCH:-0}"
@@ -81,6 +82,23 @@ function extract_last_json_line() {
 function sleep_ms() {
   local milliseconds="$1"
   sleep "$(awk -v ms="$milliseconds" 'BEGIN { printf "%.3f", (ms / 1000.0) }')"
+}
+
+function assert_sender_succeeded() {
+  local json_path="$1"
+  local context="$2"
+
+  if ! jq -e '.sent == true' "$json_path" >/dev/null 2>&1; then
+    echo "Scroll sender failed during $context" >&2
+    cat "$json_path" >&2
+    return 1
+  fi
+
+  if jq -e 'has("trusted") and .trusted != true' "$json_path" >/dev/null 2>&1; then
+    echo "Scroll sender was not trusted during $context" >&2
+    cat "$json_path" >&2
+    return 1
+  fi
 }
 
 function resolve_live_pane_target_via_daemon_cli() {
@@ -304,6 +322,27 @@ function send_prime_scroll() {
   fi
 }
 
+function measure_internal_scroll_burst() {
+  local tile_id="$1"
+  local scroll_pixels="$2"
+  local scroll_repeat="$3"
+  local scroll_interval="$4"
+  local sample_count="$5"
+  local sample_interval="$6"
+  local phase_mode="$7"
+  local timeout="$8"
+
+  gate_l_send_bridge_json_command false "$timeout" \
+    "__agtmux_measure_terminal_scroll_burst__" \
+    "$tile_id" \
+    "$scroll_pixels" \
+    "$scroll_repeat" \
+    "$scroll_interval" \
+    "$sample_count" \
+    "$sample_interval" \
+    "$phase_mode"
+}
+
 function measure_live_scroll_burst() {
   local label="$1"
   local tile_id="$2"
@@ -319,6 +358,7 @@ function measure_live_scroll_burst() {
   local viewport_sample_json_path="$gate_l_tmpdir/${prefix}-viewport-samples.json"
   local viewport_metrics_json_path="$gate_l_tmpdir/${prefix}-viewport-metrics.json"
   local send_json_path="$gate_l_tmpdir/${prefix}-send.json"
+  local measurement_json_path="$gate_l_tmpdir/${prefix}-measurement.json"
   local summary_json_path="$gate_l_tmpdir/${prefix}-summary.json"
   local focus_json=""
   local baseline_viewport_json=""
@@ -341,44 +381,61 @@ function measure_live_scroll_burst() {
 
   local sample_count
   sample_count="$(viewport_sample_count)"
-  local sample_request_id
-  sample_request_id="$(gate_l_start_async_bridge_command false "__agtmux_sample_terminal_viewport_text__" "$tile_id" "$sample_count" "$sample_interval_ms")"
-  sleep_ms 20
-  if [[ "$use_scroll_identifier" == "1" ]]; then
-    "$SCRIPT_DIR/gate_l_ax_key_sender.sh" \
-      --app-pid "$gate_l_app_pid" \
-      --scroll-identifier "$terminal_ax_identifier" \
-      --x-frac "$scroll_x_frac" \
-      --y-frac "$scroll_y_frac" \
-      --scroll-pixels "$scroll_pixels_per_event" \
-      --scroll-repeat "$events_per_burst" \
-      --scroll-interval-ms "$scroll_interval_ms" \
-      --scroll-phase-mode "$scroll_phase_mode" >"$send_json_path" 2>"$bench_stderr_path"
-  else
-    "$SCRIPT_DIR/gate_l_ax_key_sender.sh" \
-      --app-pid "$gate_l_app_pid" \
-      --scroll-front-window \
-      --x-frac "$scroll_x_frac" \
-      --y-frac "$scroll_y_frac" \
-      --scroll-pixels "$scroll_pixels_per_event" \
-      --scroll-repeat "$events_per_burst" \
-      --scroll-interval-ms "$scroll_interval_ms" \
-      --scroll-phase-mode "$scroll_phase_mode" >"$send_json_path" 2>"$bench_stderr_path"
-  fi
-  mark_stage "${prefix}-bench-done"
-
   local sample_timeout
   sample_timeout="$(
     awk -v count="$sample_count" -v interval="$sample_interval_ms" 'BEGIN {
       printf "%.3f", ((count * interval) / 1000.0) + 5.0
     }'
   )"
-  if gate_l_wait_for_async_bridge_json_result "$sample_request_id" "$sample_timeout" >"$viewport_sample_json_path"; then
-    python3 "$STEP_METRICS_PY" "$viewport_sample_json_path" >"$viewport_metrics_json_path"
+  if [[ "$use_internal_scroll_measurement" == "1" ]]; then
+    measure_internal_scroll_burst \
+      "$tile_id" \
+      "$scroll_pixels_per_event" \
+      "$events_per_burst" \
+      "$scroll_interval_ms" \
+      "$sample_count" \
+      "$sample_interval_ms" \
+      "$scroll_phase_mode" \
+      "$sample_timeout" >"$measurement_json_path"
+    jq '.sender' "$measurement_json_path" >"$send_json_path"
+    jq '.sampling' "$measurement_json_path" >"$viewport_sample_json_path"
+    assert_sender_succeeded "$send_json_path" "${prefix}-internal-measurement"
   else
-    printf '%s\n' '{}' >"$viewport_sample_json_path"
-    printf '%s\n' '{}' >"$viewport_metrics_json_path"
+    local sample_request_id
+    sample_request_id="$(gate_l_start_async_bridge_command false "__agtmux_sample_terminal_viewport_text__" "$tile_id" "$sample_count" "$sample_interval_ms")"
+    sleep_ms 20
+    if [[ "$use_scroll_identifier" == "1" ]]; then
+      "$SCRIPT_DIR/gate_l_ax_key_sender.sh" \
+        --app-pid "$gate_l_app_pid" \
+        --scroll-identifier "$terminal_ax_identifier" \
+        --x-frac "$scroll_x_frac" \
+        --y-frac "$scroll_y_frac" \
+        --scroll-pixels "$scroll_pixels_per_event" \
+        --scroll-repeat "$events_per_burst" \
+        --scroll-interval-ms "$scroll_interval_ms" \
+        --scroll-phase-mode "$scroll_phase_mode" >"$send_json_path" 2>"$bench_stderr_path"
+    else
+      "$SCRIPT_DIR/gate_l_ax_key_sender.sh" \
+        --app-pid "$gate_l_app_pid" \
+        --scroll-front-window \
+        --x-frac "$scroll_x_frac" \
+        --y-frac "$scroll_y_frac" \
+        --scroll-pixels "$scroll_pixels_per_event" \
+        --scroll-repeat "$events_per_burst" \
+        --scroll-interval-ms "$scroll_interval_ms" \
+        --scroll-phase-mode "$scroll_phase_mode" >"$send_json_path" 2>"$bench_stderr_path"
+    fi
+    assert_sender_succeeded "$send_json_path" "${prefix}-ax-sender"
+    if ! gate_l_wait_for_async_bridge_json_result "$sample_request_id" "$sample_timeout" >"$viewport_sample_json_path"; then
+      printf '%s\n' '{}' >"$viewport_sample_json_path"
+      printf '%s\n' '{}' >"$viewport_metrics_json_path"
+      echo "Failed to collect viewport samples for $prefix" >&2
+      return 1
+    fi
   fi
+  mark_stage "${prefix}-bench-done"
+
+  python3 "$STEP_METRICS_PY" "$viewport_sample_json_path" >"$viewport_metrics_json_path"
   mark_stage "${prefix}-viewport-samples-done"
 
   if final_viewport_json="$(gate_l_send_bridge_json_command false 5 "__agtmux_dump_terminal_viewport_text__" "$tile_id" 2>"$gate_l_tmpdir/${prefix}-final-viewport.last-error.log")"; then
@@ -409,6 +466,7 @@ function measure_live_scroll_burst() {
     --argjson sample_tail_ms "$sample_tail_ms" \
     --argjson scroll_interval_ms "$scroll_interval_ms" \
     --arg use_scroll_identifier "$use_scroll_identifier" \
+    --arg use_internal_scroll_measurement "$use_internal_scroll_measurement" \
     --arg terminal_ax_identifier "$terminal_ax_identifier" \
     --slurpfile focus "$focus_json_path" \
     --slurpfile sender "$send_json_path" \
@@ -423,7 +481,7 @@ function measure_live_scroll_burst() {
         scrollIntervalMs: $scroll_interval_ms,
         sampleIntervalMs: $sample_interval_ms,
         sampleTailMs: $sample_tail_ms,
-        scrollTargetMode: (if $use_scroll_identifier == "1" then "identifier" else "front-window" end),
+        scrollTargetMode: (if $use_internal_scroll_measurement == "1" then "bridge-internal" elif $use_scroll_identifier == "1" then "identifier" else "front-window" end),
         terminalAccessibilityIdentifier: (if $terminal_ax_identifier == "" then null else $terminal_ax_identifier end)
       },
       focus: $focus[0],
@@ -468,6 +526,7 @@ function prepare_live_viewport() {
   local sample_request_id
   local prime_sample_json_path=""
   local prime_metrics_json_path=""
+  local prime_measurement_json_path=""
   local changed_sample_count=0
 
   prime_sample_count="$(viewport_sample_count "$prime_scroll_repeat" "$prime_scroll_interval_ms" "$sample_tail_ms" "$sample_interval_ms")"
@@ -477,12 +536,29 @@ function prepare_live_viewport() {
     round=$((round + 1))
     prime_sample_json_path="$gate_l_tmpdir/prime-viewport-samples.$round.json"
     prime_metrics_json_path="$gate_l_tmpdir/prime-viewport-metrics.$round.json"
-    sample_request_id="$(gate_l_start_async_bridge_command false "__agtmux_sample_terminal_viewport_text__" "$tile_id" "$prime_sample_count" "$sample_interval_ms")"
-    sleep_ms 20
-    send_prime_scroll "$terminal_ax_identifier" "$scroll_point_x" "$scroll_point_y" >"$gate_l_tmpdir/prime-send.$round.json"
-    if ! gate_l_wait_for_async_bridge_json_result "$sample_request_id" "$sample_timeout" >"$prime_sample_json_path"; then
-      echo "Failed to collect prime viewport samples for host mode $host_mode" >&2
-      return 1
+    if [[ "$use_internal_scroll_measurement" == "1" ]]; then
+      prime_measurement_json_path="$gate_l_tmpdir/prime-measurement.$round.json"
+      measure_internal_scroll_burst \
+        "$tile_id" \
+        "$prime_scroll_pixels" \
+        "$prime_scroll_repeat" \
+        "$prime_scroll_interval_ms" \
+        "$prime_sample_count" \
+        "$sample_interval_ms" \
+        "$prime_scroll_phase_mode" \
+        "$sample_timeout" >"$prime_measurement_json_path"
+      jq '.sender' "$prime_measurement_json_path" >"$gate_l_tmpdir/prime-send.$round.json"
+      jq '.sampling' "$prime_measurement_json_path" >"$prime_sample_json_path"
+      assert_sender_succeeded "$gate_l_tmpdir/prime-send.$round.json" "prime-round-$round"
+    else
+      sample_request_id="$(gate_l_start_async_bridge_command false "__agtmux_sample_terminal_viewport_text__" "$tile_id" "$prime_sample_count" "$sample_interval_ms")"
+      sleep_ms 20
+      send_prime_scroll "$terminal_ax_identifier" "$scroll_point_x" "$scroll_point_y" >"$gate_l_tmpdir/prime-send.$round.json"
+      assert_sender_succeeded "$gate_l_tmpdir/prime-send.$round.json" "prime-round-$round"
+      if ! gate_l_wait_for_async_bridge_json_result "$sample_request_id" "$sample_timeout" >"$prime_sample_json_path"; then
+        echo "Failed to collect prime viewport samples for host mode $host_mode" >&2
+        return 1
+      fi
     fi
     python3 "$STEP_METRICS_PY" "$prime_sample_json_path" >"$prime_metrics_json_path"
     changed_sample_count="$(jq -r '.summary.changed_sample_count // 0' "$prime_metrics_json_path")"

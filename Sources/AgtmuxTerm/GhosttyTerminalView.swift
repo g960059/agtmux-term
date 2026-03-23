@@ -121,6 +121,20 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         let usesAlternateScroll: Bool
     }
 
+    struct InternalScrollInjectionSnapshot: Codable, Equatable {
+        let mode: String
+        let sent: Bool
+        let trusted: Bool
+        let precision: Bool
+        let phaseMode: String
+        let scrollPixels: Double
+        let scrollRepeat: Int
+        let scrollIntervalMs: Int
+        let deliveredEventCount: Int
+        let deliveredDeltaEventCount: Int
+        let usesAlternateScroll: Bool
+    }
+
     private enum ScrollVerticalDirection: Equatable {
         case up
         case down
@@ -895,56 +909,97 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     }
 
     override func scrollWheel(with event: NSEvent) {
+        dispatchScrollInput(
+            horizontalDelta: event.scrollingDeltaX,
+            verticalDelta: event.scrollingDeltaY,
+            precision: event.hasPreciseScrollingDeltas,
+            phase: event.phase,
+            momentumPhase: event.momentumPhase
+        )
+    }
+
+    @MainActor
+    func injectTrackpadScrollStepForTesting(
+        horizontalDelta: Double = 0,
+        verticalDelta: Double,
+        precision: Bool = true,
+        phase: NSEvent.Phase,
+        momentumPhase: NSEvent.Phase
+    ) {
+        dispatchScrollInput(
+            horizontalDelta: horizontalDelta,
+            verticalDelta: verticalDelta,
+            precision: precision,
+            phase: phase,
+            momentumPhase: momentumPhase
+        )
+    }
+
+    private func dispatchScrollInput(
+        horizontalDelta rawHorizontalDelta: Double,
+        verticalDelta rawVerticalDelta: Double,
+        precision: Bool,
+        phase: NSEvent.Phase,
+        momentumPhase: NSEvent.Phase
+    ) {
         guard let surface else { return }
         let handlerStartUptime = ProcessInfo.processInfo.systemUptime
         // Pass deltas raw — Ghostty expects the same sign convention as
         // NSEvent.scrollingDeltaY (positive = up). Negating was inverting scroll.
-        var x = event.scrollingDeltaX
-        var y = event.scrollingDeltaY
+        var horizontalDelta = rawHorizontalDelta
+        var verticalDelta = rawVerticalDelta
         let usesAlternateScroll = ghostty_surface_uses_alternate_scroll(surface)
-        // Match Ghostty's own SurfaceView: 2x multiplier for trackpad precision.
-        if event.hasPreciseScrollingDeltas {
+        if precision {
             let precisionMultiplier = Self.precisionScrollMultiplier(
                 usesAlternateScroll: usesAlternateScroll,
-                phase: event.phase,
-                momentumPhase: event.momentumPhase
+                phase: phase,
+                momentumPhase: momentumPhase
             )
-            x *= precisionMultiplier
-            y *= precisionMultiplier
+            horizontalDelta *= precisionMultiplier
+            verticalDelta *= precisionMultiplier
         }
         noteScrollInputTelemetry(
-            precision: event.hasPreciseScrollingDeltas,
-            phase: event.phase,
-            momentumPhase: event.momentumPhase,
-            verticalDelta: y
+            precision: precision,
+            phase: phase,
+            momentumPhase: momentumPhase,
+            verticalDelta: verticalDelta
         )
         updateScrollPresentationGestureState(
-            precision: event.hasPreciseScrollingDeltas,
-            phase: event.phase,
-            momentumPhase: event.momentumPhase,
-            verticalDelta: y
+            precision: precision,
+            phase: phase,
+            momentumPhase: momentumPhase,
+            verticalDelta: verticalDelta
         )
         updatePreciseAlternateScrollDirtyDrawEligibility(
             usesAlternateScroll: usesAlternateScroll,
-            precision: event.hasPreciseScrollingDeltas,
-            phase: event.phase,
-            momentumPhase: event.momentumPhase,
-            verticalDelta: y,
+            precision: precision,
+            phase: phase,
+            momentumPhase: momentumPhase,
+            verticalDelta: verticalDelta,
             now: handlerStartUptime
         )
         updateRendererOwnedRenderCallbackEligibility(
             usesAlternateScroll: usesAlternateScroll,
-            precision: event.hasPreciseScrollingDeltas,
-            verticalDelta: y,
+            precision: precision,
+            verticalDelta: verticalDelta,
             now: handlerStartUptime
         )
-        let scrollMods = GhosttyInput.toScrollMods(event)
+        let scrollMods = GhosttyInput.packedScrollMods(
+            precision: precision,
+            momentumPhase: momentumPhase,
+            phase: phase
+        )
         let dispatchStartUptime = ProcessInfo.processInfo.systemUptime
-        ghostty_surface_mouse_scroll(surface, x, y, scrollMods)
+        ghostty_surface_mouse_scroll(
+            surface,
+            horizontalDelta,
+            verticalDelta,
+            scrollMods
+        )
         let dispatchEndUptime = ProcessInfo.processInfo.systemUptime
         let hostScrollPresentationEnabled = shouldUseHostScrollPresentation(
             usesAlternateScroll: usesAlternateScroll,
-            precision: event.hasPreciseScrollingDeltas
+            precision: precision
         )
         if hostScrollPresentationEnabled {
             scheduleScrollPresentationDrawIfNeeded()

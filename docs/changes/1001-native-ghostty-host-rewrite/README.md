@@ -203,3 +203,19 @@ Current state:
   - instead it promotes the existing fallback controller/surface to the real
     pane key, removing one blank handoff during bootstrap on loaded local
     workbenches
+- live rewrite diagnostics now have stronger same-app plumbing:
+  - `UITestTmuxBridge` can synthesize an internal trackpad burst directly
+    against a registered `GhosttyTerminalView` and sample viewport text in the
+    same command, so fresh/live diagnosis no longer depends on external AX
+    sender trust
+  - that internal path proved the durable negative result more cleanly:
+    fresh-mounted normal-screen panes can still record `changed_sample_count =
+    0` even when scroll delivery is fully in-process
+  - the real blocker therefore remains "fresh mount does not reproduce the
+    already-loaded live history path", not external AX hit-testing
+  - the bridge activation monitor now reconciles command-loop paths while the
+    bridge stays enabled, so same-running app diagnostics can rotate
+    `UITestTmuxCommandPath` / `UITestTmuxCommandResultPath` after launch
+  - a focused regression now covers that rebind behavior, and a rebuilt
+    installed app responds on both the first and second temp command paths in
+    a same-running attach check

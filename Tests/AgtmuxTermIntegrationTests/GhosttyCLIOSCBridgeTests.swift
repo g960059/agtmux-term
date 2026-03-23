@@ -2336,6 +2336,56 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
     }
 
     @MainActor
+    func testUITestTmuxBridgeMeasuresInternalTerminalScrollBurst() async throws {
+        SurfacePool.shared.resetForTesting()
+        defer { SurfacePool.shared.resetForTesting() }
+
+        let tileID = UUID()
+        let view = GhosttyTerminalViewScrollInjectionSpy()
+        SurfacePool.shared.register(
+            view: view,
+            leafID: tileID,
+            tmuxPaneID: "%33",
+            surfaceHandle: GhosttySurfaceHandle(rawValue: 0x633)
+        )
+
+        let bridge = UITestTmuxBridge(
+            viewModel: AppViewModel(
+                hostsConfig: HostsConfig(hosts: [])
+            ),
+            env: [:]
+        )
+
+        let measurement = try await bridge.measureTerminalScrollBurstForTesting(
+            tileID: tileID,
+            verticalDelta: 10,
+            repeatCount: 4,
+            intervalMilliseconds: 0,
+            sampleCount: 1,
+            sampleIntervalMilliseconds: 0,
+            phaseMode: .trackpadBurst
+        )
+
+        XCTAssertEqual(measurement.sender.mode, "bridge-internal")
+        XCTAssertTrue(measurement.sender.sent)
+        XCTAssertTrue(measurement.sender.trusted)
+        XCTAssertEqual(measurement.sender.scrollRepeat, 4)
+        XCTAssertEqual(measurement.sender.deliveredEventCount, 5)
+        XCTAssertEqual(measurement.sender.deliveredDeltaEventCount, 4)
+        XCTAssertEqual(measurement.sampling.samples.count, 1)
+        XCTAssertEqual(
+            view.injectedSteps,
+            [
+                .init(verticalDelta: 10, phase: .began, momentumPhase: [], precision: true),
+                .init(verticalDelta: 10, phase: .changed, momentumPhase: [], precision: true),
+                .init(verticalDelta: 10, phase: .changed, momentumPhase: [], precision: true),
+                .init(verticalDelta: 10, phase: .changed, momentumPhase: [], precision: true),
+                .init(verticalDelta: 0, phase: .ended, momentumPhase: [], precision: true),
+            ]
+        )
+    }
+
+    @MainActor
     func testUITestTmuxBridgeWaitsForTerminalViewRegistration() async throws {
         SurfacePool.shared.resetForTesting()
         defer { SurfacePool.shared.resetForTesting() }
@@ -2553,6 +2603,119 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
         XCTAssertEqual(json["id"] as? String, requestID)
         XCTAssertEqual(json["ok"] as? Bool, true)
         XCTAssertEqual(json["stdout"] as? String, "ready")
+
+        await bridge.shutdown()
+    }
+
+    @MainActor
+    func testUITestTmuxBridgeStartsCommandLoopAfterLateUserDefaultsConfiguration() async throws {
+        let tmpdir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("uitest-bridge-late-defaults-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tmpdir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmpdir) }
+
+        let commandURL = tmpdir.appendingPathComponent("command.json")
+        let resultURL = tmpdir.appendingPathComponent("result.json")
+        let suiteName = "UITestTmuxBridgeLateDefaults-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let bridge = UITestTmuxBridge(
+            viewModel: AppViewModel(hostsConfig: HostsConfig(hosts: [])),
+            env: [:],
+            userDefaults: defaults
+        )
+
+        await bridge.startIfNeeded()
+        defaults.set(true, forKey: "UITestBridgeEnabled")
+        defaults.set(commandURL.path, forKey: "UITestTmuxCommandPath")
+        defaults.set(resultURL.path, forKey: "UITestTmuxCommandResultPath")
+
+        let requestID = UUID().uuidString
+        let request = """
+        {"id":"\(requestID)","args":["__agtmux_tmux_bridge_ready__"],"refreshInventory":false}
+        """
+        try request.write(to: commandURL, atomically: true, encoding: .utf8)
+
+        let deadline = ContinuousClock.now + .seconds(3)
+        var responseData: Data?
+        while ContinuousClock.now < deadline {
+            if let data = try? Data(contentsOf: resultURL), !data.isEmpty {
+                responseData = data
+                break
+            }
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+
+        let data = try XCTUnwrap(responseData)
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(json["id"] as? String, requestID)
+        XCTAssertEqual(json["ok"] as? Bool, true)
+        XCTAssertEqual(json["stdout"] as? String, "ready")
+
+        await bridge.shutdown()
+    }
+
+    @MainActor
+    func testUITestTmuxBridgeRebindsCommandLoopAfterCommandPathChange() async throws {
+        let tmpdir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("uitest-bridge-rebind-defaults-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tmpdir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmpdir) }
+
+        let commandURL1 = tmpdir.appendingPathComponent("command-1.json")
+        let resultURL1 = tmpdir.appendingPathComponent("result-1.json")
+        let commandURL2 = tmpdir.appendingPathComponent("command-2.json")
+        let resultURL2 = tmpdir.appendingPathComponent("result-2.json")
+        let suiteName = "UITestTmuxBridgeRebindDefaults-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        defaults.set(true, forKey: "UITestBridgeEnabled")
+        defaults.set(commandURL1.path, forKey: "UITestTmuxCommandPath")
+        defaults.set(resultURL1.path, forKey: "UITestTmuxCommandResultPath")
+
+        let bridge = UITestTmuxBridge(
+            viewModel: AppViewModel(hostsConfig: HostsConfig(hosts: [])),
+            env: [:],
+            userDefaults: defaults
+        )
+
+        await bridge.startIfNeeded()
+
+        func writeReadyRequest(to commandURL: URL, requestID: String) throws {
+            let request = """
+            {"id":"\(requestID)","args":["__agtmux_tmux_bridge_ready__"],"refreshInventory":false}
+            """
+            try request.write(to: commandURL, atomically: true, encoding: .utf8)
+        }
+
+        func waitForReadyResponse(at resultURL: URL, requestID: String, timeoutSeconds: Double) async throws {
+            let deadline = ContinuousClock.now + .seconds(timeoutSeconds)
+            while ContinuousClock.now < deadline {
+                if let data = try? Data(contentsOf: resultURL), !data.isEmpty {
+                    let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+                    if json["id"] as? String == requestID {
+                        XCTAssertEqual(json["ok"] as? Bool, true)
+                        XCTAssertEqual(json["stdout"] as? String, "ready")
+                        return
+                    }
+                }
+                try? await Task.sleep(for: .milliseconds(20))
+            }
+            XCTFail("Timed out waiting for response \(requestID) at \(resultURL.path)")
+        }
+
+        let requestID1 = UUID().uuidString
+        try writeReadyRequest(to: commandURL1, requestID: requestID1)
+        try await waitForReadyResponse(at: resultURL1, requestID: requestID1, timeoutSeconds: 2)
+
+        defaults.set(commandURL2.path, forKey: "UITestTmuxCommandPath")
+        defaults.set(resultURL2.path, forKey: "UITestTmuxCommandResultPath")
+
+        let requestID2 = UUID().uuidString
+        try writeReadyRequest(to: commandURL2, requestID: requestID2)
+        try await waitForReadyResponse(at: resultURL2, requestID: requestID2, timeoutSeconds: 3)
 
         await bridge.shutdown()
     }
@@ -3293,5 +3456,34 @@ private final class GhosttyTerminalViewViewportTextSpy: GhosttyTerminalView {
             return snapshots[0]
         }
         return snapshots.removeFirst()
+    }
+}
+
+@MainActor
+private final class GhosttyTerminalViewScrollInjectionSpy: GhosttyTerminalView {
+    struct InjectedStep: Equatable {
+        let verticalDelta: Double
+        let phase: NSEvent.Phase
+        let momentumPhase: NSEvent.Phase
+        let precision: Bool
+    }
+
+    private(set) var injectedSteps: [InjectedStep] = []
+
+    override func injectTrackpadScrollStepForTesting(
+        horizontalDelta: Double,
+        verticalDelta: Double,
+        precision: Bool,
+        phase: NSEvent.Phase,
+        momentumPhase: NSEvent.Phase
+    ) {
+        injectedSteps.append(
+            InjectedStep(
+                verticalDelta: verticalDelta,
+                phase: phase,
+                momentumPhase: momentumPhase,
+                precision: precision
+            )
+        )
     }
 }
