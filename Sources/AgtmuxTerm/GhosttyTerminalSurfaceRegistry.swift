@@ -101,10 +101,12 @@ final class GhosttyTerminalSurfaceRegistry {
         let generation: UInt64
         if let existingState = statesBySurfaceHandle[surfaceHandle],
            existingState.context.tileID == context.tileID,
+           existingState.context.terminalHostMode == context.terminalHostMode,
            existingState.attachCommand == attachCommand {
             generation = existingState.generation
         } else if let previousTileState,
            previousTileState.context.tileID == context.tileID,
+           previousTileState.context.terminalHostMode == context.terminalHostMode,
            previousTileState.attachCommand == attachCommand {
             generation = previousTileState.generation
         } else {
@@ -117,10 +119,12 @@ final class GhosttyTerminalSurfaceRegistry {
             preservedClientTTY = stagedClientTTY
         } else if let existingState = statesBySurfaceHandle[surfaceHandle],
                   existingState.context.tileID == context.tileID,
+                  existingState.context.terminalHostMode == context.terminalHostMode,
                   existingState.attachCommand == attachCommand {
             preservedClientTTY = existingState.clientTTY
         } else if let previousTileState,
                   previousTileState.context.tileID == context.tileID,
+                  previousTileState.context.terminalHostMode == context.terminalHostMode,
                   previousTileState.attachCommand == attachCommand {
             preservedClientTTY = previousTileState.clientTTY
         } else {

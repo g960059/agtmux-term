@@ -26,12 +26,17 @@
   refresh path in `next`
 - [x] installed-app host-mode override via app defaults for rewrite-branch
   trials
+- [x] require true next-host leaf registration in the bridge instead of
+  accepting stale tile-level views
+- [x] treat host-mode remounts as new rendered generations in the surface
+  registry
 - [x] ignore blank persisted pane refs when deriving next-host visible-pane
   identity at startup
 - [x] let next-host persisted local terminal tiles attach during bootstrap
   before the first inventory sync completes
 - [x] keep the rewrite branch full UI suite green while `next` host work is in
   flight
+- [x] forbid destructive default-local tmux bootstrap in live perf harnesses
 - [ ] realistic loaded live-pane parity gate for the next host
 - [ ] durable-knowledge promotion
 - [ ] remove `docs/changes/1001-native-ghostty-host-rewrite/` before merge

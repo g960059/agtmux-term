@@ -120,6 +120,11 @@ scripts/perf/gate_l_ax_key_sender.sh --dry-run
   UITest-enabled agtmux-term app on the default local tmux server, opens the
   target live pane, and then runs the same frontmost live client-scroll bench
   for a specific `AGTMUX_TERMINAL_HOST_MODE`.
+- do not bootstrap tmux scenarios on the default local server:
+  - `gate_l_launch_app` now refuses that path unless you explicitly set
+    `AGTMUX_PERF_ALLOW_DEFAULT_LOCAL_TMUX_SCENARIO=1`
+  - for live default-server work, prefer the bundle/defaults path used by
+    `gate_l_launch_app_without_bootstrap`
 - that wrapper now primes the fresh client with a client-targeted `PageUp`
   before the measured wheel burst and emits `clientCommandProbe` in the JSON.
   If `clientCommandProbe.moved == true` while `changed_sample_count == 0`,

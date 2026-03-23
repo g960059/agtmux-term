@@ -141,6 +141,45 @@ final class GhosttyTerminalSurfaceRegistryTests: XCTestCase {
         XCTAssertEqual(renderedState.generation, 1)
     }
 
+    @MainActor
+    func testHostModeChangeAdvancesGenerationAndDropsPreservedClientTTY() throws {
+        let registry = GhosttyTerminalSurfaceRegistry()
+        let tileID = UUID()
+        let legacyHandle = GhosttySurfaceHandle(rawValue: 0x601)
+        let nextHandle = GhosttySurfaceHandle(rawValue: 0x602)
+        let sessionRef = SessionRef(target: .local, sessionName: "main")
+
+        registry.register(
+            surfaceHandle: legacyHandle,
+            context: GhosttyTerminalSurfaceContext(
+                workbenchID: UUID(),
+                tileID: tileID,
+                surfaceKey: "workbench-v2:main",
+                sessionRef: sessionRef,
+                terminalHostMode: .legacy
+            ),
+            attachCommand: "tmux attach-session -t main"
+        )
+        try registry.register(clientTTY: "/dev/ttys019", forSurfaceHandle: legacyHandle)
+
+        registry.register(
+            surfaceHandle: nextHandle,
+            context: GhosttyTerminalSurfaceContext(
+                workbenchID: UUID(),
+                tileID: tileID,
+                surfaceKey: "workbench-v2:main",
+                sessionRef: sessionRef,
+                terminalHostMode: .next
+            ),
+            attachCommand: "tmux attach-session -t main"
+        )
+
+        let renderedState = try XCTUnwrap(registry.renderedState(forTileID: tileID))
+        XCTAssertEqual(renderedState.context.terminalHostMode, .next)
+        XCTAssertEqual(renderedState.generation, 2)
+        XCTAssertNil(renderedState.clientTTY)
+    }
+
     private func makeContext(
         tileID: UUID,
         target: TargetRef,

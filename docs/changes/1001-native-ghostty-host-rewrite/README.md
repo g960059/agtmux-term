@@ -58,6 +58,20 @@ Current state:
 - the perf harness now disables inherited shell xtrace when sourcing
   `gate_l_common.sh`, because machine-readable JSON payloads such as
   `active-target.json` were occasionally polluted by stray `output=''` prefixes
+- the next-host bridge/runtime now treats leaf ownership more strictly:
+  - `UITestTmuxBridge` no longer resolves `next` host terminal view lookups by
+    falling back to the tile UUID before an active leaf is published
+  - `waitForTerminalViewRegistration`, viewport dumps, and focus-state lookups
+    now wait for a true `TerminalHostActiveSurfaceRegistry` leaf on `next`
+    instead of accidentally accepting a stale legacy tile-level view
+  - `activeTerminalTargetSnapshot` can still fall back to the focused rendered
+    tile during bootstrap, but the returned `terminalHostMode` now comes from
+    the rendered surface context rather than the runtime override alone
+- `GhosttyTerminalSurfaceRegistry` now treats a host-mode remount on the same
+  tile as a new rendered generation:
+  - same-command `legacy -> next` or `next -> legacy` remounts no longer
+    preserve `generation` or `clientTTY`
+  - this removes one stale-state seam during loaded-tile host-mode switches
 - the realistic live client-scroll gate now has a host-mode wrapper:
   - `gate_l_terminal_host_live_client_scroll_bench.sh` launches a fresh app in
     either `legacy` or `next` mode and measures the live pane path
@@ -73,6 +87,14 @@ Current state:
   - it no longer depends on tmux client `scroll_position` / `list-clients` /
     `display-message` during the measured run, because the user's default live
     tmux server can block those commands
+  - destructive bootstrap against the default local tmux server is now
+    explicitly forbidden:
+    - `gate_l_launch_app` refuses to run a UITest bootstrap scenario on the
+      default local server unless an explicit override is set
+    - `gate_l_launch_app_without_bootstrap` now forces `bridge_config_mode=
+      defaults` whenever it targets the default local server, so live wrapper
+      runs use a normal persisted app launch instead of an env-driven UITest
+      app that could mutate the user's server
   - the measured run now uses the bridge viewport sampler as ground truth and
     sends the wheel burst directly with `gate_l_ax_key_sender.sh`
   - the bridge now also has a local `paneID` inventory fallback before

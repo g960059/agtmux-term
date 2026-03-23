@@ -670,11 +670,13 @@ open_json_path="$gate_l_tmpdir/open-terminal.json"
 active_json_path="$gate_l_tmpdir/active-target.json"
 retarget_json_path="$gate_l_tmpdir/retarget-rendered-target.json"
 switch_transition_json_path="$gate_l_tmpdir/switch-transition.json"
+switch_open_json_path="$gate_l_tmpdir/switch-open-terminal.json"
 initial_summary_json_path="$gate_l_tmpdir/initial-summary.json"
 switched_summary_json_path="$gate_l_tmpdir/switched-summary.json"
 
 printf '%s\n' 'null' >"$retarget_json_path"
 printf '%s\n' 'null' >"$switch_transition_json_path"
+printf '%s\n' 'null' >"$switch_open_json_path"
 printf '%s\n' 'null' >"$switched_summary_json_path"
 
 if [[ "$use_active_target" == "1" ]]; then
@@ -862,10 +864,25 @@ if [[ -n "$switch_to_host_mode" ]]; then
     echo "Bridge reported unexpected switched host mode: expected=$switch_to_host_mode got=$switched_mode" >&2
     exit 1
   fi
+  if [[ -n "$resolved_session_name" && -n "$pane_id" ]]; then
+    if switch_open_json="$(gate_l_send_bridge_json_command false 10 "__agtmux_open_terminal_for_pane__" "local" "$resolved_session_name" "$pane_id" 2>"$gate_l_tmpdir/switch-open-terminal.last-error.log")"; then
+      printf '%s\n' "$switch_open_json" >"$switch_open_json_path"
+      reopened_tile_id="$(jq -r '.tileID // empty' <<<"$switch_open_json")"
+      if [[ -n "$reopened_tile_id" ]]; then
+        tile_id="$reopened_tile_id"
+      fi
+    fi
+  fi
   switched_target_json="$(wait_for_tile_host_mode "$tile_id" "$switch_to_host_mode" "$settle_timeout")"
   printf '%s\n' "$switched_target_json" >"$switch_transition_json_path"
   wait_for_terminal_viewport_ready "$tile_id" "$settle_timeout"
   rendered_client_tty="$(jq -r '.renderedClientTTY // empty' "$switch_transition_json_path")"
+  rendered_client_pane_id="$(jq -r '.renderedClientPaneID // empty' "$switch_transition_json_path")"
+  if [[ -n "$pane_id" && "$rendered_client_pane_id" != "$pane_id" ]]; then
+    gate_l_send_bridge_command false 10 "__agtmux_focus_rendered_pane__" "$tile_id" "$pane_id" >/dev/null
+    wait_for_rendered_client_pane "$tile_id" "$pane_id" "$settle_timeout" >"$gate_l_tmpdir/switch-retarget-rendered-target.json"
+    rendered_client_tty="$(jq -r '.renderedClientTTY // empty' "$gate_l_tmpdir/switch-retarget-rendered-target.json")"
+  fi
   gate_l_send_bridge_command false 10 "__agtmux_focus_terminal_host__" "$tile_id" >/dev/null
   gate_l_activate_app
   sleep_ms "$focus_settle_ms"
@@ -905,6 +922,7 @@ jq -n \
   --slurpfile retarget "$retarget_json_path" \
   --slurpfile initial "$initial_summary_json_path" \
   --slurpfile switched "$switched_summary_json_path" \
+  --slurpfile switchOpen "$switch_open_json_path" \
   --slurpfile switchTransition "$switch_transition_json_path" \
   '($initial[0]) as $initialMeasurement |
    {
@@ -928,6 +946,7 @@ jq -n \
      open: $open[0],
      activeTarget: $active[0],
      retargetedRenderedTarget: ($retarget[0] // null),
+     switchOpen: ($switchOpen[0] // null),
      focusState: $initialMeasurement.focusState,
      postFocusState: $initialMeasurement.postFocusState,
      baselineViewport: $initialMeasurement.baselineViewport,

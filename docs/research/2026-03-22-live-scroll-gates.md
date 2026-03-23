@@ -129,11 +129,18 @@ Current limitation:
     title/command/active-pane fallback
   - plain `tmux` calls were reading the invoking shell's `TMUX` environment;
     the wrapper and sampler now force `env -u TMUX -u TMUX_PANE tmux` so they
-    always talk to the default local server
+    always talk to the intended server
   - `open_terminal_for_pane` could return before the tile registered a terminal
     view; the bridge now waits for view registration before returning
   - even after those fixes, the fresh/live wrapper is still diagnostic only
     until the loaded-pane viewport sampler produces stable, non-zero movement
+  - a more serious harness bug surfaced during live investigation:
+    - using a UITest app plus `AGTMUX_PERF_USE_DEFAULT_LOCAL_TMUX=1` could
+      bootstrap a `sleep 600` scenario on the user's default tmux server
+    - this path is now considered invalid for live work
+    - destructive default-server scenario bootstrap is now forbidden in the
+      shared harness; default-local live runs must use bundle/defaults launch
+      instead of env-driven UITest scenario launch
 
 ### Fresh host-mode live-client wrapper
 
@@ -181,6 +188,15 @@ Interpretation:
   changing visible viewport state"
 - host-mode parity on this wrapper is therefore still invalid until the gate
   can observe a genuinely loaded live pane
+- the bridge and rendered-surface registry also needed stricter host-mode
+  semantics for rewrite work:
+  - `next` host terminal-view lookups now require a published active leaf
+    instead of silently falling back to the tile UUID
+  - same-command `legacy <-> next` remounts on the same tile now advance
+    rendered generation and drop preserved `clientTTY`
+  - durable conclusion: loaded-tile host-mode switches cannot be evaluated
+    correctly unless the bridge and registry distinguish tile-level legacy
+    views from pane-owned next-host leaves
 
 ## Root Cause From Vendor Code
 

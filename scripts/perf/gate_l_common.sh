@@ -182,10 +182,17 @@ function gate_l_launch_app() {
   local shell_command="${4:-/bin/sleep 600}"
   local inventory_only="${AGTMUX_PERF_UITEST_INVENTORY_ONLY:-1}"
   local use_default_local_tmux="${AGTMUX_PERF_USE_DEFAULT_LOCAL_TMUX:-0}"
+  local allow_default_local_tmux_scenario="${AGTMUX_PERF_ALLOW_DEFAULT_LOCAL_TMUX_SCENARIO:-0}"
   local terminal_host_mode="${AGTMUX_PERF_TERMINAL_HOST_MODE:-}"
   local disable_app_state_restore="${AGTMUX_PERF_DISABLE_APP_STATE_RESTORE:-1}"
   local scenario_json
   local -a tmux_socket_env host_mode_env extra_uitest_env
+
+  if [[ "$use_default_local_tmux" == "1" && "$allow_default_local_tmux_scenario" != "1" ]]; then
+    echo "Refusing to bootstrap a tmux scenario on the default local tmux server." >&2
+    echo "Use gate_l_launch_app_via_bundle for loaded live-pane inspection, or set AGTMUX_PERF_ALLOW_DEFAULT_LOCAL_TMUX_SCENARIO=1 if you intentionally want a destructive default-server bootstrap." >&2
+    return 1
+  fi
 
   gate_l_socket_name="$socket_name"
   gate_l_session_name="$session_name"
@@ -272,6 +279,7 @@ function gate_l_launch_app_without_bootstrap() {
   gate_l_socket_name="$socket_name"
   if [[ "$use_default_local_tmux" == "1" ]]; then
     tmux_socket_env=()
+    bridge_config_mode="defaults"
   else
     tmux_socket_env=(AGTMUX_TMUX_SOCKET_NAME="$socket_name")
   fi
