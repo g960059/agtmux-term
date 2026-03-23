@@ -1,13 +1,14 @@
 # agtmux-term
 
-macOS terminal cockpit for managing AI agent sessions (Claude Code, Codex, etc.) running in tmux.
+macOS control plane for managing AI agent sessions (Claude Code, Codex, etc.) running in tmux with native Ghostty.
 
 ![App Icon](Sources/AgtmuxTerm/Resources/Assets.xcassets/AppIcon.appiconset/icon_256x256.png)
 
 ## Features
 
 - **Sidebar** — live tmux session list grouped by session/window, agent status (Running / Waiting / Idle / Attention), conversation titles
-- **Ghostty terminal** — GPU-accelerated rendering (~125fps via libghostty), native macOS IME, accurate VT parser
+- **Ghostty bindings** — focus an existing Ghostty tab/window for a session when one is already bound, or open a new Ghostty tab/window when it is not
+- **Normal terminal behavior** — Ghostty remains a normal terminal outside tmux; agtmux-term does not try to become a second terminal runtime
 - **Real-time state** — agtmux daemon pushes agent state every second over Unix socket JSON-RPC
 - **SSH targets** — connect to remote hosts (SSH/Mosh) and manage their sessions from one window
 - **Claude hooks** — register/unregister/verify Claude Code hooks directly from the Settings sheet
@@ -112,17 +113,19 @@ The `agtmux` binary is resolved in this order:
 ## Architecture
 
 ```
-agtmux-term (Swift macOS App)
-├── GhosttyKit.xcframework    ← Checked-in artifact; rebuilt from Ghostty source via zig when needed
-├── CockpitView (SwiftUI)     ← Top-level layout: sidebar + workbench
-├── SidebarView (SwiftUI)     ← Session list, filters, settings
-├── WorkbenchAreaV2 (SwiftUI) ← Tab-based terminal workspace
-└── Ghostty surface (Metal)   ← GPU terminal rendering
-        │
-        ├── AgtmuxDaemonService.xpc   ← XPC service managing daemon lifecycle
-        ├── agtmux daemon (UDS RPC)   ← Agent state estimation engine
-        └── tmux (PTY)                ← Terminal multiplexer
+agtmux-term (Swift macOS control plane)
+├── Sidebar / inventory / diagnostics
+├── Binding registry + restore hints
+├── Ghostty launch / focus automation
+├── AgtmuxDaemonService.xpc        ← XPC service managing daemon lifecycle
+├── agtmux daemon (UDS RPC)        ← Agent state estimation engine
+├── tmux (PTY / SSH target truth)  ← Session multiplexer and source of session existence
+└── Ghostty.app                    ← Terminal runtime authority
 ```
+
+The repository still contains embedded-host migration code, but the mainline
+product direction is session-first control of real Ghostty terminals rather
+than app-owned terminal runtime behavior.
 
 ## Documentation and Workflow
 

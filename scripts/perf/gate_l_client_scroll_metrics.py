@@ -27,16 +27,34 @@ def main() -> int:
     last_changed_elapsed_ms = None
     first_changed_snapshot = None
     last_changed_snapshot = None
+    copy_mode_sample_count = 0
+    scroll_position_sample_count = 0
+    first_copy_mode_elapsed_ms = None
+    first_scroll_position_elapsed_ms = None
 
     if samples:
         baseline_snapshot = samples[0].get("snapshot", {})
         baseline_scroll_position = baseline_snapshot.get("scrollPosition")
         previous_scroll_position = baseline_scroll_position
         final_scroll_position = baseline_scroll_position
+        if baseline_snapshot.get("paneInMode") == 1:
+            copy_mode_sample_count += 1
+            first_copy_mode_elapsed_ms = samples[0].get("elapsedMs")
+        if isinstance(baseline_scroll_position, int):
+            scroll_position_sample_count += 1
+            first_scroll_position_elapsed_ms = samples[0].get("elapsedMs")
 
         for sample in samples[1:]:
             snapshot = sample.get("snapshot", {})
             current_scroll_position = snapshot.get("scrollPosition")
+            if snapshot.get("paneInMode") == 1:
+                copy_mode_sample_count += 1
+                if first_copy_mode_elapsed_ms is None:
+                    first_copy_mode_elapsed_ms = sample.get("elapsedMs")
+            if isinstance(current_scroll_position, int):
+                scroll_position_sample_count += 1
+                if first_scroll_position_elapsed_ms is None:
+                    first_scroll_position_elapsed_ms = sample.get("elapsedMs")
             step_rows = 0
             if (
                 isinstance(previous_scroll_position, int)
@@ -86,17 +104,22 @@ def main() -> int:
     result = {
         "sample_metrics": sample_metrics,
         "summary": {
+            "raw_sample_count": len(samples),
             "baseline_scroll_position": baseline_scroll_position,
             "final_scroll_position": final_scroll_position,
             "net_scroll_delta": net_scroll_delta,
             "absolute_scroll_delta": absolute_scroll_delta,
             "sample_count": len(sample_metrics),
+            "copy_mode_sample_count": copy_mode_sample_count,
+            "scroll_position_sample_count": scroll_position_sample_count,
             "changed_sample_count": changed_sample_count,
             "unchanged_sample_count": unchanged_sample_count,
             "coarse_step_count_ge_2": coarse_step_count_ge_2,
             "coarse_step_count_ge_3": coarse_step_count_ge_3,
             "max_step_rows": max_step_rows,
             "mean_lines_per_step": mean_lines_per_step,
+            "first_copy_mode_elapsed_ms": first_copy_mode_elapsed_ms,
+            "first_scroll_position_elapsed_ms": first_scroll_position_elapsed_ms,
             "first_changed_elapsed_ms": first_changed_elapsed_ms,
             "last_changed_elapsed_ms": last_changed_elapsed_ms,
             "first_changed_snapshot": first_changed_snapshot,

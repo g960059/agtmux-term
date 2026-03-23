@@ -91,6 +91,10 @@ function sample_count_for_burst() {
     }'
 }
 
+function sample_tmux_mouse_mode() {
+  env -u TMUX -u TMUX_PANE tmux show-options -gv mouse 2>/dev/null | tr -d '\r\n'
+}
+
 focus_args=(--x-frac "$scroll_x_frac" --y-frac "$scroll_y_frac")
 if [[ -n "$scroll_identifier" ]]; then
   focus_args+=(--focus-scroll-identifier "$scroll_identifier")
@@ -145,6 +149,22 @@ fi
 
 python3 "$METRICS_PY" "$sample_json_path" >"$metrics_path"
 
+tmux_mouse_mode="$(sample_tmux_mouse_mode)"
+copy_mode_sample_count="$(jq -r '.summary.copy_mode_sample_count // 0' "$metrics_path")"
+scroll_position_sample_count="$(jq -r '.summary.scroll_position_sample_count // 0' "$metrics_path")"
+valid="true"
+invalid_reason=""
+if [[ "$tmux_mouse_mode" != "on" ]]; then
+  valid="false"
+  invalid_reason="tmux_mouse_off"
+elif [[ "$copy_mode_sample_count" == "0" ]]; then
+  valid="false"
+  invalid_reason="never_entered_copy_mode"
+elif [[ "$scroll_position_sample_count" == "0" ]]; then
+  valid="false"
+  invalid_reason="no_scroll_position_samples"
+fi
+
 send_payload="null"
 sender_stdout="$(jq -r '.sender.stdout // empty' "$sample_json_path")"
 if [[ -n "$sender_stdout" ]] && jq -e . >/dev/null 2>&1 <<<"$sender_stdout"; then
@@ -160,6 +180,9 @@ jq -n \
   --arg app_pid "${app_pid:-}" \
   --arg bundle_id "${bundle_id:-}" \
   --arg client_tty "$client_tty" \
+  --arg tmux_mouse_mode "${tmux_mouse_mode:-}" \
+  --argjson valid "$valid" \
+  --arg invalid_reason "$invalid_reason" \
   --slurpfile focus "$focus_json_path" \
   --slurpfile sender "$sender_json_path" \
   --slurpfile send "$send_json_path" \
@@ -171,6 +194,9 @@ jq -n \
     app_pid: ($app_pid | if length > 0 then . else null end),
     bundle_id: ($bundle_id | if length > 0 then . else null end),
     client_tty: $client_tty,
+    tmux_mouse_mode: ($tmux_mouse_mode | if length > 0 then . else null end),
+    valid: $valid,
+    invalid_reason: ($invalid_reason | if length > 0 then . else null end),
     focus: $focus[0],
     sender: $sender[0],
     send_json: $send[0],

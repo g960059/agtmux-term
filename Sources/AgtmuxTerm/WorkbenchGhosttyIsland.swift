@@ -213,6 +213,7 @@ final class GhosttyIslandViewController: NSViewController {
     }
 
     func hostContainerDidAttachVisibleView() {
+        restoreFocusIfNeededAfterVisibleAttach()
         guard let terminalView else { return }
         guard terminalView.surface == nil else { return }
         guard let command = pendingAttachCommand ?? currentCommand else { return }
@@ -400,5 +401,15 @@ final class GhosttyIslandViewController: NSViewController {
         pendingAttachRetryWorkItem?.cancel()
         pendingAttachRetryWorkItem = nil
         pendingAttachRetryCommand = nil
+    }
+
+    private func restoreFocusIfNeededAfterVisibleAttach() {
+        guard lastAppliedFocus == true,
+              let terminalView
+        else {
+            return
+        }
+        SurfacePool.shared.activate(leafID: surfaceID)
+        terminalView.window?.makeFirstResponder(terminalView)
     }
 }

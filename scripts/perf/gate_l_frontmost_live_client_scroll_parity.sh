@@ -98,6 +98,16 @@ function sample_client_pane_in_mode() {
   tmux display-message -p -c "$client_tty" '#{pane_in_mode}' 2>/dev/null | tr -d '\r\n'
 }
 
+function sample_tmux_mouse_mode() {
+  env -u TMUX -u TMUX_PANE tmux show-options -gv mouse 2>/dev/null | tr -d '\r\n'
+}
+
+tmux_mouse_mode="$(sample_tmux_mouse_mode)"
+if [[ "$tmux_mouse_mode" != "on" ]]; then
+  echo "gate_l_frontmost_live_client_scroll_parity.sh requires tmux mouse on; current mouse=$tmux_mouse_mode" >&2
+  exit 1
+fi
+
 function append_target_args() {
   local array_name="$1"
   local app_pid="$2"
@@ -238,6 +248,10 @@ if [[ -n "$embedded_bundle_id" ]]; then
   embedded_args+=(--bundle-id "$embedded_bundle_id")
 fi
 "$SCRIPT_DIR/gate_l_frontmost_live_client_scroll_bench.sh" "${embedded_args[@]}" "$@" >"$embedded_json_path"
+if [[ "$(jq -r '.valid // false' "$embedded_json_path")" != "true" ]]; then
+  echo "Embedded live client-scroll bench was invalid: $(jq -r '.invalid_reason // \"unknown\"' "$embedded_json_path")" >&2
+  exit 1
+fi
 
 native_args=(--label native --client-tty "$native_client_tty")
 if [[ -n "$native_app_pid" ]]; then
@@ -249,10 +263,15 @@ fi
 prepare_live_clients
 capture_prepare_snapshot native_run
 "$SCRIPT_DIR/gate_l_frontmost_live_client_scroll_bench.sh" "${native_args[@]}" "$@" >"$native_json_path"
+if [[ "$(jq -r '.valid // false' "$native_json_path")" != "true" ]]; then
+  echo "Native live client-scroll bench was invalid: $(jq -r '.invalid_reason // \"unknown\"' "$native_json_path")" >&2
+  exit 1
+fi
 
 jq -n \
   --arg embedded_client_tty "$embedded_client_tty" \
   --arg native_client_tty "$native_client_tty" \
+  --arg tmux_mouse_mode "$tmux_mouse_mode" \
   --arg use_reset "$use_reset" \
   --arg prepare_reset_threshold "$prepare_reset_threshold" \
   --arg reset_scroll_pixels "$reset_scroll_pixels" \
@@ -295,6 +314,7 @@ jq -n \
         embedded: $embedded_client_tty,
         native: $native_client_tty
       },
+      tmux_mouse_mode: $tmux_mouse_mode,
       config: {
         scroll_pixels: ($reset_scroll_pixels | tonumber),
         scroll_repeat: $reset_scroll_repeat,

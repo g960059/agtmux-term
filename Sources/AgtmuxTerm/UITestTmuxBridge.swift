@@ -787,7 +787,7 @@ final class UITestTmuxBridge {
            let activePaneContext = workbenchStore.activePaneContext,
            activePaneContext.workbenchID == selection.workbenchID,
            let selectedPaneInventoryID = selection.paneInventoryID {
-            let renderedState = GhosttyTerminalSurfaceRegistry.shared.renderedState(forTileID: terminalTile.id)
+            let renderedState = resolvedRenderedState(for: terminalTile.id)
             if let renderedState,
                let renderedClientTTY = renderedState.clientTTY,
                let renderedClientTarget = await resolveRenderedLiveTargetOrNil(
@@ -848,7 +848,7 @@ final class UITestTmuxBridge {
             )
         }
 
-        let renderedState = GhosttyTerminalSurfaceRegistry.shared.renderedState(forTileID: terminalTile.id)
+        let renderedState = resolvedRenderedState(for: terminalTile.id)
         if let renderedState,
            let renderedClientTTY = renderedState.clientTTY,
            let renderedClientTarget = await resolveRenderedLiveTargetOrNil(
@@ -1090,7 +1090,7 @@ final class UITestTmuxBridge {
                 userInfo: [NSLocalizedDescriptionKey: "Tile \(tileID.uuidString) is not a terminal tile"]
             )
         }
-        let renderedState = GhosttyTerminalSurfaceRegistry.shared.renderedState(forTileID: tileID)
+        let renderedState = resolvedRenderedState(for: tileID)
         guard renderedState != nil || resolvedTerminalView(for: tileID) != nil else {
             uiTestBridgeDebugLog("renderedTerminalTargetSnapshot missing surface tile=\(tileID.uuidString)")
             throw NSError(
@@ -1605,7 +1605,7 @@ final class UITestTmuxBridge {
         uiTestBridgeDebugLog("focusRenderedPane start tileID=\(tileID.uuidString) pane=\(paneID)")
         let sessionRef = try sessionRef(forTileID: tileID)
         uiTestBridgeDebugLog("focusRenderedPane sessionRef session=\(sessionRef.sessionName) target=\(sessionRef.target)")
-        guard let renderedClientTTY = GhosttyTerminalSurfaceRegistry.shared.renderedState(forTileID: tileID)?.clientTTY else {
+        guard let renderedClientTTY = resolvedRenderedState(for: tileID)?.clientTTY else {
             throw NSError(
                 domain: "UITestTmuxBridge",
                 code: 49,
@@ -2110,10 +2110,7 @@ final class UITestTmuxBridge {
     }
 
     private func resolvedTerminalLeafID(for tileID: UUID) -> UUID? {
-        let renderedMode = GhosttyTerminalSurfaceRegistry.shared
-            .renderedState(forTileID: tileID)?
-            .context
-            .terminalHostMode
+        let renderedMode = resolvedRenderedState(for: tileID)?.context.terminalHostMode
         let expectedMode = renderedMode ?? terminalHostMode
         if expectedMode == .next {
             return TerminalHostActiveSurfaceRegistry.shared.activeLeafID(forTileID: tileID)
@@ -2121,14 +2118,37 @@ final class UITestTmuxBridge {
         return TerminalHostActiveSurfaceRegistry.shared.activeLeafID(forTileID: tileID) ?? tileID
     }
 
+    private func resolvedRenderedSurfaceHandle(for tileID: UUID) -> GhosttySurfaceHandle? {
+        let tileRenderedState = GhosttyTerminalSurfaceRegistry.shared.renderedState(forTileID: tileID)
+        let expectedMode = tileRenderedState?.context.terminalHostMode ?? terminalHostMode
+        if expectedMode == .next,
+           let activeLeafID = TerminalHostActiveSurfaceRegistry.shared.activeLeafID(forTileID: tileID),
+           let terminalView = SurfacePool.shared.view(leafID: activeLeafID),
+           let surface = terminalView.surface {
+            return GhosttySurfaceHandle(surface: surface)
+        }
+        return GhosttyTerminalSurfaceRegistry.shared.surfaceHandle(forTileID: tileID)
+    }
+
+    private func resolvedRenderedState(for tileID: UUID) -> GhosttyRenderedTerminalSurfaceState? {
+        if let surfaceHandle = resolvedRenderedSurfaceHandle(for: tileID),
+           let renderedState = GhosttyTerminalSurfaceRegistry.shared.renderedState(forSurfaceHandle: surfaceHandle),
+           renderedState.context.tileID == tileID {
+            return renderedState
+        }
+        return GhosttyTerminalSurfaceRegistry.shared.renderedState(forTileID: tileID)
+    }
+
     private func resolvedTerminalView(for tileID: UUID) -> GhosttyTerminalView? {
-        let renderedMode = GhosttyTerminalSurfaceRegistry.shared
-            .renderedState(forTileID: tileID)?
-            .context
-            .terminalHostMode
+        let renderedMode = resolvedRenderedState(for: tileID)?.context.terminalHostMode
         let expectedMode = renderedMode ?? terminalHostMode
         if expectedMode == .next,
-           let surfaceHandle = GhosttyTerminalSurfaceRegistry.shared.surfaceHandle(forTileID: tileID),
+           let activeLeafID = TerminalHostActiveSurfaceRegistry.shared.activeLeafID(forTileID: tileID),
+           let terminalView = SurfacePool.shared.view(leafID: activeLeafID) {
+            return terminalView
+        }
+
+        if let surfaceHandle = resolvedRenderedSurfaceHandle(for: tileID),
            let terminalView = SurfacePool.shared.view(forSurfaceHandle: surfaceHandle) {
             return terminalView
         }
@@ -2179,12 +2199,11 @@ final class UITestTmuxBridge {
     ) async throws {
         let deadline = ContinuousClock.now + .milliseconds(timeoutMilliseconds)
         while ContinuousClock.now < deadline {
-            let renderedMode = GhosttyTerminalSurfaceRegistry.shared
-                .renderedState(forTileID: tileID)?
+            let renderedMode = resolvedRenderedState(for: tileID)?
                 .context
                 .terminalHostMode
             let expectedMode = renderedMode ?? terminalHostMode
-            let hasRenderedState = GhosttyTerminalSurfaceRegistry.shared.renderedState(forTileID: tileID) != nil
+            let hasRenderedState = resolvedRenderedState(for: tileID) != nil
             if resolvedTerminalView(for: tileID) != nil,
                (expectedMode != .next || hasRenderedState) {
                 return

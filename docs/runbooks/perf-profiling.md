@@ -109,13 +109,17 @@ scripts/perf/gate_l_ax_key_sender.sh --dry-run
 - `gate_l_frontmost_live_client_scroll_bench.sh` is the current realistic gate
   for the actual displayed live pane path:
   - it targets the current frontmost app window only
-  - it primes tmux copy mode and measures the frontmost tmux client's
-    `scroll_position` directly instead of depending on AX text sampling alone
+  - it measures the frontmost tmux client's `scroll_position` directly instead
+    of depending on AX text sampling alone
+  - it is only valid when tmux `mouse` is `on`
+  - the bench JSON now reports `tmux_mouse_mode`, `valid`, and
+    `invalid_reason`; treat `tmux_mouse_off` as setup failure, not as parity
   - use it when agtmux-term and native Ghostty are already open on the panes
     you want to compare
 - `gate_l_frontmost_live_client_scroll_parity.sh` runs that same live-client
   bench twice, once for agtmux-term and once for native Ghostty, and compares
   `first_changed_elapsed_ms`, scroll delta, and coarse-step counts.
+  - it refuses to run unless tmux `mouse` is `on`
 - `gate_l_terminal_host_live_client_scroll_bench.sh` launches a fresh
   UITest-enabled agtmux-term app on the default local tmux server, opens the
   target live pane, and then runs the same frontmost live client-scroll bench

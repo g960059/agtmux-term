@@ -18,10 +18,9 @@ Do not reintroduce numbered task/progress/review doc sets on the default branch.
 
 1. `README.md`
 2. `docs/product/overview.md`
-3. `docs/product/objectives.md`
-4. `docs/product/principles.md`
-5. `docs/product/goals-non-goals.md`
-6. `docs/decisions/`
-7. `docs/runbooks/change-lifecycle.md`
-8. active Issue / PR
-9. active change pack under `docs/changes/`, if one exists
+3. `docs/product/principles.md`
+4. `docs/product/goals-non-goals.md`
+5. `docs/decisions/`
+6. `docs/runbooks/change-lifecycle.md`
+7. active Issue / PR
+8. active change pack under `docs/changes/`, if one exists

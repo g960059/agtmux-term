@@ -128,7 +128,7 @@ loaded normal-screen live history.
 This is the current realistic gate for the live path:
 
 - it measures the frontmost tmux client's `scroll_position`
-- it primes copy mode before the run
+- it is only valid when tmux `mouse` is `on`
 - it compares embedded and native Ghostty on the same displayed pane path
 
 Current limitation:
@@ -296,6 +296,12 @@ coherent:
 - and mouse reporting is off
 - wheel input does not become tmux copy-mode writes
 - it goes to Ghostty's local `terminal.scrollViewport(...)` path instead
+
+For the frontmost tmux client-scroll parity wrapper there is also a tmux-side
+setup boundary:
+
+- if tmux `mouse` is `off`, the wrapper must fail as invalid setup instead of
+  reporting a zero-movement native-vs-embedded parity result
 
 That means a fresh attached client with little or no loaded local scrollback
 can:

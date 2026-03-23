@@ -2228,7 +2228,7 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
     }
 
     @MainActor
-    func testUITestTmuxBridgeTerminalViewportTextSnapshotPrefersRenderedNextHostSurfaceHandle() async throws {
+    func testUITestTmuxBridgeTerminalViewportTextSnapshotPrefersActiveLeafOverRenderedNextHostSurfaceHandle() async throws {
         SurfacePool.shared.resetForTesting()
         TerminalHostActiveSurfaceRegistry.shared.resetForTesting()
         GhosttyTerminalSurfaceRegistry.shared.resetForTesting()
@@ -2245,17 +2245,17 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
         let activeHandle = GhosttySurfaceHandle(rawValue: 0x644)
 
         let activeView = GhosttyTerminalViewViewportTextSpy()
-        activeView.snapshots = [
-            .init(text: "wrong-active-leaf", lineCount: 1, characterCount: 17, usesAlternateScroll: false)
-        ]
-        let renderedView = GhosttyTerminalViewViewportTextSpy()
         let expected = GhosttyTerminalView.ViewportTextSnapshot(
-            text: "rendered-handle-view",
+            text: "active-leaf-view",
             lineCount: 1,
-            characterCount: 20,
+            characterCount: 16,
             usesAlternateScroll: false
         )
-        renderedView.snapshots = [expected]
+        activeView.snapshots = [expected]
+        let renderedView = GhosttyTerminalViewViewportTextSpy()
+        renderedView.snapshots = [
+            .init(text: "stale-rendered-view", lineCount: 1, characterCount: 19, usesAlternateScroll: false)
+        ]
 
         SurfacePool.shared.register(
             view: activeView,
@@ -2752,6 +2752,67 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
 
         let snapshot = try bridge.terminalViewportTextSnapshotForTesting(tileID: tileID)
         XCTAssertEqual(snapshot.text, "next-leaf")
+    }
+
+    @MainActor
+    func testUITestTmuxBridgeTerminalViewportSnapshotPrefersNextHostActiveLeafViewOverStaleTileHandle() throws {
+        SurfacePool.shared.resetForTesting()
+        TerminalHostActiveSurfaceRegistry.shared.resetForTesting()
+        GhosttyTerminalSurfaceRegistry.shared.resetForTesting()
+        defer {
+            SurfacePool.shared.resetForTesting()
+            TerminalHostActiveSurfaceRegistry.shared.resetForTesting()
+            GhosttyTerminalSurfaceRegistry.shared.resetForTesting()
+        }
+
+        let tileID = UUID()
+        let staleLeafID = UUID()
+        let activeLeafID = UUID()
+        let workbenchID = UUID()
+        let sessionRef = SessionRef(target: .local, sessionName: "next-stale-tile-handle")
+        let staleView = GhosttyTerminalViewViewportTextSpy()
+        staleView.snapshots = [
+            .init(text: "stale-tile-view", lineCount: 1, characterCount: 15, usesAlternateScroll: false)
+        ]
+        let activeLeafView = GhosttyTerminalViewViewportTextSpy()
+        activeLeafView.snapshots = [
+            .init(text: "active-leaf-view", lineCount: 1, characterCount: 16, usesAlternateScroll: false)
+        ]
+        let staleHandle = GhosttySurfaceHandle(rawValue: 0x681)
+        let activeHandle = GhosttySurfaceHandle(rawValue: 0x682)
+
+        SurfacePool.shared.register(
+            view: staleView,
+            leafID: staleLeafID,
+            tmuxPaneID: "%80",
+            surfaceHandle: staleHandle
+        )
+        SurfacePool.shared.register(
+            view: activeLeafView,
+            leafID: activeLeafID,
+            tmuxPaneID: "%81",
+            surfaceHandle: activeHandle
+        )
+        GhosttyTerminalSurfaceRegistry.shared.register(
+            surfaceHandle: staleHandle,
+            context: GhosttyTerminalSurfaceContext(
+                workbenchID: workbenchID,
+                tileID: tileID,
+                surfaceKey: "wb:next-stale-tile",
+                sessionRef: sessionRef,
+                terminalHostMode: .next
+            ),
+            attachCommand: "tmux attach-session -t \(sessionRef.sessionName)"
+        )
+        TerminalHostActiveSurfaceRegistry.shared.setActiveLeafID(activeLeafID, forTileID: tileID)
+
+        let bridge = UITestTmuxBridge(
+            viewModel: AppViewModel(hostsConfig: HostsConfig(hosts: [])),
+            env: [TerminalHostMode.environmentKey: "next"]
+        )
+
+        let snapshot = try bridge.terminalViewportTextSnapshotForTesting(tileID: tileID)
+        XCTAssertEqual(snapshot.text, "active-leaf-view")
     }
 
     @MainActor

@@ -1,6 +1,6 @@
 # ADR-0001: Adopt libghostty instead of SwiftTerm
 
-- **Status**: Accepted
+- **Status**: Superseded by ADR-0006 for the mainline product path
 - **Date**: 2026-02-28
 
 ## Context
