@@ -133,6 +133,11 @@ Current state:
   - runtime host-mode selection now also honors the app default
     `TerminalHostMode`, so an installed rewrite-branch build can be switched to
     `next` without launch-time env injection
+  - persisted/sanitized active pane refs with blank `windowID/paneID` no longer
+    count as a real visible-pane identity in `next`
+  - startup mounts therefore stay on the tile-fallback controller until live
+    pane observation resolves an actual pane target, instead of creating a
+    pane-keyed child from an invalid blank identity
 - the rewrite branch now keeps the existing UI safety net green while `next`
   host work continues:
   - the full `AgtmuxTermUITests` suite currently passes on this branch at

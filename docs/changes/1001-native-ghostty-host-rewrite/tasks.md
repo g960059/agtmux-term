@@ -26,6 +26,8 @@
   refresh path in `next`
 - [x] installed-app host-mode override via app defaults for rewrite-branch
   trials
+- [x] ignore blank persisted pane refs when deriving next-host visible-pane
+  identity at startup
 - [x] keep the rewrite branch full UI suite green while `next` host work is in
   flight
 - [ ] realistic loaded live-pane parity gate for the next host

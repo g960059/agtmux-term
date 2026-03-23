@@ -1,5 +1,6 @@
 import XCTest
 @testable import AgtmuxTerm
+@testable import AgtmuxTermCore
 
 final class TerminalHostModeTests: XCTestCase {
     override func tearDown() {
@@ -41,6 +42,51 @@ final class TerminalHostModeTests: XCTestCase {
                 fallbackSurfaceID: surfaceID
             ),
             "shared|@1|%1|"
+        )
+    }
+
+    func testVisiblePaneIdentityDropsBlankPersistedPaneRefs() {
+        let paneRef = ActivePaneRef(
+            target: .local,
+            sessionName: "vm agtmux-term",
+            windowID: "",
+            paneID: "   "
+        )
+
+        XCTAssertNil(WorkbenchTerminalPaneIdentity.normalized(paneRef))
+        XCTAssertNil(WorkbenchTerminalPaneIdentity.visiblePaneIdentity(for: paneRef))
+    }
+
+    func testVisiblePaneIdentityNormalizesWhitespaceAndPreservesPaneIdentity() {
+        let paneRef = ActivePaneRef(
+            target: .local,
+            sessionName: "vm agtmux-term",
+            windowID: " @7 ",
+            paneID: " %42 ",
+            paneInstanceID: .init(
+                paneId: "%42",
+                generation: 3,
+                birthTs: Date(timeIntervalSince1970: 1234)
+            )
+        )
+
+        XCTAssertEqual(
+            WorkbenchTerminalPaneIdentity.normalized(paneRef),
+            ActivePaneRef(
+                target: .local,
+                sessionName: "vm agtmux-term",
+                windowID: "@7",
+                paneID: "%42",
+                paneInstanceID: .init(
+                    paneId: "%42",
+                    generation: 3,
+                    birthTs: Date(timeIntervalSince1970: 1234)
+                )
+            )
+        )
+        XCTAssertEqual(
+            WorkbenchTerminalPaneIdentity.visiblePaneIdentity(for: paneRef),
+            "vm agtmux-term|@7|%42|%42@3@1234.0"
         )
     }
 
