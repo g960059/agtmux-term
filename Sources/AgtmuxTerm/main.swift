@@ -211,6 +211,10 @@ let workbenchStoreV2: WorkbenchStoreV2 = MainActor.assumeIsolated {
     }
 }
 
+let mainTerminalStore: MainTerminalStore = MainActor.assumeIsolated {
+    MainTerminalStore()
+}
+
 let uiTestTmuxBridge: UITestTmuxBridge? = MainActor.assumeIsolated {
     return UITestTmuxBridge(
         viewModel: viewModel,
@@ -251,6 +255,7 @@ let cockpit = CockpitView()
     .environment(viewModel.sidebarStore)
     .environment(viewModel.runtimeStore)
     .environment(viewModel.healthStore)
+    .environment(mainTerminalStore)
     .environment(workbenchStoreV2)
     .environment(chromeState)
 
@@ -285,7 +290,7 @@ let windowChromeController: WindowChromeController = MainActor.assumeIsolated {
     let controller = WindowChromeController(
         chromeState: chromeState,
         viewModel: viewModel,
-        workbenchStoreV2: workbenchStoreV2
+        mainTerminalStore: mainTerminalStore
     )
     controller.install(on: window)
     return controller

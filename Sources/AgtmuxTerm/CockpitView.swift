@@ -18,6 +18,7 @@ private struct FullScreenTopBar: View {
     @EnvironmentObject private var viewModel: AppViewModel
     @Environment(CockpitChromeState.self) private var chromeState
     @Environment(SidebarInventoryStore.self) private var sidebarStore
+    @Environment(MainTerminalStore.self) private var mainTerminalStore
 
     private let sidebarExpandedWidth: CGFloat = 302
     private let iconSize: CGFloat = 20
@@ -33,9 +34,17 @@ private struct FullScreenTopBar: View {
                     alignment: .leading
                 )
 
-            // Tab bar fills the remaining width (aligns with WorkbenchAreaV2)
-            WorkbenchTabBarV2()
-                .frame(maxWidth: .infinity)
+            Spacer(minLength: 0)
+
+            Button {
+                mainTerminalStore.startPlainShell()
+            } label: {
+                Label("New Shell", systemImage: "terminal")
+                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                    .foregroundStyle(Color.white.opacity(0.88))
+            }
+            .buttonStyle(.plain)
+            .padding(.trailing, 12)
         }
         .frame(height: 36)
         .background(CockpitChrome.topBarFill)
@@ -83,7 +92,7 @@ private struct FullScreenTopBar: View {
 
 // MARK: - CockpitView
 
-/// Top-level layout: sidebar pane list + workspace area side by side.
+/// Top-level layout: sidebar pane list + a single main terminal side by side.
 struct CockpitView: View {
     @Environment(CockpitChromeState.self) private var chromeState
 
@@ -111,7 +120,7 @@ struct CockpitView: View {
                             .transition(.move(edge: .leading).combined(with: .opacity))
                     }
 
-                    WorkbenchAreaV2()
+                    MainTerminalView()
                         .frame(minWidth: 560, maxWidth: .infinity, maxHeight: .infinity)
                         .background(CockpitChrome.workspaceShade)
                 }

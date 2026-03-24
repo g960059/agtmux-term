@@ -15,10 +15,20 @@ Current state:
   - one embedded terminal plus one sidebar in one main window
   - sidebar actions reuse or retarget the current terminal in place
   - auto-launch session is advanced and default-off
-- the change pack now contains an implementation-ready design for:
-  - `MainTerminalStore` / coordinator
-  - visible UI rewiring away from Workbench tabs
-  - same-session retarget vs cross-session reattach
+- the code now has a first-wave implementation for:
+  - `MainTerminalStore` as the mainline terminal state owner
+  - visible UI rewiring away from `WorkbenchTabBarV2` / `WorkbenchAreaV2`
+  - plain-shell startup and `New Shell` reset
+  - same-session retarget via rendered-client truth
+  - cross-session single-terminal reattach via session attach + post-attach
+    retarget
+- targeted integration coverage now exists for:
+  - session/window/pane target resolution
+  - same-session retarget
+  - plain-shell startup defaults
 - generic workbench and companion surfaces still exist in the repository, but
   they are not the desired mainline product story
-- implementation cleanup toward a thinner terminal-first host has not started yet
+- follow-up cleanup still remains around richer diagnostics and removing or
+  quarantining more migration-only workbench/document scaffolding
+- `UITestTmuxBridge` and several UI tests still assume visible workbench state
+  and need a later migration to the `MainTerminalStore` path

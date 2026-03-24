@@ -279,17 +279,17 @@ private struct SessionSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Auto-launch session name")
+                Text("Auto-launch tmux session")
                     .font(.system(size: 13))
                     .foregroundStyle(Color.white.opacity(0.82))
-                Text("When no local tmux sessions exist, agtmux-term will create a session with this name on startup.")
+                Text("Advanced option. When no local tmux sessions exist, agtmux-term creates this session on startup. Leave empty to start in a plain shell.")
                     .font(.system(size: 11))
                     .foregroundStyle(Color.white.opacity(0.48))
                     .fixedSize(horizontal: false, vertical: true)
             }
 
             HStack(spacing: 8) {
-                TextField("main", text: $viewModel.autoLaunchSessionName)
+                TextField("Disabled", text: $viewModel.autoLaunchSessionName)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 13, design: .monospaced))
                     .frame(maxWidth: 200)

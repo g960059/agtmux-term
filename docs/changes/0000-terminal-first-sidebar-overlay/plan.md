@@ -2,8 +2,8 @@
 
 1. Rewrite durable product and decision docs around the terminal-first sidebar
    overlay model.
-2. Define the minimal `MainTerminalStore` / coordinator boundary and document
-   how it replaces visible Workbench ownership.
+2. Define the minimal `MainTerminalStore` boundary and document how it replaces
+   visible Workbench ownership.
 3. Rewire visible mainline UI to `sidebar + single main terminal`, removing
    visible workbench tabs and companion surfaces from the main window path.
 4. Make plain-shell startup and `New Shell` reset behavior real through the

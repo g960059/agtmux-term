@@ -14,6 +14,7 @@ struct TitlebarChromeView: View {
     @EnvironmentObject private var viewModel: AppViewModel
     @Environment(CockpitChromeState.self) private var chromeState
     @Environment(SidebarInventoryStore.self) private var sidebarStore
+    @Environment(MainTerminalStore.self) private var mainTerminalStore
 
     private let sidebarExpandedWidth: CGFloat = 302
 
@@ -25,8 +26,27 @@ struct TitlebarChromeView: View {
                 controls
                     .frame(width: controlsSlotWidth, alignment: .leading)
 
-                WorkbenchTabBarV2()
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                HStack(spacing: 10) {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(mainTerminalStore.statusTitle)
+                            .font(.system(size: 12, weight: .semibold, design: .rounded))
+                            .foregroundStyle(Color.white.opacity(0.9))
+                        Text(mainTerminalStore.statusDetail)
+                            .font(.system(size: 10, weight: .regular, design: .rounded))
+                            .foregroundStyle(Color.white.opacity(0.52))
+                    }
+
+                    if let diagnosticMessage = mainTerminalStore.diagnosticMessage,
+                       !diagnosticMessage.isEmpty {
+                        Text(diagnosticMessage)
+                            .font(.system(size: 10, weight: .medium, design: .rounded))
+                            .foregroundStyle(Color.white.opacity(0.66))
+                            .lineLimit(1)
+                    }
+
+                    Spacer(minLength: 0)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
             .padding(.leading, iconLeading)
@@ -115,7 +135,7 @@ struct TitlebarChromeView: View {
                 }
             }
 
-            TitlebarNewWorkbenchButton()
+            TitlebarNewShellButton()
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(AccessibilityID.sidebarFilterBar)
@@ -189,16 +209,16 @@ private struct TitlebarIconButton<Label: View>: View {
     }
 }
 
-private struct TitlebarNewWorkbenchButton: View {
-    @Environment(WorkbenchStoreV2.self) private var store
+private struct TitlebarNewShellButton: View {
+    @Environment(MainTerminalStore.self) private var mainTerminalStore
     @State private var isHovered = false
 
     var body: some View {
-        Button(action: { store.createWorkbench() }) {
+        Button(action: { mainTerminalStore.startPlainShell() }) {
             ZStack {
                 RoundedRectangle(cornerRadius: 4, style: .continuous)
                     .fill(isHovered ? TitlebarChromeMetrics.controlHover : Color.clear)
-                Image(systemName: "plus")
+                Image(systemName: "terminal")
                     .font(.system(size: TitlebarChromeMetrics.iconGlyphSize, weight: .semibold))
                     .frame(width: TitlebarChromeMetrics.iconGlyphSize, height: TitlebarChromeMetrics.iconGlyphSize)
                     .foregroundStyle(Color.white.opacity(0.88))
@@ -210,8 +230,8 @@ private struct TitlebarNewWorkbenchButton: View {
         }
         .buttonStyle(.plain)
         .onHover { isHovered = $0 }
-        .help("New Workbench")
-        .accessibilityLabel("New Workbench")
-        .accessibilityIdentifier(AccessibilityID.workspaceNewTab)
+        .help("New Shell")
+        .accessibilityLabel("New Shell")
+        .accessibilityIdentifier("main-terminal.new-shell")
     }
 }

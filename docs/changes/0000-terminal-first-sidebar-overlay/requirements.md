@@ -28,10 +28,10 @@ with a tmux and agent sidebar in the same app window.
 ## Acceptance
 
 - [x] durable docs describe the terminal-first sidebar-overlay boundary
-- [ ] startup lands in a plain shell by default
-- [ ] session-row activation reuses or retargets the current terminal with the
-      correct attach target
-- [ ] pane-row activation retargets the current terminal toward the exact pane
+- [x] startup lands in a plain shell by default
+- [x] session-row activation reuses or retargets the current terminal until the
+      correct session target is visible
+- [x] pane-row activation retargets the current terminal toward the exact pane
 - [ ] attach, restore, and terminal/sidebar drift failures are surfaced clearly
-- [ ] generic workbench/browser/document paths are explicitly demoted from the
+- [x] generic workbench/browser/document paths are explicitly demoted from the
       mainline product story

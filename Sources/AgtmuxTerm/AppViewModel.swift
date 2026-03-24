@@ -872,7 +872,7 @@ final class AppViewModel: ObservableObject {
                     fallbackPollInterval: resolvedLocalInventoryPollingInterval
                 )
             )
-        self.autoLaunchSessionName = UserDefaults.standard.string(forKey: "autoLaunchSessionName") ?? "main"
+        self.autoLaunchSessionName = UserDefaults.standard.string(forKey: "autoLaunchSessionName") ?? ""
         let config = hostsConfig ?? HostsConfig.load()
         self.hostsConfig = config
         if let remotePaneSources {

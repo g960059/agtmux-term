@@ -288,7 +288,9 @@ struct SessionBlockView: View {
     @Binding var highlightedRowID: String?
     @Binding var draggedSession: DraggedSession?
     var targetBadge: String? = nil
-    let onSelect: (AgtmuxPane, AgtmuxTermCore.WindowGroup) -> Void
+    let onSelectSession: (SessionGroup) -> Void
+    let onSelectWindow: (AgtmuxTermCore.WindowGroup) -> Void
+    let onSelectPane: (AgtmuxPane) -> Void
 
     @EnvironmentObject private var viewModel: AppViewModel
     @State private var isCollapsed = false
@@ -364,9 +366,7 @@ struct SessionBlockView: View {
             }
             .onTapGesture {
                 highlightedRowID = rowID
-                guard let window = session.windows.first,
-                      let pane = window.panes.first else { return }
-                onSelect(pane, window)
+                onSelectSession(session)
             }
             .accessibilityElement(children: .combine)
             .accessibilityIdentifier(
@@ -389,9 +389,7 @@ struct SessionBlockView: View {
             .contextMenu {
                 let allPinned = viewModel.areAllPanesPinned(in: session)
                 Button {
-                    guard let window = session.windows.first,
-                          let pane = window.panes.first else { return }
-                    onSelect(pane, window)
+                    onSelectSession(session)
                 } label: {
                     Label("Open", systemImage: "arrow.up.right.square")
                 }
@@ -433,7 +431,8 @@ struct SessionBlockView: View {
                         window: window,
                         selectedPaneId: selectedPaneId,
                         highlightedRowID: $highlightedRowID,
-                        onSelect: onSelect,
+                        onSelectWindow: onSelectWindow,
+                        onSelectPane: onSelectPane,
                         showHeader: multiWindow
                     )
                 }
@@ -484,13 +483,12 @@ struct WindowBlockView: View {
     let window: AgtmuxTermCore.WindowGroup
     let selectedPaneId: String?
     @Binding var highlightedRowID: String?
-    let onSelect: (AgtmuxPane, AgtmuxTermCore.WindowGroup) -> Void
+    let onSelectWindow: (AgtmuxTermCore.WindowGroup) -> Void
+    let onSelectPane: (AgtmuxPane) -> Void
     var showHeader: Bool = true
 
     @State private var isExpanded: Bool = true
     @EnvironmentObject private var viewModel: AppViewModel
-    @Environment(WorkbenchStoreV2.self) private var workbenchStoreV2
-    @Environment(TerminalRuntimeStore.self) private var runtimeStore
 
     private var rowID: String { "window:\(window.id)" }
     private var isHighlighted: Bool { highlightedRowID == rowID }
@@ -553,15 +551,15 @@ struct WindowBlockView: View {
             }
             .onTapGesture {
                 highlightedRowID = rowID
-                isExpanded.toggle()
+                isExpanded = true
+                onSelectWindow(window)
             }
             .contextMenu {
                 let allPinned = viewModel.areAllPanesPinned(in: window)
                 Button {
-                    guard let pane = window.panes.first else { return }
-                    workbenchStoreV2.openTerminal(for: pane, hostsConfig: runtimeStore.hostsConfig)
+                    onSelectWindow(window)
                 } label: {
-                    Label("Open in Workspace", systemImage: "rectangle.3.group")
+                    Label("Open", systemImage: "arrow.up.right.square")
                 }
                 Button {
                     TmuxManager.shared.renameWindow(
@@ -678,7 +676,7 @@ struct WindowBlockView: View {
 
     private func selectPaneRow(_ pane: AgtmuxPane) {
         highlightedRowID = "pane:\(pane.id)"
-        onSelect(pane, window)
+        onSelectPane(pane)
     }
 
     private func selectedMarkerID(for pane: AgtmuxPane) -> String {
@@ -705,7 +703,7 @@ struct PaneRowView: View {
     @Binding var highlightedRowID: String?
 
     @EnvironmentObject private var viewModel: AppViewModel
-    @Environment(WorkbenchStoreV2.self) private var workbenchStoreV2
+    @Environment(MainTerminalStore.self) private var mainTerminalStore
     @Environment(TerminalRuntimeStore.self) private var runtimeStore
 
     private var rowID: String { "pane:\(pane.id)" }
@@ -774,7 +772,7 @@ struct PaneRowView: View {
         .contextMenu {
             let isPinned = viewModel.isPanePinned(pane)
             Button {
-                workbenchStoreV2.openTerminal(for: pane, hostsConfig: runtimeStore.hostsConfig)
+                mainTerminalStore.activate(pane: pane, hostsConfig: runtimeStore.hostsConfig)
             } label: {
                 Label("Open", systemImage: "arrow.up.right.square")
             }
@@ -1622,7 +1620,7 @@ private struct SidebarHookInfoStrip: View {
 /// Scrollable pane list, grouped by source → session → window → pane.
 struct SidebarView: View {
     @EnvironmentObject var viewModel: AppViewModel
-    @Environment(WorkbenchStoreV2.self) private var workbenchStoreV2
+    @Environment(MainTerminalStore.self) private var mainTerminalStore
     @Environment(SidebarInventoryStore.self) private var sidebarStore
     @Environment(TerminalRuntimeStore.self) private var runtimeStore
     @Environment(HealthAndHooksStore.self) private var healthStore
@@ -1630,10 +1628,10 @@ struct SidebarView: View {
     @State private var draggedSession: DraggedSession?
 
     private var selectedPaneID: String? {
-        workbenchStoreV2.activePaneSelection(
+        mainTerminalStore.selectedPaneInventoryID(
             panes: sidebarStore.panes,
             hostsConfig: runtimeStore.hostsConfig
-        )?.paneInventoryID
+        )
     }
 
     private var showsLocalDaemonIssueBanner: Bool {
@@ -1683,9 +1681,25 @@ struct SidebarView: View {
                                         highlightedRowID: $highlightedRowID,
                                         draggedSession: $draggedSession,
                                         targetBadge: badge,
-                                        onSelect: { pane, _ in
-                                            workbenchStoreV2.openTerminal(
-                                                for: pane,
+                                        onSelectSession: { session in
+                                            Task {
+                                                await mainTerminalStore.activate(
+                                                    session: session,
+                                                    hostsConfig: runtimeStore.hostsConfig
+                                                )
+                                            }
+                                        },
+                                        onSelectWindow: { window in
+                                            Task {
+                                                await mainTerminalStore.activate(
+                                                    window: window,
+                                                    hostsConfig: runtimeStore.hostsConfig
+                                                )
+                                            }
+                                        },
+                                        onSelectPane: { pane in
+                                            mainTerminalStore.activate(
+                                                pane: pane,
                                                 hostsConfig: runtimeStore.hostsConfig
                                             )
                                         }

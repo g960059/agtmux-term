@@ -198,17 +198,15 @@ final class GhosttyIslandViewController: NSViewController {
         ])
         self.terminalView = tv
 
-        // Apply the first attach command if available
-        if let cmd = pendingAttachCommand {
-            applyCommandIfPossible(cmd, surfaceContext: pendingSurfaceContext)
-        }
+        applyCommandIfPossible(pendingAttachCommand, surfaceContext: pendingSurfaceContext)
     }
 
     override func viewDidAppear() {
         super.viewDidAppear()
         // Retry attach once the view is in a window (needed for surface creation)
-        if let cmd = pendingAttachCommand, currentCommand != cmd {
-            applyCommandIfPossible(cmd, surfaceContext: pendingSurfaceContext)
+        let shouldCreateDefaultShell = pendingAttachCommand == nil && terminalView?.surface == nil
+        if currentCommand != pendingAttachCommand || shouldCreateDefaultShell {
+            applyCommandIfPossible(pendingAttachCommand, surfaceContext: pendingSurfaceContext)
         }
     }
 
@@ -216,9 +214,8 @@ final class GhosttyIslandViewController: NSViewController {
         restoreFocusIfNeededAfterVisibleAttach()
         guard let terminalView else { return }
         guard terminalView.surface == nil else { return }
-        guard let command = pendingAttachCommand ?? currentCommand else { return }
         applyCommandIfPossible(
-            command,
+            pendingAttachCommand ?? currentCommand,
             surfaceContext: pendingSurfaceContext ?? registeredSurfaceContext
         )
     }
@@ -232,17 +229,14 @@ final class GhosttyIslandViewController: NSViewController {
         isFocused: Bool,
         focusRestoreNonce: UInt64
     ) {
-        let commandChanged = currentCommand != cmd
+        let shouldCreateDefaultShell = cmd == nil && (currentCommand != nil || terminalView?.surface == nil)
+        let commandChanged = currentCommand != cmd || shouldCreateDefaultShell
         let previousVisiblePaneIdentity = self.visiblePaneIdentity
 
         if commandChanged {
             lastAppliedFocus = nil
             cancelPendingRetry()
-            if let cmd {
-                applyCommandIfPossible(cmd, surfaceContext: surfaceContext)
-            } else {
-                currentCommand = nil
-            }
+            applyCommandIfPossible(cmd, surfaceContext: surfaceContext)
         }
 
         self.visiblePaneIdentity = visiblePaneIdentity
@@ -326,7 +320,7 @@ final class GhosttyIslandViewController: NSViewController {
 
     // MARK: - Private helpers
 
-    private func applyCommandIfPossible(_ command: String, surfaceContext: GhosttyTerminalSurfaceContext?) {
+    private func applyCommandIfPossible(_ command: String?, surfaceContext: GhosttyTerminalSurfaceContext?) {
         guard let tv = terminalView else {
             // viewDidLoad hasn't run yet; store for later
             pendingAttachCommand = command
@@ -338,7 +332,13 @@ final class GhosttyIslandViewController: NSViewController {
             return
         }
 
-        guard let surface = GhosttyApp.shared.newSurface(for: tv, command: command) else {
+        guard let ghosttyApp = GhosttyApp.sharedIfInitialized else {
+            pendingAttachCommand = command
+            pendingSurfaceContext = surfaceContext
+            return
+        }
+
+        guard let surface = ghosttyApp.newSurface(for: tv, command: command) else {
             scheduleRetry(for: command, surfaceContext: surfaceContext)
             return
         }
@@ -364,7 +364,7 @@ final class GhosttyIslandViewController: NSViewController {
             GhosttyTerminalSurfaceRegistry.shared.register(
                 surfaceHandle: surfaceHandle,
                 context: surfaceContext,
-                attachCommand: command
+                attachCommand: command ?? ""
             )
             registeredSurfaceHandle = surfaceHandle
             registeredSurfaceContext = surfaceContext
@@ -380,17 +380,22 @@ final class GhosttyIslandViewController: NSViewController {
         cancelPendingRetry()
     }
 
-    private func scheduleRetry(for command: String, surfaceContext: GhosttyTerminalSurfaceContext?) {
-        guard currentCommand != command else { return }
-        guard pendingAttachRetryCommand != command else { return }
+    private func scheduleRetry(for command: String?, surfaceContext: GhosttyTerminalSurfaceContext?) {
+        let commandIdentity = command ?? defaultShellRetrySentinel()
+        guard currentCommand != command || command == nil else { return }
+        guard pendingAttachRetryCommand != commandIdentity else { return }
 
         cancelPendingRetry()
-        pendingAttachRetryCommand = command
+        pendingAttachRetryCommand = commandIdentity
         GhosttyIslandUpdateTelemetry.shared.recordRetry(tileID: surfaceID)
 
         let retry = DispatchWorkItem { [weak self] in
             guard let self else { return }
-            guard self.currentCommand != command else { return }
+            if let command {
+                guard self.currentCommand != command else { return }
+            } else {
+                guard self.terminalView?.surface == nil else { return }
+            }
             self.applyCommandIfPossible(command, surfaceContext: surfaceContext)
         }
         pendingAttachRetryWorkItem = retry
@@ -412,4 +417,6 @@ final class GhosttyIslandViewController: NSViewController {
         SurfacePool.shared.activate(leafID: surfaceID)
         terminalView.window?.makeFirstResponder(terminalView)
     }
+
+    private func defaultShellRetrySentinel() -> String { "__default_shell__" }
 }

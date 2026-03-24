@@ -40,7 +40,9 @@ struct GhosttySurfaceHostView: NSViewRepresentable {
     @MainActor
     func updateNSView(_ nsView: GhosttyTerminalView, context: Context) {
         let cmd = attachCommand
-        let commandChanged = context.coordinator.currentCommand != cmd
+        let shouldCreateDefaultShell = cmd == nil
+            && (context.coordinator.currentCommand != nil || nsView.surface == nil)
+        let commandChanged = context.coordinator.currentCommand != cmd || shouldCreateDefaultShell
 
         if commandChanged {
             context.coordinator.lastAppliedFocus = nil
@@ -51,6 +53,7 @@ struct GhosttySurfaceHostView: NSViewRepresentable {
                     coordinator: context.coordinator,
                     command: cmd
                 ) else {
+                    guard GhosttyApp.sharedIfInitialized != nil else { return }
                     scheduleSurfaceRetry(
                         for: nsView,
                         coordinator: context.coordinator,
@@ -59,7 +62,17 @@ struct GhosttySurfaceHostView: NSViewRepresentable {
                     return
                 }
             } else {
-                context.coordinator.currentCommand = nil
+                guard attachDefaultShellIfPossible(
+                    nsView,
+                    coordinator: context.coordinator
+                ) else {
+                    guard GhosttyApp.sharedIfInitialized != nil else { return }
+                    scheduleDefaultShellRetry(
+                        for: nsView,
+                        coordinator: context.coordinator
+                    )
+                    return
+                }
             }
         }
 
@@ -119,9 +132,42 @@ struct GhosttySurfaceHostView: NSViewRepresentable {
         coordinator: Coordinator,
         command: String
     ) -> Bool {
+        attachSurfaceIfPossible(
+            nsView,
+            coordinator: coordinator,
+            command: command,
+            registryAttachCommand: command
+        )
+    }
+
+    @MainActor
+    private func attachDefaultShellIfPossible(
+        _ nsView: GhosttyTerminalView,
+        coordinator: Coordinator
+    ) -> Bool {
+        attachSurfaceIfPossible(
+            nsView,
+            coordinator: coordinator,
+            command: nil,
+            registryAttachCommand: ""
+        )
+    }
+
+    @MainActor
+    private func attachSurfaceIfPossible(
+        _ nsView: GhosttyTerminalView,
+        coordinator: Coordinator,
+        command: String?,
+        registryAttachCommand: String
+    ) -> Bool {
         guard nsView.window != nil else { return false }
 
-        guard let surface = GhosttyApp.shared.newSurface(for: nsView, command: command) else {
+        guard let ghosttyApp = GhosttyApp.sharedIfInitialized else {
+            coordinator.currentCommand = nil
+            return false
+        }
+
+        guard let surface = ghosttyApp.newSurface(for: nsView, command: command) else {
             return false
         }
 
@@ -145,7 +191,7 @@ struct GhosttySurfaceHostView: NSViewRepresentable {
             GhosttyTerminalSurfaceRegistry.shared.register(
                 surfaceHandle: surfaceHandle,
                 context: surfaceContext,
-                attachCommand: command
+                attachCommand: registryAttachCommand
             )
             coordinator.registeredSurfaceHandle = surfaceHandle
             coordinator.registeredSurfaceContext = surfaceContext
@@ -176,7 +222,33 @@ struct GhosttySurfaceHostView: NSViewRepresentable {
             guard self.attachSurfaceIfPossible(nsView, coordinator: coordinator, command: command) == false else {
                 return
             }
+            guard GhosttyApp.sharedIfInitialized != nil else { return }
             self.scheduleSurfaceRetry(for: nsView, coordinator: coordinator, command: command)
+        }
+
+        coordinator.pendingAttachRetryWorkItem = retry
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: retry)
+    }
+
+    @MainActor
+    private func scheduleDefaultShellRetry(
+        for nsView: GhosttyTerminalView,
+        coordinator: Coordinator
+    ) {
+        guard nsView.surface == nil else { return }
+        guard coordinator.pendingAttachRetryCommand != "__default_shell__" else { return }
+
+        cancelPendingSurfaceRetry(for: coordinator)
+        coordinator.pendingAttachRetryCommand = "__default_shell__"
+
+        let retry = DispatchWorkItem { [weak nsView, weak coordinator] in
+            guard let nsView, let coordinator else { return }
+            guard nsView.surface == nil else { return }
+            guard self.attachDefaultShellIfPossible(nsView, coordinator: coordinator) == false else {
+                return
+            }
+            guard GhosttyApp.sharedIfInitialized != nil else { return }
+            self.scheduleDefaultShellRetry(for: nsView, coordinator: coordinator)
         }
 
         coordinator.pendingAttachRetryWorkItem = retry

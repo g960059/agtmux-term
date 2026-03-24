@@ -44,7 +44,9 @@ When the user activates a session or pane from the sidebar:
 2. if the chosen target is in the same tmux session, retarget in place
 3. if the chosen target is in another session, recreate or reattach the single
    embedded terminal
-4. persist enough restore state to reopen the same target later
+4. in first wave, cross-session attach stays session-scoped and reaches the
+   requested pane through post-attach retarget
+5. persist enough restore state to reopen the same target later
 
 ## Mainline State Model
 
@@ -61,10 +63,10 @@ Proposed shape:
   - `focusRequestNonce`
   - `diagnostic`
   - `lastRestoreTargetBySession`
-- `MainTerminalCoordinator`
-  - resolves sidebar selection into a concrete tmux target
-  - chooses `retarget in place` vs `reattach/recreate`
-  - updates restore state and diagnostics
+
+First wave keeps coordination inside `MainTerminalStore` rather than splitting
+out a separate coordinator type. The split can happen later if the thinner
+mainline path grows new responsibilities.
 
 Why this boundary:
 
@@ -125,7 +127,9 @@ Same-session navigation:
 Cross-session navigation:
 
 - allow the single visible terminal to recreate or reattach
-- the app may reuse the same UI container, but the tmux attach command changes
+- the app may reuse the same UI container, but the tmux attach command remains
+  session-scoped in first wave
+- if a more specific pane or window was requested, reconcile to it after attach
 - restore the sidebar highlight and diagnostic state around the new session
 
 Reset to shell:
@@ -210,6 +214,18 @@ Stage 4:
 
 - prune or refactor the remaining workbench scaffolding once replacement paths
   are stable
+
+Current implementation status:
+
+- `MainTerminalStore` exists and owns first-wave coordination
+- `CockpitView`, `SidebarView`, and titlebar chrome are rewired to the single
+  main terminal path
+- plain-shell startup and `New Shell` reset are implemented
+- same-session retarget now refreshes from rendered-client truth instead of
+  session-wide active-pane truth
+- cross-session navigation currently means session attach plus post-attach
+  retarget, not a pane-specific initial attach command
+- richer drift/attach diagnostics and broader scaffold removal still remain
 
 ## Boundaries
 

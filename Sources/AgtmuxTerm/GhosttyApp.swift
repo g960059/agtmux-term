@@ -96,6 +96,10 @@ final class GhosttyApp {
 
     private(set) var app: ghostty_app_t?
 
+    static var sharedIfInitialized: GhosttyApp? {
+        initializedShared
+    }
+
     // Wakeup coalescing: prevents N queue items from accumulating when
     // libghostty fires wakeup_cb multiple times before tick() runs.
     private let wakeupLock = NSLock()
