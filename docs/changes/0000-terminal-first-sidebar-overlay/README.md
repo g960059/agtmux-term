@@ -15,6 +15,10 @@ Current state:
   - one embedded terminal plus one sidebar in one main window
   - sidebar actions reuse or retarget the current terminal in place
   - auto-launch session is advanced and default-off
+- the change pack now contains an implementation-ready design for:
+  - `MainTerminalStore` / coordinator
+  - visible UI rewiring away from Workbench tabs
+  - same-session retarget vs cross-session reattach
 - generic workbench and companion surfaces still exist in the repository, but
   they are not the desired mainline product story
 - implementation cleanup toward a thinner terminal-first host has not started yet
