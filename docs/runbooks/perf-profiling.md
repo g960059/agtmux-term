@@ -57,6 +57,13 @@ scripts/perf/gate_l_ax_key_sender.sh --dry-run
 
 - Run AX-driven benches serially. Do not run embedded and native captures in parallel.
 - Do not touch the mouse or keyboard while a capture is running.
+- For host-mode benches, pass the mode explicitly. Do not rely on implicit
+  `legacy` fallbacks:
+  - `--host-mode legacy|next`
+  - or `AGTMUX_PERF_TERMINAL_HOST_MODE=legacy|next`
+- Compare embedded and native Ghostty on the same upstream version before
+  drawing parity conclusions. The repo currently pins GhosttyKit to upstream
+  `v1.2.3` in `README.md`.
 - For short-keypress and scroll probes, prefer the repo-local harnesses over ad hoc manual sampling so the tmux-visible markers stay comparable.
 - Native Ghostty baselines should preferably run with no pre-existing Ghostty processes. Use `--allow-existing` only when you intentionally accept ambiguous pid attribution.
 - The current scroll proof uses a `less -N` proxy observed through `tmux capture-pane`; do not treat it as a true image-diff measurement of terminal-local scrollback.
@@ -123,7 +130,7 @@ scripts/perf/gate_l_ax_key_sender.sh --dry-run
 - `gate_l_terminal_host_live_client_scroll_bench.sh` launches a fresh
   UITest-enabled agtmux-term app on the default local tmux server, opens the
   target live pane, and then runs the same frontmost live client-scroll bench
-  for a specific `AGTMUX_TERMINAL_HOST_MODE`.
+  for an explicitly selected `AGTMUX_TERMINAL_HOST_MODE`.
 - for the current rewrite/live-host path, prefer a matching app bundle over a
   stale installed app:
   ```bash

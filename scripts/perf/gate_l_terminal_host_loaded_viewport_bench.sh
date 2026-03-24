@@ -9,7 +9,7 @@ STEP_METRICS_PY="$SCRIPT_DIR/gate_l_step_metrics.py"
 EMITTER_PY="$SCRIPT_DIR/gate_l_emit_loaded_history_fixture.py"
 CURSES_HISTORY_VIEWER_PY="$SCRIPT_DIR/gate_l_curses_history_viewer.py"
 
-host_mode="${AGTMUX_PERF_TERMINAL_HOST_MODE:-legacy}"
+host_mode="${AGTMUX_PERF_TERMINAL_HOST_MODE:-}"
 settle_timeout="${AGTMUX_PERF_LIVE_TIMEOUT:-30}"
 fixture_lines="${AGTMUX_PERF_LOADED_FIXTURE_LINES:-12000}"
 fixture_wrap_columns="${AGTMUX_PERF_LOADED_FIXTURE_WRAP_COLUMNS:-180}"
@@ -103,14 +103,7 @@ while (( $# > 0 )); do
   esac
 done
 
-case "$host_mode" in
-  legacy|next)
-    ;;
-  *)
-    echo "Unsupported host mode: $host_mode" >&2
-    exit 1
-    ;;
-esac
+gate_l_require_explicit_terminal_host_mode "$host_mode" "$0" || exit 1
 
 case "$focus_mode" in
   identifier|front-window)

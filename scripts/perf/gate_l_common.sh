@@ -107,6 +107,27 @@ function gate_l_require_app_bin() {
   fi
 }
 
+function gate_l_require_explicit_terminal_host_mode() {
+  local host_mode="$1"
+  local context="${2:-this bench}"
+
+  if [[ -z "$host_mode" ]]; then
+    echo "Explicit terminal host mode is required for $context." >&2
+    echo "Pass --host-mode legacy|next or set AGTMUX_PERF_TERMINAL_HOST_MODE." >&2
+    return 1
+  fi
+
+  case "$host_mode" in
+    legacy|next)
+      return 0
+      ;;
+    *)
+      echo "Unsupported host mode for $context: $host_mode" >&2
+      return 1
+      ;;
+  esac
+}
+
 function gate_l_read_plist_value() {
   local plist_path="$1"
   local key="$2"

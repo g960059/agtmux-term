@@ -7,7 +7,7 @@ source "$SCRIPT_DIR/gate_l_common.sh"
 
 STEP_METRICS_PY="$SCRIPT_DIR/gate_l_step_metrics.py"
 
-host_mode="${AGTMUX_PERF_TERMINAL_HOST_MODE:-legacy}"
+host_mode="${AGTMUX_PERF_TERMINAL_HOST_MODE:-}"
 session_name="${AGTMUX_PERF_LIVE_SESSION_NAME:-}"
 pane_id="${AGTMUX_PERF_LIVE_PANE_ID:-}"
 pane_title_contains="${AGTMUX_PERF_LIVE_PANE_TITLE_CONTAINS:-}"
@@ -1044,14 +1044,7 @@ while (( $# > 0 )); do
   esac
 done
 
-case "$host_mode" in
-  legacy|next)
-    ;;
-  *)
-    echo "Unsupported host mode: $host_mode" >&2
-    exit 1
-    ;;
-esac
+gate_l_require_explicit_terminal_host_mode "$host_mode" "$0" || exit 1
 
 if [[ "$use_internal_scroll_measurement" != "1" ]]; then
   case "$external_scroll_sender" in
