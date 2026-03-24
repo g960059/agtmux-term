@@ -33,6 +33,8 @@ struct MainTerminalView: View {
                     )
                     Spacer()
                 }
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier(AccessibilityID.terminalMainStatus)
 
                 if let diagnosticMessage = terminalStore.diagnosticMessage,
                    !diagnosticMessage.isEmpty {
@@ -49,6 +51,8 @@ struct MainTerminalView: View {
                             RoundedRectangle(cornerRadius: 8, style: .continuous)
                                 .stroke(MainTerminalChrome.errorStroke, lineWidth: 1)
                         )
+                        .accessibilityElement(children: .combine)
+                        .accessibilityIdentifier(AccessibilityID.terminalMainDiagnostic)
                 }
             }
             .padding(12)
@@ -59,7 +63,7 @@ struct MainTerminalView: View {
                 .stroke(MainTerminalChrome.panelStroke, lineWidth: 1)
         }
         .accessibilityElement(children: .contain)
-        .accessibilityIdentifier(AccessibilityID.workspaceArea)
+        .accessibilityIdentifier(AccessibilityID.terminalMain)
     }
 
     @ViewBuilder
@@ -82,6 +86,7 @@ struct MainTerminalView: View {
                 surfaceID: terminalStore.surfaceID,
                 mode: terminalHostMode
             ))
+            .accessibilityIdentifier(AccessibilityID.terminalMainSurface)
 
         case .tmux(let sessionRef, _, _):
             switch terminalStore.attachResolution {
@@ -108,6 +113,7 @@ struct MainTerminalView: View {
                     surfaceID: terminalStore.surfaceID,
                     mode: terminalHostMode
                 ))
+                .accessibilityIdentifier(AccessibilityID.terminalMainSurface)
 
             case .failure(let error):
                 MainTerminalFailureState(message: error.localizedDescription)

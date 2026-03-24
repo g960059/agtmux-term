@@ -1615,6 +1615,28 @@ private struct SidebarHookInfoStrip: View {
     }
 }
 
+private struct SidebarTerminalDiagnosticStrip: View {
+    let diagnostic: MainTerminalDiagnostic
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(diagnostic.inlineSummary)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Color.white.opacity(0.82))
+            Text(diagnostic.detailText)
+                .font(.system(size: 10))
+                .foregroundStyle(Color.white.opacity(0.56))
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Color.orange.opacity(0.07))
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier(AccessibilityID.sidebarTerminalDiagnostic)
+    }
+}
+
 // MARK: - SidebarView
 
 /// Scrollable pane list, grouped by source → session → window → pane.
@@ -1722,6 +1744,10 @@ struct SidebarView: View {
             // Bottom fixed area: hook info strip + settings button
             VStack(spacing: 0) {
                 Divider().opacity(0.12)
+
+                if let diagnostic = mainTerminalStore.diagnostic {
+                    SidebarTerminalDiagnosticStrip(diagnostic: diagnostic)
+                }
 
                 if healthStore.hookSetupStatus == .missing || healthStore.hookSetupStatus == .unavailable {
                     SidebarHookInfoStrip(status: healthStore.hookSetupStatus)

@@ -42,7 +42,7 @@ final class MainTerminalStoreTests: XCTestCase {
         XCTAssertEqual(store.sessionRef?.sessionName, "main")
         XCTAssertEqual(store.requestedPaneRef?.windowID, "@1")
         XCTAssertEqual(store.requestedPaneRef?.paneID, "%2")
-        XCTAssertNil(store.diagnosticMessage)
+        XCTAssertNil(store.diagnostic)
 
         store.startPlainShell()
     }
@@ -72,8 +72,8 @@ final class MainTerminalStoreTests: XCTestCase {
 
         XCTAssertEqual(store.requestedPaneRef, restoredPaneRef)
         XCTAssertEqual(
-            store.diagnosticMessage,
-            "Session target fell back to the last restored pane."
+            store.diagnostic,
+            .restoreFallbackUsed(requested: nil, resolved: restoredPaneRef)
         )
 
         store.startPlainShell()
@@ -97,8 +97,16 @@ final class MainTerminalStoreTests: XCTestCase {
         XCTAssertEqual(store.requestedPaneRef?.windowID, "@2")
         XCTAssertEqual(store.requestedPaneRef?.paneID, "%3")
         XCTAssertEqual(
-            store.diagnosticMessage,
-            "Session target fell back to the first listed pane."
+            store.diagnostic,
+            .restoreFallbackUsed(
+                requested: nil,
+                resolved: ActivePaneRef(
+                    target: .local,
+                    sessionName: "shared",
+                    windowID: "@2",
+                    paneID: "%3"
+                )
+            )
         )
 
         store.startPlainShell()
@@ -119,8 +127,11 @@ final class MainTerminalStoreTests: XCTestCase {
 
         XCTAssertEqual(store.mode, .plainShell)
         XCTAssertEqual(
-            store.diagnosticMessage,
-            "Window target unavailable: no panes are listed for @4."
+            store.diagnostic,
+            .attachFailed(
+                SessionRef(target: .local, sessionName: "main"),
+                detail: "Window target unavailable: no panes are listed for @4."
+            )
         )
     }
 
@@ -229,13 +240,71 @@ final class MainTerminalStoreTests: XCTestCase {
         }
 
         XCTAssertTrue(didResolve, "Expected the main terminal to resolve the requested pane")
-        XCTAssertNil(store.diagnosticMessage)
+        XCTAssertNil(store.diagnostic)
 
         let calls = await navigationRecorder.calls()
         XCTAssertEqual(calls.count, 1)
         XCTAssertEqual(calls[0].paneRef.paneID, "%2")
         XCTAssertEqual(calls[0].renderedClientTTY, "/dev/ttys001")
 
+        store.startPlainShell()
+    }
+
+    func testRetargetFailureSurfacesTypedDiagnostic() async throws {
+        let requestedPane = makePane(
+            sessionName: "shared",
+            windowID: "@1",
+            paneID: "%2"
+        )
+        let liveTarget = WorkbenchV2TerminalLiveTarget(
+            sessionName: "shared",
+            windowID: "@1",
+            paneID: "%1"
+        )
+        let surfaceID = UUID()
+        let sessionRef = SessionRef(target: .local, sessionName: "shared")
+        let sleepController = SleepController(allowedSleeps: 1)
+        let store = MainTerminalStore(
+            surfaceID: surfaceID,
+            dependencies: makeDependencies(
+                liveTarget: { _, _ in
+                    throw StubError.unexpectedSessionLiveTargetLookup
+                },
+                renderedLiveTarget: { _, _, _ in
+                    liveTarget
+                },
+                renderedState: { tileID in
+                    XCTAssertEqual(tileID, surfaceID)
+                    return self.makeRenderedState(
+                        tileID: surfaceID,
+                        sessionRef: sessionRef,
+                        clientTTY: "/dev/ttys002"
+                    )
+                },
+                applyNavigationIntent: { _, _, _ in
+                    throw StubError.renderedLiveTargetUnavailable
+                },
+                sleep: { _ in
+                    try await sleepController.sleep()
+                }
+            )
+        )
+
+        store.activate(pane: requestedPane, hostsConfig: .empty)
+
+        let didSurfaceDiagnostic = try await waitUntil {
+            store.diagnostic == .retargetFailed(
+                ActivePaneRef(
+                    target: .local,
+                    sessionName: "shared",
+                    windowID: "@1",
+                    paneID: "%2"
+                ),
+                detail: StubError.renderedLiveTargetUnavailable.localizedDescription
+            )
+        }
+
+        XCTAssertTrue(didSurfaceDiagnostic, "Expected retarget failure diagnostic to surface")
         store.startPlainShell()
     }
 
@@ -347,10 +416,21 @@ final class MainTerminalStoreTests: XCTestCase {
     }
 }
 
-private enum StubError: Error {
+private enum StubError: LocalizedError {
     case liveTargetUnavailable
     case renderedLiveTargetUnavailable
     case unexpectedSessionLiveTargetLookup
+
+    var errorDescription: String? {
+        switch self {
+        case .liveTargetUnavailable:
+            return "live target unavailable"
+        case .renderedLiveTargetUnavailable:
+            return "rendered live target unavailable"
+        case .unexpectedSessionLiveTargetLookup:
+            return "unexpected session live target lookup"
+        }
+    }
 }
 
 private actor LiveTargetSequence {

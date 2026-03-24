@@ -12,8 +12,8 @@
 - [x] implement pane/window activation by reusing or retargeting the current
   terminal
 - [x] implement cross-session single-terminal reattach
-- [ ] add attach, restore, and drift diagnostics for the thinner host model
-- [ ] decide what generic workbench, browser, and document code remains as
+- [x] add attach, restore, and drift diagnostics for the thinner host model
+- [x] decide what generic workbench, browser, and document code remains as
   migration-only scaffolding
-- [ ] migrate `UITestTmuxBridge` and mainline UI smoke tests off visible
+- [x] migrate `UITestTmuxBridge` and mainline UI smoke tests off visible
   workbench assumptions

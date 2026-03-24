@@ -36,7 +36,7 @@ struct TitlebarChromeView: View {
                             .foregroundStyle(Color.white.opacity(0.52))
                     }
 
-                    if let diagnosticMessage = mainTerminalStore.diagnosticMessage,
+                    if let diagnosticMessage = mainTerminalStore.diagnosticInlineText,
                        !diagnosticMessage.isEmpty {
                         Text(diagnosticMessage)
                             .font(.system(size: 10, weight: .medium, design: .rounded))
@@ -232,6 +232,6 @@ private struct TitlebarNewShellButton: View {
         .onHover { isHovered = $0 }
         .help("New Shell")
         .accessibilityLabel("New Shell")
-        .accessibilityIdentifier("main-terminal.new-shell")
+        .accessibilityIdentifier(AccessibilityID.terminalMainNewShell)
     }
 }

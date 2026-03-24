@@ -26,9 +26,13 @@ Current state:
   - session/window/pane target resolution
   - same-session retarget
   - plain-shell startup defaults
-- generic workbench and companion surfaces still exist in the repository, but
-  they are not the desired mainline product story
-- follow-up cleanup still remains around richer diagnostics and removing or
-  quarantining more migration-only workbench/document scaffolding
-- `UITestTmuxBridge` and several UI tests still assume visible workbench state
-  and need a later migration to the `MainTerminalStore` path
+- typed attach / restore / drift diagnostics now flow through
+  `MainTerminalStore` and are surfaced in the titlebar, main terminal, and
+  sidebar
+- `UITestTmuxBridge` active-target and rendered-target snapshots now prefer
+  `MainTerminalStore` and the single main-terminal surface
+- generic workbench, browser, and document code still exists in the
+  repository, but it is now explicitly migration-only scaffolding rather than
+  visible mainline UI
+- legacy workbench-shaped UI tests are quarantined with explicit skips while
+  terminal-first smoke coverage moves to the single main-terminal contract

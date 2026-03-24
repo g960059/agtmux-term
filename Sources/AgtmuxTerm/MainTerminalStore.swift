@@ -11,6 +11,75 @@ enum MainTerminalMode: Equatable {
     )
 }
 
+enum MainTerminalDiagnostic: Equatable {
+    case sessionMissing(SessionRef)
+    case paneMissing(ActivePaneRef)
+    case attachFailed(SessionRef, detail: String)
+    case retargetFailed(ActivePaneRef, detail: String)
+    case restoreFallbackUsed(requested: ActivePaneRef?, resolved: ActivePaneRef)
+    case terminalSidebarDrift(requested: ActivePaneRef?, resolved: ActivePaneRef?)
+
+    var code: String {
+        switch self {
+        case .sessionMissing:
+            return "sessionMissing"
+        case .paneMissing:
+            return "paneMissing"
+        case .attachFailed:
+            return "attachFailed"
+        case .retargetFailed:
+            return "retargetFailed"
+        case .restoreFallbackUsed:
+            return "restoreFallbackUsed"
+        case .terminalSidebarDrift:
+            return "terminalSidebarDrift"
+        }
+    }
+
+    var inlineSummary: String {
+        switch self {
+        case .sessionMissing:
+            return "Session missing"
+        case .paneMissing:
+            return "Pane missing"
+        case .attachFailed:
+            return "Attach failed"
+        case .retargetFailed:
+            return "Retarget failed"
+        case .restoreFallbackUsed:
+            return "Restore fallback"
+        case .terminalSidebarDrift:
+            return "Terminal drift"
+        }
+    }
+
+    var detailText: String {
+        switch self {
+        case .sessionMissing(let sessionRef):
+            return "Session target unavailable: no panes are listed for \(sessionRef.sessionName)."
+        case .paneMissing(let paneRef):
+            return "Pane target unavailable: \(paneRef.sessionName) \(paneRef.windowID) \(paneRef.paneID)."
+        case .attachFailed(_, let detail):
+            return detail
+        case .retargetFailed(_, let detail):
+            return detail
+        case .restoreFallbackUsed(let requested, let resolved):
+            guard let requested else {
+                return "Session target fell back to \(resolved.sessionName) \(resolved.windowID) \(resolved.paneID)."
+            }
+            return "Restore fallback used for \(requested.sessionName) \(requested.windowID) \(requested.paneID) -> \(resolved.sessionName) \(resolved.windowID) \(resolved.paneID)."
+        case .terminalSidebarDrift(let requested, let resolved):
+            let requestedLabel = requested.map(Self.paneLabel(for:)) ?? "none"
+            let resolvedLabel = resolved.map(Self.paneLabel(for:)) ?? "none"
+            return "Terminal/sidebar drift detected: requested=\(requestedLabel), resolved=\(resolvedLabel)."
+        }
+    }
+
+    private static func paneLabel(for paneRef: ActivePaneRef) -> String {
+        "\(paneRef.sessionName) \(paneRef.windowID) \(paneRef.paneID)"
+    }
+}
+
 struct MainTerminalAttachPlan: Equatable {
     let command: String
     let surfaceKey: String
@@ -162,7 +231,7 @@ final class MainTerminalStore {
 
     private(set) var mode: MainTerminalMode
     private(set) var focusRequestNonce: UInt64
-    private(set) var diagnosticMessage: String?
+    private(set) var diagnostic: MainTerminalDiagnostic?
 
     @ObservationIgnored private let dependencies: MainTerminalStoreDependencies
     @ObservationIgnored private var lastRestoreTargetBySession: [SessionRef: ActivePaneRef]
@@ -174,7 +243,7 @@ final class MainTerminalStore {
         surfaceID: UUID = UUID(),
         mode: MainTerminalMode = .plainShell,
         focusRequestNonce: UInt64 = 0,
-        diagnosticMessage: String? = nil,
+        diagnostic: MainTerminalDiagnostic? = nil,
         lastRestoreTargetBySession: [SessionRef: ActivePaneRef] = [:],
         dependencies: MainTerminalStoreDependencies = .live()
     ) {
@@ -182,7 +251,7 @@ final class MainTerminalStore {
         self.surfaceID = surfaceID
         self.mode = mode
         self.focusRequestNonce = focusRequestNonce
-        self.diagnosticMessage = diagnosticMessage
+        self.diagnostic = diagnostic
         self.lastRestoreTargetBySession = lastRestoreTargetBySession
         self.dependencies = dependencies
         self.navigationGeneration = 0
@@ -215,6 +284,14 @@ final class MainTerminalStore {
         WorkbenchTerminalPaneIdentity.visiblePaneIdentity(for: highlightedPaneRef)
     }
 
+    var diagnosticMessage: String? {
+        diagnostic?.detailText
+    }
+
+    var diagnosticInlineText: String? {
+        diagnostic?.inlineSummary
+    }
+
     var attachResolution: Result<MainTerminalAttachPlan, MainTerminalAttachError>? {
         guard let sessionRef else { return nil }
         return MainTerminalAttachResolver.resolve(
@@ -245,7 +322,7 @@ final class MainTerminalStore {
 
     func startPlainShell() {
         currentHostsConfig = .empty
-        diagnosticMessage = nil
+        diagnostic = nil
         navigationGeneration &+= 1
         navigationTask?.cancel()
         navigationTask = nil
@@ -264,17 +341,39 @@ final class MainTerminalStore {
             sessionRef: sessionRef,
             requestedPaneRef: sessionTarget.paneRef,
             hostsConfig: hostsConfig,
-            diagnosticMessage: sessionTarget.diagnosticMessage
+            diagnostic: sessionTarget.diagnostic
+        )
+    }
+
+    func activate(
+        sessionRef: SessionRef,
+        requestedPaneRef: ActivePaneRef?,
+        hostsConfig: HostsConfig,
+        diagnostic: MainTerminalDiagnostic? = nil
+    ) {
+        activateTmux(
+            sessionRef: sessionRef,
+            requestedPaneRef: requestedPaneRef,
+            hostsConfig: hostsConfig,
+            diagnostic: diagnostic
         )
     }
 
     func activate(window: AgtmuxTermCore.WindowGroup, hostsConfig: HostsConfig) async {
         guard let fallbackPane = window.panes.first else {
-            diagnosticMessage = "Window target unavailable: no panes are listed for \(window.windowId)."
+            let sessionRef = SessionRef(
+                target: Self.targetRef(for: window.source, hostsConfig: hostsConfig),
+                sessionName: window.sessionName
+            )
+            diagnostic = .attachFailed(
+                sessionRef,
+                detail: "Window target unavailable: no panes are listed for \(window.windowId)."
+            )
             return
         }
         let sessionRef = Self.sessionRef(for: fallbackPane, hostsConfig: hostsConfig)
         let requestedPaneRef: ActivePaneRef
+        let diagnostic: MainTerminalDiagnostic?
         if let liveTarget = try? await dependencies.liveTarget(sessionRef, hostsConfig),
            liveTarget.windowID == window.windowId {
             requestedPaneRef = Self.activePaneRef(
@@ -283,16 +382,20 @@ final class MainTerminalStore {
                 windowID: liveTarget.windowID,
                 paneID: liveTarget.paneID
             )
+            diagnostic = nil
         } else if let restoredPaneRef = lastRestoreTargetBySession[sessionRef],
                   restoredPaneRef.windowID == window.windowId {
             requestedPaneRef = restoredPaneRef
+            diagnostic = .restoreFallbackUsed(requested: nil, resolved: restoredPaneRef)
         } else {
             requestedPaneRef = Self.activePaneRef(for: fallbackPane, hostsConfig: hostsConfig)
+            diagnostic = .restoreFallbackUsed(requested: nil, resolved: requestedPaneRef)
         }
         activateTmux(
             sessionRef: sessionRef,
             requestedPaneRef: requestedPaneRef,
-            hostsConfig: hostsConfig
+            hostsConfig: hostsConfig,
+            diagnostic: diagnostic
         )
     }
 
@@ -322,10 +425,10 @@ final class MainTerminalStore {
         sessionRef: SessionRef,
         requestedPaneRef: ActivePaneRef?,
         hostsConfig: HostsConfig,
-        diagnosticMessage: String? = nil
+        diagnostic: MainTerminalDiagnostic? = nil
     ) {
         currentHostsConfig = hostsConfig
-        self.diagnosticMessage = diagnosticMessage
+        self.diagnostic = diagnostic
         mode = .tmux(
             sessionRef: sessionRef,
             requestedPaneRef: WorkbenchTerminalPaneIdentity.normalized(requestedPaneRef),
@@ -339,7 +442,7 @@ final class MainTerminalStore {
         session: SessionGroup,
         sessionRef: SessionRef,
         hostsConfig: HostsConfig
-    ) async -> (paneRef: ActivePaneRef?, diagnosticMessage: String?) {
+    ) async -> (paneRef: ActivePaneRef?, diagnostic: MainTerminalDiagnostic?) {
         if let liveTarget = try? await dependencies.liveTarget(sessionRef, hostsConfig) {
             return (
                 paneRef: Self.activePaneRef(
@@ -348,24 +451,25 @@ final class MainTerminalStore {
                     windowID: liveTarget.windowID,
                     paneID: liveTarget.paneID
                 ),
-                diagnosticMessage: nil
+                diagnostic: nil
             )
         }
         if let restoredPaneRef = lastRestoreTargetBySession[sessionRef] {
             return (
                 paneRef: restoredPaneRef,
-                diagnosticMessage: "Session target fell back to the last restored pane."
+                diagnostic: .restoreFallbackUsed(requested: nil, resolved: restoredPaneRef)
             )
         }
         guard let fallbackPane = session.windows.first?.panes.first else {
             return (
                 paneRef: nil,
-                diagnosticMessage: "Session target unavailable: no panes are listed for \(session.sessionName)."
+                diagnostic: .sessionMissing(sessionRef)
             )
         }
+        let fallbackPaneRef = Self.activePaneRef(for: fallbackPane, hostsConfig: hostsConfig)
         return (
-            paneRef: Self.activePaneRef(for: fallbackPane, hostsConfig: hostsConfig),
-            diagnosticMessage: "Session target fell back to the first listed pane."
+            paneRef: fallbackPaneRef,
+            diagnostic: .restoreFallbackUsed(requested: nil, resolved: fallbackPaneRef)
         )
     }
 
@@ -413,7 +517,7 @@ final class MainTerminalStore {
                     }
                     continue
                 case .missingRemoteHostKey, .activePaneUnavailable:
-                    diagnosticMessage = error.localizedDescription
+                    diagnostic = .attachFailed(sessionRef, detail: error.localizedDescription)
                     do {
                         try await dependencies.sleep(.milliseconds(250))
                     } catch {
@@ -422,7 +526,7 @@ final class MainTerminalStore {
                     continue
                 }
             } catch {
-                diagnosticMessage = error.localizedDescription
+                diagnostic = .attachFailed(sessionRef, detail: error.localizedDescription)
                 do {
                     try await dependencies.sleep(.milliseconds(250))
                 } catch {
@@ -444,10 +548,6 @@ final class MainTerminalStore {
                 paneID: liveTarget.paneID
             )
 
-            if liveTarget.sessionName == sessionRef.sessionName {
-                lastRestoreTargetBySession[sessionRef] = livePaneRef
-            }
-
             if let currentRequestedPaneRef,
                Self.samePane(lhs: currentRequestedPaneRef, rhs: livePaneRef) {
                 mode = .tmux(
@@ -455,7 +555,8 @@ final class MainTerminalStore {
                     requestedPaneRef: nil,
                     resolvedPaneRef: livePaneRef
                 )
-                diagnosticMessage = nil
+                lastRestoreTargetBySession[sessionRef] = livePaneRef
+                clearTransientDiagnosticIfNeeded()
                 do {
                     try await dependencies.sleep(.milliseconds(1500))
                 } catch {
@@ -471,8 +572,14 @@ final class MainTerminalStore {
                         requestedPaneRef: nil,
                         resolvedPaneRef: livePaneRef
                     )
+                    diagnostic = .terminalSidebarDrift(
+                        requested: currentResolvedPaneRef,
+                        resolved: livePaneRef
+                    )
+                    lastRestoreTargetBySession[sessionRef] = livePaneRef
+                } else {
+                    clearTransientDiagnosticIfNeeded()
                 }
-                diagnosticMessage = nil
                 do {
                     try await dependencies.sleep(.milliseconds(1500))
                 } catch {
@@ -497,12 +604,23 @@ final class MainTerminalStore {
                     renderedClientTTY,
                     currentHostsConfig
                 )
-                diagnosticMessage = nil
                 try await dependencies.sleep(.milliseconds(100))
             } catch {
-                diagnosticMessage = error.localizedDescription
+                diagnostic = .retargetFailed(
+                    currentRequestedPaneRef,
+                    detail: error.localizedDescription
+                )
                 try? await dependencies.sleep(.milliseconds(250))
             }
+        }
+    }
+
+    private func clearTransientDiagnosticIfNeeded() {
+        switch diagnostic {
+        case .attachFailed, .retargetFailed, .sessionMissing, .paneMissing:
+            diagnostic = nil
+        case .restoreFallbackUsed, .terminalSidebarDrift, .none:
+            break
         }
     }
 

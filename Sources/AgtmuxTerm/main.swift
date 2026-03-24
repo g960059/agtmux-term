@@ -218,6 +218,7 @@ let mainTerminalStore: MainTerminalStore = MainActor.assumeIsolated {
 let uiTestTmuxBridge: UITestTmuxBridge? = MainActor.assumeIsolated {
     return UITestTmuxBridge(
         viewModel: viewModel,
+        mainTerminalStore: mainTerminalStore,
         workbenchStore: workbenchStoreV2,
         enableMetadataMode: {
             viewModel.enableUITestMetadataMode()

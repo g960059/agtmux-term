@@ -16,6 +16,7 @@ public enum AccessibilityID {
     public static let sidebarEmpty        = "sidebar.emptyState"
     public static let sidebarHealthStrip  = "sidebar.health.strip"
     public static let sidebarHealthBadgePrefix = "sidebar.health.badge."
+    public static let sidebarTerminalDiagnostic = "sidebar.terminalDiagnostic"
     public static let sidebarSessionPrefix = "sidebar.session." // + source_session
     public static let sidebarWindowPrefix = "sidebar.window."    // + source_session_windowID
     public static let sidebarPanePrefix   = "sidebar.pane."      // + source_session_paneID
@@ -38,6 +39,13 @@ public enum AccessibilityID {
     public static let workspaceDocumentRebindTarget = "workspace.documentRebind.target"
     public static let workspaceDocumentRebindPath = "workspace.documentRebind.path"
     public static let workspaceDocumentRebindApply = "workspace.documentRebind.apply"
+
+    // MARK: - Main Terminal
+    public static let terminalMain = "terminal.main"
+    public static let terminalMainSurface = "terminal.main.surface"
+    public static let terminalMainStatus = "terminal.main.status"
+    public static let terminalMainDiagnostic = "terminal.main.diagnostic"
+    public static let terminalMainNewShell = "terminal.main.newShell"
 
     /// Sanitised key combining source/session/pane — safe for use as an identifier.
     public static func paneKey(source: String, sessionName: String, paneID: String) -> String {

@@ -225,7 +225,12 @@ Current implementation status:
   session-wide active-pane truth
 - cross-session navigation currently means session attach plus post-attach
   retarget, not a pane-specific initial attach command
-- richer drift/attach diagnostics and broader scaffold removal still remain
+- typed attach / restore / drift diagnostics now flow through the main
+  terminal status surfaces
+- `UITestTmuxBridge` active-target and rendered-target snapshots now prefer
+  `MainTerminalStore` and the single main-terminal surface
+- legacy workbench-shaped UI tests are quarantined explicitly while terminal-
+  first smoke tests move to the new accessibility contract
 
 ## Boundaries
 

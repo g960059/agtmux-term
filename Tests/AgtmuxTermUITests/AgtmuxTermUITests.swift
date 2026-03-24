@@ -62,6 +62,12 @@ final class AgtmuxTermUITests: XCTestCase {
         "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
+    private func skipLegacyWorkbenchUITest() throws {
+        throw XCTSkip(
+            "Legacy workbench UI is migration-only under the terminal-first mainline."
+        )
+    }
+
     // MARK: - setUp / tearDown
 
     override func setUpWithError() throws {
@@ -217,36 +223,28 @@ final class AgtmuxTermUITests: XCTestCase {
         )
     }
 
-    /// T-E2E-002: Empty workspace state is shown before any pane is selected.
+    /// T-E2E-002: Launch shows the single main terminal and no visible workbench chrome.
     func testEmptyStateOnLaunch() {
         app.launchEnvironment["AGTMUX_JSON"] = #"{"version":1,"panes":[]}"#
         app.launchForUITest()
-        let workspacePredicate = NSPredicate(format: "identifier == %@", AccessibilityID.workspaceArea)
-        let workspaceArea = app.descendants(matching: .any).matching(workspacePredicate).firstMatch
+        let terminal = mainTerminal()
         XCTAssertTrue(
-            workspaceArea.waitForExistence(timeout: TestConstants.settleTimeout),
-            "Workspace area should be visible after launch"
+            terminal.waitForExistence(timeout: TestConstants.settleTimeout),
+            "Main terminal should be visible after launch"
         )
-
-        let predicate = NSPredicate(format: "identifier == %@", AccessibilityID.workspaceEmpty)
-        let emptyState = app.descendants(matching: .any).matching(predicate).firstMatch
-        if emptyState.waitForExistence(timeout: TestConstants.settleTimeout) {
-            return
-        }
-
-        // Fallback for AX timing quirks: in fixture-empty mode, no workspace tile
-        // should be created even if the decorative empty-state element is not exposed.
-        let tilePredicate = NSPredicate(format: "identifier BEGINSWITH %@", AccessibilityID.workspaceTilePrefix)
-        let anyTile = app.descendants(matching: .any).matching(tilePredicate).firstMatch
         XCTAssertFalse(
-            anyTile.exists,
-            "No workspace tile should exist when AGTMUX_JSON contains zero panes"
+            app.descendants(matching: .any).matching(
+                NSPredicate(format: "identifier == %@", AccessibilityID.workspaceTabBar)
+            ).firstMatch.exists,
+            "Visible workbench tab UI should not be exposed on terminal-first launch"
         )
+        XCTAssertTrue(mainTerminalNewShellButton().exists, "New Shell should be available on launch")
     }
 
     /// T-E2E-002c: The default cockpit path opens a direct real-session V2 tile
     /// from the sidebar without creating any linked session.
     func testDefaultSidebarOpenUsesWorkbenchV2RealSessionTerminalTile() throws {
+        try skipLegacyWorkbenchUITest()
         let token = String(UUID().uuidString.prefix(8)).lowercased()
         let sessionName = "agtmux-v2-real-\(token)"
         let socket = "agtmux-v2-\(token)"
@@ -329,6 +327,7 @@ final class AgtmuxTermUITests: XCTestCase {
     /// T-E2E-002d: Reopening the same session on the default cockpit path must
     /// reveal the existing V2 tile rather than creating a second visible tile.
     func testDefaultDuplicateSessionOpenRevealsExistingWorkbenchV2Tile() throws {
+        try skipLegacyWorkbenchUITest()
         let token = String(UUID().uuidString.prefix(8)).lowercased()
         let sessionName = "agtmux-v2-dup-\(token)"
         let socket = "agtmux-v2-\(token)"
@@ -419,6 +418,7 @@ final class AgtmuxTermUITests: XCTestCase {
     /// T-E2E-002e: Restored broken V2 terminal tiles must remain visible with
     /// explicit recovery actions instead of silently disappearing.
     func testV2RestoredBrokenTerminalTileShowsPlaceholderAndCanBeRemoved() throws {
+        try skipLegacyWorkbenchUITest()
         let sessionName = "agtmux-v2-restore-missing"
         let terminalTile = WorkbenchTile(
             kind: .terminal(
@@ -477,6 +477,7 @@ final class AgtmuxTermUITests: XCTestCase {
     /// T-E2E-002f: A healthy restored V2 terminal tile must wait for inventory
     /// truth and settle into direct-attach state, not a false broken placeholder.
     func testV2RestoredHealthyTerminalTileDoesNotSurfaceBrokenPlaceholder() throws {
+        try skipLegacyWorkbenchUITest()
         let paneID = "%55"
         let sessionName = "agtmux-v2-restore-healthy"
         let terminalTile = WorkbenchTile(
@@ -540,6 +541,7 @@ final class AgtmuxTermUITests: XCTestCase {
     }
 
     func testV2RestoredBrokenTerminalTileCanRebindToLiveSession() throws {
+        try skipLegacyWorkbenchUITest()
         let missingSession = "agtmux-v2-restore-missing-rebind"
         let reboundSession = "agtmux-v2-restore-rebound"
         let terminalTile = WorkbenchTile(
@@ -611,6 +613,7 @@ final class AgtmuxTermUITests: XCTestCase {
     }
 
     func testV2RestoredBrokenDocumentTileRetryCanRecover() throws {
+        try skipLegacyWorkbenchUITest()
         let tempDirectory = try makeTemporaryDirectory()
         let documentPath = tempDirectory.appendingPathComponent("restore-retry.md").path
         let expectedText = "Recovered by retry"
@@ -663,6 +666,7 @@ final class AgtmuxTermUITests: XCTestCase {
     }
 
     func testV2RestoredBrokenDocumentTileCanRebindToExistingPath() throws {
+        try skipLegacyWorkbenchUITest()
         let tempDirectory = try makeTemporaryDirectory()
         let missingPath = tempDirectory.appendingPathComponent("missing.md").path
         let reboundPath = tempDirectory.appendingPathComponent("rebound.md").path
@@ -732,6 +736,7 @@ final class AgtmuxTermUITests: XCTestCase {
     }
 
     func testV2RestoredBrokenDocumentTileCanBeRemoved() throws {
+        try skipLegacyWorkbenchUITest()
         let tempDirectory = try makeTemporaryDirectory()
         let missingPath = tempDirectory.appendingPathComponent("remove.md").path
         let documentTile = WorkbenchTile(
@@ -768,10 +773,7 @@ final class AgtmuxTermUITests: XCTestCase {
         )
     }
 
-    /// T-E2E-002b: Selecting a pane updates tab title to the session name.
-    ///
-    /// Regression coverage:
-    ///   - Tab title must not stay on a fixed bootstrap label.
+    /// T-E2E-002b: Selecting a pane updates the main terminal status without surfacing tab chrome.
     func testSelectedPaneSessionNameShownInTabTitle() throws {
         let paneID = "%44"
         let sessionName = "agtmux-e2e-title-sync"
@@ -799,23 +801,21 @@ final class AgtmuxTermUITests: XCTestCase {
 
         row.click()
 
-        let tabBar = app.descendants(matching: .any).matching(
-            NSPredicate(format: "identifier == %@", AccessibilityID.workspaceTabBar)
-        ).firstMatch
-        XCTAssertTrue(tabBar.waitForExistence(timeout: TestConstants.settleTimeout))
-
-        let tabPredicate = NSPredicate(format: "identifier BEGINSWITH %@", AccessibilityID.workspaceTabPrefix)
-        let firstTab = tabBar.descendants(matching: .any).matching(tabPredicate).firstMatch
-        XCTAssertTrue(firstTab.waitForExistence(timeout: TestConstants.settleTimeout))
+        let status = mainTerminalStatus()
+        XCTAssertTrue(status.waitForExistence(timeout: TestConstants.settleTimeout))
         let tabTitleExpectation = expectation(
             for: NSPredicate(format: "label CONTAINS %@", sessionName),
-            evaluatedWith: firstTab
+            evaluatedWith: status
         )
 
         wait(for: [tabTitleExpectation], timeout: 5.0)
 
-        let legacyMain = tabBar.staticTexts.matching(NSPredicate(format: "label == %@", "Main"))
-        XCTAssertEqual(legacyMain.count, 0, "Tab title should no longer be fixed to 'Main'")
+        XCTAssertFalse(
+            app.descendants(matching: .any).matching(
+                NSPredicate(format: "identifier == %@", AccessibilityID.workspaceTabBar)
+            ).firstMatch.exists,
+            "Visible workbench tab bar should stay absent after pane selection"
+        )
     }
 
     /// T-E2E-002c: metadata-enabled launch should surface local daemon health badges
@@ -992,76 +992,39 @@ final class AgtmuxTermUITests: XCTestCase {
         )
     }
 
-    /// T-E2E-005: New-tab button creates a tab.
+    /// T-E2E-005: New Shell resets the single main terminal back to plain shell.
     func testTabCreation() throws {
+        let paneID = "%55"
+        let sessionName = "agtmux-e2e-new-shell"
+        app.launchEnvironment["AGTMUX_JSON"] = """
+        {"version":1,"panes":[
+          {"pane_id":"\(paneID)","session_name":"\(sessionName)","window_id":"@1",
+           "window_index":1,"window_name":"zsh","activity_state":"idle",
+           "presence":"unmanaged","evidence_mode":"none",
+           "current_cmd":"zsh","updated_at":"2026-03-23T12:00:00Z","age_secs":0}
+        ]}
+        """
         app.launchForUITest()
-        let tabBarPred = NSPredicate(format: "identifier == %@", AccessibilityID.workspaceTabBar)
-        let tabBar = app.descendants(matching: .any).matching(tabBarPred).firstMatch
-        XCTAssertTrue(tabBar.waitForExistence(timeout: TestConstants.settleTimeout))
 
-        let tabPredicate = NSPredicate(format: "identifier BEGINSWITH %@", AccessibilityID.workspaceTabPrefix)
-        let allDescendants = { self.app.descendants(matching: .any).matching(tabPredicate) }
-        let tabsBefore = allDescendants().count
-        let expectedCount = tabsBefore + 1
+        let row = paneRow(source: "local", sessionName: sessionName, paneID: paneID)
+        XCTAssertTrue(row.waitForExistence(timeout: TestConstants.sidebarPopulateTimeout))
+        row.click()
 
-        func waitForTabCount(_ timeout: TimeInterval) -> Bool {
-            let countPredicate = NSPredicate(format: "count == %d", expectedCount)
-            let countExpectation = expectation(for: countPredicate, evaluatedWith: allDescendants())
-            let result = XCTWaiter.wait(for: [countExpectation], timeout: timeout)
-            return result == .completed
-        }
+        let status = mainTerminalStatus()
+        XCTAssertTrue(status.waitForExistence(timeout: TestConstants.settleTimeout))
+        wait(
+            for: [expectation(for: NSPredicate(format: "label CONTAINS %@", sessionName), evaluatedWith: status)],
+            timeout: TestConstants.settleTimeout
+        )
 
-        func tryClick(_ element: XCUIElement, waitAfterTap: TimeInterval = 3.0) -> Bool {
-            guard element.exists else { return false }
-            element.click()
-            return waitForTabCount(waitAfterTap)
-        }
+        let newShellButton = mainTerminalNewShellButton()
+        XCTAssertTrue(newShellButton.waitForExistence(timeout: TestConstants.settleTimeout))
+        newShellButton.click()
 
-        let newTabButton = app.descendants(matching: .any).matching(
-            NSPredicate(format: "identifier == %@", AccessibilityID.workspaceNewTab)
-        ).firstMatch
-        var created = false
-
-        // Preferred path: dedicated AX id.
-        if newTabButton.waitForExistence(timeout: 2.0) {
-            created = tryClick(newTabButton, waitAfterTap: 5.0)
-        }
-
-        // Fallback path for environments where the plus button is exposed with
-        // tab-bar id instead of workspace.newTabButton.
-        if !created {
-            let tabBarButtonFallback = tabBar.descendants(matching: .button).matching(
-                NSPredicate(format: "identifier == %@", AccessibilityID.workspaceTabBar)
-            ).firstMatch
-            created = tryClick(tabBarButtonFallback)
-        }
-
-        // Fallback path for environments exposing only label.
-        if !created {
-            let labeledFallback = app.buttons.matching(NSPredicate(format: "label == %@", "New Tab")).firstMatch
-            created = tryClick(labeledFallback)
-        }
-
-        // Last resort: keyboard shortcut.
-        if !created {
-            let workspace = app.descendants(matching: .any).matching(
-                NSPredicate(format: "identifier == %@", AccessibilityID.workspaceArea)
-            ).firstMatch
-            if workspace.exists {
-                workspace.click()
-            } else {
-                app.windows.firstMatch.click()
-            }
-            app.typeKey("t", modifierFlags: .command)
-            created = waitForTabCount(2)
-        }
-
-        if !created {
-            throw XCTSkip(
-                "Tab creation control is not exposed to XCUITest in this desktop session " +
-                "(no workspace.newTabButton and Cmd+T had no effect)."
-            )
-        }
+        wait(
+            for: [expectation(for: NSPredicate(format: "label CONTAINS %@", "Plain Shell"), evaluatedWith: status)],
+            timeout: TestConstants.settleTimeout
+        )
     }
 
     /// T-E2E-007: Sidebar shows panes returned by the agtmux daemon.
@@ -1131,17 +1094,14 @@ final class AgtmuxTermUITests: XCTestCase {
             "Pane \(pane2ID) must appear in sidebar (AX id: \(AccessibilityID.sidebarPanePrefix + key2))"
         )
 
-        // Selecting a pane should open a workspace tile for that pane.
-        waitForWorkspaceToLeaveEmptyState()
+        // Selecting a pane should retarget the single visible main terminal.
         row1.click()
-        waitForWorkspaceToLeaveEmptyState()
-        let tile1 = app.descendants(matching: .any).matching(
-            NSPredicate(format: "identifier BEGINSWITH %@", AccessibilityID.workspaceTilePrefix)
-        ).firstMatch
         XCTAssertTrue(
-            tile1.waitForExistence(timeout: TestConstants.surfaceReadyTimeout),
-            "Selecting a sidebar pane should display its workspace tile"
+            selectedPaneMarker(sessionName: sessionName, paneID: pane1ID)
+                .waitForExistence(timeout: TestConstants.surfaceReadyTimeout),
+            "Selecting a sidebar pane should update the canonical selected marker"
         )
+        XCTAssertTrue(mainTerminal().exists, "Main terminal should stay visible after pane selection")
     }
 
     /// T-E2E-007b: Managed pane rows restore provider badge state and trailing freshness semantics.
@@ -2555,6 +2515,7 @@ final class AgtmuxTermUITests: XCTestCase {
 
     /// T-E2E-004: CRASH REGRESSION TEST.
     func testPaneSelectionCreatesTerminalTile() throws {
+        try skipLegacyWorkbenchUITest()
         app.launchForUITest()
         let predicate = NSPredicate(format: "identifier BEGINSWITH %@", AccessibilityID.sidebarPanePrefix)
         let paneRow = app.otherElements.matching(predicate).firstMatch
@@ -2591,6 +2552,7 @@ final class AgtmuxTermUITests: XCTestCase {
 
     /// T-E2E-006: SPLIT REGRESSION TEST.
     func testSecondPaneSelectionReplacesNotSplits() throws {
+        try skipLegacyWorkbenchUITest()
         app.launchForUITest()
         let panePredicate = NSPredicate(format: "identifier BEGINSWITH %@", AccessibilityID.sidebarPanePrefix)
         let allRows = app.otherElements.matching(panePredicate)
@@ -2706,6 +2668,24 @@ final class AgtmuxTermUITests: XCTestCase {
             return String(describing: value)
         }
         return nil
+    }
+
+    private func mainTerminal() -> XCUIElement {
+        app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier == %@", AccessibilityID.terminalMain)
+        ).firstMatch
+    }
+
+    private func mainTerminalStatus() -> XCUIElement {
+        app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier == %@", AccessibilityID.terminalMainStatus)
+        ).firstMatch
+    }
+
+    private func mainTerminalNewShellButton() -> XCUIElement {
+        app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier == %@", AccessibilityID.terminalMainNewShell)
+        ).firstMatch
     }
 
     private func workbenchV2TerminalTile(sessionName: String) -> XCUIElement {
@@ -3661,23 +3641,16 @@ final class AgtmuxTermUITests: XCTestCase {
         sessionName: String,
         timeout: TimeInterval = TestConstants.surfaceReadyTimeout
     ) {
-        let tileQuery = app.descendants(matching: .any).matching(
-            NSPredicate(
-                format: "identifier BEGINSWITH %@ AND NOT identifier ENDSWITH %@ AND label == %@",
-                AccessibilityID.workspaceTilePrefix,
-                ".status",
-                sessionName
-            )
+        let terminal = mainTerminal()
+        XCTAssertTrue(
+            terminal.waitForExistence(timeout: timeout),
+            "Main terminal should stay visible for \(sessionName)"
         )
-        let oneTile = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "count == 1"),
-            object: tileQuery
-        )
-        wait(for: [oneTile], timeout: timeout)
-        XCTAssertEqual(
-            tileQuery.count,
-            1,
-            "Same-session retarget must keep exactly one visible tile for \(sessionName)"
+        XCTAssertFalse(
+            app.descendants(matching: .any).matching(
+                NSPredicate(format: "identifier == %@", AccessibilityID.workspaceTabBar)
+            ).firstMatch.exists,
+            "Visible workbench tab bar should stay absent for \(sessionName)"
         )
     }
 
