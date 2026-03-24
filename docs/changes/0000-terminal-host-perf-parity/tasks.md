@@ -9,6 +9,14 @@
   perf workflow
 - [x] add render-callback and direct-draw ownership counters
 - [x] add main-thread tick/draw timing coverage for the current hot path
-- [ ] add resize churn and pane/surface lifecycle counters
-- [ ] produce the first measured parity table for `legacy` / `next` / native
+- [x] add resize churn and pane/surface lifecycle counters
+- [x] stop losing late per-id bridge command results in live readiness probes
+- [x] make the UITest bridge command loop single-flight under runtime-config churn
+- [x] atomically claim bridge command files across competing consumers
+- [x] isolate direct live launches from competing `AgtmuxTerm` bridge readers
+- [x] align live focus-host timeout with the terminal registration budget
+- [x] skip impossible fresh-launch active-target waits before opening the live pane
+- [x] produce the first measured parity table for `legacy` / `next` / native
+- [ ] add a cadence-sensitive parity table that can explain user-visible
+  smoothness gaps beyond step granularity
 - [ ] thin the `next` hot path based on those measurements

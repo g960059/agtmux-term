@@ -23,6 +23,94 @@ final class TerminalHostActiveSurfaceRegistry {
     }
 }
 
+@MainActor
+final class NextHostPaneControllerTelemetry {
+    struct Snapshot: Codable, Equatable {
+        let createCount: Int
+        let promoteCount: Int
+        let activateCount: Int
+        let deactivateCount: Int
+        let evictCount: Int
+        let retainedPaneControllerCount: Int
+        let maxRetainedPaneControllerCount: Int
+        let retentionOrderCount: Int
+    }
+
+    private struct State {
+        var createCount = 0
+        var promoteCount = 0
+        var activateCount = 0
+        var deactivateCount = 0
+        var evictCount = 0
+        var retainedPaneControllerCount = 0
+        var maxRetainedPaneControllerCount = 0
+        var retentionOrderCount = 0
+    }
+
+    static let shared = NextHostPaneControllerTelemetry()
+
+    private var statesByTileID: [UUID: State] = [:]
+
+    func recordCreate(tileID: UUID) {
+        var state = statesByTileID[tileID] ?? State()
+        state.createCount += 1
+        statesByTileID[tileID] = state
+    }
+
+    func recordPromote(tileID: UUID) {
+        var state = statesByTileID[tileID] ?? State()
+        state.promoteCount += 1
+        statesByTileID[tileID] = state
+    }
+
+    func recordActivate(tileID: UUID) {
+        var state = statesByTileID[tileID] ?? State()
+        state.activateCount += 1
+        statesByTileID[tileID] = state
+    }
+
+    func recordDeactivate(tileID: UUID) {
+        var state = statesByTileID[tileID] ?? State()
+        state.deactivateCount += 1
+        statesByTileID[tileID] = state
+    }
+
+    func recordEvict(tileID: UUID, count: Int) {
+        var state = statesByTileID[tileID] ?? State()
+        state.evictCount += count
+        statesByTileID[tileID] = state
+    }
+
+    func recordRetention(tileID: UUID, retainedCount: Int, retentionOrderCount: Int) {
+        var state = statesByTileID[tileID] ?? State()
+        state.retainedPaneControllerCount = retainedCount
+        state.retentionOrderCount = retentionOrderCount
+        state.maxRetainedPaneControllerCount = max(
+            state.maxRetainedPaneControllerCount,
+            retainedCount
+        )
+        statesByTileID[tileID] = state
+    }
+
+    func reset(tileID: UUID) {
+        statesByTileID[tileID] = State()
+    }
+
+    func snapshot(tileID: UUID) -> Snapshot {
+        let state = statesByTileID[tileID] ?? State()
+        return Snapshot(
+            createCount: state.createCount,
+            promoteCount: state.promoteCount,
+            activateCount: state.activateCount,
+            deactivateCount: state.deactivateCount,
+            evictCount: state.evictCount,
+            retainedPaneControllerCount: state.retainedPaneControllerCount,
+            maxRetainedPaneControllerCount: state.maxRetainedPaneControllerCount,
+            retentionOrderCount: state.retentionOrderCount
+        )
+    }
+}
+
 struct TerminalHostRenderModel: Equatable {
     let surfaceID: UUID
     let poolKey: String
@@ -191,7 +279,13 @@ final class NextGhosttyIslandViewController: NSViewController {
         )
         paneModels[paneKey] = paneModel
 
-        let controller = paneControllers[paneKey] ?? makePaneController(model: paneModel)
+        let controller: GhosttyIslandViewController
+        if let existingController = paneControllers[paneKey] {
+            controller = existingController
+        } else {
+            NextHostPaneControllerTelemetry.shared.recordCreate(tileID: tileID)
+            controller = makePaneController(model: paneModel)
+        }
         paneControllers[paneKey] = controller
         controller.update(
             attachCommand: paneModel.attachCommand,
@@ -212,9 +306,15 @@ final class NextGhosttyIslandViewController: NSViewController {
         paneRetentionOrder.removeAll { $0 == paneKey }
         paneRetentionOrder.append(paneKey)
         evictInactivePaneControllersIfNeeded(activePaneKey: paneKey)
+        NextHostPaneControllerTelemetry.shared.recordRetention(
+            tileID: tileID,
+            retainedCount: paneControllers.count,
+            retentionOrderCount: paneRetentionOrder.count
+        )
     }
 
     private func promotePaneController(from sourceKey: String, to targetKey: String) {
+        NextHostPaneControllerTelemetry.shared.recordPromote(tileID: tileID)
         if let surfaceID = paneSurfaceIDs.removeValue(forKey: sourceKey) {
             paneSurfaceIDs[targetKey] = surfaceID
         }
@@ -248,6 +348,7 @@ final class NextGhosttyIslandViewController: NSViewController {
               let controller = paneControllers[activePaneKey],
               var model = paneModels[activePaneKey]
         else { return }
+        NextHostPaneControllerTelemetry.shared.recordDeactivate(tileID: tileID)
         model = TerminalHostRenderModel(
             surfaceID: model.surfaceID,
             poolKey: model.poolKey,
@@ -269,6 +370,7 @@ final class NextGhosttyIslandViewController: NSViewController {
     }
 
     private func activatePaneController(_ controller: GhosttyIslandViewController, paneKey: String) {
+        NextHostPaneControllerTelemetry.shared.recordActivate(tileID: tileID)
         if children.contains(where: { $0 === controller }) == false {
             addChild(controller)
         }
@@ -302,6 +404,7 @@ final class NextGhosttyIslandViewController: NSViewController {
             )
         )
         let evictedKeys = paneControllers.keys.filter { keptKeys.contains($0) == false }
+        NextHostPaneControllerTelemetry.shared.recordEvict(tileID: tileID, count: evictedKeys.count)
         for key in evictedKeys {
             guard let controller = paneControllers.removeValue(forKey: key) else { continue }
             paneModels.removeValue(forKey: key)

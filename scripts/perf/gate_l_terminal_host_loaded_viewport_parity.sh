@@ -126,6 +126,44 @@ jq -n \
       (telemetry($payload; ["scrollTelemetry", "scroll", "refreshDrawRequestCount"]) // null),
     scrollImmediatePresentationDrawCount:
       (telemetry($payload; ["scrollTelemetry", "scroll", "immediatePresentationDrawCount"]) // null),
+    metricsSyncAppliedCount:
+      (telemetry($payload; ["scrollTelemetry", "scroll", "surfaceMetricsSync", "appliedCount"]) // null),
+    metricsSyncNoopCount:
+      (telemetry($payload; ["scrollTelemetry", "scroll", "surfaceMetricsSync", "noopCount"]) // null),
+    metricsSyncMarkDirtyCount:
+      (telemetry($payload; ["scrollTelemetry", "scroll", "surfaceMetricsSync", "markDirtyCount"]) // null),
+    metricsSyncSizeUpdateCount:
+      (telemetry($payload; ["scrollTelemetry", "scroll", "surfaceMetricsSync", "sizeUpdateCount"]) // null),
+    surfacePoolRegisterCount:
+      (telemetry($payload; ["scrollTelemetry", "surfacePool", "registerCount"]) // null),
+    surfacePoolActivateCount:
+      (telemetry($payload; ["scrollTelemetry", "surfacePool", "activateCount"]) // null),
+    surfacePoolBackgroundCount:
+      (telemetry($payload; ["scrollTelemetry", "surfacePool", "backgroundCount"]) // null),
+    surfacePoolScheduleGCCount:
+      (telemetry($payload; ["scrollTelemetry", "surfacePool", "scheduleGCCount"]) // null),
+    surfacePoolMarkDirtyCount:
+      (telemetry($payload; ["scrollTelemetry", "surfacePool", "markDirtyCount"]) // null),
+    surfacePoolMarkDirtyForDirectDrawCount:
+      (telemetry($payload; ["scrollTelemetry", "surfacePool", "markDirtyForDirectDrawCount"]) // null),
+    surfacePoolDirtyActiveConsumedSurfaceCount:
+      (telemetry($payload; ["scrollTelemetry", "surfacePool", "dirtyActiveConsumedSurfaceCount"]) // null),
+    surfacePoolActiveCount:
+      (telemetry($payload; ["scrollTelemetry", "surfacePool", "activeCount"]) // null),
+    surfacePoolBackgroundedCount:
+      (telemetry($payload; ["scrollTelemetry", "surfacePool", "backgroundedCount"]) // null),
+    surfacePoolPendingGCCount:
+      (telemetry($payload; ["scrollTelemetry", "surfacePool", "pendingGCCount"]) // null),
+    nextHostCreateCount:
+      (telemetry($payload; ["scrollTelemetry", "nextHost", "createCount"]) // null),
+    nextHostPromoteCount:
+      (telemetry($payload; ["scrollTelemetry", "nextHost", "promoteCount"]) // null),
+    nextHostEvictCount:
+      (telemetry($payload; ["scrollTelemetry", "nextHost", "evictCount"]) // null),
+    nextHostRetainedPaneControllerCount:
+      (telemetry($payload; ["scrollTelemetry", "nextHost", "retainedPaneControllerCount"]) // null),
+    nextHostMaxRetainedPaneControllerCount:
+      (telemetry($payload; ["scrollTelemetry", "nextHost", "maxRetainedPaneControllerCount"]) // null),
     fixtureFirstKeyUpElapsedMs:
       (telemetry($payload; ["fixtureEventSummary", "firstKeyUpElapsedMs"]) // null),
     fixtureKeyUpCount:
@@ -193,6 +231,51 @@ jq -n \
     scrollImmediatePresentationDrawCountDelta:
       ((telemetry($next; ["scrollTelemetry", "scroll", "immediatePresentationDrawCount"]) // 0) -
        (telemetry($legacy; ["scrollTelemetry", "scroll", "immediatePresentationDrawCount"]) // 0)),
+    metricsSyncAppliedCountDelta:
+      ((telemetry($next; ["scrollTelemetry", "scroll", "surfaceMetricsSync", "appliedCount"]) // 0) -
+       (telemetry($legacy; ["scrollTelemetry", "scroll", "surfaceMetricsSync", "appliedCount"]) // 0)),
+    metricsSyncNoopCountDelta:
+      ((telemetry($next; ["scrollTelemetry", "scroll", "surfaceMetricsSync", "noopCount"]) // 0) -
+       (telemetry($legacy; ["scrollTelemetry", "scroll", "surfaceMetricsSync", "noopCount"]) // 0)),
+    metricsSyncMarkDirtyCountDelta:
+      ((telemetry($next; ["scrollTelemetry", "scroll", "surfaceMetricsSync", "markDirtyCount"]) // 0) -
+       (telemetry($legacy; ["scrollTelemetry", "scroll", "surfaceMetricsSync", "markDirtyCount"]) // 0)),
+    metricsSyncSizeUpdateCountDelta:
+      ((telemetry($next; ["scrollTelemetry", "scroll", "surfaceMetricsSync", "sizeUpdateCount"]) // 0) -
+       (telemetry($legacy; ["scrollTelemetry", "scroll", "surfaceMetricsSync", "sizeUpdateCount"]) // 0)),
+    surfacePoolRegisterCountDelta:
+      ((telemetry($next; ["scrollTelemetry", "surfacePool", "registerCount"]) // 0) -
+       (telemetry($legacy; ["scrollTelemetry", "surfacePool", "registerCount"]) // 0)),
+    surfacePoolActivateCountDelta:
+      ((telemetry($next; ["scrollTelemetry", "surfacePool", "activateCount"]) // 0) -
+       (telemetry($legacy; ["scrollTelemetry", "surfacePool", "activateCount"]) // 0)),
+    surfacePoolBackgroundCountDelta:
+      ((telemetry($next; ["scrollTelemetry", "surfacePool", "backgroundCount"]) // 0) -
+       (telemetry($legacy; ["scrollTelemetry", "surfacePool", "backgroundCount"]) // 0)),
+    surfacePoolScheduleGCCountDelta:
+      ((telemetry($next; ["scrollTelemetry", "surfacePool", "scheduleGCCount"]) // 0) -
+       (telemetry($legacy; ["scrollTelemetry", "surfacePool", "scheduleGCCount"]) // 0)),
+    surfacePoolMarkDirtyCountDelta:
+      ((telemetry($next; ["scrollTelemetry", "surfacePool", "markDirtyCount"]) // 0) -
+       (telemetry($legacy; ["scrollTelemetry", "surfacePool", "markDirtyCount"]) // 0)),
+    surfacePoolMarkDirtyForDirectDrawCountDelta:
+      ((telemetry($next; ["scrollTelemetry", "surfacePool", "markDirtyForDirectDrawCount"]) // 0) -
+       (telemetry($legacy; ["scrollTelemetry", "surfacePool", "markDirtyForDirectDrawCount"]) // 0)),
+    surfacePoolDirtyActiveConsumedSurfaceCountDelta:
+      ((telemetry($next; ["scrollTelemetry", "surfacePool", "dirtyActiveConsumedSurfaceCount"]) // 0) -
+       (telemetry($legacy; ["scrollTelemetry", "surfacePool", "dirtyActiveConsumedSurfaceCount"]) // 0)),
+    nextHostCreateCountDelta:
+      ((telemetry($next; ["scrollTelemetry", "nextHost", "createCount"]) // 0) -
+       (telemetry($legacy; ["scrollTelemetry", "nextHost", "createCount"]) // 0)),
+    nextHostPromoteCountDelta:
+      ((telemetry($next; ["scrollTelemetry", "nextHost", "promoteCount"]) // 0) -
+       (telemetry($legacy; ["scrollTelemetry", "nextHost", "promoteCount"]) // 0)),
+    nextHostEvictCountDelta:
+      ((telemetry($next; ["scrollTelemetry", "nextHost", "evictCount"]) // 0) -
+       (telemetry($legacy; ["scrollTelemetry", "nextHost", "evictCount"]) // 0)),
+    nextHostMaxRetainedPaneControllerCountDelta:
+      ((telemetry($next; ["scrollTelemetry", "nextHost", "maxRetainedPaneControllerCount"]) // 0) -
+       (telemetry($legacy; ["scrollTelemetry", "nextHost", "maxRetainedPaneControllerCount"]) // 0)),
     fixtureFirstKeyUpElapsedDeltaMs:
       ((telemetry($next; ["fixtureEventSummary", "firstKeyUpElapsedMs"]) // 0) -
        (telemetry($legacy; ["fixtureEventSummary", "firstKeyUpElapsedMs"]) // 0))
@@ -251,6 +334,36 @@ jq -n \
       ($runs | map(.comparison.scrollRefreshDrawRequestCountDelta) | median),
     scrollImmediatePresentationDrawCountDelta:
       ($runs | map(.comparison.scrollImmediatePresentationDrawCountDelta) | median),
+    metricsSyncAppliedCountDelta:
+      ($runs | map(.comparison.metricsSyncAppliedCountDelta) | median),
+    metricsSyncNoopCountDelta:
+      ($runs | map(.comparison.metricsSyncNoopCountDelta) | median),
+    metricsSyncMarkDirtyCountDelta:
+      ($runs | map(.comparison.metricsSyncMarkDirtyCountDelta) | median),
+    metricsSyncSizeUpdateCountDelta:
+      ($runs | map(.comparison.metricsSyncSizeUpdateCountDelta) | median),
+    surfacePoolRegisterCountDelta:
+      ($runs | map(.comparison.surfacePoolRegisterCountDelta) | median),
+    surfacePoolActivateCountDelta:
+      ($runs | map(.comparison.surfacePoolActivateCountDelta) | median),
+    surfacePoolBackgroundCountDelta:
+      ($runs | map(.comparison.surfacePoolBackgroundCountDelta) | median),
+    surfacePoolScheduleGCCountDelta:
+      ($runs | map(.comparison.surfacePoolScheduleGCCountDelta) | median),
+    surfacePoolMarkDirtyCountDelta:
+      ($runs | map(.comparison.surfacePoolMarkDirtyCountDelta) | median),
+    surfacePoolMarkDirtyForDirectDrawCountDelta:
+      ($runs | map(.comparison.surfacePoolMarkDirtyForDirectDrawCountDelta) | median),
+    surfacePoolDirtyActiveConsumedSurfaceCountDelta:
+      ($runs | map(.comparison.surfacePoolDirtyActiveConsumedSurfaceCountDelta) | median),
+    nextHostCreateCountDelta:
+      ($runs | map(.comparison.nextHostCreateCountDelta) | median),
+    nextHostPromoteCountDelta:
+      ($runs | map(.comparison.nextHostPromoteCountDelta) | median),
+    nextHostEvictCountDelta:
+      ($runs | map(.comparison.nextHostEvictCountDelta) | median),
+    nextHostMaxRetainedPaneControllerCountDelta:
+      ($runs | map(.comparison.nextHostMaxRetainedPaneControllerCountDelta) | median),
     fixtureFirstKeyUpElapsedDeltaMs:
       ($runs | map(.comparison.fixtureFirstKeyUpElapsedDeltaMs) | median)
   } as $comparison |
@@ -286,6 +399,36 @@ jq -n \
           ($legacyPayloads | map(telemetry(.; ["scrollTelemetry", "scroll", "refreshDrawRequestCount"]) // empty) | median),
         scrollImmediatePresentationDrawCount:
           ($legacyPayloads | map(telemetry(.; ["scrollTelemetry", "scroll", "immediatePresentationDrawCount"]) // empty) | median),
+        metricsSyncAppliedCount:
+          ($legacyPayloads | map(telemetry(.; ["scrollTelemetry", "scroll", "surfaceMetricsSync", "appliedCount"]) // empty) | median),
+        metricsSyncNoopCount:
+          ($legacyPayloads | map(telemetry(.; ["scrollTelemetry", "scroll", "surfaceMetricsSync", "noopCount"]) // empty) | median),
+        metricsSyncMarkDirtyCount:
+          ($legacyPayloads | map(telemetry(.; ["scrollTelemetry", "scroll", "surfaceMetricsSync", "markDirtyCount"]) // empty) | median),
+        metricsSyncSizeUpdateCount:
+          ($legacyPayloads | map(telemetry(.; ["scrollTelemetry", "scroll", "surfaceMetricsSync", "sizeUpdateCount"]) // empty) | median),
+        surfacePoolRegisterCount:
+          ($legacyPayloads | map(telemetry(.; ["scrollTelemetry", "surfacePool", "registerCount"]) // empty) | median),
+        surfacePoolActivateCount:
+          ($legacyPayloads | map(telemetry(.; ["scrollTelemetry", "surfacePool", "activateCount"]) // empty) | median),
+        surfacePoolBackgroundCount:
+          ($legacyPayloads | map(telemetry(.; ["scrollTelemetry", "surfacePool", "backgroundCount"]) // empty) | median),
+        surfacePoolScheduleGCCount:
+          ($legacyPayloads | map(telemetry(.; ["scrollTelemetry", "surfacePool", "scheduleGCCount"]) // empty) | median),
+        surfacePoolMarkDirtyCount:
+          ($legacyPayloads | map(telemetry(.; ["scrollTelemetry", "surfacePool", "markDirtyCount"]) // empty) | median),
+        surfacePoolMarkDirtyForDirectDrawCount:
+          ($legacyPayloads | map(telemetry(.; ["scrollTelemetry", "surfacePool", "markDirtyForDirectDrawCount"]) // empty) | median),
+        surfacePoolDirtyActiveConsumedSurfaceCount:
+          ($legacyPayloads | map(telemetry(.; ["scrollTelemetry", "surfacePool", "dirtyActiveConsumedSurfaceCount"]) // empty) | median),
+        nextHostCreateCount:
+          ($legacyPayloads | map(telemetry(.; ["scrollTelemetry", "nextHost", "createCount"]) // empty) | median),
+        nextHostPromoteCount:
+          ($legacyPayloads | map(telemetry(.; ["scrollTelemetry", "nextHost", "promoteCount"]) // empty) | median),
+        nextHostEvictCount:
+          ($legacyPayloads | map(telemetry(.; ["scrollTelemetry", "nextHost", "evictCount"]) // empty) | median),
+        nextHostMaxRetainedPaneControllerCount:
+          ($legacyPayloads | map(telemetry(.; ["scrollTelemetry", "nextHost", "maxRetainedPaneControllerCount"]) // empty) | median),
         fixtureFirstKeyUpElapsedMs:
           ($legacyPayloads | map(telemetry(.; ["fixtureEventSummary", "firstKeyUpElapsedMs"]) // empty) | median)
       }
@@ -321,6 +464,36 @@ jq -n \
           ($nextPayloads | map(telemetry(.; ["scrollTelemetry", "scroll", "refreshDrawRequestCount"]) // empty) | median),
         scrollImmediatePresentationDrawCount:
           ($nextPayloads | map(telemetry(.; ["scrollTelemetry", "scroll", "immediatePresentationDrawCount"]) // empty) | median),
+        metricsSyncAppliedCount:
+          ($nextPayloads | map(telemetry(.; ["scrollTelemetry", "scroll", "surfaceMetricsSync", "appliedCount"]) // empty) | median),
+        metricsSyncNoopCount:
+          ($nextPayloads | map(telemetry(.; ["scrollTelemetry", "scroll", "surfaceMetricsSync", "noopCount"]) // empty) | median),
+        metricsSyncMarkDirtyCount:
+          ($nextPayloads | map(telemetry(.; ["scrollTelemetry", "scroll", "surfaceMetricsSync", "markDirtyCount"]) // empty) | median),
+        metricsSyncSizeUpdateCount:
+          ($nextPayloads | map(telemetry(.; ["scrollTelemetry", "scroll", "surfaceMetricsSync", "sizeUpdateCount"]) // empty) | median),
+        surfacePoolRegisterCount:
+          ($nextPayloads | map(telemetry(.; ["scrollTelemetry", "surfacePool", "registerCount"]) // empty) | median),
+        surfacePoolActivateCount:
+          ($nextPayloads | map(telemetry(.; ["scrollTelemetry", "surfacePool", "activateCount"]) // empty) | median),
+        surfacePoolBackgroundCount:
+          ($nextPayloads | map(telemetry(.; ["scrollTelemetry", "surfacePool", "backgroundCount"]) // empty) | median),
+        surfacePoolScheduleGCCount:
+          ($nextPayloads | map(telemetry(.; ["scrollTelemetry", "surfacePool", "scheduleGCCount"]) // empty) | median),
+        surfacePoolMarkDirtyCount:
+          ($nextPayloads | map(telemetry(.; ["scrollTelemetry", "surfacePool", "markDirtyCount"]) // empty) | median),
+        surfacePoolMarkDirtyForDirectDrawCount:
+          ($nextPayloads | map(telemetry(.; ["scrollTelemetry", "surfacePool", "markDirtyForDirectDrawCount"]) // empty) | median),
+        surfacePoolDirtyActiveConsumedSurfaceCount:
+          ($nextPayloads | map(telemetry(.; ["scrollTelemetry", "surfacePool", "dirtyActiveConsumedSurfaceCount"]) // empty) | median),
+        nextHostCreateCount:
+          ($nextPayloads | map(telemetry(.; ["scrollTelemetry", "nextHost", "createCount"]) // empty) | median),
+        nextHostPromoteCount:
+          ($nextPayloads | map(telemetry(.; ["scrollTelemetry", "nextHost", "promoteCount"]) // empty) | median),
+        nextHostEvictCount:
+          ($nextPayloads | map(telemetry(.; ["scrollTelemetry", "nextHost", "evictCount"]) // empty) | median),
+        nextHostMaxRetainedPaneControllerCount:
+          ($nextPayloads | map(telemetry(.; ["scrollTelemetry", "nextHost", "maxRetainedPaneControllerCount"]) // empty) | median),
         fixtureFirstKeyUpElapsedMs:
           ($nextPayloads | map(telemetry(.; ["fixtureEventSummary", "firstKeyUpElapsedMs"]) // empty) | median)
       }

@@ -1474,6 +1474,13 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
             )
             XCTAssertEqual(view.displayIDUpdates, [77])
             XCTAssertEqual(scheduledTicks, 1)
+            let firstSnapshot = view.scrollTelemetrySnapshotForTesting()
+            XCTAssertEqual(firstSnapshot.surfaceMetricsSync.appliedCount, 1)
+            XCTAssertEqual(firstSnapshot.surfaceMetricsSync.noopCount, 0)
+            XCTAssertEqual(firstSnapshot.surfaceMetricsSync.markDirtyCount, 1)
+            XCTAssertEqual(firstSnapshot.surfaceMetricsSync.contentScaleUpdateCount, 1)
+            XCTAssertEqual(firstSnapshot.surfaceMetricsSync.sizeUpdateCount, 1)
+            XCTAssertEqual(firstSnapshot.surfaceMetricsSync.displayIDUpdateCount, 1)
 
             GhosttyApp.runDirtyDrawPassForTesting()
             view.resetMetricTracking()
@@ -1484,12 +1491,21 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
             XCTAssertTrue(view.sizeUpdates.isEmpty)
             XCTAssertTrue(view.displayIDUpdates.isEmpty)
             XCTAssertEqual(scheduledTicks, 0)
+            let secondSnapshot = view.scrollTelemetrySnapshotForTesting()
+            XCTAssertEqual(secondSnapshot.surfaceMetricsSync.appliedCount, 1)
+            XCTAssertEqual(secondSnapshot.surfaceMetricsSync.noopCount, 1)
+            XCTAssertEqual(secondSnapshot.surfaceMetricsSync.markDirtyCount, 1)
 
             view.applySurfaceMetricsForTesting(movedDisplayMetrics)
             XCTAssertTrue(view.contentScaleUpdates.isEmpty)
             XCTAssertTrue(view.sizeUpdates.isEmpty)
             XCTAssertEqual(view.displayIDUpdates, [88])
             XCTAssertEqual(scheduledTicks, 1)
+            let thirdSnapshot = view.scrollTelemetrySnapshotForTesting()
+            XCTAssertEqual(thirdSnapshot.surfaceMetricsSync.appliedCount, 2)
+            XCTAssertEqual(thirdSnapshot.surfaceMetricsSync.noopCount, 1)
+            XCTAssertEqual(thirdSnapshot.surfaceMetricsSync.markDirtyCount, 2)
+            XCTAssertEqual(thirdSnapshot.surfaceMetricsSync.displayIDUpdateCount, 2)
         }
     }
 
@@ -1539,6 +1555,42 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
             SurfacePool.shared.activate(leafID: leafID)
             XCTAssertEqual(scheduledTicks, 1)
         }
+    }
+
+    @MainActor
+    func testSurfacePoolTelemetryTracksLifecycleCounters() {
+        SurfacePool.shared.resetForTesting()
+        defer { SurfacePool.shared.resetForTesting() }
+
+        let view = GhosttyTerminalViewDrawSpy()
+        let leafID = UUID()
+        let surfaceHandle = GhosttySurfaceHandle(rawValue: 0x62A)
+
+        SurfacePool.shared.register(
+            view: view,
+            leafID: leafID,
+            tmuxPaneID: "%27",
+            surfaceHandle: surfaceHandle
+        )
+        GhosttyApp.runDirtyDrawPassForTesting()
+        SurfacePool.shared.background(leafID: leafID)
+        SurfacePool.shared.markDirty(surfaceHandle: surfaceHandle)
+        SurfacePool.shared.activate(leafID: leafID)
+        GhosttyApp.runDirtyDrawPassForTesting()
+        SurfacePool.shared.release(leafID: leafID, expectedViewID: ObjectIdentifier(view))
+
+        let snapshot = SurfacePool.shared.telemetrySnapshotForTesting()
+        XCTAssertEqual(snapshot.registerCount, 1)
+        XCTAssertEqual(snapshot.activateCount, 1)
+        XCTAssertEqual(snapshot.backgroundCount, 1)
+        XCTAssertEqual(snapshot.scheduleGCCount, 1)
+        XCTAssertEqual(snapshot.releaseCount, 1)
+        XCTAssertEqual(snapshot.markDirtyCount, 1)
+        XCTAssertGreaterThanOrEqual(snapshot.dirtyActiveConsumedSurfaceCount, 2)
+        XCTAssertEqual(snapshot.activeCount, 0)
+        XCTAssertEqual(snapshot.backgroundedCount, 0)
+        XCTAssertEqual(snapshot.pendingGCCount, 1)
+        XCTAssertEqual(snapshot.dirtySurfaceCount, 0)
     }
 
     @MainActor
@@ -1601,6 +1653,15 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
         XCTAssertEqual(snapshot.pendingScrollToDrawCount, 0)
         XCTAssertEqual(snapshot.pendingScrollToLayerPresentCount, 0)
         XCTAssertEqual(snapshot.pendingRenderToDrawCount, 0)
+        XCTAssertEqual(snapshot.surfaceMetricsSync.syncAttemptCount, 0)
+        XCTAssertEqual(snapshot.surfaceMetricsSync.forceCount, 0)
+        XCTAssertEqual(snapshot.surfaceMetricsSync.metricsUnavailableCount, 0)
+        XCTAssertEqual(snapshot.surfaceMetricsSync.appliedCount, 0)
+        XCTAssertEqual(snapshot.surfaceMetricsSync.noopCount, 0)
+        XCTAssertEqual(snapshot.surfaceMetricsSync.markDirtyCount, 0)
+        XCTAssertEqual(snapshot.surfaceMetricsSync.contentScaleUpdateCount, 0)
+        XCTAssertEqual(snapshot.surfaceMetricsSync.sizeUpdateCount, 0)
+        XCTAssertEqual(snapshot.surfaceMetricsSync.displayIDUpdateCount, 0)
         XCTAssertEqual(snapshot.alternateScroll.preciseEventCount, 0)
         XCTAssertEqual(snapshot.alternateScroll.preciseStepCount, 0)
         XCTAssertEqual(snapshot.alternateScroll.preciseMessageQueueCount, 0)
@@ -1666,6 +1727,15 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
         XCTAssertEqual(resetSnapshot.preciseScrollInputCount, 0)
         XCTAssertEqual(resetSnapshot.directPhaseScrollInputCount, 0)
         XCTAssertEqual(resetSnapshot.momentumPhaseScrollInputCount, 0)
+        XCTAssertEqual(resetSnapshot.surfaceMetricsSync.syncAttemptCount, 0)
+        XCTAssertEqual(resetSnapshot.surfaceMetricsSync.forceCount, 0)
+        XCTAssertEqual(resetSnapshot.surfaceMetricsSync.metricsUnavailableCount, 0)
+        XCTAssertEqual(resetSnapshot.surfaceMetricsSync.appliedCount, 0)
+        XCTAssertEqual(resetSnapshot.surfaceMetricsSync.noopCount, 0)
+        XCTAssertEqual(resetSnapshot.surfaceMetricsSync.markDirtyCount, 0)
+        XCTAssertEqual(resetSnapshot.surfaceMetricsSync.contentScaleUpdateCount, 0)
+        XCTAssertEqual(resetSnapshot.surfaceMetricsSync.sizeUpdateCount, 0)
+        XCTAssertEqual(resetSnapshot.surfaceMetricsSync.displayIDUpdateCount, 0)
         XCTAssertEqual(resetSnapshot.alternateScroll.preciseEventCount, 0)
         XCTAssertEqual(resetSnapshot.alternateScroll.preciseStepCount, 0)
         XCTAssertEqual(resetSnapshot.alternateScroll.preciseMessageQueueCount, 0)
@@ -2334,6 +2404,177 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
         try await bridge.waitForTerminalViewRegistrationForTesting(tileID: tileID, timeoutMilliseconds: 200)
         let snapshot = try bridge.terminalViewportTextSnapshotForTesting(tileID: tileID)
         XCTAssertEqual(snapshot, expected)
+    }
+
+    @MainActor
+    func testUITestTmuxBridgeFocusTerminalHostWaitsForTerminalViewRegistration() async throws {
+        SurfacePool.shared.resetForTesting()
+        defer { SurfacePool.shared.resetForTesting() }
+
+        let tileID = UUID()
+        let surfaceHandle = GhosttySurfaceHandle(rawValue: 0x645)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 240),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        defer { window.orderOut(nil) }
+
+        let bridge = UITestTmuxBridge(
+            viewModel: AppViewModel(hostsConfig: HostsConfig(hosts: [])),
+            env: [TerminalHostMode.environmentKey: "legacy"]
+        )
+
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(50))
+            let view = GhosttyTerminalViewViewportTextSpy(frame: window.contentView?.bounds ?? .zero)
+            window.contentView = view
+            SurfacePool.shared.register(
+                view: view,
+                leafID: tileID,
+                tmuxPaneID: "%45",
+                surfaceHandle: surfaceHandle
+            )
+        }
+
+        try await bridge.focusTerminalHostForTesting(tileID: tileID)
+        XCTAssertTrue(window.firstResponder is GhosttyTerminalView)
+    }
+
+    @MainActor
+    func testUITestTmuxBridgeTerminalRegistrationStateSnapshotReportsLegacySurfacePoolState() throws {
+        SurfacePool.shared.resetForTesting()
+        defer { SurfacePool.shared.resetForTesting() }
+
+        let tileID = UUID()
+        let surfaceHandle = GhosttySurfaceHandle(rawValue: 0x646)
+        let view = GhosttyTerminalViewViewportTextSpy()
+        SurfacePool.shared.register(
+            view: view,
+            leafID: tileID,
+            tmuxPaneID: "%46",
+            surfaceHandle: surfaceHandle
+        )
+
+        let bridge = UITestTmuxBridge(
+            viewModel: AppViewModel(hostsConfig: HostsConfig(hosts: [])),
+            env: [TerminalHostMode.environmentKey: "legacy"]
+        )
+
+        let data = bridge.terminalRegistrationStateSnapshotForTesting(tileID: tileID)
+        let payload = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+        XCTAssertEqual(payload["tileID"] as? String, tileID.uuidString)
+        XCTAssertEqual(payload["terminalHostMode"] as? String, "legacy")
+        XCTAssertEqual(payload["viewForTileLeafPresent"] as? Bool, true)
+        XCTAssertEqual(payload["viewForResolvedLeafPresent"] as? Bool, true)
+        XCTAssertEqual(payload["resolvedTerminalViewPresent"] as? Bool, true)
+        XCTAssertEqual(payload["registrySurfaceHandlePresent"] as? Bool, false)
+    }
+
+    @MainActor
+    func testUITestTmuxBridgeStartCommandLoopProcessesOneRequestAtATime() async throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let commandURL = tempDir.appendingPathComponent("tmux-command.json")
+        let responseURL = tempDir.appendingPathComponent("tmux-command-result.json")
+        let requestResponseURL = tempDir.appendingPathComponent("tmux-command-result.request.json")
+        let requestPayload = """
+        {
+          "id":"single-flight-request",
+          "args":["__agtmux_tmux_bridge_ready__"],
+          "refreshInventory":false,
+          "responsePath":"\(requestResponseURL.path)"
+        }
+        """
+        try Data(requestPayload.utf8).write(to: commandURL, options: .atomic)
+
+        let bridge = UITestTmuxBridge(
+            viewModel: AppViewModel(hostsConfig: HostsConfig(hosts: [])),
+            env: [
+                "AGTMUX_UITEST": "1",
+                "AGTMUX_UITEST_TMUX_COMMAND_PATH": commandURL.path,
+                "AGTMUX_UITEST_TMUX_COMMAND_RESULT_PATH": responseURL.path,
+                "AGTMUX_UITEST_BRIDGE_PROCESS_DELAY_MS": "150"
+            ]
+        )
+
+        bridge.startCommandLoopIfNeededForTesting()
+        bridge.startCommandLoopIfNeededForTesting()
+
+        let finished = await waitUntil {
+            FileManager.default.fileExists(atPath: requestResponseURL.path)
+        }
+        XCTAssertTrue(finished)
+        try await bridge.waitForCommandLoopIdleForTesting(timeoutMilliseconds: 1_000)
+        XCTAssertEqual(bridge.processedCommandCountForTesting(), 1)
+
+        let responseData = try Data(contentsOf: requestResponseURL)
+        let payload = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: responseData) as? [String: Any]
+        )
+        XCTAssertEqual(payload["id"] as? String, "single-flight-request")
+        XCTAssertEqual(payload["ok"] as? Bool, true)
+    }
+
+    @MainActor
+    func testUITestTmuxBridgeCommandLoopClaimsCommandFileAcrossBridgeInstances() async throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let commandURL = tempDir.appendingPathComponent("tmux-command.json")
+        let responseURL = tempDir.appendingPathComponent("tmux-command-result.json")
+        let requestResponseURL = tempDir.appendingPathComponent("tmux-command-result.request.json")
+        let requestPayload = """
+        {
+          "id":"shared-request",
+          "args":["__agtmux_tmux_bridge_ready__"],
+          "refreshInventory":false,
+          "responsePath":"\(requestResponseURL.path)"
+        }
+        """
+        try Data(requestPayload.utf8).write(to: commandURL, options: .atomic)
+
+        let env: [String: String] = [
+            "AGTMUX_UITEST": "1",
+            "AGTMUX_UITEST_TMUX_COMMAND_PATH": commandURL.path,
+            "AGTMUX_UITEST_TMUX_COMMAND_RESULT_PATH": responseURL.path,
+            "AGTMUX_UITEST_BRIDGE_PROCESS_DELAY_MS": "150"
+        ]
+        let firstBridge = UITestTmuxBridge(
+            viewModel: AppViewModel(hostsConfig: HostsConfig(hosts: [])),
+            env: env
+        )
+        let secondBridge = UITestTmuxBridge(
+            viewModel: AppViewModel(hostsConfig: HostsConfig(hosts: [])),
+            env: env
+        )
+
+        firstBridge.startCommandLoopIfNeededForTesting()
+        secondBridge.startCommandLoopIfNeededForTesting()
+
+        let finished = await waitUntil {
+            FileManager.default.fileExists(atPath: requestResponseURL.path)
+        }
+        XCTAssertTrue(finished)
+        try await firstBridge.waitForCommandLoopIdleForTesting(timeoutMilliseconds: 1_000)
+        try await secondBridge.waitForCommandLoopIdleForTesting(timeoutMilliseconds: 1_000)
+        XCTAssertEqual(
+            firstBridge.processedCommandCountForTesting() + secondBridge.processedCommandCountForTesting(),
+            1
+        )
+
+        let responseData = try Data(contentsOf: requestResponseURL)
+        let payload = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: responseData) as? [String: Any]
+        )
+        XCTAssertEqual(payload["id"] as? String, "shared-request")
+        XCTAssertEqual(payload["ok"] as? Bool, true)
     }
 
     @MainActor

@@ -70,6 +70,18 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         let preciseReadNewlineByteCount: Int
     }
 
+    struct SurfaceMetricsSyncTelemetrySnapshot: Codable, Equatable {
+        let syncAttemptCount: Int
+        let forceCount: Int
+        let metricsUnavailableCount: Int
+        let appliedCount: Int
+        let noopCount: Int
+        let markDirtyCount: Int
+        let contentScaleUpdateCount: Int
+        let sizeUpdateCount: Int
+        let displayIDUpdateCount: Int
+    }
+
     struct ScrollTelemetrySnapshot: Codable, Equatable {
         let firstScrollInputElapsedMs: Double?
         let firstPreciseScrollInputElapsedMs: Double?
@@ -114,6 +126,7 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         let pendingScrollToDrawCount: Int
         let pendingScrollToLayerPresentCount: Int
         let pendingRenderToDrawCount: Int
+        let surfaceMetricsSync: SurfaceMetricsSyncTelemetrySnapshot
         let alternateScroll: AlternateScrollTelemetrySnapshot
     }
 
@@ -238,6 +251,15 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     private var rendererOwnedRenderCallbackEligibleUntilUptime: TimeInterval?
     private var lastScrollPresentationDrawTelemetryUptime: TimeInterval?
     private var lastLayerPresentUptime: TimeInterval?
+    private var surfaceMetricsSyncAttemptCount = 0
+    private var surfaceMetricsSyncForceCount = 0
+    private var surfaceMetricsUnavailableCount = 0
+    private var surfaceMetricsAppliedCount = 0
+    private var surfaceMetricsNoopCount = 0
+    private var surfaceMetricsMarkDirtyCount = 0
+    private var surfaceContentScaleUpdateCount = 0
+    private var surfaceSizeUpdateCount = 0
+    private var surfaceDisplayIDUpdateCount = 0
 
     // MARK: - IME state
 
@@ -1328,6 +1350,15 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         lastHostDrawUptime = nil
         lastScrollPresentationDrawTelemetryUptime = nil
         lastLayerPresentUptime = nil
+        surfaceMetricsSyncAttemptCount = 0
+        surfaceMetricsSyncForceCount = 0
+        surfaceMetricsUnavailableCount = 0
+        surfaceMetricsAppliedCount = 0
+        surfaceMetricsNoopCount = 0
+        surfaceMetricsMarkDirtyCount = 0
+        surfaceContentScaleUpdateCount = 0
+        surfaceSizeUpdateCount = 0
+        surfaceDisplayIDUpdateCount = 0
         paneRetargetPresentationDrawPending = false
         paneRetargetPresentationRecoveryProbeScheduled = false
         lastPaneRetargetPresentationDrawUptime = nil
@@ -1492,6 +1523,17 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
             pendingScrollToDrawCount: pendingScrollToDrawUptimes.count,
             pendingScrollToLayerPresentCount: pendingScrollToLayerPresentUptimes.count,
             pendingRenderToDrawCount: pendingRenderToDrawUptimes.count,
+            surfaceMetricsSync: SurfaceMetricsSyncTelemetrySnapshot(
+                syncAttemptCount: surfaceMetricsSyncAttemptCount,
+                forceCount: surfaceMetricsSyncForceCount,
+                metricsUnavailableCount: surfaceMetricsUnavailableCount,
+                appliedCount: surfaceMetricsAppliedCount,
+                noopCount: surfaceMetricsNoopCount,
+                markDirtyCount: surfaceMetricsMarkDirtyCount,
+                contentScaleUpdateCount: surfaceContentScaleUpdateCount,
+                sizeUpdateCount: surfaceSizeUpdateCount,
+                displayIDUpdateCount: surfaceDisplayIDUpdateCount
+            ),
             alternateScroll: alternateScrollTelemetrySnapshot()
         )
     }
@@ -2218,7 +2260,14 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         shouldMarkDirty: Bool,
         force: Bool = false
     ) {
-        guard let metrics = currentSurfaceMetrics() else { return }
+        surfaceMetricsSyncAttemptCount += 1
+        if force {
+            surfaceMetricsSyncForceCount += 1
+        }
+        guard let metrics = currentSurfaceMetrics() else {
+            surfaceMetricsUnavailableCount += 1
+            return
+        }
         applySurfaceMetricsIfNeeded(
             metrics,
             shouldMarkDirty: shouldMarkDirty,
@@ -2263,7 +2312,11 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         force: Bool = false
     ) {
         let previousMetrics = lastAppliedSurfaceMetrics
-        guard force || previousMetrics != metrics else { return }
+        guard force || previousMetrics != metrics else {
+            surfaceMetricsNoopCount += 1
+            return
+        }
+        surfaceMetricsAppliedCount += 1
         lastAppliedSurfaceMetrics = metrics
 
         if let window {
@@ -2276,6 +2329,7 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         if force
             || previousMetrics?.xScale != metrics.xScale
             || previousMetrics?.yScale != metrics.yScale {
+            surfaceContentScaleUpdateCount += 1
             updateSurfaceContentScale(
                 xScale: metrics.xScale,
                 yScale: metrics.yScale
@@ -2285,6 +2339,7 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         if force
             || previousMetrics?.pixelWidth != metrics.pixelWidth
             || previousMetrics?.pixelHeight != metrics.pixelHeight {
+            surfaceSizeUpdateCount += 1
             updateSurfaceSize(
                 pixelWidth: metrics.pixelWidth,
                 pixelHeight: metrics.pixelHeight
@@ -2292,10 +2347,12 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         }
 
         if force || previousMetrics?.displayID != metrics.displayID {
+            surfaceDisplayIDUpdateCount += 1
             updateSurfaceDisplayID(metrics.displayID)
         }
 
         if shouldMarkDirty {
+            surfaceMetricsMarkDirtyCount += 1
             SurfacePool.shared.markDirty(view: self)
         }
     }

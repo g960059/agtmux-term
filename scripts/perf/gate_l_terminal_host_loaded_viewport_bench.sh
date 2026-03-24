@@ -49,8 +49,14 @@ function wait_for_terminal_viewport_ready() {
   local deadline=$((EPOCHREALTIME + timeout))
 
   while (( EPOCHREALTIME < deadline )); do
-    if gate_l_send_bridge_json_command false 5 "__agtmux_dump_terminal_viewport_text__" "$tile_id" \
-      >/dev/null 2>"$gate_l_tmpdir/viewport-ready.last-error.log"; then
+    local remaining_timeout
+    remaining_timeout="$(awk -v deadline="$deadline" -v now="$EPOCHREALTIME" 'BEGIN {
+      remaining = deadline - now
+      if (remaining < 0.05) remaining = 0.05
+      printf "%.3f", remaining
+    }')"
+    if gate_l_wait_for_bridge_json_command_until "$remaining_timeout" "$gate_l_tmpdir/viewport-ready.last-error.log" "__agtmux_dump_terminal_viewport_text__" "$tile_id" \
+      >/dev/null; then
       return 0
     fi
     sleep 0.05
@@ -71,7 +77,13 @@ function wait_for_viewport_marker() {
   local output=""
 
   while (( EPOCHREALTIME < deadline )); do
-    if output="$(gate_l_send_bridge_json_command false 5 "__agtmux_dump_terminal_viewport_text__" "$tile_id" 2>"$gate_l_tmpdir/viewport-marker.last-error.log")"; then
+    local remaining_timeout
+    remaining_timeout="$(awk -v deadline="$deadline" -v now="$EPOCHREALTIME" 'BEGIN {
+      remaining = deadline - now
+      if (remaining < 0.05) remaining = 0.05
+      printf "%.3f", remaining
+    }')"
+    if output="$(gate_l_wait_for_bridge_json_command_until "$remaining_timeout" "$gate_l_tmpdir/viewport-marker.last-error.log" "__agtmux_dump_terminal_viewport_text__" "$tile_id")"; then
       if jq -er --arg marker "$marker" '.text | contains($marker)' >/dev/null <<<"$output"; then
         return 0
       fi

@@ -118,7 +118,34 @@ jq -n \
        (metric($legacy; ["postScrollTelemetry", "scroll", "refreshDrawRequestCount"]) // 0)),
     scrollImmediatePresentationDrawCountDelta:
       ((metric($next; ["postScrollTelemetry", "scroll", "immediatePresentationDrawCount"]) // 0) -
-       (metric($legacy; ["postScrollTelemetry", "scroll", "immediatePresentationDrawCount"]) // 0))
+       (metric($legacy; ["postScrollTelemetry", "scroll", "immediatePresentationDrawCount"]) // 0)),
+    metricsSyncAppliedCountDelta:
+      ((metric($next; ["postScrollTelemetry", "scroll", "surfaceMetricsSync", "appliedCount"]) // 0) -
+       (metric($legacy; ["postScrollTelemetry", "scroll", "surfaceMetricsSync", "appliedCount"]) // 0)),
+    metricsSyncSizeUpdateCountDelta:
+      ((metric($next; ["postScrollTelemetry", "scroll", "surfaceMetricsSync", "sizeUpdateCount"]) // 0) -
+       (metric($legacy; ["postScrollTelemetry", "scroll", "surfaceMetricsSync", "sizeUpdateCount"]) // 0)),
+    surfacePoolMarkDirtyCountDelta:
+      ((metric($next; ["postScrollTelemetry", "surfacePool", "markDirtyCount"]) // 0) -
+       (metric($legacy; ["postScrollTelemetry", "surfacePool", "markDirtyCount"]) // 0)),
+    surfacePoolMarkDirtyForDirectDrawCountDelta:
+      ((metric($next; ["postScrollTelemetry", "surfacePool", "markDirtyForDirectDrawCount"]) // 0) -
+       (metric($legacy; ["postScrollTelemetry", "surfacePool", "markDirtyForDirectDrawCount"]) // 0)),
+    surfacePoolDirtyActiveConsumedSurfaceCountDelta:
+      ((metric($next; ["postScrollTelemetry", "surfacePool", "dirtyActiveConsumedSurfaceCount"]) // 0) -
+       (metric($legacy; ["postScrollTelemetry", "surfacePool", "dirtyActiveConsumedSurfaceCount"]) // 0)),
+    nextHostCreateCountDelta:
+      ((metric($next; ["postScrollTelemetry", "nextHost", "createCount"]) // 0) -
+       (metric($legacy; ["postScrollTelemetry", "nextHost", "createCount"]) // 0)),
+    nextHostPromoteCountDelta:
+      ((metric($next; ["postScrollTelemetry", "nextHost", "promoteCount"]) // 0) -
+       (metric($legacy; ["postScrollTelemetry", "nextHost", "promoteCount"]) // 0)),
+    nextHostEvictCountDelta:
+      ((metric($next; ["postScrollTelemetry", "nextHost", "evictCount"]) // 0) -
+       (metric($legacy; ["postScrollTelemetry", "nextHost", "evictCount"]) // 0)),
+    nextHostMaxRetainedPaneControllerCountDelta:
+      ((metric($next; ["postScrollTelemetry", "nextHost", "maxRetainedPaneControllerCount"]) // 0) -
+       (metric($legacy; ["postScrollTelemetry", "nextHost", "maxRetainedPaneControllerCount"]) // 0))
   };
   ($legacy[0]) as $legacyPayload |
   ($next[0]) as $nextPayload |

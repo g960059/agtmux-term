@@ -47,6 +47,7 @@ scripts/perf/gate_l_ax_key_sender.sh --dry-run
 - `scripts/perf/gate_l_terminal_host_live_client_scroll_parity.sh`
 - `scripts/perf/gate_l_terminal_host_loaded_viewport_bench.sh`
 - `scripts/perf/gate_l_terminal_host_loaded_viewport_parity.sh`
+- `scripts/perf/gate_l_terminal_host_scroll_parity_table.sh`
 - `scripts/perf/gate_l_keypress_bench.sh`
 - `scripts/perf/gate_l_native_ghostty_keypress_bench.sh`
 - `scripts/perf/gate_l_pane_switch_bench.sh`
@@ -97,6 +98,27 @@ scripts/perf/gate_l_ax_key_sender.sh --dry-run
   `mean_lines_per_step.p50`, `step_rows.p95`, `max_step_rows`,
   `coarse_step_ratio_ge_2`, `coarse_step_ratio_ge_3`, and
   `first_changed_elapsed_ms`.
+- `gate_l_terminal_host_scroll_parity_table.sh` is the current benchmark-
+  hygiene wrapper for the perf-parity program:
+  - it forces a matched-version native-vs-embedded setup by default
+  - it runs the live `legacy` vs `next` host-mode parity wrapper
+  - it runs the native-vs-embedded up-scroll step parity wrapper for both
+    `legacy` and `next`
+  - it records embedded/native Ghostty metadata in the output JSON
+  - use the vendored app when you want a matched `1.2.3` baseline:
+  ```bash
+  GATE_L_APP_BIN="$PWD/build-live-direct-debug/Build/Products/Debug/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" \
+  AGTMUX_PERF_KEEP_TMP=1 \
+  scripts/perf/gate_l_terminal_host_scroll_parity_table.sh \
+    --app "$PWD/vendor/ghostty/zig-out/Ghostty.app" \
+    --live-session-name gate-normal-scroll \
+    --live-pane-id '%1' \
+    --live-timeout 25 \
+    > /tmp/agtmux-terminal-host-scroll-parity-table.json
+  ```
+  - the first matched `1.2.3` table passed for `legacy`, `next`, and live
+    host-mode parity, but it still only measures step granularity and first
+    visible change; it does not yet explain a user-visible frame-cadence gap
 - `gate_l_trackpad_live_curses_history_step_parity.sh` is the current
   alternate-screen proxy for tmux-attached live history:
   - it captures the real pane history with `--no-join-wrapped`

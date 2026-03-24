@@ -18,6 +18,39 @@ import os
 @Observable
 @MainActor
 final class SurfacePool {
+    struct TelemetrySnapshot: Codable, Equatable {
+        let registerCount: Int
+        let activateCount: Int
+        let backgroundCount: Int
+        let scheduleGCCount: Int
+        let releaseCount: Int
+        let gcPassCount: Int
+        let gcEvictedSurfaceCount: Int
+        let deregisterCount: Int
+        let markDirtyCount: Int
+        let markDirtyForDirectDrawCount: Int
+        let dirtyActiveConsumedSurfaceCount: Int
+        let activeCount: Int
+        let backgroundedCount: Int
+        let pendingGCCount: Int
+        let defunctCount: Int
+        let dirtySurfaceCount: Int
+    }
+
+    private struct TelemetryState {
+        var registerCount = 0
+        var activateCount = 0
+        var backgroundCount = 0
+        var scheduleGCCount = 0
+        var releaseCount = 0
+        var gcPassCount = 0
+        var gcEvictedSurfaceCount = 0
+        var deregisterCount = 0
+        var markDirtyCount = 0
+        var markDirtyForDirectDrawCount = 0
+        var dirtyActiveConsumedSurfaceCount = 0
+    }
+
     static let shared = SurfacePool()
     private static let debugLogger = Logger(
         subsystem: "local.agtmux.term",
@@ -63,6 +96,7 @@ final class SurfacePool {
     private let debugCountsEnabled = ProcessInfo.processInfo.environment["AGTMUX_SURFACEPOOL_DEBUG_COUNTS"] == "1"
     private var lastDebugLogAt = Date.distantPast
     private var lastRecordedDirtyCount = 0
+    private var telemetryState = TelemetryState()
 
     private init() {}
 
@@ -90,6 +124,7 @@ final class SurfacePool {
         leafIDsByViewID[viewID] = leafID
         activeSurfaceViewIDs.insert(viewID)
         dirtySurfaceViewIDs.insert(viewID)
+        telemetryState.registerCount += 1
         scheduleTickIfDrawable(view: view)
         debugLogCounts(reason: "register")
     }
@@ -105,6 +140,7 @@ final class SurfacePool {
               managed.state != .active else { return }
         pool[leafID]?.state = .active
         activeSurfaceViewIDs.insert(ObjectIdentifier(managed.view))
+        telemetryState.activateCount += 1
         if let surface = managed.view.surface {
             ghostty_surface_set_occlusion(surface, true)
         }
@@ -119,6 +155,7 @@ final class SurfacePool {
               managed.state == .active else { return }
         pool[leafID]?.state = .backgrounded
         activeSurfaceViewIDs.remove(ObjectIdentifier(managed.view))
+        telemetryState.backgroundCount += 1
         if let surface = managed.view.surface {
             ghostty_surface_set_occlusion(surface, false)
         }
@@ -140,6 +177,7 @@ final class SurfacePool {
         managed.state = .pendingGC
         managed.pendingGCDeadline = Date().addingTimeInterval(5)
         pool[leafID] = managed
+        telemetryState.scheduleGCCount += 1
         startGCTimerIfNeeded()
         debugLogCounts(reason: "scheduleGC")
     }
@@ -160,16 +198,19 @@ final class SurfacePool {
            ObjectIdentifier(managed.view) != expectedViewID {
             return
         }
+        telemetryState.releaseCount += 1
         scheduleGC(leafID: leafID)
     }
 
     // MARK: - GC execution
 
     func gc() {
+        telemetryState.gcPassCount += 1
         let now = Date()
         let expired = pool.filter { _, m in
             m.state == .pendingGC && (m.pendingGCDeadline ?? now) <= now
         }
+        telemetryState.gcEvictedSurfaceCount += expired.count
         for (leafID, managed) in expired {
             // Free the surface via clearSurface() — sets view.surface = nil before
             // releasing the strong reference so deinit won't double-free.
@@ -202,6 +243,7 @@ final class SurfacePool {
               let managed = pool[leafID],
               managed.state != .pendingGC,
               managed.state != .defunct else { return }
+        telemetryState.markDirtyCount += 1
         _ = markDirty(
             viewID: ObjectIdentifier(managed.view),
             view: managed.view,
@@ -215,6 +257,7 @@ final class SurfacePool {
               let managed = pool[leafID],
               managed.state != .pendingGC,
               managed.state != .defunct else { return false }
+        telemetryState.markDirtyForDirectDrawCount += 1
         return markDirty(
             viewID: ObjectIdentifier(managed.view),
             view: managed.view,
@@ -253,6 +296,7 @@ final class SurfacePool {
     func consumeDirtyActiveSurfaceViewIDs() -> Set<ObjectIdentifier> {
         let drawable = dirtySurfaceViewIDs.intersection(activeSurfaceViewIDs)
         dirtySurfaceViewIDs.subtract(drawable)
+        telemetryState.dirtyActiveConsumedSurfaceCount += drawable.count
         return drawable
     }
 
@@ -302,6 +346,32 @@ final class SurfacePool {
         dirtySurfaceViewIDs.removeAll()
         lastDebugLogAt = .distantPast
         lastRecordedDirtyCount = 0
+        telemetryState = TelemetryState()
+    }
+
+    func resetTelemetryForTesting() {
+        telemetryState = TelemetryState()
+    }
+
+    func telemetrySnapshotForTesting() -> TelemetrySnapshot {
+        TelemetrySnapshot(
+            registerCount: telemetryState.registerCount,
+            activateCount: telemetryState.activateCount,
+            backgroundCount: telemetryState.backgroundCount,
+            scheduleGCCount: telemetryState.scheduleGCCount,
+            releaseCount: telemetryState.releaseCount,
+            gcPassCount: telemetryState.gcPassCount,
+            gcEvictedSurfaceCount: telemetryState.gcEvictedSurfaceCount,
+            deregisterCount: telemetryState.deregisterCount,
+            markDirtyCount: telemetryState.markDirtyCount,
+            markDirtyForDirectDrawCount: telemetryState.markDirtyForDirectDrawCount,
+            dirtyActiveConsumedSurfaceCount: telemetryState.dirtyActiveConsumedSurfaceCount,
+            activeCount: activeSurfaceViewIDs.count,
+            backgroundedCount: pool.values.filter { $0.state == .backgrounded }.count,
+            pendingGCCount: pool.values.filter { $0.state == .pendingGC }.count,
+            defunctCount: pool.values.filter { $0.state == .defunct }.count,
+            dirtySurfaceCount: dirtySurfaceViewIDs.count
+        )
     }
 
     // MARK: - Helpers
@@ -327,6 +397,7 @@ final class SurfacePool {
         leafIDsBySurfaceHandle.removeValue(forKey: managed.surfaceHandle)
         leafIDsByViewID.removeValue(forKey: ObjectIdentifier(managed.view))
         pool.removeValue(forKey: leafID)
+        telemetryState.deregisterCount += 1
         debugLogCounts(reason: "deregister")
     }
 

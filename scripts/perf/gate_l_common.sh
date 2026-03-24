@@ -63,6 +63,7 @@ function gate_l_clear_bridge_defaults() {
 function gate_l_launch_app_via_bundle() {
   local app_bundle=""
   local disable_app_state_restore="${AGTMUX_PERF_DISABLE_APP_STATE_RESTORE:-1}"
+  local terminate_all_instances="${AGTMUX_PERF_TERMINATE_ALL_AGTMUX_INSTANCES:-1}"
   app_bundle="$(gate_l_app_bundle_path)" || {
     echo "Cannot derive app bundle path from GATE_L_APP_BIN: $GATE_L_APP_BIN" >&2
     return 1
@@ -70,6 +71,17 @@ function gate_l_launch_app_via_bundle() {
 
   local app_exec="$GATE_L_APP_BIN"
   local before after new_pid
+  if [[ "$terminate_all_instances" == "1" ]]; then
+    osascript -e 'tell application id "com.g960059.agtmux.term" to quit' >/dev/null 2>&1 || true
+    pkill -f 'AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm' >/dev/null 2>&1 || true
+    local all_deadline=$((EPOCHREALTIME + 5))
+    while (( EPOCHREALTIME < all_deadline )); do
+      if ! pgrep -f 'AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm' >/dev/null 2>&1; then
+        break
+      fi
+      sleep 0.1
+    done
+  fi
   pkill -f "$app_exec" >/dev/null 2>&1 || true
   local kill_deadline=$((EPOCHREALTIME + 5))
   while (( EPOCHREALTIME < kill_deadline )); do
@@ -160,6 +172,97 @@ function gate_l_resolve_native_ghostty_app_path() {
   fi
 
   return 1
+}
+
+function gate_l_extract_ghostty_version() {
+  local raw="$1"
+  print -r -- "$raw" | grep -Eo 'v?[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 | sed 's/^v//'
+}
+
+function gate_l_embedded_ghostty_source_ref() {
+  local marker_file="${AGTMUX_GHOSTTYKIT_MARKER_FILE:-$GATE_L_ROOT/GhosttyKit/.ghostty-source-ref}"
+  if [[ -f "$marker_file" ]]; then
+    cat "$marker_file"
+  fi
+}
+
+function gate_l_embedded_ghostty_metadata_json() {
+  local source_ref=""
+  local version=""
+
+  source_ref="$(gate_l_embedded_ghostty_source_ref)"
+  if [[ -n "$source_ref" ]]; then
+    version="$(gate_l_extract_ghostty_version "$source_ref")"
+  fi
+
+  jq -n \
+    --arg source_ref "$source_ref" \
+    --arg version "$version" \
+    '{
+      source_ref: (if $source_ref == "" then null else $source_ref end),
+      version: (if $version == "" then null else $version end)
+    }'
+}
+
+function gate_l_native_ghostty_metadata_json() {
+  local app_path="$1"
+  local plist_path="$app_path/Contents/Info.plist"
+  local bundle_id=""
+  local display_name=""
+  local executable_name=""
+  local app_bin=""
+  local version_output=""
+  local version_line=""
+  local version=""
+  local app_source="explicit"
+
+  bundle_id="$(gate_l_read_plist_value "$plist_path" "CFBundleIdentifier")"
+  display_name="$(gate_l_read_plist_value "$plist_path" "CFBundleDisplayName")"
+  executable_name="$(gate_l_read_plist_value "$plist_path" "CFBundleExecutable")"
+
+  if [[ -z "$executable_name" ]]; then
+    echo "Failed to read Ghostty executable metadata from $plist_path" >&2
+    return 1
+  fi
+
+  app_bin="$app_path/Contents/MacOS/$executable_name"
+  if [[ ! -x "$app_bin" ]]; then
+    echo "Ghostty executable is not runnable: $app_bin" >&2
+    return 1
+  fi
+
+  if [[ "$app_path" == "/Applications/Ghostty.app" ]]; then
+    app_source="applications"
+  elif [[ "$app_path" == "$GATE_L_ROOT/vendor/ghostty/zig-out/Ghostty.app" ]]; then
+    app_source="vendored"
+  elif [[ "$app_path" == *"/Ghostty.app" ]]; then
+    app_source="spotlight"
+  fi
+
+  version_output="$("$app_bin" +version 2>/dev/null || true)"
+  version_line="$(print -r -- "$version_output" | head -n 1)"
+  version="$(print -r -- "$version_output" | awk -F': ' '/- version:/{print $2; exit}')"
+  if [[ -z "$version" ]]; then
+    version="$(gate_l_extract_ghostty_version "$version_line")"
+  fi
+
+  jq -n \
+    --arg app_path "$app_path" \
+    --arg app_source "$app_source" \
+    --arg bundle_id "$bundle_id" \
+    --arg display_name "$display_name" \
+    --arg executable "$app_bin" \
+    --arg version "$version" \
+    --arg version_line "$version_line" \
+    '{
+      app_path: $app_path,
+      app_source: $app_source,
+      bundle_id: (if $bundle_id == "" then null else $bundle_id end),
+      display_name: (if $display_name == "" then null else $display_name end),
+      executable: $executable,
+      version: (if $version == "" then null else $version end),
+      version_line: (if $version_line == "" then null else $version_line end)
+    }'
 }
 
 function gate_l_setup_paths() {
@@ -485,7 +588,7 @@ function gate_l_send_bridge_command() {
     refresh_json="true"
   fi
 
-  rm -f "$gate_l_command_path" "$gate_l_command_result_path" "$response_path"
+  rm -f "$response_path" "$tmp_command_path"
   jq -n \
     --arg id "$request_id" \
     --arg responsePath "$response_path" \
@@ -573,7 +676,7 @@ function gate_l_start_async_bridge_command() {
     refresh_json="true"
   fi
 
-  rm -f "$gate_l_command_path" "$gate_l_command_result_path" "$response_path"
+  rm -f "$response_path" "$tmp_command_path"
   jq -n \
     --arg id "$request_id" \
     --arg responsePath "$response_path" \
@@ -586,49 +689,106 @@ function gate_l_start_async_bridge_command() {
   print -r -- "${request_id}|${response_path}"
 }
 
+function gate_l_poll_async_bridge_json_result() {
+  local async_request="$1"
+  local request_id="${async_request%%|*}"
+  local response_path="${async_request#*|}"
+
+  if [[ ! -s "$response_path" ]]; then
+    return 2
+  fi
+
+  local response_id
+  response_id="$(jq -r '.id // empty' "$response_path" 2>/dev/null || true)"
+  if [[ "$response_id" != "$request_id" ]]; then
+    echo "App-side tmux command returned mismatched response id: expected=$request_id got=${response_id:-<empty>}" >&2
+    return 1
+  fi
+
+  local ok
+  ok="$(jq -r '.ok' "$response_path")"
+  if [[ "$ok" == "true" ]]; then
+    local output
+    output="$(jq -r '.stdout' "$response_path")"
+    local normalized_output=""
+    if ! normalized_output="$(gate_l_normalize_bridge_json_stdout "$output")"; then
+      echo "App-side tmux command returned non-JSON stdout for request $request_id" >&2
+      if [[ -n "$output" ]]; then
+        print -r -- "$output" >&2
+      else
+        echo "<empty stdout>" >&2
+      fi
+      rm -f "$response_path"
+      return 1
+    fi
+    print -r -- "$normalized_output"
+    rm -f "$response_path"
+    return 0
+  fi
+
+  local error_message
+  error_message="$(jq -r '.error // "unknown error"' "$response_path")"
+  echo "App-side tmux command failed: $error_message" >&2
+  rm -f "$response_path"
+  return 1
+}
+
 function gate_l_wait_for_async_bridge_json_result() {
   local async_request="$1"
   local timeout="$2"
-  local request_id="${async_request%%|*}"
-  local response_path="${async_request#*|}"
   local deadline=$((EPOCHREALTIME + timeout))
 
   while (( EPOCHREALTIME < deadline )); do
-    if [[ -s "$response_path" ]]; then
-      local response_id
-      response_id="$(jq -r '.id // empty' "$response_path" 2>/dev/null || true)"
-      if [[ "$response_id" == "$request_id" ]]; then
-        local ok
-        ok="$(jq -r '.ok' "$response_path")"
-        if [[ "$ok" == "true" ]]; then
-          local output
-          output="$(jq -r '.stdout' "$response_path")"
-          local normalized_output=""
-          if ! normalized_output="$(gate_l_normalize_bridge_json_stdout "$output")"; then
-            echo "App-side tmux command returned non-JSON stdout for request $request_id" >&2
-            if [[ -n "$output" ]]; then
-              print -r -- "$output" >&2
-            else
-              echo "<empty stdout>" >&2
-            fi
-            return 1
-          fi
-          print -r -- "$normalized_output"
-          rm -f "$response_path"
-          return 0
-        fi
-
-        local error_message
-        error_message="$(jq -r '.error // "unknown error"' "$response_path")"
-        echo "App-side tmux command failed: $error_message" >&2
-        rm -f "$response_path"
-        return 1
-      fi
+    if gate_l_poll_async_bridge_json_result "$async_request"; then
+      return 0
+    fi
+    local poll_status=$?
+    if (( poll_status != 2 )); then
+      return "$poll_status"
     fi
     sleep 0.05
   done
 
-  echo "Timed out waiting for app-side tmux command result: $request_id" >&2
+  echo "Timed out waiting for app-side tmux command result: ${async_request%%|*}" >&2
+  return 1
+}
+
+function gate_l_wait_for_bridge_json_command_until() {
+  local timeout="$1"
+  local error_log_path="$2"
+  shift 2
+
+  local deadline=$((EPOCHREALTIME + timeout))
+  local last_error=""
+  local async_request=""
+  local output=""
+
+  while (( EPOCHREALTIME < deadline )); do
+    if [[ -z "$async_request" ]]; then
+      async_request="$(gate_l_start_async_bridge_command false "$@")"
+    fi
+
+    if output="$(gate_l_poll_async_bridge_json_result "$async_request" 2>"$error_log_path")"; then
+      print -r -- "$output"
+      return 0
+    fi
+
+    local poll_status=$?
+    if (( poll_status == 2 )); then
+      sleep 0.05
+      continue
+    fi
+
+    if [[ -s "$error_log_path" ]]; then
+      last_error="$(<"$error_log_path")"
+    fi
+    async_request=""
+    sleep 0.05
+  done
+
+  if [[ -n "$last_error" ]]; then
+    print -r -- "$last_error" >"$error_log_path"
+  fi
   return 1
 }
 
@@ -665,7 +825,13 @@ function gate_l_wait_for_active_target() {
 
   while (( EPOCHREALTIME < deadline )); do
     local output
-    if output="$(gate_l_send_bridge_json_command false 2 "__agtmux_dump_active_terminal_target__" 2>"$gate_l_tmpdir/active-target.last-error.log")"; then
+    local remaining_timeout
+    remaining_timeout="$(awk -v deadline="$deadline" -v now="$EPOCHREALTIME" 'BEGIN {
+      remaining = deadline - now
+      if (remaining < 0.05) remaining = 0.05
+      printf "%.3f", remaining
+    }')"
+    if output="$(gate_l_wait_for_bridge_json_command_until "$remaining_timeout" "$gate_l_tmpdir/active-target.last-error.log" "__agtmux_dump_active_terminal_target__")"; then
       last_output="$output"
       local got_session got_window got_pane selected_window selected_pane
       got_session="$(jq -r '.sessionName' <<<"$output")"
@@ -724,7 +890,13 @@ function gate_l_wait_for_active_snapshot() {
 
   while (( EPOCHREALTIME < deadline )); do
     local output
-    if output="$(gate_l_send_bridge_json_command false 2 "__agtmux_dump_active_terminal_target__" 2>"$gate_l_tmpdir/active-target.last-error.log")"; then
+    local remaining_timeout
+    remaining_timeout="$(awk -v deadline="$deadline" -v now="$EPOCHREALTIME" 'BEGIN {
+      remaining = deadline - now
+      if (remaining < 0.05) remaining = 0.05
+      printf "%.3f", remaining
+    }')"
+    if output="$(gate_l_wait_for_bridge_json_command_until "$remaining_timeout" "$gate_l_tmpdir/active-target.last-error.log" "__agtmux_dump_active_terminal_target__")"; then
       local got_session rendered_pane
       got_session="$(jq -r '.sessionName' <<<"$output")"
       rendered_pane="$(jq -r '.renderedClientPaneID // empty' <<<"$output")"
@@ -757,7 +929,13 @@ function gate_l_wait_for_rendered_target() {
 
   while (( EPOCHREALTIME < deadline )); do
     local output
-    if output="$(gate_l_send_bridge_json_command false 2 "__agtmux_dump_active_terminal_target__" 2>"$gate_l_tmpdir/rendered-target.last-error.log")"; then
+    local remaining_timeout
+    remaining_timeout="$(awk -v deadline="$deadline" -v now="$EPOCHREALTIME" 'BEGIN {
+      remaining = deadline - now
+      if (remaining < 0.05) remaining = 0.05
+      printf "%.3f", remaining
+    }')"
+    if output="$(gate_l_wait_for_bridge_json_command_until "$remaining_timeout" "$gate_l_tmpdir/rendered-target.last-error.log" "__agtmux_dump_active_terminal_target__")"; then
       last_output="$output"
       local got_session got_window got_pane
       got_session="$(jq -r '.sessionName' <<<"$output")"

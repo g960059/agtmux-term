@@ -34,6 +34,7 @@ registration_timeout_ms="${AGTMUX_PERF_LIVE_REGISTRATION_TIMEOUT_MS:-15000}"
 frontmost_timeout_ms="${AGTMUX_PERF_LIVE_FRONTMOST_TIMEOUT_MS:-20000}"
 open_retry_count="${AGTMUX_PERF_LIVE_OPEN_RETRY_COUNT:-3}"
 open_retry_sleep_ms="${AGTMUX_PERF_LIVE_OPEN_RETRY_SLEEP_MS:-400}"
+active_target_initial_timeout="${AGTMUX_PERF_LIVE_ACTIVE_TARGET_INITIAL_TIMEOUT:-}"
 refresh_inventory_before_open="${AGTMUX_PERF_LIVE_REFRESH_INVENTORY_BEFORE_OPEN:-0}"
 skip_bridge_host_mode_set="${AGTMUX_PERF_LIVE_SKIP_BRIDGE_HOST_MODE_SET:-0}"
 use_internal_scroll_measurement="${AGTMUX_PERF_LIVE_USE_INTERNAL_SCROLL_MEASUREMENT:-1}"
@@ -48,6 +49,7 @@ ui_scroll_derived_data_path="${AGTMUX_PERF_LIVE_UI_SCROLL_DERIVED_DATA_PATH:-$HO
 ui_scroll_sender_lead_ms="${AGTMUX_PERF_LIVE_UI_SCROLL_LEAD_MS:-25000}"
 internal_measurement_retry_count="${AGTMUX_PERF_LIVE_INTERNAL_MEASUREMENT_RETRY_COUNT:-3}"
 internal_measurement_retry_sleep_ms="${AGTMUX_PERF_LIVE_INTERNAL_MEASUREMENT_RETRY_SLEEP_MS:-120}"
+focus_terminal_host_timeout="${AGTMUX_PERF_LIVE_FOCUS_TERMINAL_HOST_TIMEOUT:-}"
 
 if [[ "$attach_running_app" == "1" && -z "${AGTMUX_PERF_LIVE_USE_ACTIVE_TARGET:-}" ]]; then
   use_active_target=1
@@ -55,6 +57,25 @@ fi
 
 if [[ "$attach_running_app" == "1" && -z "${AGTMUX_PERF_LIVE_USE_INTERNAL_SCROLL_MEASUREMENT:-}" ]]; then
   use_internal_scroll_measurement=0
+fi
+
+prefer_direct_open_on_fresh_launch=0
+if [[ "$attach_running_app" != "1" && "$use_internal_scroll_measurement" == "1" ]]; then
+  prefer_direct_open_on_fresh_launch=1
+fi
+
+if [[ -z "$active_target_initial_timeout" ]]; then
+  active_target_initial_timeout="$settle_timeout"
+fi
+
+if [[ -z "$focus_terminal_host_timeout" ]]; then
+  focus_terminal_host_timeout="$(awk -v settle="$settle_timeout" -v registration_ms="$registration_timeout_ms" 'BEGIN {
+    registration = registration_ms / 1000.0
+    timeout = settle
+    if (registration > timeout) timeout = registration
+    timeout += 2.0
+    printf "%.3f", timeout
+  }')"
 fi
 
 if [[ -z "$external_scroll_sender" ]]; then
@@ -224,18 +245,30 @@ function wait_for_terminal_viewport_ready() {
   local tile_id="$1"
   local timeout="${2:-15}"
   local deadline=$((EPOCHREALTIME + timeout))
+  local registration_state_path="$gate_l_tmpdir/viewport-registration-state.json"
 
   while (( EPOCHREALTIME < deadline )); do
-    if gate_l_send_bridge_json_command false 8 "__agtmux_dump_terminal_viewport_text__" "$tile_id" \
-      >/dev/null 2>"$gate_l_tmpdir/viewport-ready.last-error.log"; then
+    local remaining_timeout
+    remaining_timeout="$(awk -v deadline="$deadline" -v now="$EPOCHREALTIME" 'BEGIN {
+      remaining = deadline - now
+      if (remaining < 0.05) remaining = 0.05
+      printf "%.3f", remaining
+    }')"
+    if gate_l_wait_for_bridge_json_command_until "$remaining_timeout" "$gate_l_tmpdir/viewport-ready.last-error.log" "__agtmux_dump_terminal_viewport_text__" "$tile_id" \
+      >/dev/null; then
       return 0
     fi
     sleep 0.05
   done
 
+  gate_l_send_bridge_json_command false 5 "__agtmux_dump_terminal_registration_state__" "$tile_id" \
+    >"$registration_state_path" 2>"$gate_l_tmpdir/viewport-registration-state.last-error.log" || true
   echo "Timed out waiting for terminal viewport readiness for tileID $tile_id" >&2
   if [[ -s "$gate_l_tmpdir/viewport-ready.last-error.log" ]]; then
     cat "$gate_l_tmpdir/viewport-ready.last-error.log" >&2
+  fi
+  if [[ -s "$registration_state_path" ]]; then
+    cat "$registration_state_path" >&2
   fi
   return 1
 }
@@ -248,7 +281,13 @@ function wait_for_rendered_client_pane() {
   local output=""
 
   while (( EPOCHREALTIME < deadline )); do
-    if output="$(gate_l_send_bridge_json_command false 5 "__agtmux_dump_rendered_terminal_target__" "$tile_id" 2>"$gate_l_tmpdir/rendered-pane.last-error.log")"; then
+    local remaining_timeout
+    remaining_timeout="$(awk -v deadline="$deadline" -v now="$EPOCHREALTIME" 'BEGIN {
+      remaining = deadline - now
+      if (remaining < 0.05) remaining = 0.05
+      printf "%.3f", remaining
+    }')"
+    if output="$(gate_l_wait_for_bridge_json_command_until "$remaining_timeout" "$gate_l_tmpdir/rendered-pane.last-error.log" "__agtmux_dump_rendered_terminal_target__" "$tile_id")"; then
       local rendered_pane_id
       rendered_pane_id="$(jq -r '.renderedClientPaneID // empty' <<<"$output")"
       if [[ "$rendered_pane_id" == "$expected_pane_id" ]]; then
@@ -275,7 +314,13 @@ function wait_for_rendered_terminal_target_ready() {
   local output=""
 
   while (( EPOCHREALTIME < deadline )); do
-    if output="$(gate_l_send_bridge_json_command false 5 "__agtmux_dump_rendered_terminal_target__" "$tile_id" 2>"$gate_l_tmpdir/rendered-target-ready.last-error.log")"; then
+    local remaining_timeout
+    remaining_timeout="$(awk -v deadline="$deadline" -v now="$EPOCHREALTIME" 'BEGIN {
+      remaining = deadline - now
+      if (remaining < 0.05) remaining = 0.05
+      printf "%.3f", remaining
+    }')"
+    if output="$(gate_l_wait_for_bridge_json_command_until "$remaining_timeout" "$gate_l_tmpdir/rendered-target-ready.last-error.log" "__agtmux_dump_rendered_terminal_target__" "$tile_id")"; then
       printf '%s\n' "$output"
       return 0
     fi
@@ -299,7 +344,13 @@ function wait_for_tile_host_mode() {
   local output=""
 
   while (( EPOCHREALTIME < deadline )); do
-    if output="$(gate_l_send_bridge_json_command false 5 "__agtmux_dump_rendered_terminal_target__" "$tile_id" 2>"$gate_l_tmpdir/host-mode-ready.last-error.log")"; then
+    local remaining_timeout
+    remaining_timeout="$(awk -v deadline="$deadline" -v now="$EPOCHREALTIME" 'BEGIN {
+      remaining = deadline - now
+      if (remaining < 0.05) remaining = 0.05
+      printf "%.3f", remaining
+    }')"
+    if output="$(gate_l_wait_for_bridge_json_command_until "$remaining_timeout" "$gate_l_tmpdir/host-mode-ready.last-error.log" "__agtmux_dump_rendered_terminal_target__" "$tile_id")"; then
       local actual_mode
       actual_mode="$(jq -r '.terminalHostMode // empty' <<<"$output")"
       if [[ "$actual_mode" == "$expected_mode" ]]; then
@@ -715,8 +766,10 @@ function measure_live_scroll_burst() {
   local post_focus_json=""
   local post_scroll_telemetry_json=""
 
-  if ! wait_for_terminal_viewport_ready "$tile_id" "$settle_timeout"; then
-    return 1
+  if [[ "$use_internal_scroll_measurement" != "1" ]]; then
+    if ! wait_for_terminal_viewport_ready "$tile_id" "$settle_timeout"; then
+      return 1
+    fi
   fi
 
   if focus_json="$(gate_l_send_bridge_json_command false 5 "__agtmux_dump_focus_state__" "$tile_id" 2>"$gate_l_tmpdir/${prefix}-focus-state.last-error.log")"; then
@@ -869,8 +922,10 @@ function prepare_live_viewport() {
   local prime_measurement_json_path=""
   local changed_sample_count=0
 
-  if ! wait_for_terminal_viewport_ready "$tile_id" "$settle_timeout"; then
-    return 1
+  if [[ "$use_internal_scroll_measurement" != "1" ]]; then
+    if ! wait_for_terminal_viewport_ready "$tile_id" "$settle_timeout"; then
+      return 1
+    fi
   fi
 
   prime_sample_count="$(viewport_sample_count "$prime_scroll_repeat" "$prime_scroll_interval_ms" "$sample_tail_ms" "$sample_interval_ms")"
@@ -982,7 +1037,13 @@ function wait_for_live_active_target() {
   local output=""
 
   while (( EPOCHREALTIME < deadline )); do
-    if output="$(gate_l_send_bridge_json_command false 5 "__agtmux_dump_active_terminal_target__" 2>"$gate_l_tmpdir/live-active-target.last-error.log")"; then
+    local remaining_timeout
+    remaining_timeout="$(awk -v deadline="$deadline" -v now="$EPOCHREALTIME" 'BEGIN {
+      remaining = deadline - now
+      if (remaining < 0.05) remaining = 0.05
+      printf "%.3f", remaining
+    }')"
+    if output="$(gate_l_wait_for_bridge_json_command_until "$remaining_timeout" "$gate_l_tmpdir/live-active-target.last-error.log" "__agtmux_dump_active_terminal_target__")"; then
       local got_session got_tile got_rendered_pane got_selected_pane
       got_session="$(jq -r '.sessionName // empty' <<<"$output")"
       got_tile="$(jq -r '.tileID // empty' <<<"$output")"
@@ -1134,29 +1195,36 @@ switch_transition_json_path="$gate_l_tmpdir/switch-transition.json"
 switch_open_json_path="$gate_l_tmpdir/switch-open-terminal.json"
 initial_summary_json_path="$gate_l_tmpdir/initial-summary.json"
 switched_summary_json_path="$gate_l_tmpdir/switched-summary.json"
+focus_registration_state_json_path="$gate_l_tmpdir/focus-host-registration-state.json"
 
 printf '%s\n' 'null' >"$retarget_json_path"
 printf '%s\n' 'null' >"$switch_transition_json_path"
 printf '%s\n' 'null' >"$switch_open_json_path"
 printf '%s\n' 'null' >"$switched_summary_json_path"
+printf '%s\n' 'null' >"$focus_registration_state_json_path"
 
 if [[ "$use_active_target" == "1" ]]; then
   mark_stage active-target-start
   focus_existing_json=""
   open_json=""
-  if ! active_json="$(wait_for_live_active_target "$session_name" "$pane_id" 2)"; then
-    if open_json="$(gate_l_send_bridge_json_command false 10 "__agtmux_open_terminal_for_pane__" "local" "$session_name" "${pane_id:-}" 2>"$gate_l_tmpdir/open-terminal.last-error.log")"; then
-      printf '%s\n' "$open_json" >"$open_json_path"
-      tile_id="$(jq -r '.tileID // empty' <<<"$open_json")"
-      resolved_session_name="$(jq -r '.sessionName // empty' <<<"$open_json")"
-      resolution_reason="open-terminal-session-fallback"
-      if [[ -n "$tile_id" ]]; then
-        wait_for_terminal_viewport_ready "$tile_id" "$settle_timeout"
-        active_json="$(wait_for_rendered_terminal_target_ready "$tile_id" "$settle_timeout")"
-      else
-        echo "open_terminal_for_pane did not return a tileID" >&2
-        exit 1
-      fi
+  if [[ "$prefer_direct_open_on_fresh_launch" != "1" ]] \
+    && ! active_json="$(wait_for_live_active_target "$session_name" "$pane_id" "$active_target_initial_timeout")"; then
+      if open_json="$(gate_l_send_bridge_json_command false "$settle_timeout" "__agtmux_open_terminal_for_pane__" "local" "$session_name" "${pane_id:-}" 2>"$gate_l_tmpdir/open-terminal.last-error.log")"; then
+        printf '%s\n' "$open_json" >"$open_json_path"
+        tile_id="$(jq -r '.tileID // empty' <<<"$open_json")"
+        resolved_session_name="$(jq -r '.sessionName // empty' <<<"$open_json")"
+        resolution_reason="open-terminal-session-fallback"
+        if [[ -n "$tile_id" ]]; then
+          if [[ "$use_internal_scroll_measurement" == "1" ]]; then
+            active_json="$open_json"
+          else
+            wait_for_terminal_viewport_ready "$tile_id" "$settle_timeout"
+            active_json="$(wait_for_rendered_terminal_target_ready "$tile_id" "$settle_timeout")"
+          fi
+        else
+          echo "open_terminal_for_pane did not return a tileID" >&2
+          exit 1
+        fi
     elif gate_l_send_bridge_json_command false 5 "__agtmux_focus_existing_terminal_tile__" "$session_name" \
       >"$gate_l_tmpdir/focus-existing-terminal-tile.json" 2>"$gate_l_tmpdir/focus-existing-terminal-tile.last-error.log"; then
       focus_existing_json="$(cat "$gate_l_tmpdir/focus-existing-terminal-tile.json")"
@@ -1171,11 +1239,36 @@ if [[ "$use_active_target" == "1" ]]; then
           echo "focus_existing_terminal_tile did not return a tileID" >&2
           exit 1
         fi
-        wait_for_terminal_viewport_ready "$tile_id" "$settle_timeout"
-        active_json="$(wait_for_rendered_terminal_target_ready "$tile_id" "$settle_timeout")"
+        if [[ "$use_internal_scroll_measurement" == "1" ]]; then
+          active_json="$focus_existing_json"
+        else
+          wait_for_terminal_viewport_ready "$tile_id" "$settle_timeout"
+          active_json="$(wait_for_rendered_terminal_target_ready "$tile_id" "$settle_timeout")"
+        fi
       fi
     fi
     if [[ -z "$focus_existing_json" && -z "$open_json" ]]; then
+      active_json="$(wait_for_live_active_target "$session_name" "$pane_id" "$settle_timeout")"
+      resolution_reason="active-target"
+    fi
+  elif [[ "$prefer_direct_open_on_fresh_launch" == "1" ]]; then
+    if open_json="$(gate_l_send_bridge_json_command false "$settle_timeout" "__agtmux_open_terminal_for_pane__" "local" "$session_name" "${pane_id:-}" 2>"$gate_l_tmpdir/open-terminal.last-error.log")"; then
+      printf '%s\n' "$open_json" >"$open_json_path"
+      tile_id="$(jq -r '.tileID // empty' <<<"$open_json")"
+      resolved_session_name="$(jq -r '.sessionName // empty' <<<"$open_json")"
+      resolution_reason="open-terminal-fresh-launch"
+      if [[ -n "$tile_id" ]]; then
+        if [[ "$use_internal_scroll_measurement" == "1" ]]; then
+          active_json="$open_json"
+        else
+          wait_for_terminal_viewport_ready "$tile_id" "$settle_timeout"
+          active_json="$(wait_for_rendered_terminal_target_ready "$tile_id" "$settle_timeout")"
+        fi
+      else
+        echo "open_terminal_for_pane did not return a tileID" >&2
+        exit 1
+      fi
+    else
       active_json="$(wait_for_live_active_target "$session_name" "$pane_id" "$settle_timeout")"
       resolution_reason="active-target"
     fi
@@ -1296,11 +1389,11 @@ else
   fi
 fi
 
-wait_for_terminal_viewport_ready "$tile_id" "$settle_timeout"
 if [[ "$use_internal_scroll_measurement" != "1" ]]; then
+  wait_for_terminal_viewport_ready "$tile_id" "$settle_timeout"
   wait_for_rendered_terminal_target_ready "$tile_id" "$settle_timeout" >/dev/null
+  mark_stage viewport-ready
 fi
-mark_stage viewport-ready
 
 active_host_mode="$(jq -r '.terminalHostMode // empty' <<<"$active_json")"
 rendered_client_tty="$(jq -r '.renderedClientTTY // empty' <<<"$active_json")"
@@ -1327,9 +1420,18 @@ if [[ "$active_host_mode" != "$host_mode" ]]; then
   exit 1
 fi
 
-gate_l_send_bridge_command false 10 "__agtmux_focus_terminal_host__" "$tile_id" >/dev/null
+if ! gate_l_send_bridge_command false "$focus_terminal_host_timeout" "__agtmux_focus_terminal_host__" "$tile_id" \
+  >/dev/null 2>"$gate_l_tmpdir/focus-host.last-error.log"; then
+  gate_l_send_bridge_json_command false 5 "__agtmux_dump_terminal_registration_state__" "$tile_id" \
+    >"$focus_registration_state_json_path" 2>"$gate_l_tmpdir/focus-host-registration-state.last-error.log" || true
+  echo "Failed to focus terminal host for tile $tile_id" >&2
+  exit 1
+fi
 gate_l_activate_app
 sleep_ms "$focus_settle_ms"
+if [[ "$use_internal_scroll_measurement" == "1" ]]; then
+  mark_stage viewport-ready
+fi
 mark_stage focus-host
 
 terminal_ax_identifier="workspace.terminalHost.${tile_id}"
@@ -1358,7 +1460,7 @@ if [[ -n "$switch_to_host_mode" ]]; then
     exit 1
   fi
   if [[ -n "$resolved_session_name" && -n "$pane_id" ]]; then
-    if switch_open_json="$(gate_l_send_bridge_json_command false 10 "__agtmux_open_terminal_for_pane__" "local" "$resolved_session_name" "$pane_id" 2>"$gate_l_tmpdir/switch-open-terminal.last-error.log")"; then
+    if switch_open_json="$(gate_l_send_bridge_json_command false "$settle_timeout" "__agtmux_open_terminal_for_pane__" "local" "$resolved_session_name" "$pane_id" 2>"$gate_l_tmpdir/switch-open-terminal.last-error.log")"; then
       printf '%s\n' "$switch_open_json" >"$switch_open_json_path"
       reopened_tile_id="$(jq -r '.tileID // empty' <<<"$switch_open_json")"
       if [[ -n "$reopened_tile_id" ]]; then
@@ -1380,7 +1482,7 @@ if [[ -n "$switch_to_host_mode" ]]; then
     wait_for_rendered_client_pane "$tile_id" "$pane_id" "$settle_timeout" >"$gate_l_tmpdir/switch-retarget-rendered-target.json"
     rendered_client_tty="$(jq -r '.renderedClientTTY // empty' "$gate_l_tmpdir/switch-retarget-rendered-target.json")"
   fi
-  gate_l_send_bridge_command false 10 "__agtmux_focus_terminal_host__" "$tile_id" >/dev/null
+  gate_l_send_bridge_command false "$focus_terminal_host_timeout" "__agtmux_focus_terminal_host__" "$tile_id" >/dev/null
   gate_l_activate_app
   sleep_ms "$focus_settle_ms"
   if focus_json="$(gate_l_send_bridge_json_command false 5 "__agtmux_dump_focus_state__" "$tile_id" 2>"$gate_l_tmpdir/switched-focus-state.last-error.log")"; then

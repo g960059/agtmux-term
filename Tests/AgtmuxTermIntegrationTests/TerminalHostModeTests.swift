@@ -138,6 +138,42 @@ final class TerminalHostModeTests: XCTestCase {
         )
     }
 
+    @MainActor
+    func testNextHostPaneControllerTelemetryTracksPromotionAndEviction() {
+        let tileID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-FFFFFFFFFFFF")!
+        func model(_ visiblePaneIdentity: String?) -> TerminalHostRenderModel {
+            TerminalHostRenderModel(
+                surfaceID: tileID,
+                poolKey: "%1",
+                attachCommand: "tmux attach-session -t main",
+                surfaceContext: nil,
+                visiblePaneIdentity: visiblePaneIdentity,
+                isFocused: true,
+                focusRestoreNonce: 0
+            )
+        }
+
+        let controller = NextGhosttyIslandViewController(model: model(nil))
+        controller.loadViewIfNeeded()
+        NextHostPaneControllerTelemetry.shared.reset(tileID: tileID)
+
+        controller.update(model: model("main|@0|%0|"))
+        controller.update(model: model("main|@0|%1|"))
+        controller.update(model: model("main|@0|%2|"))
+        controller.update(model: model("main|@0|%3|"))
+        controller.update(model: model("main|@0|%4|"))
+
+        let snapshot = NextHostPaneControllerTelemetry.shared.snapshot(tileID: tileID)
+        XCTAssertEqual(snapshot.promoteCount, 1)
+        XCTAssertEqual(snapshot.createCount, 4)
+        XCTAssertEqual(snapshot.activateCount, 4)
+        XCTAssertEqual(snapshot.deactivateCount, 4)
+        XCTAssertEqual(snapshot.evictCount, 1)
+        XCTAssertEqual(snapshot.retainedPaneControllerCount, 4)
+        XCTAssertEqual(snapshot.maxRetainedPaneControllerCount, 4)
+        XCTAssertEqual(snapshot.retentionOrderCount, 4)
+    }
+
     func testBootstrapRenderPolicyAllowsNextHostLocalTerminalWithResolvedAttachPlan() {
         let attachPlan = WorkbenchV2TerminalAttachPlan(
             command: "tmux attach-session -t main",
