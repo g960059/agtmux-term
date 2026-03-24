@@ -69,6 +69,30 @@ on the hot path.
 4. Special-case the one-main-terminal path to one visible controller/surface
 5. Only then consider flipping the default host mode away from `legacy`
 
+## First Deterministic Loaded-Viewport Finding
+
+After the first counter pass, the loaded-viewport parity wrapper now surfaces
+both app-side and view-side ownership counters. One deterministic
+`legacy` vs `next` run on 2026-03-23 produced this first narrowing:
+
+- `next` lost to `legacy` by about `52.3ms` on `first_changed_elapsed_ms`
+- app-side scheduler counters stayed flat on both sides:
+  - `appRenderCallbackCount = 0`
+  - `appScheduledDirectDrawPassCount = 0`
+  - `appImmediateDirectDrawPassCount = 0`
+  - `appDirtyDrawPassCount = 0`
+- view-side render-request counters also stayed flat on both sides:
+  - `scrollRenderRequestCount = 0`
+  - `scrollRefreshDrawRequestCount = 0`
+- the only ownership delta in that run was
+  `scrollImmediatePresentationDrawCount`:
+  - `legacy = 16`
+  - `next = 0`
+
+This does not prove root cause yet, but it does narrow the first deterministic
+loaded-viewport gap away from `GhosttyApp` direct-draw scheduling and toward
+`GhosttyTerminalView`'s host scroll-presentation behavior.
+
 ## Scope Boundary
 
 This is a terminal-host performance investigation, not a product-direction

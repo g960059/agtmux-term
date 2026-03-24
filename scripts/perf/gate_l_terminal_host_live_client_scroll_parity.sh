@@ -85,7 +85,28 @@ jq -n \
     coarse_step_count_ge_3_delta:
       ((summary($next; "coarse_step_count_ge_3") // 0) - (summary($legacy; "coarse_step_count_ge_3") // 0)),
     net_scroll_delta_delta:
-      ((summary($next; "net_scroll_delta") // 0) - (summary($legacy; "net_scroll_delta") // 0))
+      ((summary($next; "net_scroll_delta") // 0) - (summary($legacy; "net_scroll_delta") // 0)),
+    appRenderCallbackCountDelta:
+      ((metric($next; ["postScrollTelemetry", "app", "renderCallbackCount"]) // 0) -
+       (metric($legacy; ["postScrollTelemetry", "app", "renderCallbackCount"]) // 0)),
+    appScheduledDirectDrawPassCountDelta:
+      ((metric($next; ["postScrollTelemetry", "app", "scheduledDirectDrawPassCount"]) // 0) -
+       (metric($legacy; ["postScrollTelemetry", "app", "scheduledDirectDrawPassCount"]) // 0)),
+    appImmediateDirectDrawPassCountDelta:
+      ((metric($next; ["postScrollTelemetry", "app", "immediateDirectDrawPassCount"]) // 0) -
+       (metric($legacy; ["postScrollTelemetry", "app", "immediateDirectDrawPassCount"]) // 0)),
+    appDirtyDrawPassCountDelta:
+      ((metric($next; ["postScrollTelemetry", "app", "dirtyDrawPassCount"]) // 0) -
+       (metric($legacy; ["postScrollTelemetry", "app", "dirtyDrawPassCount"]) // 0)),
+    scrollRenderRequestCountDelta:
+      ((metric($next; ["postScrollTelemetry", "scroll", "renderRequestCount"]) // 0) -
+       (metric($legacy; ["postScrollTelemetry", "scroll", "renderRequestCount"]) // 0)),
+    scrollRefreshDrawRequestCountDelta:
+      ((metric($next; ["postScrollTelemetry", "scroll", "refreshDrawRequestCount"]) // 0) -
+       (metric($legacy; ["postScrollTelemetry", "scroll", "refreshDrawRequestCount"]) // 0)),
+    scrollImmediatePresentationDrawCountDelta:
+      ((metric($next; ["postScrollTelemetry", "scroll", "immediatePresentationDrawCount"]) // 0) -
+       (metric($legacy; ["postScrollTelemetry", "scroll", "immediatePresentationDrawCount"]) // 0))
   };
   ($legacy[0]) as $legacyPayload |
   ($next[0]) as $nextPayload |

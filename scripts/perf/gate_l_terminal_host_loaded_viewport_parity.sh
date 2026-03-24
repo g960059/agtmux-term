@@ -102,6 +102,22 @@ jq -n \
       (telemetry($payload; ["scrollTelemetry", "island", "retryCount"]) // null),
     islandApplyCommandCount:
       (telemetry($payload; ["scrollTelemetry", "island", "applyCommandCount"]) // null),
+    appRenderCallbackCount:
+      (telemetry($payload; ["scrollTelemetry", "app", "renderCallbackCount"]) // null),
+    appScheduledDirectDrawPassCount:
+      (telemetry($payload; ["scrollTelemetry", "app", "scheduledDirectDrawPassCount"]) // null),
+    appImmediateDirectDrawPassCount:
+      (telemetry($payload; ["scrollTelemetry", "app", "immediateDirectDrawPassCount"]) // null),
+    appDirtyDrawPassCount:
+      (telemetry($payload; ["scrollTelemetry", "app", "dirtyDrawPassCount"]) // null),
+    appDirtyDrawnSurfaceCount:
+      (telemetry($payload; ["scrollTelemetry", "app", "dirtyDrawnSurfaceCount"]) // null),
+    scrollRenderRequestCount:
+      (telemetry($payload; ["scrollTelemetry", "scroll", "renderRequestCount"]) // null),
+    scrollRefreshDrawRequestCount:
+      (telemetry($payload; ["scrollTelemetry", "scroll", "refreshDrawRequestCount"]) // null),
+    scrollImmediatePresentationDrawCount:
+      (telemetry($payload; ["scrollTelemetry", "scroll", "immediatePresentationDrawCount"]) // null),
     fixtureFirstKeyUpElapsedMs:
       (telemetry($payload; ["fixtureEventSummary", "firstKeyUpElapsedMs"]) // null),
     fixtureKeyUpCount:
@@ -133,6 +149,30 @@ jq -n \
     islandApplyCommandCountDelta:
       ((telemetry($next; ["scrollTelemetry", "island", "applyCommandCount"]) // 0) -
        (telemetry($legacy; ["scrollTelemetry", "island", "applyCommandCount"]) // 0)),
+    appRenderCallbackCountDelta:
+      ((telemetry($next; ["scrollTelemetry", "app", "renderCallbackCount"]) // 0) -
+       (telemetry($legacy; ["scrollTelemetry", "app", "renderCallbackCount"]) // 0)),
+    appScheduledDirectDrawPassCountDelta:
+      ((telemetry($next; ["scrollTelemetry", "app", "scheduledDirectDrawPassCount"]) // 0) -
+       (telemetry($legacy; ["scrollTelemetry", "app", "scheduledDirectDrawPassCount"]) // 0)),
+    appImmediateDirectDrawPassCountDelta:
+      ((telemetry($next; ["scrollTelemetry", "app", "immediateDirectDrawPassCount"]) // 0) -
+       (telemetry($legacy; ["scrollTelemetry", "app", "immediateDirectDrawPassCount"]) // 0)),
+    appDirtyDrawPassCountDelta:
+      ((telemetry($next; ["scrollTelemetry", "app", "dirtyDrawPassCount"]) // 0) -
+       (telemetry($legacy; ["scrollTelemetry", "app", "dirtyDrawPassCount"]) // 0)),
+    appDirtyDrawnSurfaceCountDelta:
+      ((telemetry($next; ["scrollTelemetry", "app", "dirtyDrawnSurfaceCount"]) // 0) -
+       (telemetry($legacy; ["scrollTelemetry", "app", "dirtyDrawnSurfaceCount"]) // 0)),
+    scrollRenderRequestCountDelta:
+      ((telemetry($next; ["scrollTelemetry", "scroll", "renderRequestCount"]) // 0) -
+       (telemetry($legacy; ["scrollTelemetry", "scroll", "renderRequestCount"]) // 0)),
+    scrollRefreshDrawRequestCountDelta:
+      ((telemetry($next; ["scrollTelemetry", "scroll", "refreshDrawRequestCount"]) // 0) -
+       (telemetry($legacy; ["scrollTelemetry", "scroll", "refreshDrawRequestCount"]) // 0)),
+    scrollImmediatePresentationDrawCountDelta:
+      ((telemetry($next; ["scrollTelemetry", "scroll", "immediatePresentationDrawCount"]) // 0) -
+       (telemetry($legacy; ["scrollTelemetry", "scroll", "immediatePresentationDrawCount"]) // 0)),
     fixtureFirstKeyUpElapsedDeltaMs:
       ((telemetry($next; ["fixtureEventSummary", "firstKeyUpElapsedMs"]) // 0) -
        (telemetry($legacy; ["fixtureEventSummary", "firstKeyUpElapsedMs"]) // 0))
@@ -167,6 +207,22 @@ jq -n \
       ($runs | map(.comparison.islandRetryCountDelta) | median),
     islandApplyCommandCountDelta:
       ($runs | map(.comparison.islandApplyCommandCountDelta) | median),
+    appRenderCallbackCountDelta:
+      ($runs | map(.comparison.appRenderCallbackCountDelta) | median),
+    appScheduledDirectDrawPassCountDelta:
+      ($runs | map(.comparison.appScheduledDirectDrawPassCountDelta) | median),
+    appImmediateDirectDrawPassCountDelta:
+      ($runs | map(.comparison.appImmediateDirectDrawPassCountDelta) | median),
+    appDirtyDrawPassCountDelta:
+      ($runs | map(.comparison.appDirtyDrawPassCountDelta) | median),
+    appDirtyDrawnSurfaceCountDelta:
+      ($runs | map(.comparison.appDirtyDrawnSurfaceCountDelta) | median),
+    scrollRenderRequestCountDelta:
+      ($runs | map(.comparison.scrollRenderRequestCountDelta) | median),
+    scrollRefreshDrawRequestCountDelta:
+      ($runs | map(.comparison.scrollRefreshDrawRequestCountDelta) | median),
+    scrollImmediatePresentationDrawCountDelta:
+      ($runs | map(.comparison.scrollImmediatePresentationDrawCountDelta) | median),
     fixtureFirstKeyUpElapsedDeltaMs:
       ($runs | map(.comparison.fixtureFirstKeyUpElapsedDeltaMs) | median)
   } as $comparison |
@@ -180,6 +236,20 @@ jq -n \
           ($legacyPayloads | map(telemetry(.; ["scrollTelemetry", "scroll", "scrollToFirstDraw", "p50Ms"]) // empty) | median),
         scrollToLayerPresentP50Ms:
           ($legacyPayloads | map(telemetry(.; ["scrollTelemetry", "scroll", "scrollToLayerPresent", "p50Ms"]) // empty) | median),
+        appRenderCallbackCount:
+          ($legacyPayloads | map(telemetry(.; ["scrollTelemetry", "app", "renderCallbackCount"]) // empty) | median),
+        appScheduledDirectDrawPassCount:
+          ($legacyPayloads | map(telemetry(.; ["scrollTelemetry", "app", "scheduledDirectDrawPassCount"]) // empty) | median),
+        appImmediateDirectDrawPassCount:
+          ($legacyPayloads | map(telemetry(.; ["scrollTelemetry", "app", "immediateDirectDrawPassCount"]) // empty) | median),
+        appDirtyDrawPassCount:
+          ($legacyPayloads | map(telemetry(.; ["scrollTelemetry", "app", "dirtyDrawPassCount"]) // empty) | median),
+        scrollRenderRequestCount:
+          ($legacyPayloads | map(telemetry(.; ["scrollTelemetry", "scroll", "renderRequestCount"]) // empty) | median),
+        scrollRefreshDrawRequestCount:
+          ($legacyPayloads | map(telemetry(.; ["scrollTelemetry", "scroll", "refreshDrawRequestCount"]) // empty) | median),
+        scrollImmediatePresentationDrawCount:
+          ($legacyPayloads | map(telemetry(.; ["scrollTelemetry", "scroll", "immediatePresentationDrawCount"]) // empty) | median),
         fixtureFirstKeyUpElapsedMs:
           ($legacyPayloads | map(telemetry(.; ["fixtureEventSummary", "firstKeyUpElapsedMs"]) // empty) | median)
       }
@@ -193,6 +263,20 @@ jq -n \
           ($nextPayloads | map(telemetry(.; ["scrollTelemetry", "scroll", "scrollToFirstDraw", "p50Ms"]) // empty) | median),
         scrollToLayerPresentP50Ms:
           ($nextPayloads | map(telemetry(.; ["scrollTelemetry", "scroll", "scrollToLayerPresent", "p50Ms"]) // empty) | median),
+        appRenderCallbackCount:
+          ($nextPayloads | map(telemetry(.; ["scrollTelemetry", "app", "renderCallbackCount"]) // empty) | median),
+        appScheduledDirectDrawPassCount:
+          ($nextPayloads | map(telemetry(.; ["scrollTelemetry", "app", "scheduledDirectDrawPassCount"]) // empty) | median),
+        appImmediateDirectDrawPassCount:
+          ($nextPayloads | map(telemetry(.; ["scrollTelemetry", "app", "immediateDirectDrawPassCount"]) // empty) | median),
+        appDirtyDrawPassCount:
+          ($nextPayloads | map(telemetry(.; ["scrollTelemetry", "app", "dirtyDrawPassCount"]) // empty) | median),
+        scrollRenderRequestCount:
+          ($nextPayloads | map(telemetry(.; ["scrollTelemetry", "scroll", "renderRequestCount"]) // empty) | median),
+        scrollRefreshDrawRequestCount:
+          ($nextPayloads | map(telemetry(.; ["scrollTelemetry", "scroll", "refreshDrawRequestCount"]) // empty) | median),
+        scrollImmediatePresentationDrawCount:
+          ($nextPayloads | map(telemetry(.; ["scrollTelemetry", "scroll", "immediatePresentationDrawCount"]) // empty) | median),
         fixtureFirstKeyUpElapsedMs:
           ($nextPayloads | map(telemetry(.; ["fixtureEventSummary", "firstKeyUpElapsedMs"]) // empty) | median)
       }
