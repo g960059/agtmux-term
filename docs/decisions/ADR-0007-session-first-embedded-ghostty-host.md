@@ -1,8 +1,14 @@
 # ADR-0007: Keep the mainline product a session-first embedded Ghostty cockpit
 
-- **Status**: Accepted
+- **Status**: Superseded by ADR-0008
 - **Date**: 2026-03-23
 - **Supersedes**: ADR-0006 for the mainline product boundary
+- **Superseded By**: ADR-0008
+
+ADR-0007 captured the step away from external Ghostty window automation and
+back toward an embedded main-window cockpit. The current durable boundary is
+ADR-0008, which further narrows the mainline product to a terminal-first
+embedded Ghostty cockpit with a tmux/agent sidebar overlay.
 
 ## Context
 
