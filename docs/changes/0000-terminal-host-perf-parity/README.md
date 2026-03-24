@@ -20,4 +20,6 @@ Current state:
   `legacy`
 - the perf runbook now documents the matched-version native-vs-embedded
   comparison rule
+- `__agtmux_dump_scroll_telemetry__` now exposes app-side render/direct-draw
+  ownership counters and view-side refresh/immediate draw counters
 - the next work is a perf-parity program, not another UX rewrite

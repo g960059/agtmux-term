@@ -832,8 +832,12 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
                 GhosttyApp.runDirtyDrawPassForTesting()
                 dirtyView.resetDrawTracking()
                 cleanView.resetDrawTracking()
+                dirtyView.resetScrollTelemetryForTesting()
+                cleanView.resetScrollTelemetryForTesting()
+                GhosttyApp.resetSurfaceDrawTelemetryForTesting()
                 scheduledTicks = 0
                 scheduledDirectDraws = 0
+                dirtyView.noteScrollInputTelemetryForTesting()
 
                 XCTAssertTrue(
                     GhosttyApp.handleAction(
@@ -850,6 +854,18 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
                 XCTAssertEqual(scheduledTicks, 0)
                 XCTAssertEqual(scheduledDirectDraws, 1)
                 XCTAssertEqual(cleanView.triggerDrawCallCount, 0)
+
+                let viewSnapshot = dirtyView.scrollTelemetrySnapshotForTesting()
+                XCTAssertEqual(viewSnapshot.renderRequestCount, 1)
+                XCTAssertEqual(viewSnapshot.refreshDrawRequestCount, 1)
+                XCTAssertEqual(viewSnapshot.immediatePresentationDrawCount, 0)
+
+                let appSnapshot = GhosttyApp.surfaceDrawTelemetrySnapshotForTesting()
+                XCTAssertEqual(appSnapshot.renderCallbackCount, 1)
+                XCTAssertEqual(appSnapshot.scheduledDirectDrawPassCount, 1)
+                XCTAssertEqual(appSnapshot.immediateDirectDrawPassCount, 0)
+                XCTAssertEqual(appSnapshot.dirtyDrawPassCount, 1)
+                XCTAssertEqual(appSnapshot.dirtyDrawnSurfaceCount, 1)
             }
         }
     }
@@ -966,12 +982,12 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
 
         let dirtyView = GhosttyTerminalViewDrawSpy()
         let cleanView = GhosttyTerminalViewDrawSpy()
-        dirtyView.preferImmediateDirtyDrawForRenderCallback = true
+        dirtyView.shouldPreferImmediateDirtyDrawForRenderCallback = true
         let dirtyHandle = GhosttySurfaceHandle(rawValue: 0x625)
         let cleanHandle = GhosttySurfaceHandle(rawValue: 0x626)
         var scheduledDirectDraws = 0
 
-        await GhosttyApp.withTestDirectDrawScheduleObserver({
+        GhosttyApp.withTestDirectDrawScheduleObserver({
             scheduledDirectDraws += 1
         }) {
             SurfacePool.shared.register(
@@ -990,7 +1006,11 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
             GhosttyApp.runDirtyDrawPassForTesting()
             dirtyView.resetDrawTracking()
             cleanView.resetDrawTracking()
+            dirtyView.resetScrollTelemetryForTesting()
+            cleanView.resetScrollTelemetryForTesting()
+            GhosttyApp.resetSurfaceDrawTelemetryForTesting()
             scheduledDirectDraws = 0
+            dirtyView.noteScrollInputTelemetryForTesting()
 
             XCTAssertTrue(
                 GhosttyApp.handleAction(
@@ -1003,6 +1023,18 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
             XCTAssertEqual(dirtyView.triggerDrawCallCount, 1)
             XCTAssertEqual(cleanView.triggerDrawCallCount, 0)
             XCTAssertEqual(scheduledDirectDraws, 0)
+
+            let viewSnapshot = dirtyView.scrollTelemetrySnapshotForTesting()
+            XCTAssertEqual(viewSnapshot.renderRequestCount, 1)
+            XCTAssertEqual(viewSnapshot.refreshDrawRequestCount, 0)
+            XCTAssertEqual(viewSnapshot.immediatePresentationDrawCount, 1)
+
+            let appSnapshot = GhosttyApp.surfaceDrawTelemetrySnapshotForTesting()
+            XCTAssertEqual(appSnapshot.renderCallbackCount, 1)
+            XCTAssertEqual(appSnapshot.scheduledDirectDrawPassCount, 0)
+            XCTAssertEqual(appSnapshot.immediateDirectDrawPassCount, 1)
+            XCTAssertEqual(appSnapshot.dirtyDrawPassCount, 1)
+            XCTAssertEqual(appSnapshot.dirtyDrawnSurfaceCount, 1)
         }
     }
 
@@ -1548,6 +1580,9 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
         XCTAssertEqual(snapshot.scrollInputHandlerSamplesMs, [])
         XCTAssertEqual(snapshot.scrollInputDispatchSamplesMs, [])
         XCTAssertEqual(snapshot.scrollInputVerticalDeltaAbsSamples.count, 2)
+        XCTAssertEqual(snapshot.renderRequestCount, 2)
+        XCTAssertEqual(snapshot.refreshDrawRequestCount, 0)
+        XCTAssertEqual(snapshot.immediatePresentationDrawCount, 0)
         XCTAssertEqual(snapshot.drawCount, 2)
         XCTAssertEqual(snapshot.scrollPresentationDrawCount, 0)
         XCTAssertEqual(snapshot.layerPresentGap.count, 1)
@@ -1614,6 +1649,9 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
         XCTAssertEqual(resetSnapshot.scrollInputHandlerSamplesMs, [])
         XCTAssertEqual(resetSnapshot.scrollInputDispatchSamplesMs, [])
         XCTAssertEqual(resetSnapshot.scrollInputVerticalDeltaAbsSamples, [])
+        XCTAssertEqual(resetSnapshot.renderRequestCount, 0)
+        XCTAssertEqual(resetSnapshot.refreshDrawRequestCount, 0)
+        XCTAssertEqual(resetSnapshot.immediatePresentationDrawCount, 0)
         XCTAssertEqual(resetSnapshot.drawCount, 0)
         XCTAssertEqual(resetSnapshot.scrollPresentationDrawCount, 0)
         XCTAssertEqual(resetSnapshot.layerPresentGap.count, 0)
@@ -4315,22 +4353,26 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
 private final class GhosttyTerminalViewDrawSpy: GhosttyTerminalView {
     private(set) var triggerDrawCallCount = 0
     private(set) var scrollPresentationDrawCallCount = 0
-    var preferImmediateDirtyDrawForRenderCallback = false
+    var shouldPreferImmediateDirtyDrawForRenderCallback = false
 
     override func hasSurfaceForScrollPresentationDraw() -> Bool {
         true
     }
 
     override func prefersImmediateDirtyDrawForRenderCallback(now: TimeInterval) -> Bool {
-        preferImmediateDirtyDrawForRenderCallback
+        shouldPreferImmediateDirtyDrawForRenderCallback
     }
 
     override func triggerDraw() {
         triggerDrawCallCount += 1
+        super.triggerDraw()
     }
 
     override func triggerDirtyDrawForRenderCallback(now: TimeInterval) {
-        triggerDrawCallCount += 1
+        if shouldPreferImmediateDirtyDrawForRenderCallback {
+            triggerDrawCallCount += 1
+        }
+        super.triggerDirtyDrawForRenderCallback(now: now)
     }
 
     override func performScrollPresentationDraw() {

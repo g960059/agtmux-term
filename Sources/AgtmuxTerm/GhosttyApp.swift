@@ -10,6 +10,14 @@ import os
 ///   We reference GhosttyApp.shared which is a static property and thus
 ///   not a closure capture in the C-function-pointer sense.
 final class GhosttyApp {
+    struct SurfaceDrawTelemetrySnapshot: Codable, Equatable {
+        let renderCallbackCount: Int
+        let scheduledDirectDrawPassCount: Int
+        let immediateDirectDrawPassCount: Int
+        let dirtyDrawPassCount: Int
+        let dirtyDrawnSurfaceCount: Int
+    }
+
     static let shared = GhosttyApp()
     private static var initializedShared: GhosttyApp?
     private static let schedulerExperimentDisabled =
@@ -93,6 +101,16 @@ final class GhosttyApp {
     private static var directDrawPassPending = false
     @MainActor
     private static var pendingSurfaceDrawGapState: OSSignpostIntervalState?
+    @MainActor
+    private static var renderCallbackCount = 0
+    @MainActor
+    private static var scheduledDirectDrawPassCount = 0
+    @MainActor
+    private static var immediateDirectDrawPassCount = 0
+    @MainActor
+    private static var dirtyDrawPassCount = 0
+    @MainActor
+    private static var dirtyDrawnSurfaceCount = 0
 
     private(set) var app: ghostty_app_t?
 
@@ -232,6 +250,7 @@ final class GhosttyApp {
 
         @MainActor
         func applyRenderCallback() {
+            renderCallbackCount += 1
             let view = SurfacePool.shared.view(forSurfaceHandle: surfaceHandle)
             view?.noteRenderRequestTelemetry()
             let now = ProcessInfo.processInfo.systemUptime
@@ -367,6 +386,22 @@ final class GhosttyApp {
     static func resetSurfaceDrawTelemetryForTesting() {
         pendingSurfaceDrawGapState = nil
         directDrawPassPending = false
+        renderCallbackCount = 0
+        scheduledDirectDrawPassCount = 0
+        immediateDirectDrawPassCount = 0
+        dirtyDrawPassCount = 0
+        dirtyDrawnSurfaceCount = 0
+    }
+
+    @MainActor
+    static func surfaceDrawTelemetrySnapshotForTesting() -> SurfaceDrawTelemetrySnapshot {
+        SurfaceDrawTelemetrySnapshot(
+            renderCallbackCount: renderCallbackCount,
+            scheduledDirectDrawPassCount: scheduledDirectDrawPassCount,
+            immediateDirectDrawPassCount: immediateDirectDrawPassCount,
+            dirtyDrawPassCount: dirtyDrawPassCount,
+            dirtyDrawnSurfaceCount: dirtyDrawnSurfaceCount
+        )
     }
 
     deinit {
@@ -400,6 +435,7 @@ final class GhosttyApp {
         guard shouldScheduleTickOnMain() else { return }
         guard directDrawPassPending == false else { return }
         directDrawPassPending = true
+        scheduledDirectDrawPassCount += 1
         directDrawScheduleObserver()
 
         let mainRunLoop = CFRunLoopGetMain()
@@ -417,6 +453,7 @@ final class GhosttyApp {
     private static func runDirectDrawPassImmediatelyIfPossible() -> Bool {
         guard shouldScheduleTickOnMain() else { return false }
         guard directDrawPassPending == false else { return false }
+        immediateDirectDrawPassCount += 1
         runDirtyDrawPass()
         return true
     }
@@ -495,6 +532,7 @@ final class GhosttyApp {
 
     @MainActor
     private static func runDirtyDrawPass() {
+        dirtyDrawPassCount += 1
         let dirtyViews = SurfacePool.shared.consumeDirtyActiveSurfaceViews()
         guard dirtyViews.isEmpty == false else {
             SurfacePool.shared.recordDrawPassCount(0)
@@ -512,6 +550,7 @@ final class GhosttyApp {
             AgtmuxSignpost.surfaceDraw.endInterval("draw", drawState)
             drawnSurfaceCount += 1
         }
+        dirtyDrawnSurfaceCount += drawnSurfaceCount
         SurfacePool.shared.recordDrawPassCount(drawnSurfaceCount)
     }
 

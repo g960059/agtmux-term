@@ -188,6 +188,7 @@ final class UITestTmuxBridge {
 
     private struct ScrollBenchTelemetrySnapshot: Codable {
         let scroll: GhosttyTerminalView.ScrollTelemetrySnapshot
+        let app: GhosttyApp.SurfaceDrawTelemetrySnapshot
         let island: GhosttyIslandUpdateTelemetry.Snapshot
         let publish: AppViewModel.PublishTelemetrySnapshot
     }
@@ -1818,6 +1819,7 @@ final class UITestTmuxBridge {
         let tileID = try tileID(from: args, command: dumpScrollTelemetryCommand)
         return ScrollBenchTelemetrySnapshot(
             scroll: terminalView.scrollTelemetrySnapshotForTesting(),
+            app: GhosttyApp.surfaceDrawTelemetrySnapshotForTesting(),
             island: GhosttyIslandUpdateTelemetry.shared.snapshot(tileID: tileID),
             publish: viewModel.publishTelemetrySnapshotForTesting()
         )

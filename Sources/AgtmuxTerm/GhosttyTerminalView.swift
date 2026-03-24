@@ -100,6 +100,9 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         let scrollInputHandlerSamplesMs: [Double]
         let scrollInputDispatchSamplesMs: [Double]
         let scrollInputVerticalDeltaAbsSamples: [Double]
+        let renderRequestCount: Int
+        let refreshDrawRequestCount: Int
+        let immediatePresentationDrawCount: Int
         let drawCount: Int
         let scrollPresentationDrawCount: Int
         let layerPresentCount: Int
@@ -226,6 +229,9 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     private var drawCount = 0
     private var scrollPresentationDrawCount = 0
     private var layerPresentCount = 0
+    private var renderRequestCount = 0
+    private var refreshDrawRequestCount = 0
+    private var immediatePresentationDrawCount = 0
     private var lastHostDrawUptime: TimeInterval?
     private var lastScrollInputEventUptime: TimeInterval?
     private var preciseAlternateScrollDirtyDrawEligibleUntilUptime: TimeInterval?
@@ -406,6 +412,7 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     /// work back to libghostty's render queue so the IOSurface layer can present on its
     /// own pacing instead of doing the full draw synchronously here.
     func triggerDraw() {
+        refreshDrawRequestCount += 1
         guard let surface else { return }
         ghostty_surface_refresh(surface)
     }
@@ -1134,6 +1141,7 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
             return
         }
         let now = ProcessInfo.processInfo.systemUptime
+        renderRequestCount += 1
 
         for state in pendingScrollToRenderStates {
             AgtmuxSignpost.scrollLatency.endInterval("scrollToRenderRequest", state)
@@ -1312,6 +1320,9 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         drawCount = 0
         scrollPresentationDrawCount = 0
         layerPresentCount = 0
+        renderRequestCount = 0
+        refreshDrawRequestCount = 0
+        immediatePresentationDrawCount = 0
         lastScrollInputEventUptime = nil
         preciseAlternateScrollDirtyDrawEligibleUntilUptime = nil
         lastHostDrawUptime = nil
@@ -1467,6 +1478,9 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
             scrollInputHandlerSamplesMs: scrollInputHandlerSamplesMs,
             scrollInputDispatchSamplesMs: scrollInputDispatchSamplesMs,
             scrollInputVerticalDeltaAbsSamples: scrollInputVerticalDeltaAbsSamples,
+            renderRequestCount: renderRequestCount,
+            refreshDrawRequestCount: refreshDrawRequestCount,
+            immediatePresentationDrawCount: immediatePresentationDrawCount,
             drawCount: drawCount,
             scrollPresentationDrawCount: scrollPresentationDrawCount,
             layerPresentCount: layerPresentCount,
@@ -1720,6 +1734,7 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
 
     @MainActor
     private func performImmediatePresentationDraw() {
+        immediatePresentationDrawCount += 1
         guard let surface else { return }
         ghostty_surface_draw(surface)
     }
