@@ -1760,6 +1760,127 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
     }
 
     @MainActor
+    func testScrollTelemetryCollectionDisabledLeavesSnapshotsEmptyUntilReset() {
+        let view = GhosttyTerminalViewDrawSpy()
+
+        view.setScrollTelemetryCollectionEnabledForTesting(false)
+        view.noteScrollInputTelemetryForTesting(now: 10.0, precision: true, phase: .changed, verticalDelta: 1)
+        view.noteRenderRequestTelemetry()
+        view.noteLayerPresentationTelemetryForTesting()
+        view.noteHostDrawTelemetry()
+
+        let disabledSnapshot = view.scrollTelemetrySnapshotForTesting()
+        XCTAssertEqual(disabledSnapshot.scrollInputCount, 0)
+        XCTAssertEqual(disabledSnapshot.scrollToRenderRequest.count, 0)
+        XCTAssertEqual(disabledSnapshot.scrollToFirstDraw.count, 0)
+        XCTAssertEqual(disabledSnapshot.scrollToLayerPresent.count, 0)
+        XCTAssertEqual(disabledSnapshot.renderRequestCount, 0)
+        XCTAssertEqual(disabledSnapshot.drawCount, 0)
+        XCTAssertEqual(disabledSnapshot.layerPresentCount, 0)
+
+        view.resetScrollTelemetryForTesting()
+        view.noteScrollInputTelemetryForTesting(now: 20.0, precision: true, phase: .changed, verticalDelta: 1)
+        view.noteRenderRequestTelemetry()
+        view.noteLayerPresentationTelemetryForTesting()
+        view.noteHostDrawTelemetry()
+
+        let enabledSnapshot = view.scrollTelemetrySnapshotForTesting()
+        XCTAssertEqual(enabledSnapshot.scrollInputCount, 1)
+        XCTAssertEqual(enabledSnapshot.scrollToRenderRequest.count, 1)
+        XCTAssertEqual(enabledSnapshot.scrollToFirstDraw.count, 1)
+        XCTAssertEqual(enabledSnapshot.scrollToLayerPresent.count, 1)
+        XCTAssertEqual(enabledSnapshot.renderRequestCount, 1)
+        XCTAssertEqual(enabledSnapshot.drawCount, 1)
+        XCTAssertEqual(enabledSnapshot.layerPresentCount, 1)
+    }
+
+    @MainActor
+    func testSurfaceDrawTelemetryCollectionDisabledStillDrawsTargetSurface() async {
+        SurfacePool.shared.resetForTesting()
+        defer { SurfacePool.shared.resetForTesting() }
+        GhosttyApp.setSurfaceDrawTelemetryEnabledForTesting(false)
+        defer { GhosttyApp.resetSurfaceDrawTelemetryForTesting() }
+
+        let dirtyView = GhosttyTerminalViewDrawSpy()
+        let cleanView = GhosttyTerminalViewDrawSpy()
+        let dirtyHandle = GhosttySurfaceHandle(rawValue: 0x6A1)
+        let cleanHandle = GhosttySurfaceHandle(rawValue: 0x6A2)
+
+        await GhosttyApp.withTestDirectDrawScheduleObserver({}) {
+            SurfacePool.shared.register(
+                view: dirtyView,
+                leafID: UUID(),
+                tmuxPaneID: "%61",
+                surfaceHandle: dirtyHandle
+            )
+            SurfacePool.shared.register(
+                view: cleanView,
+                leafID: UUID(),
+                tmuxPaneID: "%62",
+                surfaceHandle: cleanHandle
+            )
+
+            GhosttyApp.runDirtyDrawPassForTesting()
+            dirtyView.resetDrawTracking()
+            cleanView.resetDrawTracking()
+
+            XCTAssertTrue(
+                GhosttyApp.handleAction(
+                    nil,
+                    target: makeSurfaceTarget(dirtyHandle),
+                    action: makeRenderAction()
+                )
+            )
+
+            let drew = await waitUntil {
+                dirtyView.triggerDrawCallCount == 1
+            }
+            XCTAssertTrue(drew)
+            XCTAssertEqual(cleanView.triggerDrawCallCount, 0)
+
+            let snapshot = GhosttyApp.surfaceDrawTelemetrySnapshotForTesting()
+            XCTAssertEqual(snapshot.renderCallbackCount, 0)
+            XCTAssertEqual(snapshot.scheduledDirectDrawPassCount, 0)
+            XCTAssertEqual(snapshot.immediateDirectDrawPassCount, 0)
+            XCTAssertEqual(snapshot.dirtyDrawPassCount, 0)
+            XCTAssertEqual(snapshot.dirtyDrawnSurfaceCount, 0)
+            XCTAssertEqual(snapshot.ghosttyAppTickDuration.count, 0)
+            XCTAssertEqual(snapshot.dirtyDrawPassDuration.count, 0)
+        }
+    }
+
+    @MainActor
+    func testNextModeWithTelemetryDisabledDoesNotPreferRenderLayerContentsObservation() {
+        let view = GhosttyTerminalViewDrawSpy()
+        view.setTerminalHostMode(.next)
+        view.setScrollTelemetryCollectionEnabledForTesting(false)
+
+        XCTAssertFalse(view.prefersRenderLayerContentsObservationForTesting())
+    }
+
+    @MainActor
+    func testLegacyModeKeepsRenderLayerContentsObservationWhenTelemetryDisabled() {
+        let view = GhosttyTerminalViewDrawSpy()
+        view.setTerminalHostMode(.legacy)
+        view.setScrollTelemetryCollectionEnabledForTesting(false)
+
+        XCTAssertTrue(view.prefersRenderLayerContentsObservationForTesting())
+    }
+
+    @MainActor
+    func testNextModeKeepsRenderLayerContentsObservationDuringPaneRetargetRecovery() {
+        let view = GhosttyTerminalViewDrawSpy()
+        view.setTerminalHostMode(.next)
+        view.setScrollTelemetryCollectionEnabledForTesting(false)
+        view.configurePaneRetargetObservationStateForTesting(
+            drawPending: false,
+            recoveryScheduled: true
+        )
+
+        XCTAssertTrue(view.prefersRenderLayerContentsObservationForTesting())
+    }
+
+    @MainActor
     func testScrollPresentationDrawTelemetryTracksFirstDrawAndGap() {
         let view = GhosttyTerminalViewDrawSpy()
 

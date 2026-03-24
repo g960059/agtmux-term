@@ -288,6 +288,160 @@ But it leaves the next question open:
 That makes the next measurement slice more specific: add a cadence-sensitive
 parity table instead of overfitting the current step gate.
 
+## First Cadence-Sensitive Table
+
+The next slice added two wrappers on 2026-03-24:
+
+- `scripts/perf/gate_l_trackpad_history_scroll_parity.sh`
+- `scripts/perf/gate_l_terminal_host_cadence_parity_table.sh`
+
+The history wrapper keeps the native-vs-embedded gate on tmux-visible latency,
+because the external Ghostty bench still cannot expose layer-present telemetry.
+But it also records embedded-only cadence diagnostics from the same run:
+
+- `scroll_to_layer_present_ms`
+- `layer_present_gap_*`
+- `scroll_presentation_draw_gap_*`
+
+It also had to remove one stale readiness assumption from
+`gate_l_trackpad_history_scroll_bench.sh`: after the terminal-first/plain-shell
+startup change, the bench can no longer wait for an active snapshot before it
+reads the tile opened by `__agtmux_open_terminal_for_pane__`. It now uses the
+open result directly.
+
+### First Short Matched-Version Result
+
+A short `2`-iteration matched `1.2.3` cadence table completed with:
+
+- `legacy_native_passed = true`
+- `next_native_passed = true`
+- `next_minus_legacy_proxy_deltas.tmux_visible_line_change_p50_delta_ms ≈ +21.6`
+- `next_minus_legacy_proxy_deltas.tmux_visible_line_change_p95_delta_ms ≈ +6.5`
+- `next_minus_legacy_embedded_cadence_deltas.scroll_to_layer_present_p95_delta_ms ≈ +4.1`
+- `next_minus_legacy_embedded_cadence_deltas.layer_present_gap_p95_delta_ms ≈ +7.3`
+
+Representative embedded cadence samples from that short run were:
+
+- `legacy scroll_to_layer_present_ms.p95 ≈ 27.5`
+- `next scroll_to_layer_present_ms.p95 ≈ 31.6`
+- `legacy layer_present_gap_p95_ms ≈ 40.6`
+- `next layer_present_gap_p95_ms ≈ 47.9`
+
+### Interpretation
+
+This is still not a true FPS/image-diff benchmark, but it is closer to the
+reported user complaint than the step table.
+
+The important narrowing is:
+
+- the matched-version native proxy still passes for both `legacy` and `next`
+- but the first cadence-sensitive sample shows `next` slightly worse than
+  `legacy` on embedded-only presentation metrics
+
+So the current best lead is no longer “step size versus native”; it is “the
+embedded presentation cadence inside `next` is still slightly worse, even when
+the native proxy gate passes.”
+
+## First Hot-Path Thinning Slice
+
+The first code change after that table did not tune `next`'s cadence policy
+yet. It removed always-on host telemetry from the normal app path instead.
+
+### Change
+
+- `GhosttyTerminalView` no longer appends scroll sample arrays or signposts on
+  every scroll event by default in non-test app runs
+- `GhosttyApp` no longer accumulates render-callback/direct-draw timing
+  samples by default in non-test app runs
+- bridge/test/perf resets still turn the telemetry back on before a measured
+  run
+- `AGTMUX_SCROLL_TELEMETRY_ENABLED=1` forces the old collection behavior on
+  for manual profiling
+
+This preserves the timing state that the recovery/throttle logic still uses
+(`lastScrollInputUptime`, `lastLayerPresentUptime`) while removing the arrays,
+signposts, and counter churn from the default hot path.
+
+### Short Matched-Version Rerun
+
+After rebuilding the debug bundle, a repeated short `2`-iteration matched
+`1.2.3` cadence table on 2026-03-24 produced:
+
+- `legacy_native_passed = true`
+- `next_native_passed = true`
+- `next_minus_legacy_proxy_deltas.tmux_visible_line_change_p50_delta_ms ≈ -18.4`
+- `next_minus_legacy_embedded_cadence_deltas.scroll_to_layer_present_p95_delta_ms ≈ -13.4`
+- `next_minus_legacy_embedded_cadence_deltas.layer_present_gap_p95_delta_ms ≈ -4.1`
+
+This is only one short rerun, so it is not enough to declare native parity
+done. But it is materially different from the first cadence table: removing
+always-on host telemetry was enough to flip the short `next-minus-legacy`
+cadence deltas from positive to negative.
+
+### Updated Interpretation
+
+The current ranking becomes:
+
+1. always-on host telemetry was part of the hot path and is now removed from
+   default app runs
+2. the remaining gap, if any, is now more likely to live in `next` cadence
+   policy or generalized surface/controller indirection than in measurement
+   collection itself
+
+## Render-Layer Observation Follow-Up
+
+One more low-risk follow-up landed immediately after the telemetry slice.
+
+### Change
+
+- `GhosttyTerminalView` now only keeps `layer.contents` observation active when
+  it is needed for one of these reasons:
+  - telemetry collection is enabled
+  - the view is in `legacyHybrid`
+  - a pane-retarget recovery probe is active
+- steady-state `next` with telemetry off now drops that observation instead of
+  taking a KVO callback on every layer-present update
+
+### Scope
+
+This slice is targeted at installed-app feel, not the current cadence harness.
+
+The current harness always issues `__agtmux_reset_scroll_telemetry__` before a
+measured burst, and that deliberately re-enables the observation so the bench
+can still collect `scroll_to_layer_present_ms` and `layer_present_gap_*`.
+
+So the proof for this slice is structural rather than benchmark-based:
+
+- focused tests now lock in that `next + telemetry off` disables the
+  observation
+- `legacy + telemetry off` still keeps it
+- pane-retarget recovery in `next` still forces it back on
+
+## Signpost Follow-Up
+
+The next measurement-oriented slice made host/scroll signpost intervals
+default-off as well.
+
+### Change
+
+- JSON telemetry benches still collect uptime/sample arrays
+- but `AgtmuxSignpost` intervals for scroll latency, tick, and surface draw now
+  stay off unless `AGTMUX_HOST_SIGNPOSTS_ENABLED=1`
+
+### Short Rerun
+
+A repeated short `2`-iteration matched `1.2.3` cadence table after the
+signpost change stayed mixed:
+
+- `next_minus_legacy_proxy_deltas.tmux_visible_line_change_p50_delta_ms ≈ +9.3`
+- `next_minus_legacy_embedded_cadence_deltas.scroll_to_layer_present_p95_delta_ms ≈ -1.2`
+- `next_minus_legacy_embedded_cadence_deltas.layer_present_gap_p95_delta_ms ≈ -0.5`
+
+So signpost emission was not the dominant remaining tail. It is still worth
+keeping off by default because the JSON telemetry is sufficient for current
+gates, but the remaining work should stay focused on cadence policy and
+surface/controller indirection.
+
 ## Scope Boundary
 
 This is a terminal-host performance investigation, not a product-direction

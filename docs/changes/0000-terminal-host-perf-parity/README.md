@@ -76,4 +76,53 @@ Current state:
     - `next_minus_legacy first_changed_elapsed_p95_delta_ms ≈ -13.6`
   - this table is still step- and first-change-oriented; it does not explain a
     user report like “native feels 60fps while embedded feels 5fps”
+- a cadence-sensitive table now exists on top of the existing history-scroll
+  benches:
+  - `gate_l_trackpad_history_scroll_parity.sh` reuses the matched-version
+    native-vs-embedded setup, but keeps the gate on tmux-visible latency while
+    surfacing embedded-only `scroll_to_layer_present_ms` and
+    `layer_present_gap_*` diagnostics
+  - `gate_l_terminal_host_cadence_parity_table.sh` runs that wrapper for both
+    `legacy` and `next` and summarizes `next_minus_legacy` proxy and embedded
+    cadence deltas
+  - the first short matched `1.2.3` cadence table passed on the native proxy
+    gate for both `legacy` and `next`, but still showed `next` slightly worse
+    on the embedded-only cadence diagnostics:
+    - `next_minus_legacy tmux_visible_line_change_p50_delta_ms ≈ +21.6`
+    - `next_minus_legacy scroll_to_layer_present_p95_delta_ms ≈ +4.1`
+    - `next_minus_legacy layer_present_gap_p95_delta_ms ≈ +7.3`
+  - so the perf program now has a measurement seam that is closer to the user
+    complaint than the pure step table, even though it still is not a true FPS
+    or image-diff capture
+- the first hot-path thinning slice is now in:
+  - app-side and view-side scroll telemetry collection defaults off in normal
+    app runs instead of appending samples and signposts on every scroll event
+  - bridge/perf/test `reset` commands still re-enable that telemetry before a
+    measured run, and `AGTMUX_SCROLL_TELEMETRY_ENABLED=1` still forces it on
+  - the first repeated short matched `1.2.3` cadence rerun after that change
+    flipped the previously positive `next-minus-legacy` cadence deltas
+    negative:
+    - `tmux_visible_line_change_p50_delta_ms ≈ -18.4`
+    - `scroll_to_layer_present_p95_delta_ms ≈ -13.4`
+    - `layer_present_gap_p95_delta_ms ≈ -4.1`
+  - this does not prove the whole native parity problem is solved, but it does
+    show that always-on host telemetry itself was part of the hot path
+- a follow-up steady-state slice is also in for normal app runs:
+  - `next` no longer keeps `layer.contents` observation active when both of
+    these are true:
+    - scroll telemetry collection is off
+    - no pane-retarget recovery probe is in flight
+  - `legacy` still keeps that observation because its host scroll-presentation
+    throttle/recovery logic depends on layer-present timing
+  - `next` also re-enables the observation during pane-retarget recovery so the
+    blank-frame guard still has layer-present truth
+  - this slice is aimed at installed-app feel and is not directly visible in
+    the current perf harness, because the harness explicitly re-enables scroll
+    telemetry before each measured run
+- measurement signposts are now default-off too:
+  - the JSON telemetry benches still collect uptime/sample arrays, but they no
+    longer emit host/scroll signpost intervals unless
+    `AGTMUX_HOST_SIGNPOSTS_ENABLED=1`
+  - a short cadence rerun after this change stayed mixed instead of cleanly
+    improving, so signpost emission was not the dominant remaining tail
 - the next work is a perf-parity program, not another UX rewrite

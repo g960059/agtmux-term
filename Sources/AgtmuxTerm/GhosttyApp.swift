@@ -31,6 +31,13 @@ final class GhosttyApp {
     private static var initializedShared: GhosttyApp?
     private static let schedulerExperimentDisabled =
         ProcessInfo.processInfo.environment["AGTMUX_GHOSTTY_SCHEDULER_EXPERIMENT_DISABLED"] == "1"
+    private static let hostSignpostsEnabled =
+        ProcessInfo.processInfo.environment["AGTMUX_HOST_SIGNPOSTS_ENABLED"] == "1"
+    @MainActor
+    private static var surfaceDrawTelemetryEnabled =
+        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+        || NSClassFromString("XCTestCase") != nil
+        || ProcessInfo.processInfo.environment["AGTMUX_SCROLL_TELEMETRY_ENABLED"] == "1"
 
     typealias BridgeActionDispatcher = @MainActor (
         ghostty_target_s,
@@ -263,7 +270,9 @@ final class GhosttyApp {
 
         @MainActor
         func applyRenderCallback() {
-            renderCallbackCount += 1
+            if surfaceDrawTelemetryEnabled {
+                renderCallbackCount += 1
+            }
             let view = SurfacePool.shared.view(forSurfaceHandle: surfaceHandle)
             view?.noteRenderRequestTelemetry()
             let now = ProcessInfo.processInfo.systemUptime
@@ -397,6 +406,17 @@ final class GhosttyApp {
 
     @MainActor
     static func resetSurfaceDrawTelemetryForTesting() {
+        resetSurfaceDrawTelemetry(enableCollection: true)
+    }
+
+    @MainActor
+    static func setSurfaceDrawTelemetryEnabledForTesting(_ enabled: Bool) {
+        resetSurfaceDrawTelemetry(enableCollection: enabled)
+    }
+
+    @MainActor
+    private static func resetSurfaceDrawTelemetry(enableCollection: Bool) {
+        surfaceDrawTelemetryEnabled = enableCollection
         pendingSurfaceDrawGapState = nil
         directDrawPassPending = false
         renderCallbackCount = 0
@@ -430,9 +450,17 @@ final class GhosttyApp {
     @MainActor
     private func tick() {
         guard let app else { return }
-        let tickID = AgtmuxSignpost.ghosttyTick.makeSignpostID()
-        let tickState = AgtmuxSignpost.ghosttyTick.beginInterval("tick", id: tickID)
-        defer { AgtmuxSignpost.ghosttyTick.endInterval("tick", tickState) }
+        let tickState = Self.hostSignpostsEnabled
+            ? AgtmuxSignpost.ghosttyTick.beginInterval(
+                "tick",
+                id: AgtmuxSignpost.ghosttyTick.makeSignpostID()
+            )
+            : nil
+        defer {
+            if let tickState {
+                AgtmuxSignpost.ghosttyTick.endInterval("tick", tickState)
+            }
+        }
         wakeupLock.lock()
         wakeupPending = false
         wakeupLock.unlock()
@@ -441,7 +469,9 @@ final class GhosttyApp {
         let tickStart = ProcessInfo.processInfo.systemUptime
         ghostty_app_tick(app)
         let tickEnd = ProcessInfo.processInfo.systemUptime
-        Self.ghosttyAppTickDurationSamplesMs.append((tickEnd - tickStart) * 1000.0)
+        if Self.surfaceDrawTelemetryEnabled {
+            Self.ghosttyAppTickDurationSamplesMs.append((tickEnd - tickStart) * 1000.0)
+        }
         Self.runDirtyDrawPass()
     }
 
@@ -455,7 +485,9 @@ final class GhosttyApp {
         guard shouldScheduleTickOnMain() else { return }
         guard directDrawPassPending == false else { return }
         directDrawPassPending = true
-        scheduledDirectDrawPassCount += 1
+        if surfaceDrawTelemetryEnabled {
+            scheduledDirectDrawPassCount += 1
+        }
         directDrawScheduleObserver()
 
         let mainRunLoop = CFRunLoopGetMain()
@@ -473,7 +505,9 @@ final class GhosttyApp {
     private static func runDirectDrawPassImmediatelyIfPossible() -> Bool {
         guard shouldScheduleTickOnMain() else { return false }
         guard directDrawPassPending == false else { return false }
-        immediateDirectDrawPassCount += 1
+        if surfaceDrawTelemetryEnabled {
+            immediateDirectDrawPassCount += 1
+        }
         runDirtyDrawPass()
         return true
     }
@@ -553,11 +587,15 @@ final class GhosttyApp {
     @MainActor
     private static func runDirtyDrawPass() {
         let passStart = ProcessInfo.processInfo.systemUptime
-        dirtyDrawPassCount += 1
+        if surfaceDrawTelemetryEnabled {
+            dirtyDrawPassCount += 1
+        }
         let dirtyViews = SurfacePool.shared.consumeDirtyActiveSurfaceViews()
         defer {
-            let passEnd = ProcessInfo.processInfo.systemUptime
-            dirtyDrawPassDurationSamplesMs.append((passEnd - passStart) * 1000.0)
+            if surfaceDrawTelemetryEnabled {
+                let passEnd = ProcessInfo.processInfo.systemUptime
+                dirtyDrawPassDurationSamplesMs.append((passEnd - passStart) * 1000.0)
+            }
         }
 
         guard dirtyViews.isEmpty == false else {
@@ -570,13 +608,21 @@ final class GhosttyApp {
             let drawNow = ProcessInfo.processInfo.systemUptime
             view.noteHostDrawTelemetry()
             recordSurfaceDrawGap()
-            let drawID = AgtmuxSignpost.surfaceDraw.makeSignpostID()
-            let drawState = AgtmuxSignpost.surfaceDraw.beginInterval("draw", id: drawID)
+            let drawState = Self.hostSignpostsEnabled
+                ? AgtmuxSignpost.surfaceDraw.beginInterval(
+                    "draw",
+                    id: AgtmuxSignpost.surfaceDraw.makeSignpostID()
+                )
+                : nil
             view.triggerDirtyDrawForRenderCallback(now: drawNow)
-            AgtmuxSignpost.surfaceDraw.endInterval("draw", drawState)
+            if let drawState {
+                AgtmuxSignpost.surfaceDraw.endInterval("draw", drawState)
+            }
             drawnSurfaceCount += 1
         }
-        dirtyDrawnSurfaceCount += drawnSurfaceCount
+        if surfaceDrawTelemetryEnabled {
+            dirtyDrawnSurfaceCount += drawnSurfaceCount
+        }
         SurfacePool.shared.recordDrawPassCount(drawnSurfaceCount)
     }
 
@@ -590,6 +636,10 @@ final class GhosttyApp {
 
     @MainActor
     private static func recordSurfaceDrawGap() {
+        guard hostSignpostsEnabled else {
+            pendingSurfaceDrawGapState = nil
+            return
+        }
         if let pendingSurfaceDrawGapState {
             AgtmuxSignpost.surfaceDraw.endInterval("drawGap", pendingSurfaceDrawGapState)
         }

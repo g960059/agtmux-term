@@ -36,9 +36,11 @@ scripts/perf/gate_l_ax_key_sender.sh --dry-run
 - `scripts/perf/gate_l_native_ghostty_scroll_bench.sh`
 - `scripts/perf/gate_l_trackpad_history_scroll_bench.sh`
 - `scripts/perf/gate_l_native_ghostty_trackpad_history_scroll_bench.sh`
+- `scripts/perf/gate_l_trackpad_history_scroll_parity.sh`
 - `scripts/perf/gate_l_trackpad_upscroll_step_bench.sh`
 - `scripts/perf/gate_l_native_ghostty_trackpad_upscroll_step_bench.sh`
 - `scripts/perf/gate_l_trackpad_upscroll_step_parity.sh`
+- `scripts/perf/gate_l_terminal_host_cadence_parity_table.sh`
 - `scripts/perf/gate_l_trackpad_live_curses_history_step_parity.sh`
 - `scripts/perf/gate_l_trackpad_live_pane_bench.sh`
 - `scripts/perf/gate_l_frontmost_live_client_scroll_bench.sh`
@@ -85,6 +87,42 @@ scripts/perf/gate_l_ax_key_sender.sh --dry-run
   when you need the exact same `tmux_visible_line_change_ms` proxy against
   `/Applications/Ghostty.app`, but do not confuse that proxy with the actual
   user-visible presentation seam.
+- `gate_l_trackpad_history_scroll_parity.sh` is the cadence-oriented native
+  parity wrapper for that same transcript fixture:
+  - it forces explicit embedded host mode and matched Ghostty versions by
+    default
+  - it gates on `tmux_visible_line_change_ms` deltas because the native bench
+    still has no layer-present telemetry
+  - it also records embedded-only cadence diagnostics such as
+    `scroll_to_layer_present_ms` and `layer_present_gap_*`
+- `gate_l_terminal_host_cadence_parity_table.sh` runs the history-scroll
+  parity wrapper for both `legacy` and `next` and summarizes:
+  - `next_minus_legacy` native-proxy deltas
+  - `next_minus_legacy` embedded cadence deltas
+  - use it when the complaint is “the terminal feels visually rougher” rather
+    than “the step size is too coarse”
+  - short matched-version example:
+  ```bash
+  GATE_L_APP_BIN="$PWD/build-live-direct-debug/Build/Products/Debug/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" \
+  AGTMUX_PERF_KEEP_TMP=1 \
+  scripts/perf/gate_l_terminal_host_cadence_parity_table.sh \
+    --history-iterations 2 \
+    --app "$PWD/vendor/ghostty/zig-out/Ghostty.app" \
+    > /tmp/agtmux-terminal-host-cadence-parity-table.json
+  ```
+- scroll/app telemetry collection is now default-off in normal app runs:
+  - perf scripts do not need extra setup because they already issue
+    `__agtmux_reset_scroll_telemetry__`, which re-enables collection for the
+    measured terminal before each run
+  - that also means cadence benches intentionally keep `layer.contents`
+    observation active during measured runs, even though steady-state `next`
+    drops it in normal telemetry-off app usage
+  - if you need manual ad-hoc telemetry in a non-test launch, set
+    `AGTMUX_SCROLL_TELEMETRY_ENABLED=1`
+- host/scroll signpost intervals are also default-off:
+  - current JSON benches do not need them
+  - if you want Instruments signposts alongside the JSON payloads, set
+    `AGTMUX_HOST_SIGNPOSTS_ENABLED=1`
 - `gate_l_trackpad_upscroll_step_bench.sh` now samples the visible pane rows
   themselves, not just the wrapped logical line number. Use it when the user
   complaint is “rows jump in chunks” rather than “the first movement starts

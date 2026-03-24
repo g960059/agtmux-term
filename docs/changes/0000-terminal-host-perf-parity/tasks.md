@@ -17,6 +17,8 @@
 - [x] align live focus-host timeout with the terminal registration budget
 - [x] skip impossible fresh-launch active-target waits before opening the live pane
 - [x] produce the first measured parity table for `legacy` / `next` / native
-- [ ] add a cadence-sensitive parity table that can explain user-visible
+- [x] add a cadence-sensitive parity table that can explain user-visible
   smoothness gaps beyond step granularity
-- [ ] thin the `next` hot path based on those measurements
+- [x] remove always-on telemetry collection from the normal hot path
+- [ ] thin the `next` cadence path further if matched-version cadence still
+  trails native or user feel

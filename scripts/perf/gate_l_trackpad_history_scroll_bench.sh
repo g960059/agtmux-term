@@ -258,13 +258,17 @@ fi
 ready_capture="$(gate_l_tmux capture-pane -p -t "$target" -S -200 2>/dev/null || true)"
 
 gate_l_activate_app
-gate_l_send_bridge_command false 10 "__agtmux_open_terminal_for_pane__" "local" "$session_name" "$pane_id" >/dev/null
+open_terminal_json="$(gate_l_send_bridge_json_command false 10 "__agtmux_open_terminal_for_pane__" "local" "$session_name" "$pane_id")"
 gate_l_activate_app
 
-gate_l_wait_for_active_snapshot "$session_name" "$settle_timeout" >/dev/null
-# Read the successful bridge response directly from the result file so the bench
-# does not depend on a large JSON snapshot surviving a shell round-trip.
-tile_id="$(jq -r '.stdout | fromjson | .tileID' "$gate_l_command_result_path")"
+# Read the successful open response directly so the bench does not depend on an
+# active-target snapshot appearing on plain-shell startup.
+tile_id="$(jq -r '.tileID // empty' <<<"$open_terminal_json")"
+if [[ -z "$tile_id" || "$tile_id" == "null" ]]; then
+  echo "Failed to resolve tileID from open_terminal_for_pane result" >&2
+  echo "$open_terminal_json" >&2
+  exit 1
+fi
 gate_l_send_bridge_command false 10 "__agtmux_focus_terminal_host__" "$tile_id" >/dev/null
 gate_l_activate_app
 focus_snapshot="$(gate_l_send_bridge_json_command false 10 "__agtmux_dump_focus_state__" "$tile_id")"
