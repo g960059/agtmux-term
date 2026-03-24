@@ -1,12 +1,13 @@
 # Principles
 
 - **session-first UX**: the main thing the app shows and acts on is a tmux session.
+- **one main window**: the sidebar and the terminal stay together in the app's main panel.
 - **tmux truth first**: tmux and SSH define session existence; the app does not.
-- **native Ghostty authority**: rendering, input, IME, and runtime terminal behavior belong to Ghostty, not the app.
+- **Ghostty engine authority**: rendering, input, IME, and terminal semantics come from GhosttyKit/libghostty, not app-authored terminal code.
 - **daemon as metadata truth**: agtmux sync-v3 provides health, metadata, and observability, not session existence.
-- **binding before spawning**: focus an existing live Ghostty binding before opening another terminal.
+- **reveal before spawn**: reveal an existing embedded session viewport before opening another one.
 - **fail loudly**: permission, transport, binding, and host failures are surfaced explicitly.
 - **no silent guessing**: no fuzzy rebinding, guessed host substitution, or implicit fallback that changes meaning.
-- **control plane only**: the app owns bindings, restore state, diagnostics, and launch/focus automation.
-- **tab/window first**: new Ghostty tab/window flows come before any pane-automation ambitions.
+- **thin host, not generic workspace truth**: the app hosts Ghostty surfaces, but generic workbench/tile state is not the mainline product model.
+- **session viewport first**: the main panel is for session terminals first; browser/document companions are secondary or migration-only.
 - **remote remains no-install**: richer remote workflows must not require remote sidecars by default.

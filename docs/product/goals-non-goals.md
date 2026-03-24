@@ -3,18 +3,19 @@
 ## Goals
 
 - make local and remote tmux sessions easy to browse and act on
-- make session-row open / focus behavior binding-aware and explicit
-- focus an existing Ghostty binding before opening a duplicate session
-- open a new Ghostty tab or window when no live binding exists
-- keep Ghostty normal outside tmux-attached flows
-- surface binding, automation, daemon, and host failures clearly
+- keep the sidebar and the active terminal in one app window
+- make session-row activation reveal an existing embedded session viewport first
+- open a session in the main panel when it is not already visible
+- preserve Ghostty-quality terminal behavior through GhosttyKit/libghostty
+- surface attach, restore, daemon, and host failures clearly
 - keep remote support no-install by default
-- stay closer to a lightweight control plane than an IDE
+- keep the mainline UX closer to a tmux cockpit than a generic IDE workspace
 
 ## Non-Goals
 
-- preserving any app-owned terminal runtime as the mainline product path
-- mirroring Ghostty tabs, windows, or panes inside app-owned layout truth
-- automating new Ghostty pane creation in the first mainline wave
+- making separate external Ghostty windows or tabs the mainline UX
+- treating generic workbench / tile graphs as product truth
+- making browser/document surfaces the primary session workflow
+- rebuilding terminal behavior outside GhosttyKit/libghostty
 - requiring remote sidecars by default
 - guessing session identity from fuzzy prompt or hostname heuristics

@@ -10,7 +10,8 @@ This repository keeps durable documentation and active change packs under
 - `docs/changes/` — active multi-step change packs only
 
 Active multi-step work belongs in `docs/changes/<issue-id>-slug/` and is removed
-from the default branch after merge.
+from the default branch after merge. Pre-issue work may temporarily use
+`docs/changes/0000-...` until a real issue exists.
 
 Do not reintroduce numbered task/progress/review doc sets on the default branch.
 

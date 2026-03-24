@@ -43,9 +43,9 @@ Each change pack must contain:
 - `plan.md`
 - `tasks.md`
 
-`docs/changes/0000-...` is reserved for in-progress work that predates GitHub issue
-discipline and is being migrated into this model. Replace it with a real issue
-id when the issue exists.
+`docs/changes/0000-...` is reserved for active pre-issue work and for
+in-progress work that predates GitHub issue discipline. Replace it with a real
+issue id when the issue exists.
 
 ## Before Merge
 

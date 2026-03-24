@@ -8,5 +8,6 @@
 - Promote durable knowledge before merge.
 - Remove the change pack from the default branch after merge.
 
-`docs/changes/0000-...` exists only for migrated in-progress work that started
-before GitHub issue ids became the primary key.
+`docs/changes/0000-...` may be used for active pre-issue work or for migrated
+in-progress work that predates GitHub issue discipline. Replace it with a real
+issue id once the issue exists.

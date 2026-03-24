@@ -1,14 +1,16 @@
 # agtmux-term
 
-macOS control plane for managing AI agent sessions (Claude Code, Codex, etc.) running in tmux with native Ghostty.
+macOS tmux cockpit for AI-agent sessions with a session-first sidebar and an
+embedded Ghostty terminal in the main panel.
 
 ![App Icon](Sources/AgtmuxTerm/Resources/Assets.xcassets/AppIcon.appiconset/icon_256x256.png)
 
 ## Features
 
 - **Sidebar** — live tmux session list grouped by session/window, agent status (Running / Waiting / Idle / Attention), conversation titles
-- **Ghostty bindings** — focus an existing Ghostty tab/window for a session when one is already bound, or open a new Ghostty tab/window when it is not
-- **Normal terminal behavior** — Ghostty remains a normal terminal outside tmux; agtmux-term does not try to become a second terminal runtime
+- **Main-panel terminal** — the terminal stays in the same app window as the sidebar instead of jumping to a separate Ghostty window
+- **Session-first reveal** — clicking a session reveals an existing terminal viewport in the main panel first, or opens one there when absent
+- **Native Ghostty runtime** — terminal rendering, input, and IME behavior come from GhosttyKit/libghostty rather than a custom terminal implementation
 - **Real-time state** — agtmux daemon pushes agent state every second over Unix socket JSON-RPC
 - **SSH targets** — connect to remote hosts (SSH/Mosh) and manage their sessions from one window
 - **Claude hooks** — register/unregister/verify Claude Code hooks directly from the Settings sheet
@@ -113,19 +115,19 @@ The `agtmux` binary is resolved in this order:
 ## Architecture
 
 ```
-agtmux-term (Swift macOS control plane)
+agtmux-term (Swift macOS tmux cockpit)
 ├── Sidebar / inventory / diagnostics
-├── Binding registry + restore hints
-├── Ghostty launch / focus automation
+├── Session reveal / restore state
+├── Embedded Ghostty host surfaces in the main panel
 ├── AgtmuxDaemonService.xpc        ← XPC service managing daemon lifecycle
 ├── agtmux daemon (UDS RPC)        ← Agent state estimation engine
 ├── tmux (PTY / SSH target truth)  ← Session multiplexer and source of session existence
-└── Ghostty.app                    ← Terminal runtime authority
+└── GhosttyKit / libghostty        ← Terminal runtime engine inside the app
 ```
 
-The repository still contains embedded-host migration code, but the mainline
-product direction is session-first control of real Ghostty terminals rather
-than app-owned terminal runtime behavior.
+The repository still contains generic workbench and migration-only paths, but
+the mainline product direction is a session-first sidebar with Ghostty hosted
+inside the app's main panel, not separate Ghostty app windows.
 
 ## Documentation and Workflow
 
