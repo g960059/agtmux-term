@@ -112,6 +112,14 @@ jq -n \
       (telemetry($payload; ["scrollTelemetry", "app", "dirtyDrawPassCount"]) // null),
     appDirtyDrawnSurfaceCount:
       (telemetry($payload; ["scrollTelemetry", "app", "dirtyDrawnSurfaceCount"]) // null),
+    appGhosttyAppTickSampleCount:
+      (telemetry($payload; ["scrollTelemetry", "app", "ghosttyAppTickDuration", "count"]) // null),
+    appGhosttyAppTickP95Ms:
+      (telemetry($payload; ["scrollTelemetry", "app", "ghosttyAppTickDuration", "p95Ms"]) // null),
+    appDirtyDrawPassDurationSampleCount:
+      (telemetry($payload; ["scrollTelemetry", "app", "dirtyDrawPassDuration", "count"]) // null),
+    appDirtyDrawPassDurationP95Ms:
+      (telemetry($payload; ["scrollTelemetry", "app", "dirtyDrawPassDuration", "p95Ms"]) // null),
     scrollRenderRequestCount:
       (telemetry($payload; ["scrollTelemetry", "scroll", "renderRequestCount"]) // null),
     scrollRefreshDrawRequestCount:
@@ -164,6 +172,18 @@ jq -n \
     appDirtyDrawnSurfaceCountDelta:
       ((telemetry($next; ["scrollTelemetry", "app", "dirtyDrawnSurfaceCount"]) // 0) -
        (telemetry($legacy; ["scrollTelemetry", "app", "dirtyDrawnSurfaceCount"]) // 0)),
+    appGhosttyAppTickSampleCountDelta:
+      ((telemetry($next; ["scrollTelemetry", "app", "ghosttyAppTickDuration", "count"]) // 0) -
+       (telemetry($legacy; ["scrollTelemetry", "app", "ghosttyAppTickDuration", "count"]) // 0)),
+    appGhosttyAppTickP95DeltaMs:
+      ((telemetry($next; ["scrollTelemetry", "app", "ghosttyAppTickDuration", "p95Ms"]) // 0) -
+       (telemetry($legacy; ["scrollTelemetry", "app", "ghosttyAppTickDuration", "p95Ms"]) // 0)),
+    appDirtyDrawPassDurationSampleCountDelta:
+      ((telemetry($next; ["scrollTelemetry", "app", "dirtyDrawPassDuration", "count"]) // 0) -
+       (telemetry($legacy; ["scrollTelemetry", "app", "dirtyDrawPassDuration", "count"]) // 0)),
+    appDirtyDrawPassDurationP95DeltaMs:
+      ((telemetry($next; ["scrollTelemetry", "app", "dirtyDrawPassDuration", "p95Ms"]) // 0) -
+       (telemetry($legacy; ["scrollTelemetry", "app", "dirtyDrawPassDuration", "p95Ms"]) // 0)),
     scrollRenderRequestCountDelta:
       ((telemetry($next; ["scrollTelemetry", "scroll", "renderRequestCount"]) // 0) -
        (telemetry($legacy; ["scrollTelemetry", "scroll", "renderRequestCount"]) // 0)),
@@ -217,6 +237,14 @@ jq -n \
       ($runs | map(.comparison.appDirtyDrawPassCountDelta) | median),
     appDirtyDrawnSurfaceCountDelta:
       ($runs | map(.comparison.appDirtyDrawnSurfaceCountDelta) | median),
+    appGhosttyAppTickSampleCountDelta:
+      ($runs | map(.comparison.appGhosttyAppTickSampleCountDelta) | median),
+    appGhosttyAppTickP95DeltaMs:
+      ($runs | map(.comparison.appGhosttyAppTickP95DeltaMs) | median),
+    appDirtyDrawPassDurationSampleCountDelta:
+      ($runs | map(.comparison.appDirtyDrawPassDurationSampleCountDelta) | median),
+    appDirtyDrawPassDurationP95DeltaMs:
+      ($runs | map(.comparison.appDirtyDrawPassDurationP95DeltaMs) | median),
     scrollRenderRequestCountDelta:
       ($runs | map(.comparison.scrollRenderRequestCountDelta) | median),
     scrollRefreshDrawRequestCountDelta:
@@ -244,6 +272,14 @@ jq -n \
           ($legacyPayloads | map(telemetry(.; ["scrollTelemetry", "app", "immediateDirectDrawPassCount"]) // empty) | median),
         appDirtyDrawPassCount:
           ($legacyPayloads | map(telemetry(.; ["scrollTelemetry", "app", "dirtyDrawPassCount"]) // empty) | median),
+        appGhosttyAppTickSampleCount:
+          ($legacyPayloads | map(telemetry(.; ["scrollTelemetry", "app", "ghosttyAppTickDuration", "count"]) // empty) | median),
+        appGhosttyAppTickP95Ms:
+          ($legacyPayloads | map(telemetry(.; ["scrollTelemetry", "app", "ghosttyAppTickDuration", "p95Ms"]) // empty) | median),
+        appDirtyDrawPassDurationSampleCount:
+          ($legacyPayloads | map(telemetry(.; ["scrollTelemetry", "app", "dirtyDrawPassDuration", "count"]) // empty) | median),
+        appDirtyDrawPassDurationP95Ms:
+          ($legacyPayloads | map(telemetry(.; ["scrollTelemetry", "app", "dirtyDrawPassDuration", "p95Ms"]) // empty) | median),
         scrollRenderRequestCount:
           ($legacyPayloads | map(telemetry(.; ["scrollTelemetry", "scroll", "renderRequestCount"]) // empty) | median),
         scrollRefreshDrawRequestCount:
@@ -271,6 +307,14 @@ jq -n \
           ($nextPayloads | map(telemetry(.; ["scrollTelemetry", "app", "immediateDirectDrawPassCount"]) // empty) | median),
         appDirtyDrawPassCount:
           ($nextPayloads | map(telemetry(.; ["scrollTelemetry", "app", "dirtyDrawPassCount"]) // empty) | median),
+        appGhosttyAppTickSampleCount:
+          ($nextPayloads | map(telemetry(.; ["scrollTelemetry", "app", "ghosttyAppTickDuration", "count"]) // empty) | median),
+        appGhosttyAppTickP95Ms:
+          ($nextPayloads | map(telemetry(.; ["scrollTelemetry", "app", "ghosttyAppTickDuration", "p95Ms"]) // empty) | median),
+        appDirtyDrawPassDurationSampleCount:
+          ($nextPayloads | map(telemetry(.; ["scrollTelemetry", "app", "dirtyDrawPassDuration", "count"]) // empty) | median),
+        appDirtyDrawPassDurationP95Ms:
+          ($nextPayloads | map(telemetry(.; ["scrollTelemetry", "app", "dirtyDrawPassDuration", "p95Ms"]) // empty) | median),
         scrollRenderRequestCount:
           ($nextPayloads | map(telemetry(.; ["scrollTelemetry", "scroll", "renderRequestCount"]) // empty) | median),
         scrollRefreshDrawRequestCount:

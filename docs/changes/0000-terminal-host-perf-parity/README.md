@@ -23,8 +23,10 @@ Current state:
 - `__agtmux_dump_scroll_telemetry__` now exposes app-side render/direct-draw
   ownership counters and view-side refresh/immediate draw counters
 - the host-mode parity wrappers now surface those counters in their diagnostics
-- one deterministic loaded-viewport `legacy` vs `next` pass on 2026-03-23
-  showed the first visible delta without any app-side scheduler delta:
-  `next` trailed `legacy` by about `52ms`, while the only new counter gap was
+- app-side timing summaries for `ghostty_app_tick(...)` and
+  `runDirtyDrawPass()` now ride in the same telemetry snapshot
+- repeated deterministic loaded-viewport single passes are still mixed on
+  latency delta, but the measured burst still shows no app-side scheduler or
+  timing samples on either side; the persistent ownership gap remains
   `scrollImmediatePresentationDrawCount` (`legacy=16`, `next=0`)
 - the next work is a perf-parity program, not another UX rewrite

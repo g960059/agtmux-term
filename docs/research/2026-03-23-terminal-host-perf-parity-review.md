@@ -72,15 +72,23 @@ on the hot path.
 ## First Deterministic Loaded-Viewport Finding
 
 After the first counter pass, the loaded-viewport parity wrapper now surfaces
-both app-side and view-side ownership counters. One deterministic
-`legacy` vs `next` run on 2026-03-23 produced this first narrowing:
+both app-side and view-side ownership counters. After the timing pass, the
+same wrapper also surfaces app-side `ghostty_app_tick(...)` and
+`runDirtyDrawPass()` summaries.
 
-- `next` lost to `legacy` by about `52.3ms` on `first_changed_elapsed_ms`
+Single deterministic `legacy` vs `next` runs on 2026-03-23 have shown mixed
+latency deltas, including one run where `next` lost by about `52.3ms` and a
+later run where `next` won by about `63.7ms`. The stable narrowing from those
+passes is not the single-run latency number; it is the ownership profile:
+
 - app-side scheduler counters stayed flat on both sides:
   - `appRenderCallbackCount = 0`
   - `appScheduledDirectDrawPassCount = 0`
   - `appImmediateDirectDrawPassCount = 0`
   - `appDirtyDrawPassCount = 0`
+- app-side timing summaries also stayed empty on both sides:
+  - `appGhosttyAppTickSampleCount = 0`
+  - `appDirtyDrawPassDurationSampleCount = 0`
 - view-side render-request counters also stayed flat on both sides:
   - `scrollRenderRequestCount = 0`
   - `scrollRefreshDrawRequestCount = 0`
@@ -89,9 +97,10 @@ both app-side and view-side ownership counters. One deterministic
   - `legacy = 16`
   - `next = 0`
 
-This does not prove root cause yet, but it does narrow the first deterministic
-loaded-viewport gap away from `GhosttyApp` direct-draw scheduling and toward
-`GhosttyTerminalView`'s host scroll-presentation behavior.
+This does not prove root cause yet, but it does narrow the deterministic
+loaded-viewport gap away from `GhosttyApp` direct-draw scheduling and tick
+ownership and toward `GhosttyTerminalView`'s host scroll-presentation
+behavior.
 
 ## Scope Boundary
 

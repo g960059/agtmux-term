@@ -8,7 +8,7 @@
 - [x] document the matched-version native-vs-embedded comparison rule in the
   perf workflow
 - [x] add render-callback and direct-draw ownership counters
-- [ ] add main-thread tick/draw timing coverage for the current hot path
+- [x] add main-thread tick/draw timing coverage for the current hot path
 - [ ] add resize churn and pane/surface lifecycle counters
 - [ ] produce the first measured parity table for `legacy` / `next` / native
 - [ ] thin the `next` hot path based on those measurements

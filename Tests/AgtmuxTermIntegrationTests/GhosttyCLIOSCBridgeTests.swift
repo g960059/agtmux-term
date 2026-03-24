@@ -866,6 +866,9 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
                 XCTAssertEqual(appSnapshot.immediateDirectDrawPassCount, 0)
                 XCTAssertEqual(appSnapshot.dirtyDrawPassCount, 1)
                 XCTAssertEqual(appSnapshot.dirtyDrawnSurfaceCount, 1)
+                XCTAssertEqual(appSnapshot.ghosttyAppTickDuration.count, 0)
+                XCTAssertEqual(appSnapshot.dirtyDrawPassDuration.count, 1)
+                XCTAssertNotNil(appSnapshot.dirtyDrawPassDuration.maxMs)
             }
         }
     }
@@ -1035,6 +1038,9 @@ final class GhosttyCLIOSCBridgeTests: XCTestCase {
             XCTAssertEqual(appSnapshot.immediateDirectDrawPassCount, 1)
             XCTAssertEqual(appSnapshot.dirtyDrawPassCount, 1)
             XCTAssertEqual(appSnapshot.dirtyDrawnSurfaceCount, 1)
+            XCTAssertEqual(appSnapshot.ghosttyAppTickDuration.count, 0)
+            XCTAssertEqual(appSnapshot.dirtyDrawPassDuration.count, 1)
+            XCTAssertNotNil(appSnapshot.dirtyDrawPassDuration.maxMs)
         }
     }
 

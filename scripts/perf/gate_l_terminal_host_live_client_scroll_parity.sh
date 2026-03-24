@@ -98,6 +98,18 @@ jq -n \
     appDirtyDrawPassCountDelta:
       ((metric($next; ["postScrollTelemetry", "app", "dirtyDrawPassCount"]) // 0) -
        (metric($legacy; ["postScrollTelemetry", "app", "dirtyDrawPassCount"]) // 0)),
+    appGhosttyAppTickSampleCountDelta:
+      ((metric($next; ["postScrollTelemetry", "app", "ghosttyAppTickDuration", "count"]) // 0) -
+       (metric($legacy; ["postScrollTelemetry", "app", "ghosttyAppTickDuration", "count"]) // 0)),
+    appGhosttyAppTickP95DeltaMs:
+      ((metric($next; ["postScrollTelemetry", "app", "ghosttyAppTickDuration", "p95Ms"]) // 0) -
+       (metric($legacy; ["postScrollTelemetry", "app", "ghosttyAppTickDuration", "p95Ms"]) // 0)),
+    appDirtyDrawPassDurationSampleCountDelta:
+      ((metric($next; ["postScrollTelemetry", "app", "dirtyDrawPassDuration", "count"]) // 0) -
+       (metric($legacy; ["postScrollTelemetry", "app", "dirtyDrawPassDuration", "count"]) // 0)),
+    appDirtyDrawPassDurationP95DeltaMs:
+      ((metric($next; ["postScrollTelemetry", "app", "dirtyDrawPassDuration", "p95Ms"]) // 0) -
+       (metric($legacy; ["postScrollTelemetry", "app", "dirtyDrawPassDuration", "p95Ms"]) // 0)),
     scrollRenderRequestCountDelta:
       ((metric($next; ["postScrollTelemetry", "scroll", "renderRequestCount"]) // 0) -
        (metric($legacy; ["postScrollTelemetry", "scroll", "renderRequestCount"]) // 0)),

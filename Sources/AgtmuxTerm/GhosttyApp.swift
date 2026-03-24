@@ -10,12 +10,21 @@ import os
 ///   We reference GhosttyApp.shared which is a static property and thus
 ///   not a closure capture in the C-function-pointer sense.
 final class GhosttyApp {
+    struct MetricSummary: Codable, Equatable {
+        let count: Int
+        let p50Ms: Double?
+        let p95Ms: Double?
+        let maxMs: Double?
+    }
+
     struct SurfaceDrawTelemetrySnapshot: Codable, Equatable {
         let renderCallbackCount: Int
         let scheduledDirectDrawPassCount: Int
         let immediateDirectDrawPassCount: Int
         let dirtyDrawPassCount: Int
         let dirtyDrawnSurfaceCount: Int
+        let ghosttyAppTickDuration: MetricSummary
+        let dirtyDrawPassDuration: MetricSummary
     }
 
     static let shared = GhosttyApp()
@@ -111,6 +120,10 @@ final class GhosttyApp {
     private static var dirtyDrawPassCount = 0
     @MainActor
     private static var dirtyDrawnSurfaceCount = 0
+    @MainActor
+    private static var ghosttyAppTickDurationSamplesMs: [Double] = []
+    @MainActor
+    private static var dirtyDrawPassDurationSamplesMs: [Double] = []
 
     private(set) var app: ghostty_app_t?
 
@@ -391,6 +404,8 @@ final class GhosttyApp {
         immediateDirectDrawPassCount = 0
         dirtyDrawPassCount = 0
         dirtyDrawnSurfaceCount = 0
+        ghosttyAppTickDurationSamplesMs = []
+        dirtyDrawPassDurationSamplesMs = []
     }
 
     @MainActor
@@ -400,7 +415,9 @@ final class GhosttyApp {
             scheduledDirectDrawPassCount: scheduledDirectDrawPassCount,
             immediateDirectDrawPassCount: immediateDirectDrawPassCount,
             dirtyDrawPassCount: dirtyDrawPassCount,
-            dirtyDrawnSurfaceCount: dirtyDrawnSurfaceCount
+            dirtyDrawnSurfaceCount: dirtyDrawnSurfaceCount,
+            ghosttyAppTickDuration: summary(for: ghosttyAppTickDurationSamplesMs),
+            dirtyDrawPassDuration: summary(for: dirtyDrawPassDurationSamplesMs)
         )
     }
 
@@ -421,7 +438,10 @@ final class GhosttyApp {
         wakeupLock.unlock()
         tickExecutionDepth += 1
         defer { tickExecutionDepth -= 1 }
+        let tickStart = ProcessInfo.processInfo.systemUptime
         ghostty_app_tick(app)
+        let tickEnd = ProcessInfo.processInfo.systemUptime
+        Self.ghosttyAppTickDurationSamplesMs.append((tickEnd - tickStart) * 1000.0)
         Self.runDirtyDrawPass()
     }
 
@@ -532,8 +552,14 @@ final class GhosttyApp {
 
     @MainActor
     private static func runDirtyDrawPass() {
+        let passStart = ProcessInfo.processInfo.systemUptime
         dirtyDrawPassCount += 1
         let dirtyViews = SurfacePool.shared.consumeDirtyActiveSurfaceViews()
+        defer {
+            let passEnd = ProcessInfo.processInfo.systemUptime
+            dirtyDrawPassDurationSamplesMs.append((passEnd - passStart) * 1000.0)
+        }
+
         guard dirtyViews.isEmpty == false else {
             SurfacePool.shared.recordDrawPassCount(0)
             return
@@ -573,6 +599,29 @@ final class GhosttyApp {
             "drawGap",
             id: gapID
         )
+    }
+
+    @MainActor
+    private static func summary(for samples: [Double]) -> MetricSummary {
+        guard samples.isEmpty == false else {
+            return MetricSummary(count: 0, p50Ms: nil, p95Ms: nil, maxMs: nil)
+        }
+
+        let sorted = samples.sorted()
+        return MetricSummary(
+            count: sorted.count,
+            p50Ms: percentile(50, sortedSamples: sorted),
+            p95Ms: percentile(95, sortedSamples: sorted),
+            maxMs: sorted.last
+        )
+    }
+
+    @MainActor
+    private static func percentile(_ percentile: Double, sortedSamples: [Double]) -> Double {
+        guard sortedSamples.isEmpty == false else { return .zero }
+        let index = Int(ceil((percentile / 100.0) * Double(sortedSamples.count)) - 1.0)
+        let boundedIndex = max(0, min(sortedSamples.count - 1, index))
+        return sortedSamples[boundedIndex]
     }
 
     private static func makeOwnedCustomOSCDispatch(
