@@ -18,8 +18,35 @@ enum TestConstants {
 }
 
 extension XCUIApplication {
+    private func runningExecutableProcessIDs(
+        matching pattern: String
+    ) -> [pid_t] {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+        task.arguments = ["-f", pattern]
+
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.standardError = Pipe()
+
+        do {
+            try task.run()
+        } catch {
+            return []
+        }
+
+        task.waitUntilExit()
+        guard task.terminationStatus == 0 else { return [] }
+
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        guard let raw = String(data: data, encoding: .utf8) else { return [] }
+        return raw
+            .split(whereSeparator: \.isNewline)
+            .compactMap { pid_t($0.trimmingCharacters(in: .whitespaces)) }
+    }
+
     private func stabilizeForegroundForUITest(
-        bundleID: String = "local.agtmux.term.app",
+        bundleID: String = "com.g960059.agtmux.term",
         timeout: TimeInterval = 5.0
     ) {
         let deadline = Date().addingTimeInterval(timeout)
@@ -103,7 +130,7 @@ extension XCUIApplication {
         //    instances and orphaned processes launched outside XCUITest).
         //    NSRunningApplication.runningApplications() is a read-only query — allowed
         //    even in sandboxed test runners.
-        let bundleID = "local.agtmux.term.app"
+        let bundleID = "com.g960059.agtmux.term"
         let gracefulDeadline = Date().addingTimeInterval(4.0)
         while Date() < gracefulDeadline {
             let still = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
@@ -129,6 +156,21 @@ extension XCUIApplication {
             let killVerifyDeadline = Date().addingTimeInterval(2.0)
             while Date() < killVerifyDeadline {
                 if NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).isEmpty {
+                    break
+                }
+                Thread.sleep(forTimeInterval: 0.1)
+            }
+        }
+
+        let executablePattern = "AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm"
+        let stubbornPIDs = runningExecutableProcessIDs(matching: executablePattern)
+        if !stubbornPIDs.isEmpty {
+            stubbornPIDs.forEach { pid in
+                _ = kill(pid, SIGKILL)
+            }
+            let pgrepVerifyDeadline = Date().addingTimeInterval(2.0)
+            while Date() < pgrepVerifyDeadline {
+                if runningExecutableProcessIDs(matching: executablePattern).isEmpty {
                     break
                 }
                 Thread.sleep(forTimeInterval: 0.1)

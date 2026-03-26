@@ -14,33 +14,51 @@ index f8d8c1676..41199b9bf 100644
          },
      },
 diff --git a/include/ghostty.h b/include/ghostty.h
-index 3f1e0c9d9..70dd7e5ac 100644
+index 3f1e0c9d9..eeaf84118 100644
 --- a/include/ghostty.h
 +++ b/include/ghostty.h
-@@ -432,6 +432,19 @@ typedef struct {
+@@ -432,6 +432,37 @@ typedef struct {
    uint32_t cell_height_px;
  } ghostty_surface_size_s;
-
+ 
 +typedef struct {
 +  uint64_t precise_event_count;
 +  uint64_t precise_step_count;
++  uint64_t precise_first_event_elapsed_ms;
 +  uint64_t precise_message_queue_count;
++  uint64_t precise_first_message_queue_elapsed_ms;
 +  uint64_t precise_mailbox_notify_count;
++  uint64_t precise_first_mailbox_notify_elapsed_ms;
++  uint64_t precise_write_queue_count;
++  uint64_t precise_write_queue_bytes;
++  uint64_t precise_first_write_queue_elapsed_ms;
++  uint64_t precise_write_completed_count;
++  uint64_t precise_write_completed_bytes;
++  uint64_t precise_first_write_completed_elapsed_ms;
 +  uint64_t precise_drain_turn_count;
 +  uint64_t precise_drained_message_count;
 +  uint64_t precise_drain_requeue_count;
++  uint64_t precise_first_drain_turn_elapsed_ms;
 +  uint64_t precise_read_chunk_count;
 +  uint64_t precise_read_chunk_bytes;
 +  uint64_t precise_read_chunk_max_bytes;
++  uint64_t precise_first_read_chunk_elapsed_ms;
++  uint64_t precise_up_sequence_count;
++  uint64_t precise_down_sequence_count;
++  uint64_t precise_application_cursor_sequence_count;
++  uint64_t precise_normal_cursor_sequence_count;
++  uint64_t precise_read_escape_byte_count;
++  uint64_t precise_read_printable_byte_count;
++  uint64_t precise_read_newline_byte_count;
 +} ghostty_surface_alternate_scroll_telemetry_s;
 +
  // Config types
-
+ 
  // config.Color
-@@ -733,6 +746,13 @@ typedef struct {
+@@ -733,6 +764,13 @@ typedef struct {
    int8_t progress;
  } ghostty_action_progress_report_s;
-
+ 
 +// terminal.osc.Command.CustomOSC.C
 +typedef struct {
 +  uint16_t osc;
@@ -51,23 +69,31 @@ index 3f1e0c9d9..70dd7e5ac 100644
  // apprt.Action.Key
  typedef enum {
    GHOSTTY_ACTION_QUIT,
-@@ -788,6 +808,7 @@ typedef enum {
+@@ -771,6 +809,7 @@ typedef enum {
+   GHOSTTY_ACTION_MOUSE_VISIBILITY,
+   GHOSTTY_ACTION_MOUSE_OVER_LINK,
+   GHOSTTY_ACTION_RENDERER_HEALTH,
++  GHOSTTY_ACTION_RENDERER_FRAME_COMPLETED,
+   GHOSTTY_ACTION_OPEN_CONFIG,
+   GHOSTTY_ACTION_QUIT_TIMER,
+   GHOSTTY_ACTION_FLOAT_WINDOW,
+@@ -788,6 +827,7 @@ typedef enum {
    GHOSTTY_ACTION_SHOW_CHILD_EXITED,
    GHOSTTY_ACTION_PROGRESS_REPORT,
    GHOSTTY_ACTION_SHOW_ON_SCREEN_KEYBOARD,
 +  GHOSTTY_ACTION_CUSTOM_OSC,
  } ghostty_action_tag_e;
-
+ 
  typedef union {
-@@ -819,6 +840,7 @@ typedef union {
+@@ -819,6 +859,7 @@ typedef union {
    ghostty_action_close_tab_mode_e close_tab_mode;
    ghostty_surface_message_childexited_s child_exited;
    ghostty_action_progress_report_s progress_report;
 +  ghostty_action_custom_osc_s custom_osc;
  } ghostty_action_u;
-
+ 
  typedef struct {
-@@ -935,6 +957,9 @@ ghostty_surface_config_s ghostty_surface_inherited_config(ghostty_surface_t);
+@@ -935,6 +976,9 @@ ghostty_surface_config_s ghostty_surface_inherited_config(ghostty_surface_t);
  void ghostty_surface_update_config(ghostty_surface_t, ghostty_config_t);
  bool ghostty_surface_needs_confirm_quit(ghostty_surface_t);
  bool ghostty_surface_process_exited(ghostty_surface_t);
@@ -78,13 +104,21 @@ index 3f1e0c9d9..70dd7e5ac 100644
  void ghostty_surface_draw(ghostty_surface_t);
  void ghostty_surface_set_content_scale(ghostty_surface_t, double, double);
 diff --git a/src/Surface.zig b/src/Surface.zig
-index 2df720fcb..753c8850f 100644
+index 2df720fcb..46dd2c3e6 100644
 --- a/src/Surface.zig
 +++ b/src/Surface.zig
-@@ -937,6 +937,21 @@ pub fn handleMessage(self: *Surface, msg: Message) !void {
+@@ -43,7 +43,6 @@ const log = std.log.scoped(.surface);
+ 
+ // The renderer implementation to use.
+ const Renderer = rendererpkg.Renderer;
+-
+ /// Minimum window size in cells. This is used to prevent the window from
+ /// being resized to a size that is too small to be useful. These defaults
+ /// are chosen to match the default size of Mac's Terminal.app, but is
+@@ -937,6 +936,21 @@ pub fn handleMessage(self: *Surface, msg: Message) !void {
              );
          },
-
+ 
 +        .custom_osc => |v| {
 +            defer v.req.deinit();
 +
@@ -101,12 +135,59 @@ index 2df720fcb..753c8850f 100644
 +        },
 +
          .close => self.close(),
-
+ 
          .child_exited => |v| self.childExited(v),
-@@ -2018,6 +2033,14 @@ fn queueRender(self: *Surface) !void {
+@@ -954,6 +968,16 @@ pub fn handleMessage(self: *Surface, msg: Message) !void {
+ 
+         .renderer_health => |health| self.updateRendererHealth(health),
+ 
++        .renderer_frame_completed => {
++            _ = self.rt_app.performAction(
++                .{ .surface = self },
++                .renderer_frame_completed,
++                {},
++            ) catch |err| {
++                log.warn("apprt failed to deliver renderer frame completion err={}", .{err});
++            };
++        },
++
+         .report_color_scheme => |force| self.reportColorScheme(force),
+ 
+         .present_surface => try self.presentSurface(),
+@@ -1031,7 +1055,7 @@ fn selectionScrollTick(self: *Surface) !void {
+ 
+     // We modified our viewport and selection so we need to queue
+     // a render.
+-    try self.queueRender();
++    try self.queueRenderAndDraw();
+ }
+ 
+ fn childExited(self: *Surface, info: apprt.surface.Message.ChildExited) void {
+@@ -1219,7 +1243,7 @@ fn passwordInput(self: *Surface, v: bool) !void {
+         log.warn("apprt failed to set secure input state err={}", .{err});
+     };
+ 
+-    try self.queueRender();
++    try self.queueRenderAndDraw();
+ }
+ 
+ /// Sends a DSR response for the current color scheme to the pty. If
+@@ -1372,7 +1396,10 @@ fn mouseRefreshLinks(
+             );
+         }
+ 
+-        try self.queueRender();
++        // Embedded hosts need the post-keypress repaint to land immediately
++        // on the renderer thread so typed input does not wait for a later
++        // focus or pane change before becoming visible.
++        try self.queueRenderAndDraw();
+         return;
+     }
+ 
+@@ -2018,6 +2045,14 @@ fn queueRender(self: *Surface) !void {
      try self.renderer_thread.wakeup.notify();
  }
-
+ 
 +/// Queue a render and force the renderer thread to immediately draw the
 +/// refreshed frame once its state update completes. This is reserved for
 +/// explicit host seams such as refresh/occlusion where we need an immediate
@@ -118,28 +199,40 @@ index 2df720fcb..753c8850f 100644
  pub fn sizeCallback(self: *Surface, size: apprt.SurfaceSize) !void {
      // Crash metadata in case we crash in here
      crash.sentry.thread_state = self.crashThreadState();
-@@ -2694,7 +2717,7 @@ pub fn occlusionCallback(self: *Surface, visible: bool) !void {
+@@ -2145,7 +2180,10 @@ pub fn preeditCallback(self: *Surface, preedit_: ?[]const u8) !void {
+     self.renderer_state.preedit = .{
+         .codepoints = try codepoints.toOwnedSlice(self.alloc),
+     };
+-    try self.queueRender();
++    // Normal viewport scroll is latency-sensitive user input on embedded
++    // hosts too, so keep the draw ownership on the renderer thread and
++    // present the refreshed frame immediately.
++    try self.queueRenderAndDraw();
+ }
+ 
+ /// Returns true if the given key event would trigger a keybinding
+@@ -2694,7 +2732,7 @@ pub fn occlusionCallback(self: *Surface, visible: bool) !void {
      _ = self.renderer_thread.mailbox.push(.{
          .visible = visible,
      }, .{ .forever = {} });
 -    try self.queueRender();
 +    try self.queueRenderAndDraw();
  }
-
+ 
  pub fn focusCallback(self: *Surface, focused: bool) !void {
-@@ -2790,7 +2813,7 @@ pub fn refreshCallback(self: *Surface) !void {
+@@ -2790,7 +2828,7 @@ pub fn refreshCallback(self: *Surface) !void {
      defer crash.sentry.thread_state = null;
-
+ 
      // The point of this callback is to schedule a render, so do that.
 -    try self.queueRender();
 +    try self.queueRenderAndDraw();
  }
-
+ 
  // The amount to scroll. This structure is always normalized so that
-@@ -2809,6 +2832,28 @@ const ScrollAmount = struct {
+@@ -2809,6 +2847,28 @@ const ScrollAmount = struct {
      }
  };
-
+ 
 +const PrecisionAlternateScrollResolution = struct {
 +    delta: isize = 0,
 +    pending: f64 = 0,
@@ -165,10 +258,10 @@ index 2df720fcb..753c8850f 100644
  /// Mouse scroll event. Negative is down, left. Positive is up, right.
  ///
  /// "Natural scrolling" is a macOS term for inverting the scroll direction.
-@@ -2829,6 +2874,11 @@ pub fn scrollCallback(
+@@ -2829,6 +2889,11 @@ pub fn scrollCallback(
      // Always show the mouse again if it is hidden
      if (self.mouse.hidden) self.showMouse();
-
+ 
 +    const uses_alternate_scroll =
 +        self.io.terminal.active_screen == .alternate and
 +        self.io.terminal.flags.mouse_event == .none and
@@ -177,10 +270,10 @@ index 2df720fcb..753c8850f 100644
      const y: ScrollAmount = if (yoff == 0) .{} else y: {
          // We use cell_size to determine if we have accumulated enough to trigger a scroll
          const cell_size: f64 = @floatFromInt(self.size.cell.height);
-@@ -2863,6 +2913,16 @@ pub fn scrollCallback(
+@@ -2863,6 +2928,16 @@ pub fn scrollCallback(
          // direction and undo a pending scroll.
          const poff: f64 = self.mouse.pending_scroll_y + yoff_adjusted;
-
+ 
 +        if (scroll_mods.precision and uses_alternate_scroll) {
 +            const resolution = resolvePrecisionAlternateScroll(
 +                self.mouse.pending_scroll_y,
@@ -194,7 +287,7 @@ index 2df720fcb..753c8850f 100644
          // If the new offset is less than a single unit of scroll, we save
          // the new pending value and do not scroll yet.
          if (@abs(poff) < cell_size) {
-@@ -2921,10 +2981,7 @@ pub fn scrollCallback(
+@@ -2921,10 +2996,7 @@ pub fn scrollCallback(
          // we convert to cursor keys. This only happens if we're:
          // (1) alt screen (2) no explicit mouse reporting and (3) alt
          // scroll mode enabled.
@@ -206,7 +299,7 @@ index 2df720fcb..753c8850f 100644
              if (y.delta != 0) {
                  // When we send mouse events as cursor keys we always
                  // clear the selection.
-@@ -2943,8 +3000,30 @@ pub fn scrollCallback(
+@@ -2943,8 +3015,33 @@ pub fn scrollCallback(
                          .down_left => "\x1b[B",
                      };
                  };
@@ -220,6 +313,9 @@ index 2df720fcb..753c8850f 100644
 +                    self.io.notePreciseAlternateScrollEvent(repeat);
 +                }
 +                for (0..repeat) |_| {
++                    if (scroll_mods.precision) {
++                        self.io.notePreciseAlternateScrollSequence(seq);
++                    }
 +                    var msg: termio.Message = if (scroll_mods.precision)
 +                        .{ .write_scroll_step = .{} }
 +                    else
@@ -238,16 +334,20 @@ index 2df720fcb..753c8850f 100644
 +                    self.io.queueMessage(msg, .locked);
                  }
              }
-
-@@ -2986,9 +3065,27 @@ pub fn scrollCallback(
+ 
+@@ -2986,7 +3083,28 @@ pub fn scrollCallback(
          }
      }
-
+ 
+-    try self.queueRender();
 +    if (y.delta == 0 and x.delta == 0) return;
 +
-     try self.queueRender();
- }
-
++    // Normal viewport scroll is latency-sensitive user input on embedded
++    // hosts too, so keep draw ownership on the renderer thread and
++    // present the refreshed frame immediately.
++    try self.queueRenderAndDraw();
++}
++
 +test "resolvePrecisionAlternateScroll keeps excess pending after one step" {
 +    const testing = std.testing;
 +
@@ -262,41 +362,66 @@ index 2df720fcb..753c8850f 100644
 +    const resolution = resolvePrecisionAlternateScroll(12, -40, 20);
 +    try testing.expectEqual(@as(isize, -1), resolution.delta);
 +    try testing.expectApproxEqAbs(@as(f64, -8), resolution.pending, 0.0001);
-+}
-+
+ }
+ 
  /// This is called when the content scale of the surface changes. The surface
- /// can then update any DPI-sensitive state.
- pub fn contentScaleCallback(self: *Surface, content_scale: apprt.ContentScale) !void {
+@@ -4417,7 +4535,7 @@ pub fn posToViewport(self: Surface, xpos: f64, ypos: f64) terminal.point.Coordin
+ /// Precondition: the render_state mutex must be held.
+ fn scrollToBottom(self: *Surface) !void {
+     try self.io.terminal.scrollViewport(.{ .bottom = {} });
+-    try self.queueRender();
++    try self.queueRenderAndDraw();
+ }
+ 
+ fn hideMouse(self: *Surface) void {
 diff --git a/src/apprt/action.zig b/src/apprt/action.zig
-index b7dc80e03..c29127f4b 100644
+index b7dc80e03..3ed7bd41c 100644
 --- a/src/apprt/action.zig
 +++ b/src/apprt/action.zig
-@@ -295,6 +295,9 @@ pub const Action = union(Key) {
+@@ -204,6 +204,9 @@ pub const Action = union(Key) {
+     /// The health of the renderer has changed.
+     renderer_health: renderer.Health,
+ 
++    /// The renderer completed a frame for the target surface.
++    renderer_frame_completed,
++
+     /// Open the Ghostty configuration. This is platform-specific about
+     /// what it means; it can mean opening a dedicated UI or just opening
+     /// a file in a text editor.
+@@ -295,6 +298,9 @@ pub const Action = union(Key) {
      /// Show the on-screen keyboard.
      show_on_screen_keyboard,
-
+ 
 +    /// Surface-scoped custom OSC carrier payload.
 +    custom_osc: terminal.osc.Command.CustomOSC,
 +
      /// Sync with: ghostty_action_tag_e
      pub const Key = enum(c_int) {
          quit,
-@@ -350,6 +353,7 @@ pub const Action = union(Key) {
+@@ -333,6 +339,7 @@ pub const Action = union(Key) {
+         mouse_visibility,
+         mouse_over_link,
+         renderer_health,
++        renderer_frame_completed,
+         open_config,
+         quit_timer,
+         float_window,
+@@ -350,6 +357,7 @@ pub const Action = union(Key) {
          show_child_exited,
          progress_report,
          show_on_screen_keyboard,
 +        custom_osc,
      };
-
+ 
      /// Sync with: ghostty_action_u
 diff --git a/src/apprt/embedded.zig b/src/apprt/embedded.zig
-index 08d8291ef..1a4d78daa 100644
+index 08d8291ef..1f289eb24 100644
 --- a/src/apprt/embedded.zig
 +++ b/src/apprt/embedded.zig
 @@ -332,6 +332,99 @@ pub const App = struct {
      }
  };
-
+ 
 +test "embedded App.performAction forwards custom osc through action callback" {
 +    const testing = std.testing;
 +
@@ -393,30 +518,48 @@ index 08d8291ef..1a4d78daa 100644
  /// Platform-specific configuration for libghostty.
  pub const Platform = union(PlatformTag) {
      macos: MacOS,
-@@ -1211,6 +1304,19 @@ pub const CAPI = struct {
+@@ -1211,6 +1304,37 @@ pub const CAPI = struct {
          cell_height_px: u32,
      };
-
+ 
 +    const SurfaceAlternateScrollTelemetry = extern struct {
 +        precise_event_count: u64,
 +        precise_step_count: u64,
++        precise_first_event_elapsed_ms: u64,
 +        precise_message_queue_count: u64,
++        precise_first_message_queue_elapsed_ms: u64,
 +        precise_mailbox_notify_count: u64,
++        precise_first_mailbox_notify_elapsed_ms: u64,
++        precise_write_queue_count: u64,
++        precise_write_queue_bytes: u64,
++        precise_first_write_queue_elapsed_ms: u64,
++        precise_write_completed_count: u64,
++        precise_write_completed_bytes: u64,
++        precise_first_write_completed_elapsed_ms: u64,
 +        precise_drain_turn_count: u64,
 +        precise_drained_message_count: u64,
 +        precise_drain_requeue_count: u64,
++        precise_first_drain_turn_elapsed_ms: u64,
 +        precise_read_chunk_count: u64,
 +        precise_read_chunk_bytes: u64,
 +        precise_read_chunk_max_bytes: u64,
++        precise_first_read_chunk_elapsed_ms: u64,
++        precise_up_sequence_count: u64,
++        precise_down_sequence_count: u64,
++        precise_application_cursor_sequence_count: u64,
++        precise_normal_cursor_sequence_count: u64,
++        precise_read_escape_byte_count: u64,
++        precise_read_printable_byte_count: u64,
++        precise_read_newline_byte_count: u64,
 +    };
 +
      // ghostty_text_s
      const Text = extern struct {
          tl_px_x: f64,
-@@ -1519,6 +1625,16 @@ pub const CAPI = struct {
+@@ -1519,6 +1643,16 @@ pub const CAPI = struct {
          return surface.core_surface.child_exited;
      }
-
+ 
 +    export fn ghostty_surface_uses_alternate_scroll(surface: *Surface) bool {
 +        const core_surface = &surface.core_surface;
 +        core_surface.renderer_state.mutex.lock();
@@ -430,10 +573,10 @@ index 08d8291ef..1a4d78daa 100644
      /// Returns true if the surface has a selection.
      export fn ghostty_surface_has_selection(surface: *Surface) bool {
          return surface.core_surface.hasSelection();
-@@ -1611,6 +1727,28 @@ pub const CAPI = struct {
+@@ -1611,6 +1745,46 @@ pub const CAPI = struct {
          surface.draw();
      }
-
+ 
 +    export fn ghostty_surface_reset_alternate_scroll_telemetry(surface: *Surface) void {
 +        surface.core_surface.io.resetAlternateScrollTelemetry();
 +    }
@@ -445,14 +588,32 @@ index 08d8291ef..1a4d78daa 100644
 +        return .{
 +            .precise_event_count = snapshot.precise_event_count,
 +            .precise_step_count = snapshot.precise_step_count,
++            .precise_first_event_elapsed_ms = snapshot.precise_first_event_elapsed_ms,
 +            .precise_message_queue_count = snapshot.precise_message_queue_count,
++            .precise_first_message_queue_elapsed_ms = snapshot.precise_first_message_queue_elapsed_ms,
 +            .precise_mailbox_notify_count = snapshot.precise_mailbox_notify_count,
++            .precise_first_mailbox_notify_elapsed_ms = snapshot.precise_first_mailbox_notify_elapsed_ms,
++            .precise_write_queue_count = snapshot.precise_write_queue_count,
++            .precise_write_queue_bytes = snapshot.precise_write_queue_bytes,
++            .precise_first_write_queue_elapsed_ms = snapshot.precise_first_write_queue_elapsed_ms,
++            .precise_write_completed_count = snapshot.precise_write_completed_count,
++            .precise_write_completed_bytes = snapshot.precise_write_completed_bytes,
++            .precise_first_write_completed_elapsed_ms = snapshot.precise_first_write_completed_elapsed_ms,
 +            .precise_drain_turn_count = snapshot.precise_drain_turn_count,
 +            .precise_drained_message_count = snapshot.precise_drained_message_count,
 +            .precise_drain_requeue_count = snapshot.precise_drain_requeue_count,
++            .precise_first_drain_turn_elapsed_ms = snapshot.precise_first_drain_turn_elapsed_ms,
 +            .precise_read_chunk_count = snapshot.precise_read_chunk_count,
 +            .precise_read_chunk_bytes = snapshot.precise_read_chunk_bytes,
 +            .precise_read_chunk_max_bytes = snapshot.precise_read_chunk_max_bytes,
++            .precise_first_read_chunk_elapsed_ms = snapshot.precise_first_read_chunk_elapsed_ms,
++            .precise_up_sequence_count = snapshot.precise_up_sequence_count,
++            .precise_down_sequence_count = snapshot.precise_down_sequence_count,
++            .precise_application_cursor_sequence_count = snapshot.precise_application_cursor_sequence_count,
++            .precise_normal_cursor_sequence_count = snapshot.precise_normal_cursor_sequence_count,
++            .precise_read_escape_byte_count = snapshot.precise_read_escape_byte_count,
++            .precise_read_printable_byte_count = snapshot.precise_read_printable_byte_count,
++            .precise_read_newline_byte_count = snapshot.precise_read_newline_byte_count,
 +        };
 +    }
 +
@@ -464,18 +625,18 @@ index 04a51b78e..27dc1bdf3 100644
 --- a/src/apprt/gtk/class/application.zig
 +++ b/src/apprt/gtk/class/application.zig
 @@ -613,6 +613,8 @@ pub const Application = extern struct {
-
+ 
              .open_url => Action.openUrl(self, value),
-
+ 
 +            .custom_osc => return Action.customOSC(target, value),
 +
              .pwd => Action.pwd(target, value),
-
+ 
              .present_terminal => return Action.presentTerminal(target),
 @@ -2071,6 +2073,24 @@ const Action = struct {
          }
      }
-
+ 
 +    pub fn customOSC(
 +        target: apprt.Target,
 +        value: terminal.osc.Command.CustomOSC,
@@ -498,13 +659,23 @@ index 04a51b78e..27dc1bdf3 100644
          self: *Application,
          mode: apprt.action.QuitTimer,
 diff --git a/src/apprt/surface.zig b/src/apprt/surface.zig
-index e4effe128..2b1b663f4 100644
+index e4effe128..0a9141f54 100644
 --- a/src/apprt/surface.zig
 +++ b/src/apprt/surface.zig
-@@ -90,6 +90,12 @@ pub const Message = union(enum) {
+@@ -63,6 +63,9 @@ pub const Message = union(enum) {
+     /// Health status change for the renderer.
+     renderer_health: renderer.Health,
+ 
++    /// The renderer completed a frame for this surface.
++    renderer_frame_completed: void,
++
+     /// Report the color scheme. The bool parameter is whether to force or not.
+     /// If force is true, the color scheme should be reported even if mode
+     /// 2031 is not set.
+@@ -90,6 +93,12 @@ pub const Message = union(enum) {
      /// The terminal has reported a change in the working directory.
      pwd_change: WriteReq,
-
+ 
 +    /// Surface-scoped custom OSC carrier payload.
 +    custom_osc: struct {
 +        osc: u16,
@@ -513,7 +684,7 @@ index e4effe128..2b1b663f4 100644
 +
      /// The terminal encountered a bell character.
      ring_bell,
-
+ 
 diff --git a/src/input/mouse.zig b/src/input/mouse.zig
 index 2be2b9a26..96689dd59 100644
 --- a/src/input/mouse.zig
@@ -521,7 +692,7 @@ index 2be2b9a26..96689dd59 100644
 @@ -63,6 +63,18 @@ pub const Momentum = enum(u3) {
      may_begin = 6,
  };
-
+ 
 +/// The direct gesture phase of a precision scroll event. Unlike momentum, this
 +/// reflects finger-contact phases while the gesture is active.
 +pub const Phase = enum(u3) {
@@ -540,7 +711,7 @@ index 2be2b9a26..96689dd59 100644
 @@ -90,7 +102,12 @@ pub const ScrollMods = packed struct(u8) {
      /// This is used to handle "inertial scrolling" (i.e. flicking).
      momentum: Momentum = .none,
-
+ 
 -    _padding: u4 = 0,
 +    /// The direct gesture phase (if available, supported) of the scroll event.
 +    /// This lets the renderer distinguish active finger contact from inertial
@@ -548,7 +719,7 @@ index 2be2b9a26..96689dd59 100644
 +    phase: Phase = .none,
 +
 +    _padding: u1 = 0,
-
+ 
      // For our own understanding
      test {
 @@ -100,5 +117,9 @@ pub const ScrollMods = packed struct(u8) {
@@ -566,14 +737,14 @@ index f4201edcc..e8d449347 100644
 --- a/src/renderer/Metal.zig
 +++ b/src/renderer/Metal.zig
 @@ -35,6 +35,8 @@ pub const custom_shader_y_is_down = true;
-
+ 
  /// Triple buffering.
  pub const swap_chain_count = 3;
 +pub const supports_sparse_bg_viewport_sync = true;
 +pub const supports_sparse_fg_viewport_sync = true;
-
+ 
  const log = std.log.scoped(.metal);
-
+ 
 diff --git a/src/renderer/OpenGL.zig b/src/renderer/OpenGL.zig
 index 673f79501..a9fa3dba2 100644
 --- a/src/renderer/OpenGL.zig
@@ -584,9 +755,9 @@ index 673f79501..a9fa3dba2 100644
  pub const swap_chain_count = 1;
 +pub const supports_sparse_bg_viewport_sync = false;
 +pub const supports_sparse_fg_viewport_sync = false;
-
+ 
  const log = std.log.scoped(.opengl);
-
+ 
 diff --git a/src/renderer/Thread.zig b/src/renderer/Thread.zig
 index 210c2e337..8763922e7 100644
 --- a/src/renderer/Thread.zig
@@ -594,7 +765,7 @@ index 210c2e337..8763922e7 100644
 @@ -68,6 +68,10 @@ draw_active: bool = false,
  draw_now: xev.Async,
  draw_now_c: xev.Completion = .{},
-
+ 
 +/// When set by the app thread, the next wakeup-triggered render should also
 +/// force an immediate draw on the renderer thread after frame data updates.
 +draw_after_render_requested: std.atomic.Value(u8) = .{ .raw = 0 },
@@ -605,18 +776,18 @@ index 210c2e337..8763922e7 100644
 @@ -466,6 +470,10 @@ fn drainMailbox(self: *Thread) !void {
                  self.startDrawTimer();
              },
-
+ 
 +            .render_and_draw => {
 +                _ = self.draw_after_render_requested.swap(1, .seq_cst);
 +            },
 +
              .inspector => |v| self.flags.has_inspector = v,
-
+ 
              .macos_display_id => |v| {
 @@ -481,6 +489,13 @@ fn changeConfig(self: *Thread, config: *const DerivedConfig) !void {
      self.config = config.*;
  }
-
+ 
 +/// Request a renderer-thread-owned render immediately followed by an
 +/// immediate draw pass after the frame data is refreshed.
 +pub fn requestRenderAndDraw(self: *Thread) !void {
@@ -629,7 +800,7 @@ index 210c2e337..8763922e7 100644
  fn drawFrame(self: *Thread, now: bool) void {
 @@ -514,7 +529,7 @@ fn wakeupCallback(
      };
-
+ 
      const t = self_.?;
 -
 +    const draw_after_render = t.draw_after_render_requested.swap(0, .seq_cst) != 0;
@@ -639,7 +810,7 @@ index 210c2e337..8763922e7 100644
 @@ -523,6 +538,13 @@ fn wakeupCallback(
      // Render immediately
      _ = renderCallback(t, undefined, undefined, {});
-
+ 
 +    // Immediate renderer-thread draws are reserved for explicit host seams
 +    // such as refresh/occlusion. They still stay renderer-owned because
 +    // the render thread performs both the frame update and the follow-on draw.
@@ -653,7 +824,7 @@ index 210c2e337..8763922e7 100644
 @@ -598,17 +620,7 @@ fn renderCallback(
          return .disarm;
      };
-
+ 
 -    // If we have an inspector, let the app know we want to rerender that.
 -    if (t.flags.has_inspector) {
 -        _ = t.app_mailbox.push(.{ .redraw_inspector = t.surface }, .{ .instant = {} });
@@ -666,13 +837,13 @@ index 210c2e337..8763922e7 100644
 -    ) catch |err|
 -        log.warn("error rendering err={}", .{err});
 +    t.updateFrameData();
-
+ 
      // Draw
      t.drawFrame(false);
 @@ -616,6 +628,19 @@ fn renderCallback(
      return .disarm;
  }
-
+ 
 +fn updateFrameData(self: *Thread) void {
 +    // If we have an inspector, let the app know we want to rerender that.
 +    if (self.flags.has_inspector) {
@@ -704,7 +875,7 @@ index 51cd5f5bc..8d1e0c6c1 100644
 @@ -140,6 +141,249 @@ pub const Contents = struct {
          self.fg_rows.reset();
      }
-
+ 
 +    /// Shift the visible rows by the given amount without reshaping any glyphs.
 +    ///
 +    /// Positive values move content toward larger row indices (downward on the
@@ -959,7 +1130,7 @@ index 51cd5f5bc..8d1e0c6c1 100644
 -        assert(y < self.size.rows);
 +        assert(y >= 0 and y < self.size.rows);
 +        const row_index: usize = @intCast(y);
-
+ 
          switch (key) {
              .bg => comptime unreachable,
 @@ -206,7 +450,7 @@ pub const Contents = struct {
@@ -970,7 +1141,7 @@ index 51cd5f5bc..8d1e0c6c1 100644
 +            => try self.fg_rows.lists[row_index + 1].append(alloc, cell),
          }
      }
-
+ 
 @@ -221,6 +465,84 @@ pub const Contents = struct {
          // the correct index.
          self.fg_rows.lists[y + 1].clearRetainingCapacity();
@@ -1054,12 +1225,12 @@ index 51cd5f5bc..8d1e0c6c1 100644
 +        }
 +    }
  };
-
+ 
  /// Returns true if a codepoint for a cell is a covering character. A covering
 @@ -519,6 +841,72 @@ test "Contents with zero-sized screen" {
      try testing.expect(c.getCursorGlyph() == null);
  }
-
+ 
 +test "Contents shiftRows positive moves content downward and clears exposed top rows" {
 +    const testing = std.testing;
 +    const alloc = testing.allocator;
@@ -1130,13 +1301,13 @@ index 51cd5f5bc..8d1e0c6c1 100644
      const testing = std.testing;
      const alloc = testing.allocator;
 diff --git a/src/renderer/generic.zig b/src/renderer/generic.zig
-index 946f84a8a..59392f1c8 100644
+index 946f84a8a..02897f508 100644
 --- a/src/renderer/generic.zig
 +++ b/src/renderer/generic.zig
-@@ -143,17 +143,60 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+@@ -143,17 +143,63 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
          /// cells goes into a separate shader.
          cells: cellpkg.Contents,
-
+ 
 -        /// The last viewport that we based our rebuild off of. If this changes,
 -        /// then we do a full rebuild of the cells. The pointer values in this pin
 -        /// are NOT SAFE to read because they may be modified, freed, etc from the
@@ -1147,7 +1318,7 @@ index 946f84a8a..59392f1c8 100644
 +        /// identity and invalidation; viewport-shift reuse is driven by the
 +        /// separate screen-space Y coordinate below.
          cells_viewport: ?terminal.Pin = null,
-
+ 
 +        /// The screen-space Y coordinate of the viewport top row for the
 +        /// currently cached cell contents. This remains safe to compare across
 +        /// frames and lets pure viewport shifts reuse row buffers.
@@ -1175,7 +1346,7 @@ index 946f84a8a..59392f1c8 100644
          /// to determine if any possible changes have been made to the
          /// cells for the draw call.
          cells_rebuilt: bool = false,
-
+ 
 +        /// Monotonic revision for the currently cached cells.
 +        cells_revision: u64 = 1,
 +
@@ -1195,13 +1366,16 @@ index 946f84a8a..59392f1c8 100644
 +        /// viewport-shift move on the GPU.
 +        cells_fg_sparse_sync_rows: std.ArrayListUnmanaged(terminal.size.CellCountInt) = .{},
 +
++        /// Visible-row foreground offsets for the currently cached cells.
++        cells_fg_row_offsets: std.ArrayListUnmanaged(usize) = .{},
++
          /// The current GPU uniform values.
          uniforms: shaderpkg.Uniforms,
-
-@@ -225,6 +268,11 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+ 
+@@ -225,6 +271,11 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
          /// Our shader pipelines.
          shaders: Shaders,
-
+ 
 +        const CellUploadHint = enum {
 +            full,
 +            viewport_shift,
@@ -1210,10 +1384,10 @@ index 946f84a8a..59392f1c8 100644
          /// Swap chain which maintains multiple copies of the state needed to
          /// render a frame, so that we can start building the next frame while
          /// the previous frame is still being processed on the GPU.
-@@ -252,12 +300,16 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+@@ -252,12 +303,16 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
              /// the renderer is deinited after that.
              defunct: bool = false,
-
+ 
 -            pub fn init(api: GraphicsAPI, custom_shaders: bool) !SwapChain {
 +            pub fn init(
 +                alloc: Allocator,
@@ -1221,15 +1395,15 @@ index 946f84a8a..59392f1c8 100644
 +                custom_shaders: bool,
 +            ) !SwapChain {
                  var result: SwapChain = .{ .frames = undefined };
-
+ 
                  // Initialize all of our frame state.
                  for (&result.frames) |*frame| {
 -                    frame.* = try FrameState.init(api, custom_shaders);
 +                    frame.* = try FrameState.init(alloc, api, custom_shaders);
                  }
-
+ 
                  return result;
-@@ -301,9 +353,21 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+@@ -301,9 +356,22 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
          ///
          /// This is used to implement double/triple buffering.
          const FrameState = struct {
@@ -1247,14 +1421,15 @@ index 946f84a8a..59392f1c8 100644
 +            bg_rows: terminal.size.CellCountInt = 0,
 +            bg_columns: terminal.size.CellCountInt = 0,
 +            fg_row_counts: std.ArrayListUnmanaged(u32) = .{},
++            fg_row_offsets: std.ArrayListUnmanaged(usize) = .{},
 +            fg_row_viewport_shifted: std.ArrayListUnmanaged(bool) = .{},
-
+ 
              grayscale: Texture,
              grayscale_modified: usize = 0,
-@@ -330,7 +394,11 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+@@ -330,7 +398,11 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
              const CellTextBuffer = Buffer(shaderpkg.CellText);
              const BgImageBuffer = Buffer(shaderpkg.BgImage);
-
+ 
 -            pub fn init(api: GraphicsAPI, custom_shaders: bool) !FrameState {
 +            pub fn init(
 +                alloc: Allocator,
@@ -1264,32 +1439,33 @@ index 946f84a8a..59392f1c8 100644
                  // Uniform buffer contains exactly 1 uniform struct. The
                  // uniform data will be undefined so this must be set before
                  // a frame is drawn.
-@@ -384,6 +452,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+@@ -384,6 +456,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                  const target = try api.initTarget(1, 1);
-
+ 
                  return .{
 +                    .alloc = alloc,
                      .uniforms = uniforms,
                      .cells = cells,
                      .cells_bg = cells_bg,
-@@ -400,6 +469,8 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+@@ -400,6 +473,9 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                  self.uniforms.deinit();
                  self.cells.deinit();
                  self.cells_bg.deinit();
 +                self.fg_row_counts.deinit(self.alloc);
++                self.fg_row_offsets.deinit(self.alloc);
 +                self.fg_row_viewport_shifted.deinit(self.alloc);
                  self.grayscale.deinit();
                  self.color.deinit();
                  self.bg_image_buffer.deinit();
-@@ -644,6 +715,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
-
+@@ -644,6 +720,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+ 
              // Prepare our swap chain
              var swap_chain = try SwapChain.init(
 +                alloc,
                  api,
                  has_custom_shaders,
              );
-@@ -696,6 +768,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+@@ -696,6 +773,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                      .projection_matrix = undefined,
                      .cell_size = undefined,
                      .grid_size = undefined,
@@ -1297,15 +1473,16 @@ index 946f84a8a..59392f1c8 100644
                      .grid_padding = undefined,
                      .screen_size = undefined,
                      .padding_extend = .{},
-@@ -770,6 +843,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+@@ -770,6 +848,8 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
              }
-
+ 
              self.cells.deinit(self.alloc);
 +            self.cells_fg_sparse_sync_rows.deinit(self.alloc);
-
++            self.cells_fg_row_offsets.deinit(self.alloc);
+ 
              self.font_shaper.deinit();
              self.font_shaper_cache.deinit(self.alloc);
-@@ -917,6 +991,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+@@ -917,6 +997,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
              // We reinitialize our shaders and our swap chain.
              try self.initShaders();
              self.swap_chain = try SwapChain.init(
@@ -1313,7 +1490,7 @@ index 946f84a8a..59392f1c8 100644
                  self.api,
                  self.has_custom_shaders,
              );
-@@ -959,6 +1034,9 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+@@ -959,6 +1040,9 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
          /// Mark the full screen as dirty so that we redraw everything.
          pub fn markDirty(self: *Self) void {
              self.cells_viewport = null;
@@ -1321,9 +1498,9 @@ index 946f84a8a..59392f1c8 100644
 +            self.cells_viewport_is_bottom = false;
 +            self.cells_cursor_row = null;
          }
-
+ 
          /// Called when we get an updated display ID for our display link.
-@@ -1065,6 +1143,9 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+@@ -1065,6 +1149,9 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
              // an outdated atlas from the old grid and this can cause garbage
              // to be rendered.
              self.cells_viewport = null;
@@ -1331,9 +1508,9 @@ index 946f84a8a..59392f1c8 100644
 +            self.cells_viewport_is_bottom = false;
 +            self.cells_cursor_row = null;
          }
-
+ 
          /// Update uniforms that are based on the font grid.
-@@ -1086,19 +1167,30 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+@@ -1086,19 +1173,30 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
              // Data we extract out of the critical area.
              const Critical = struct {
                  bg: terminal.color.RGB,
@@ -1345,7 +1522,7 @@ index 946f84a8a..59392f1c8 100644
                  cursor_style: ?renderer.CursorStyle,
                  color_palette: terminal.color.Palette,
 +                viewport_is_bottom: bool,
-
+ 
                  /// If true, rebuild the full screen.
                  full_rebuild: bool,
 +
@@ -1358,7 +1535,7 @@ index 946f84a8a..59392f1c8 100644
 +                /// leaving the live bottom without forcing a full rebuild.
 +                shift_extra_row: ?terminal.size.CellCountInt,
              };
-
+ 
              // Update all our data as tightly as possible within the mutex.
 -            var critical: Critical = critical: {
 +            var live_viewport_shift_bg: ?terminal.color.RGB = null;
@@ -1366,8 +1543,8 @@ index 946f84a8a..59392f1c8 100644
                  // const start = try std.time.Instant.now();
                  // const start_micro = std.time.microTimestamp();
                  // defer {
-@@ -1149,16 +1241,11 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
-
+@@ -1149,16 +1247,11 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+ 
                  // Get the viewport pin so that we can compare it to the current.
                  const viewport_pin = state.terminal.screen.pages.pin(.{ .viewport = .{} }).?;
 -
@@ -1385,10 +1562,10 @@ index 946f84a8a..59392f1c8 100644
 +                    viewport_pin,
 +                ).?.screen.y;
 +                const viewport_is_bottom = state.terminal.screen.viewportIsBottom();
-
+ 
                  // Whether to draw our cursor or not.
                  const cursor_style = if (state.terminal.flags.password_input)
-@@ -1185,34 +1272,167 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+@@ -1185,34 +1278,167 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                  // If we have any virtual references, we must also rebuild our
                  // kitty state on every frame because any cell change can move
                  // an image.
@@ -1403,7 +1580,7 @@ index 946f84a8a..59392f1c8 100644
 +                if (kitty_graphics_dirty or self.image_virtual) {
                      try self.prepKittyGraphics(state.terminal);
                  }
-
+ 
                  // If we have any terminal dirty flags set then we need to rebuild
 -                // the entire screen. This can be optimized in the future.
 -                const full_rebuild: bool = rebuild: {
@@ -1542,7 +1719,7 @@ index 946f84a8a..59392f1c8 100644
 +                            dirty_set.unsetAll();
 +                        }
                      }
-
+ 
 -                    // If our viewport changed then we need to rebuild the entire
 -                    // screen because it means we scrolled. If we have no previous
 -                    // viewport then we must rebuild.
@@ -1560,7 +1737,7 @@ index 946f84a8a..59392f1c8 100644
 +                    live_viewport_shift_bg = self.background_color orelse self.default_background_color;
 +                    break :critical null;
 +                }
-
+ 
 -                    break :rebuild false;
 -                };
 +                var screen_copy = try state.terminal.screen.clone(
@@ -1571,11 +1748,11 @@ index 946f84a8a..59392f1c8 100644
 +                    } },
 +                );
 +                errdefer screen_copy.deinit();
-
+ 
                  // Reset the dirty flags in the terminal and screen. We assume
                  // that our rebuild will be successful since so we optimize for
-@@ -1234,33 +1454,56 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
-
+@@ -1234,33 +1460,56 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+ 
                  // Update our viewport pin
                  self.cells_viewport = viewport_pin;
 +                self.cells_viewport_screen_y = viewport_screen_y;
@@ -1586,7 +1763,7 @@ index 946f84a8a..59392f1c8 100644
 +                    state.terminal.screen.cursor.y
 +                else
 +                    null;
-
+ 
                  break :critical .{
                      .bg = self.background_color orelse self.default_background_color,
 -                    .screen = screen_copy,
@@ -1644,11 +1821,11 @@ index 946f84a8a..59392f1c8 100644
 +                break :bg live_viewport_shift_bg orelse
 +                    self.background_color orelse self.default_background_color;
 +            };
-
+ 
              // Notify our shaper we're done for the frame. For some shapers,
              // such as CoreText, this triggers off-thread cleanup logic.
-@@ -1273,9 +1516,9 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
-
+@@ -1273,9 +1522,9 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+ 
                  // Update our background color
                  self.uniforms.bg_color = .{
 -                    critical.bg.r,
@@ -1660,8 +1837,8 @@ index 946f84a8a..59392f1c8 100644
                      @intFromFloat(@round(self.config.background_opacity * 255.0)),
                  };
              }
-@@ -1395,8 +1638,47 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
-
+@@ -1395,8 +1644,47 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+ 
              // Setup our frame data
              try frame.uniforms.sync(&.{self.uniforms});
 -            try frame.cells_bg.sync(self.cells.bg_cells);
@@ -1707,13 +1884,24 @@ index 946f84a8a..59392f1c8 100644
 +
 +                break :fg_count frame.cells_count;
 +            };
-
+ 
              // If our background image buffer has changed, sync it.
              if (frame.bg_image_buffer_modified != self.bg_image_buffer_modified) {
-@@ -1754,6 +2036,15 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+@@ -1548,6 +1836,10 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+             self: *Self,
+             health: Health,
+         ) void {
++            _ = self.surface_mailbox.push(.{
++                .renderer_frame_completed = {},
++            }, .{ .instant = {} });
++
+             // If our health value hasn't changed, then we do nothing. We don't
+             // do a cmpxchg here because strict atomicity isn't important.
+             if (self.health.load(.seq_cst) != health) {
+@@ -1754,6 +2046,15 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                  text_end orelse @intCast(self.image_placements.items.len);
          }
-
+ 
 +        fn hasActiveKittyGraphics(
 +            self: *const Self,
 +            screen: *const terminal.Screen,
@@ -1726,23 +1914,23 @@ index 946f84a8a..59392f1c8 100644
          fn prepKittyVirtualPlacement(
              self: *Self,
              t: *terminal.Terminal,
-@@ -2103,6 +2394,9 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
-
+@@ -2103,6 +2404,9 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+ 
              // Reset our viewport to force a rebuild, in case of a font change.
              self.cells_viewport = null;
 +            self.cells_viewport_screen_y = null;
 +            self.cells_viewport_is_bottom = false;
 +            self.cells_cursor_row = null;
-
+ 
              const blending_changed = old_blending != config.blending;
-
-@@ -2253,15 +2547,17 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+ 
+@@ -2253,15 +2557,17 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
              if (self.cells.getCursorGlyph()) |cursor| {
                  const cursor_width: f32 = @floatFromInt(cursor.glyph_size[0]);
                  const cursor_height: f32 = @floatFromInt(cursor.glyph_size[1]);
 +                const cursor_grid_x: u32 = @intCast(cursor.grid_pos[0]);
 +                const cursor_grid_y: u32 = @intCast(cursor.grid_pos[1]);
-
+ 
                  // Left edge of the cell the cursor is in.
                  var pixel_x: f32 = @floatFromInt(
 -                    cursor.grid_pos[0] * cell.width + padding.left,
@@ -1754,12 +1942,12 @@ index 946f84a8a..59392f1c8 100644
 -                    cursor.grid_pos[1] * cell.height + padding.top,
 +                    cursor_grid_y * cell.height + padding.top,
                  );
-
+ 
                  // If +Y is up in our shaders, we need to flip the coordinate
-@@ -2323,18 +2619,596 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+@@ -2323,18 +2629,596 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
              }
          }
-
+ 
 +        const PreeditRange = struct {
 +            y: terminal.size.CellCountInt,
 +            x: [2]terminal.size.CellCountInt,
@@ -2353,8 +2541,8 @@ index 946f84a8a..59392f1c8 100644
          ) !void {
              self.draw_mutex.lock();
              defer self.draw_mutex.unlock();
-@@ -2364,11 +3238,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
-
+@@ -2364,11 +3248,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+ 
              // Determine our x/y range for preedit. We don't want to render anything
              // here because we will render the preedit separately.
 -            const preedit_range: ?struct {
@@ -2366,7 +2554,7 @@ index 946f84a8a..59392f1c8 100644
                  const range = preedit_v.range(screen.cursor.x, screen.pages.cols - 1);
                  break :preedit .{
                      .y = screen.cursor.y,
-@@ -2376,7 +3246,6 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+@@ -2376,7 +3256,6 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                      .cp_offset = range.cp_offset,
                  };
              } else null;
@@ -2374,24 +2562,24 @@ index 946f84a8a..59392f1c8 100644
              const grid_size_diff =
                  self.cells.size.rows != screen.pages.rows or
                  self.cells.size.columns != screen.pages.cols;
-@@ -2393,10 +3262,16 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+@@ -2393,10 +3272,16 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
              }
-
+ 
              const rebuild = wants_rebuild or grid_size_diff;
 +            const previous_text_grid_pos_y_delta = self.cells_text_grid_pos_y_delta;
 +            var text_grid_pos_y_delta = previous_text_grid_pos_y_delta;
 +            self.cells_fg_sparse_sync_rows.clearRetainingCapacity();
-
+ 
              if (rebuild) {
                  // If we are doing a full rebuild, then we clear the entire cell buffer.
                  self.cells.reset();
 +                text_grid_pos_y_delta = 0;
 +                self.cells_text_grid_pos_y_delta = 0;
 +                self.uniforms.text_grid_pos_y_delta = 0;
-
+ 
                  // We also reset our padding extension depending on the screen type
                  switch (self.config.padding_color) {
-@@ -2413,430 +3288,138 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+@@ -2413,430 +3298,138 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                          };
                      },
                  }
@@ -2714,7 +2902,7 @@ index 946f84a8a..59392f1c8 100644
 -                        };
                      }
 +                }
-
+ 
 -                    // If the invisible flag is set on this cell then we
 -                    // don't need to render any foreground elements, so
 -                    // we just skip all glyphs with this x coordinate.
@@ -2734,7 +2922,7 @@ index 946f84a8a..59392f1c8 100644
 +                self.cells_text_grid_pos_y_delta = text_grid_pos_y_delta;
 +                self.uniforms.text_grid_pos_y_delta = text_grid_pos_y_delta;
 +            }
-
+ 
 -                    // Give links a single underline, unless they already have
 -                    // an underline, in which case use a double underline to
 -                    // distinguish them.
@@ -2771,7 +2959,7 @@ index 946f84a8a..59392f1c8 100644
 +                    shift_extra_row,
 +                );
 +                defer viewport_shift_rows.deinit(arena_alloc);
-
+ 
 -                    if (style.flags.overline) self.addOverline(@intCast(x), @intCast(y), fg, alpha) catch |err| {
 -                        log.warn(
 -                            "error adding overline to cell, will be invalid x={} y={}, err={}",
@@ -2805,7 +2993,7 @@ index 946f84a8a..59392f1c8 100644
 +                        text_grid_pos_y_delta,
 +                    );
 +                }
-
+ 
 -                    // If we're at or past the end of our shaper run then
 -                    // we need to get the next run from the run iterator.
 -                    if (shaper_cells != null and shaper_cells_i >= shaper_cells.?.len) {
@@ -2835,7 +3023,7 @@ index 946f84a8a..59392f1c8 100644
 +                    // The viewport may have more rows than our cell contents,
 +                    // so we need to break from the loop early if we hit y = 0.
 +                    if (y == 0) break;
-
+ 
 -                    if (shaper_run) |run| glyphs: {
 -                        // If we haven't shaped this run yet, do so.
 -                        shaper_cells = shaper_cells orelse
@@ -2865,7 +3053,7 @@ index 946f84a8a..59392f1c8 100644
 -                                break :cache cells;
 -                            };
 +                    y -= 1;
-
+ 
 -                        const cells = shaper_cells orelse break :glyphs;
 -
 -                        // If there are no shaper cells for this run, ignore it.
@@ -2906,7 +3094,7 @@ index 946f84a8a..59392f1c8 100644
 +                        // Clear the cells if the row is dirty
 +                        self.cells.clear(y);
                      }
-
+ 
 -                    // Finally, draw a strikethrough if necessary.
 -                    if (style.flags.strikethrough) self.addStrikethrough(
 -                        @intCast(x),
@@ -2930,7 +3118,7 @@ index 946f84a8a..59392f1c8 100644
 +                    );
                  }
              }
-
+ 
 +            if (rebuild or viewport_row_shift == 0) {
 +                self.cells_text_grid_pos_y_delta = text_grid_pos_y_delta;
 +                self.uniforms.text_grid_pos_y_delta = text_grid_pos_y_delta;
@@ -2939,17 +3127,17 @@ index 946f84a8a..59392f1c8 100644
              // Setup our cursor rendering information.
              cursor: {
                  // By default, we don't handle cursor inversion on the shader.
-@@ -2886,7 +3469,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+@@ -2886,7 +3479,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                  self.addCursor(screen, style, cursor_color);
-
+ 
                  // If the cursor is visible then we set our uniforms.
 -                if (style == .block and screen.viewportIsBottom()) {
 +                if (style == .block and viewport_is_bottom) {
                      const wide = screen.cursor.page_cell.wide;
-
+ 
                      self.uniforms.cursor_pos = .{
-@@ -2957,6 +3540,13 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
-
+@@ -2957,6 +3550,13 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+ 
              // Update that our cells rebuilt
              self.cells_rebuilt = true;
 +            self.cells_revision +%= 1;
@@ -2959,13 +3147,13 @@ index 946f84a8a..59392f1c8 100644
 +                self.cells_upload_hint = .full;
 +                self.cells_upload_chain +%= 1;
 +            }
-
+ 
              // Log some things
              // log.debug("rebuildCells complete cached_runs={}", .{
-@@ -2964,6 +3554,341 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+@@ -2964,6 +3564,397 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
              // });
          }
-
+ 
 +        fn syncViewportShiftBackground(
 +            self: *Self,
 +            frame: *FrameState,
@@ -3066,48 +3254,78 @@ index 946f84a8a..59392f1c8 100644
 +        ) !usize {
 +            const rows: usize = @intCast(self.cells.size.rows);
 +            try frame.fg_row_counts.resize(frame.alloc, rows);
++            try frame.fg_row_offsets.resize(frame.alloc, rows + 1);
 +            try frame.fg_row_viewport_shifted.resize(frame.alloc, rows);
 +
 +            const prefix_count = self.cells.fg_rows.lists[0].items.len;
 +            const suffix_count = self.cells.fg_rows.lists[self.cells.size.rows + 1].items.len;
 +            frame.fg_prefix_count = prefix_count;
 +            frame.fg_suffix_count = suffix_count;
++            frame.fg_row_offsets.items[0] = 0;
 +
-+            var total: usize = prefix_count + suffix_count;
++            var visible_total: usize = 0;
 +            var y: terminal.size.CellCountInt = 0;
 +            while (y < self.cells.size.rows) : (y += 1) {
 +                const count = self.cells.rowItemCount(y);
 +                frame.fg_row_counts.items[y] = @intCast(count);
 +                frame.fg_row_viewport_shifted.items[y] =
 +                    self.cells.rowViewportShifted(y);
-+                total += count;
++                visible_total += count;
++                frame.fg_row_offsets.items[@as(usize, @intCast(y)) + 1] = visible_total;
 +            }
 +
-+            return total;
++            return prefix_count + visible_total + suffix_count;
++        }
++
++        fn syncCurrentForegroundRowOffsets(self: *Self) !void {
++            const rows: usize = @intCast(self.cells.size.rows);
++            try self.cells_fg_row_offsets.resize(self.alloc, rows + 1);
++            self.cells_fg_row_offsets.items[0] = 0;
++
++            var visible_total: usize = 0;
++            var y: terminal.size.CellCountInt = 0;
++            while (y < self.cells.size.rows) : (y += 1) {
++                visible_total += self.cells.rowItemCount(y);
++                self.cells_fg_row_offsets.items[@as(usize, @intCast(y)) + 1] = visible_total;
++            }
 +        }
 +
 +        fn currentForegroundRowOffset(
 +            self: *Self,
 +            y: terminal.size.CellCountInt,
 +        ) usize {
-+            var offset: usize = 0;
-+            var row: terminal.size.CellCountInt = 0;
-+            while (row < y) : (row += 1) {
-+                offset += self.cells.rowItemCount(row);
-+            }
-+            return offset;
++            return self.cells_fg_row_offsets.items[@as(usize, @intCast(y))];
 +        }
 +
 +        fn previousForegroundRowOffset(
 +            frame: *FrameState,
 +            y: terminal.size.CellCountInt,
 +        ) usize {
-+            var offset: usize = 0;
-+            var row: terminal.size.CellCountInt = 0;
-+            while (row < y) : (row += 1) {
-+                offset += frame.fg_row_counts.items[row];
-+            }
-+            return offset;
++            return frame.fg_row_offsets.items[@as(usize, @intCast(y))];
++        }
++
++        fn shiftViewportShiftForegroundSegment(
++            self: *Self,
++            frame: *FrameState,
++            moved_src_start: terminal.size.CellCountInt,
++            moved_dst_start: terminal.size.CellCountInt,
++            segment_start: terminal.size.CellCountInt,
++            segment_end: terminal.size.CellCountInt,
++        ) !void {
++            if (segment_start >= segment_end) return;
++
++            const src_start =
++                moved_src_start + (segment_start - moved_dst_start);
++            const src_end = src_start + (segment_end - segment_start);
++            const src_offset =
++                frame.fg_prefix_count + previousForegroundRowOffset(frame, src_start);
++            const src_end_offset =
++                frame.fg_prefix_count + previousForegroundRowOffset(frame, src_end);
++            const dst_offset = self.currentForegroundRowOffset(segment_start);
++            const moved_count = src_end_offset - src_offset;
++            if (moved_count == 0) return;
++
++            try frame.cells.shiftRange(dst_offset, src_offset, moved_count);
 +        }
 +
 +        fn syncViewportShiftForeground(
@@ -3148,6 +3366,7 @@ index 946f84a8a..59392f1c8 100644
 +            const rows = self.cells.size.rows;
 +            const abs_shift: terminal.size.CellCountInt = @intCast(@abs(row_shift));
 +            if (abs_shift == 0 or abs_shift >= rows) return false;
++            try self.syncCurrentForegroundRowOffsets();
 +
 +            const moved_src_start: terminal.size.CellCountInt = if (row_shift > 0)
 +                0
@@ -3162,11 +3381,13 @@ index 946f84a8a..59392f1c8 100644
 +
 +            // If rebuilt rows inside the moved block changed item count then a
 +            // single contiguous GPU block shift is no longer valid for the
-+            // whole moved region. Shift the unchanged prefix and resync the
-+            // suffix from the first count change onward instead of falling all
-+            // the way back to a full visible upload.
-+            const first_count_change_row = blk: {
++            // whole moved region. Keep the unchanged prefix and suffix on the
++            // fast shift path and narrow the resynced middle to the actual
++            // mismatch window instead of resyncing everything after the first
++            // mismatch.
++            const count_change_rows = blk: {
 +                var first: ?terminal.size.CellCountInt = null;
++                var last: ?terminal.size.CellCountInt = null;
 +                for (self.cells_fg_sparse_sync_rows.items) |y| {
 +                    if (y < moved_dst_start or y >= moved_dst_end) continue;
 +                    // Rows inside the moved block inherit bytes from their
@@ -3176,33 +3397,56 @@ index 946f84a8a..59392f1c8 100644
 +                    if (self.cells.rowItemCount(y) ==
 +                        frame.fg_row_counts.items[source_row]) continue;
 +                    if (first == null or y < first.?) first = y;
++                    if (last == null or y > last.?) last = y;
 +                }
-+                break :blk first;
++                break :blk .{ .first = first, .last = last };
 +            };
-+            const moved_prefix_end = first_count_change_row orelse moved_dst_end;
++            const moved_prefix_end = count_change_rows.first orelse moved_dst_end;
++            const moved_suffix_start = if (count_change_rows.last) |last| last + 1 else moved_dst_start;
 +
-+            const moved_prefix_row_count = moved_prefix_end - moved_dst_start;
-+            if (moved_prefix_row_count > 0) {
-+                const src_offset =
-+                    frame.fg_prefix_count + previousForegroundRowOffset(frame, moved_src_start);
-+                const src_end = previousForegroundRowOffset(
++            if (row_shift > 0) {
++                try self.shiftViewportShiftForegroundSegment(
 +                    frame,
-+                    moved_src_start + moved_prefix_row_count,
-+                ) + frame.fg_prefix_count;
-+                const dst_offset = self.currentForegroundRowOffset(moved_dst_start);
-+                const moved_count = src_end - src_offset;
-+                if (moved_count > 0) {
-+                    try frame.cells.shiftRange(dst_offset, src_offset, moved_count);
-+                }
++                    moved_src_start,
++                    moved_dst_start,
++                    moved_suffix_start,
++                    moved_dst_end,
++                );
++                try self.shiftViewportShiftForegroundSegment(
++                    frame,
++                    moved_src_start,
++                    moved_dst_start,
++                    moved_dst_start,
++                    moved_prefix_end,
++                );
++            } else {
++                try self.shiftViewportShiftForegroundSegment(
++                    frame,
++                    moved_src_start,
++                    moved_dst_start,
++                    moved_dst_start,
++                    moved_prefix_end,
++                );
++                try self.shiftViewportShiftForegroundSegment(
++                    frame,
++                    moved_src_start,
++                    moved_dst_start,
++                    moved_suffix_start,
++                    moved_dst_end,
++                );
 +            }
 +
-+            if (first_count_change_row) |start_row| {
-+                try self.syncViewportShiftForegroundRows(frame, start_row, moved_dst_end);
++            if (count_change_rows.first) |start_row| {
++                try self.syncViewportShiftForegroundRows(
++                    frame,
++                    start_row,
++                    count_change_rows.last.? + 1,
++                );
 +            }
 +
 +            for (self.cells_fg_sparse_sync_rows.items) |y| {
-+                if (first_count_change_row) |start_row| {
-+                    if (y >= start_row and y < moved_dst_end) continue;
++                if (count_change_rows.first) |start_row| {
++                    if (y >= start_row and y <= count_change_rows.last.?) continue;
 +                }
 +                try self.syncViewportShiftForegroundRow(frame, y);
 +            }
@@ -3304,7 +3548,7 @@ index 946f84a8a..59392f1c8 100644
          /// Add an underline decoration to the specified cell
          fn addUnderline(
              self: *Self,
-@@ -3203,7 +4128,10 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+@@ -3203,7 +4194,10 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
              self.cells.setCursor(.{
                  .atlas = .grayscale,
                  .bools = .{ .is_cursor_glyph = true },
@@ -3321,7 +3565,7 @@ index 410fb8632..f13ec2fa0 100644
 --- a/src/renderer/link.zig
 +++ b/src/renderer/link.zig
 @@ -92,6 +92,10 @@ pub const Set = struct {
-
+ 
          // If we have no matches then we can try the regex matches.
          if (matches.items.len == 0) {
 +            if (!self.needsRegexViewportScan(mouse_mods)) {
@@ -3334,7 +3578,7 @@ index 410fb8632..f13ec2fa0 100644
 @@ -104,6 +108,22 @@ pub const Set = struct {
          return .{ .matches = try matches.toOwnedSlice() };
      }
-
+ 
 +    fn needsRegexViewportScan(
 +        self: *const Set,
 +        mouse_mods: inputpkg.Mods,
@@ -3394,12 +3638,12 @@ index 410fb8632..f13ec2fa0 100644
 +        return false;
 +    }
  };
-
+ 
  /// MatchSet is the result of matching links against a screen. This contains
 @@ -602,6 +650,74 @@ test "matchset mods no match" {
      } }).?));
  }
-
+ 
 +test "matchset line scan eligibility skips non-hovered rows" {
 +    const testing = std.testing;
 +    const alloc = testing.allocator;
@@ -3478,7 +3722,7 @@ index d6255661f..18668eda5 100644
 @@ -62,6 +62,11 @@ pub const Message = union(enum) {
          impl: *renderer.Renderer.DerivedConfig,
      },
-
+ 
 +    /// Force the next wakeup-triggered render to follow with an immediate
 +    /// draw. This stays renderer-owned while avoiding visible clumping on
 +    /// narrow seams such as precise alternate-scroll.
@@ -3486,7 +3730,7 @@ index d6255661f..18668eda5 100644
 +
      /// Activate or deactivate the inspector.
      inspector: bool,
-
+ 
 diff --git a/src/renderer/metal/buffer.zig b/src/renderer/metal/buffer.zig
 index 43320a60b..5ad72f239 100644
 --- a/src/renderer/metal/buffer.zig
@@ -3494,7 +3738,7 @@ index 43320a60b..5ad72f239 100644
 @@ -67,6 +67,50 @@ pub fn Buffer(comptime T: type) type {
              self.buffer.msgSend(void, objc.sel("release"), .{});
          }
-
+ 
 +        fn ensureCapacity(self: *Self, item_len: usize) !void {
 +            const req_bytes = item_len * @sizeOf(T);
 +            const avail_bytes = self.buffer.getProperty(c_ulong, "length");
@@ -3566,7 +3810,7 @@ index 43320a60b..5ad72f239 100644
 -            }
 +            try self.syncRange(0, data);
 +        }
-
+ 
 -            // We can fit within the buffer so we can just replace bytes.
 -            const dst = dst: {
 -                const ptr = self.buffer.msgSend(?[*]u8, objc.sel("contents"), .{}) orelse {
@@ -3576,7 +3820,7 @@ index 43320a60b..5ad72f239 100644
 +        /// Sync a contiguous range within the buffer.
 +        pub fn syncRange(self: *Self, offset_items: usize, data: []const T) !void {
 +            if (data.len == 0) return;
-
+ 
 -                break :dst ptr[0..req_bytes];
 -            };
 -
@@ -3588,7 +3832,7 @@ index 43320a60b..5ad72f239 100644
 +            @memcpy(dst[offset_items..][0..data.len], data);
 +            self.didModify(offset_items, data.len);
 +        }
-
+ 
 -            @memcpy(dst, src);
 -
 -            // If we're using the managed resource storage mode, then
@@ -3630,7 +3874,7 @@ index 43320a60b..5ad72f239 100644
 +            );
 +            self.didModify(modified_start, modified_end - modified_start);
          }
-
+ 
          /// Like Buffer.sync but takes data from an array of ArrayLists,
          /// rather than a single array. Returns the number of items synced.
          pub fn syncFromArrayLists(self: *Self, lists: []const std.ArrayListUnmanaged(T)) !usize {
@@ -3648,7 +3892,7 @@ index 43320a60b..5ad72f239 100644
              for (lists) |list| {
                  total_len += list.items.len;
              }
-
+ 
 -            // If we need more bytes than our buffer has, we need to reallocate.
 -            const req_bytes = total_len * @sizeOf(T);
 -            const avail_bytes = self.buffer.getProperty(c_ulong, "length");
@@ -3668,7 +3912,7 @@ index 43320a60b..5ad72f239 100644
 -                );
 -            }
 +            if (total_len == 0) return 0;
-
+ 
 -            // We can fit within the buffer so we can just replace bytes.
 -            const dst = dst: {
 -                const ptr = self.buffer.msgSend(?[*]u8, objc.sel("contents"), .{}) orelse {
@@ -3681,7 +3925,7 @@ index 43320a60b..5ad72f239 100644
 -
 -            var i: usize = 0;
 +            const dst = try self.mutableContents(offset_items + total_len);
-
+ 
 +            var i: usize = offset_items;
              for (lists) |list| {
 -                const ptr = @as([*]const u8, @ptrCast(list.items.ptr));
@@ -3690,7 +3934,7 @@ index 43320a60b..5ad72f239 100644
 +                @memcpy(dst[i..][0..list.items.len], list.items);
 +                i += list.items.len;
              }
-
+ 
 -            // If we're using the managed resource storage mode, then
 -            // we need to signal Metal to synchronize the buffer data.
 -            //
@@ -3703,7 +3947,7 @@ index 43320a60b..5ad72f239 100644
 -                );
 -            }
 +            self.didModify(offset_items, total_len);
-
+ 
              return total_len;
          }
 diff --git a/src/renderer/metal/shaders.zig b/src/renderer/metal/shaders.zig
@@ -3713,7 +3957,7 @@ index bf3bcc6e4..3ca66d8b6 100644
 @@ -208,6 +208,9 @@ pub const Uniforms = extern struct {
      /// Size of the grid in columns and rows.
      grid_size: [2]u16 align(4),
-
+ 
 +    /// Additional Y offset to apply to viewport-shifted foreground instances.
 +    text_grid_pos_y_delta: i32 align(4),
 +
@@ -3735,7 +3979,7 @@ index bf3bcc6e4..3ca66d8b6 100644
 +        viewport_shifted: bool = false,
 +        _padding: u5 = 0,
      } align(1) = .{},
-
+ 
      pub const Atlas = enum(u8) {
 diff --git a/src/renderer/opengl/shaders.zig b/src/renderer/opengl/shaders.zig
 index 80980bac7..cf32b5d33 100644
@@ -3744,7 +3988,7 @@ index 80980bac7..cf32b5d33 100644
 @@ -174,6 +174,9 @@ pub const Uniforms = extern struct {
      /// Size of the grid in columns and rows.
      grid_size: [2]u16 align(4),
-
+ 
 +    /// Additional Y offset to apply to viewport-shifted foreground instances.
 +    text_grid_pos_y_delta: i32 align(4),
 +
@@ -3766,7 +4010,7 @@ index 80980bac7..cf32b5d33 100644
 +        viewport_shifted: bool = false,
 +        _padding: u5 = 0,
      } align(1) = .{},
-
+ 
      pub const Atlas = enum(u8) {
 diff --git a/src/renderer/shaders/glsl/cell_text.v.glsl b/src/renderer/shaders/glsl/cell_text.v.glsl
 index 7e38e2f0c..5fc1240af 100644
@@ -3775,13 +4019,13 @@ index 7e38e2f0c..5fc1240af 100644
 @@ -9,8 +9,9 @@ layout(location = 1) in uvec2 glyph_size;
  // The left and top bearings for the glyph (x, y)
  layout(location = 2) in ivec2 bearings;
-
+ 
 -// The grid coordinates (x, y) where x < columns and y < rows
 -layout(location = 3) in uvec2 grid_pos;
 +// The grid coordinates (x, y) where x < columns. Y may be viewport-shifted
 +// base space while `VIEWPORT_SHIFTED` is set.
 +layout(location = 3) in ivec2 grid_pos;
-
+ 
  // The color of the rendered text glyph.
  layout(location = 4) in uvec4 color;
 @@ -28,6 +29,7 @@ const uint ATLAS_COLOR = 1u;
@@ -3789,12 +4033,12 @@ index 7e38e2f0c..5fc1240af 100644
  const uint NO_MIN_CONTRAST = 1u;
  const uint IS_CURSOR_GLYPH = 2u;
 +const uint VIEWPORT_SHIFTED = 4u;
-
+ 
  out CellTextVertexOut {
      flat uint atlas;
 @@ -41,13 +43,18 @@ layout(binding = 1, std430) readonly buffer bg_cells {
  };
-
+ 
  void main() {
 -    uvec2 grid_size = unpack2u16(grid_size_packed_2u16);
 -    uvec2 cursor_pos = unpack2u16(cursor_pos_packed_2u16);
@@ -3807,13 +4051,13 @@ index 7e38e2f0c..5fc1240af 100644
 +        grid_y += text_grid_pos_y_delta;
 +    }
 +    ivec2 effective_grid_pos = ivec2(grid_pos.x, grid_y);
-
+ 
      // Convert the grid x, y into world space x, y by accounting for cell size
 -    vec2 cell_pos = cell_size * vec2(grid_pos);
 +    vec2 cell_pos = cell_size * vec2(effective_grid_pos);
-
+ 
      int vid = gl_VertexID;
-
+ 
 @@ -117,7 +124,7 @@ void main() {
      out_data.color = load_color(color, true);
      // Get the BG color
@@ -3825,11 +4069,11 @@ index 7e38e2f0c..5fc1240af 100644
      // Blend it with the global bg color
 @@ -136,7 +143,7 @@ void main() {
      }
-
+ 
      // Check if current position is under cursor (including wide cursor)
 -    bool is_cursor_pos = ((grid_pos.x == cursor_pos.x) || (cursor_wide && (grid_pos.x == (cursor_pos.x + 1)))) && (grid_pos.y == cursor_pos.y);
 +    bool is_cursor_pos = ((effective_grid_pos.x == cursor_pos.x) || (cursor_wide && (effective_grid_pos.x == (cursor_pos.x + 1)))) && (effective_grid_pos.y == cursor_pos.y);
-
+ 
      // If this cell is the cursor cell, but we're not processing
      // the cursor glyph itself, then we need to change the color.
 diff --git a/src/renderer/shaders/glsl/common.glsl b/src/renderer/shaders/glsl/common.glsl
@@ -3862,15 +4106,15 @@ index 4797f89e4..b6635e4d2 100644
    IS_CURSOR_GLYPH = 2u,
 +  VIEWPORT_SHIFTED = 4u,
  };
-
+ 
  struct CellTextVertexIn {
 @@ -533,7 +535,7 @@ struct CellTextVertexIn {
    int2 bearings [[attribute(2)]];
-
+ 
    // The grid coordinates (x, y) where x < columns and y < rows
 -  ushort2 grid_pos [[attribute(3)]];
 +  short2 grid_pos [[attribute(3)]];
-
+ 
    // The color of the rendered text glyph.
    uchar4 color [[attribute(4)]];
 @@ -559,8 +561,13 @@ vertex CellTextVertexOut cell_text_vertex(
@@ -3885,11 +4129,11 @@ index 4797f89e4..b6635e4d2 100644
    // Convert the grid x, y into world space x, y by accounting for cell size
 -  float2 cell_pos = uniforms.cell_size * float2(in.grid_pos);
 +  float2 cell_pos = uniforms.cell_size * float2(effective_grid_pos);
-
+ 
    // We use a triangle strip with 4 vertices to render quads,
    // so we determine which corner of the cell this vertex is in
 @@ -635,7 +642,7 @@ vertex CellTextVertexOut cell_text_vertex(
-
+ 
    // Get the BG color
    out.bg_color = load_color(
 -    bg_colors[in.grid_pos.y * uniforms.grid_size.x + in.grid_pos.x],
@@ -3898,7 +4142,7 @@ index 4797f89e4..b6635e4d2 100644
      true
    );
 @@ -657,10 +664,10 @@ vertex CellTextVertexOut cell_text_vertex(
-
+ 
    // Check if current position is under cursor (including wide cursor)
    bool is_cursor_pos = (
 -      in.grid_pos.x == uniforms.cursor_pos.x ||
@@ -3908,11 +4152,11 @@ index 4797f89e4..b6635e4d2 100644
 -    ) && in.grid_pos.y == uniforms.cursor_pos.y;
 +        effective_grid_pos.x == uniforms.cursor_pos.x + 1
 +    ) && effective_grid_pos.y == uniforms.cursor_pos.y;
-
+ 
    // If this cell is the cursor cell, but we're not processing
    // the cursor glyph itself, then we need to change the color.
 @@ -850,4 +857,3 @@ fragment float4 image_fragment(
-
+ 
    return rgba;
  }
 -
@@ -3921,9 +4165,9 @@ index 028fcdf0a..928168862 100644
 --- a/src/terminal/osc.zig
 +++ b/src/terminal/osc.zig
 @@ -17,6 +17,8 @@ pub const color = osc_color;
-
+ 
  const log = std.log.scoped(.osc);
-
+ 
 +pub const AGTMUX_BRIDGE_OSC: u16 = 9911;
 +
  pub const Command = union(enum) {
@@ -3932,7 +4176,7 @@ index 028fcdf0a..928168862 100644
 @@ -107,6 +109,9 @@ pub const Command = union(enum) {
          value: []const u8,
      },
-
+ 
 +    /// Raw custom OSC carrier. This is currently used for the agtmux bridge.
 +    custom_osc: CustomOSC,
 +
@@ -3942,7 +4186,7 @@ index 028fcdf0a..928168862 100644
 @@ -202,6 +207,39 @@ pub const Command = union(enum) {
          }
      };
-
+ 
 +    pub const CustomOSC = struct {
 +        osc: u16,
 +        payload: []const u8,
@@ -3986,12 +4230,12 @@ index 028fcdf0a..928168862 100644
 +        @"99",
 +        @"991",
 +        @"9911",
-
+ 
          // We're in a semantic prompt OSC command but we aren't sure
          // what the command is yet, i.e. `133;`
 @@ -1016,6 +1057,7 @@ pub const Parser = struct {
              },
-
+ 
              .@"9" => switch (c) {
 +                '9' => self.state = .@"99",
                  ';' => {
@@ -4000,7 +4244,7 @@ index 028fcdf0a..928168862 100644
 @@ -1023,6 +1065,30 @@ pub const Parser = struct {
                  else => self.state = .invalid,
              },
-
+ 
 +            .@"99" => switch (c) {
 +                '1' => self.state = .@"991",
 +                else => self.state = .invalid,
@@ -4031,7 +4275,7 @@ index 028fcdf0a..928168862 100644
 @@ -1918,6 +1984,39 @@ test "OSC: report pwd empty" {
      try testing.expectEqualStrings("", cmd.report_pwd.value);
  }
-
+ 
 +test "OSC: custom osc 9911 preserves payload" {
 +    const testing = std.testing;
 +
@@ -4067,7 +4311,7 @@ index 028fcdf0a..928168862 100644
 +
  test "OSC: pointer cursor" {
      const testing = std.testing;
-
+ 
 diff --git a/src/terminal/stream.zig b/src/terminal/stream.zig
 index 9a3561aac..f4c7d9093 100644
 --- a/src/terminal/stream.zig
@@ -4075,7 +4319,7 @@ index 9a3561aac..f4c7d9093 100644
 @@ -1558,6 +1558,13 @@ pub fn Stream(comptime Handler: type) type {
                      } else log.warn("unimplemented OSC callback: {}", .{cmd});
                  },
-
+ 
 +                .custom_osc => |v| {
 +                    if (@hasDecl(T, "customOSC")) {
 +                        try self.handler.customOSC(v);
@@ -4089,7 +4333,7 @@ index 9a3561aac..f4c7d9093 100644
 @@ -2287,6 +2294,23 @@ test "stream: change window title with invalid utf-8" {
      }
  }
-
+ 
 +test "stream: custom osc 9911 reaches handler with ST terminator" {
 +    const H = struct {
 +        payload: ?osc.Command.CustomOSC = null,
@@ -4111,36 +4355,88 @@ index 9a3561aac..f4c7d9093 100644
      const H = struct {
          const Self = @This();
 diff --git a/src/termio/Exec.zig b/src/termio/Exec.zig
-index 77fd2cc68..4a970c97c 100644
+index 77fd2cc68..af1442040 100644
 --- a/src/termio/Exec.zig
 +++ b/src/termio/Exec.zig
-@@ -1302,6 +1302,9 @@ pub const ReadThread = struct {
+@@ -151,6 +151,8 @@ pub fn threadEnter(
+ 
+     // Setup our threadata backend state to be our own
+     td.backend = .{ .exec = .{
++        .alloc = alloc,
++        .io = io,
+         .start = process_start,
+         .write_stream = stream,
+         .process = process,
+@@ -487,8 +489,10 @@ fn ttyWrite(
+         log.err("write error: {}", .{err});
+         return .disarm;
+     };
+-    _ = d;
+-    //log.info("WROTE: {d}", .{d});
++    if (td.precise_write_lengths.items.len > 0) {
++        const len = td.precise_write_lengths.orderedRemove(0);
++        td.io.notePreciseAlternateScrollWriteCompleted(@min(d, len));
++    }
+ 
+     return .disarm;
+ }
+@@ -499,6 +503,9 @@ pub const ThreadData = struct {
+     // enough to satisfy most write requests. It must be a power of 2.
+     const WRITE_REQ_PREALLOC = std.math.pow(usize, 2, 5);
+ 
++    alloc: Allocator,
++    io: *termio.Termio,
++
+     /// Process start time and boolean of whether its already exited.
+     start: std.time.Instant,
+     exited: bool = false,
+@@ -519,6 +526,10 @@ pub const ThreadData = struct {
+     /// The write queue for the data stream.
+     write_queue: xev.WriteQueue = .{},
+ 
++    /// FIFO of queued precise alternate-scroll write lengths so completion
++    /// callbacks can prove the bytes made it to the PTY stream.
++    precise_write_lengths: std.ArrayListUnmanaged(u8) = .{},
++
+     /// This is used for both waiting for the process to exit and then
+     /// subsequently to wait for the data_stream to close.
+     process_wait_c: xev.Completion = .{},
+@@ -543,6 +554,7 @@ pub const ThreadData = struct {
+ 
+     pub fn deinit(self: *ThreadData, alloc: Allocator) void {
+         posix.close(self.read_thread_pipe);
++        self.precise_write_lengths.deinit(self.alloc);
+ 
+         // Clear our write pools. We know we aren't ever going to do
+         // any more IO since we stop our data stream below so we can just
+@@ -1302,6 +1314,10 @@ pub const ReadThread = struct {
                  if (n == 0) break;
-
+ 
                  // log.info("DATA: {d}", .{n});
 +                if (io.hasPreciseAlternateScrollReadBudget()) {
 +                    io.notePreciseAlternateScrollReadChunk(n);
++                    io.notePreciseAlternateScrollReadByteClasses(buf[0..n]);
 +                }
                  @call(.always_inline, termio.Termio.processOutput, .{ io, buf[0..n] });
              }
-
+ 
 diff --git a/src/termio/Termio.zig b/src/termio/Termio.zig
-index e41fe33a9..216469f0c 100644
+index e41fe33a9..2d36be719 100644
 --- a/src/termio/Termio.zig
 +++ b/src/termio/Termio.zig
 @@ -28,6 +28,8 @@ const configpkg = @import("../config.zig");
  const shell_integration = @import("shell_integration.zig");
-
+ 
  const log = std.log.scoped(.io_exec);
 +const AtomicU64 = std.atomic.Value(u64);
 +const AtomicU32 = std.atomic.Value(u32);
-
+ 
  /// Allocator
  alloc: Allocator,
 @@ -62,6 +64,15 @@ size: renderer.Size,
  /// The mailbox implementation to use.
  mailbox: termio.Mailbox,
-
+ 
 +/// Alternate-scroll telemetry used by the embedded harness to distinguish
 +/// input emission from IO-thread drain clumping on precise trackpad scrolls.
 +alternate_scroll_telemetry: AlternateScrollTelemetry = .{},
@@ -4153,60 +4449,159 @@ index e41fe33a9..216469f0c 100644
  /// The stream parser. This parses the stream of escape codes and so on
  /// from the child process and calls callbacks in the stream handler.
  terminal_stream: terminalpkg.Stream(StreamHandler),
-@@ -201,6 +212,62 @@ pub const DerivedConfig = struct {
+@@ -201,6 +212,161 @@ pub const DerivedConfig = struct {
      }
  };
-
+ 
 +pub const AlternateScrollTelemetrySnapshot = extern struct {
 +    precise_event_count: u64,
 +    precise_step_count: u64,
++    precise_first_event_elapsed_ms: u64,
 +    precise_message_queue_count: u64,
++    precise_first_message_queue_elapsed_ms: u64,
 +    precise_mailbox_notify_count: u64,
++    precise_first_mailbox_notify_elapsed_ms: u64,
++    precise_write_queue_count: u64,
++    precise_write_queue_bytes: u64,
++    precise_first_write_queue_elapsed_ms: u64,
++    precise_write_completed_count: u64,
++    precise_write_completed_bytes: u64,
++    precise_first_write_completed_elapsed_ms: u64,
 +    precise_drain_turn_count: u64,
 +    precise_drained_message_count: u64,
 +    precise_drain_requeue_count: u64,
++    precise_first_drain_turn_elapsed_ms: u64,
 +    precise_read_chunk_count: u64,
 +    precise_read_chunk_bytes: u64,
 +    precise_read_chunk_max_bytes: u64,
++    precise_first_read_chunk_elapsed_ms: u64,
++    precise_up_sequence_count: u64,
++    precise_down_sequence_count: u64,
++    precise_application_cursor_sequence_count: u64,
++    precise_normal_cursor_sequence_count: u64,
++    precise_read_escape_byte_count: u64,
++    precise_read_printable_byte_count: u64,
++    precise_read_newline_byte_count: u64,
 +};
 +
 +const AlternateScrollTelemetry = struct {
++    const unset_elapsed_ms = std.math.maxInt(u64);
++
++    reset_time_ns: AtomicU64 = .{ .raw = 0 },
 +    precise_event_count: AtomicU64 = .{ .raw = 0 },
 +    precise_step_count: AtomicU64 = .{ .raw = 0 },
++    precise_first_event_elapsed_ms: AtomicU64 = .{ .raw = unset_elapsed_ms },
 +    precise_message_queue_count: AtomicU64 = .{ .raw = 0 },
++    precise_first_message_queue_elapsed_ms: AtomicU64 = .{ .raw = unset_elapsed_ms },
 +    precise_mailbox_notify_count: AtomicU64 = .{ .raw = 0 },
++    precise_first_mailbox_notify_elapsed_ms: AtomicU64 = .{ .raw = unset_elapsed_ms },
++    precise_write_queue_count: AtomicU64 = .{ .raw = 0 },
++    precise_write_queue_bytes: AtomicU64 = .{ .raw = 0 },
++    precise_first_write_queue_elapsed_ms: AtomicU64 = .{ .raw = unset_elapsed_ms },
++    precise_write_completed_count: AtomicU64 = .{ .raw = 0 },
++    precise_write_completed_bytes: AtomicU64 = .{ .raw = 0 },
++    precise_first_write_completed_elapsed_ms: AtomicU64 = .{ .raw = unset_elapsed_ms },
 +    precise_drain_turn_count: AtomicU64 = .{ .raw = 0 },
 +    precise_drained_message_count: AtomicU64 = .{ .raw = 0 },
 +    precise_drain_requeue_count: AtomicU64 = .{ .raw = 0 },
++    precise_first_drain_turn_elapsed_ms: AtomicU64 = .{ .raw = unset_elapsed_ms },
 +    precise_read_chunk_count: AtomicU64 = .{ .raw = 0 },
 +    precise_read_chunk_bytes: AtomicU64 = .{ .raw = 0 },
 +    precise_read_chunk_max_bytes: AtomicU64 = .{ .raw = 0 },
++    precise_first_read_chunk_elapsed_ms: AtomicU64 = .{ .raw = unset_elapsed_ms },
++    precise_up_sequence_count: AtomicU64 = .{ .raw = 0 },
++    precise_down_sequence_count: AtomicU64 = .{ .raw = 0 },
++    precise_application_cursor_sequence_count: AtomicU64 = .{ .raw = 0 },
++    precise_normal_cursor_sequence_count: AtomicU64 = .{ .raw = 0 },
++    precise_read_escape_byte_count: AtomicU64 = .{ .raw = 0 },
++    precise_read_printable_byte_count: AtomicU64 = .{ .raw = 0 },
++    precise_read_newline_byte_count: AtomicU64 = .{ .raw = 0 },
 +
 +    fn reset(self: *AlternateScrollTelemetry) void {
++        self.reset_time_ns.store(@intCast(std.time.nanoTimestamp()), .monotonic);
 +        self.precise_event_count.store(0, .monotonic);
 +        self.precise_step_count.store(0, .monotonic);
++        self.precise_first_event_elapsed_ms.store(unset_elapsed_ms, .monotonic);
 +        self.precise_message_queue_count.store(0, .monotonic);
++        self.precise_first_message_queue_elapsed_ms.store(unset_elapsed_ms, .monotonic);
 +        self.precise_mailbox_notify_count.store(0, .monotonic);
++        self.precise_first_mailbox_notify_elapsed_ms.store(unset_elapsed_ms, .monotonic);
++        self.precise_write_queue_count.store(0, .monotonic);
++        self.precise_write_queue_bytes.store(0, .monotonic);
++        self.precise_first_write_queue_elapsed_ms.store(unset_elapsed_ms, .monotonic);
++        self.precise_write_completed_count.store(0, .monotonic);
++        self.precise_write_completed_bytes.store(0, .monotonic);
++        self.precise_first_write_completed_elapsed_ms.store(unset_elapsed_ms, .monotonic);
 +        self.precise_drain_turn_count.store(0, .monotonic);
 +        self.precise_drained_message_count.store(0, .monotonic);
 +        self.precise_drain_requeue_count.store(0, .monotonic);
++        self.precise_first_drain_turn_elapsed_ms.store(unset_elapsed_ms, .monotonic);
 +        self.precise_read_chunk_count.store(0, .monotonic);
 +        self.precise_read_chunk_bytes.store(0, .monotonic);
 +        self.precise_read_chunk_max_bytes.store(0, .monotonic);
++        self.precise_first_read_chunk_elapsed_ms.store(unset_elapsed_ms, .monotonic);
++        self.precise_up_sequence_count.store(0, .monotonic);
++        self.precise_down_sequence_count.store(0, .monotonic);
++        self.precise_application_cursor_sequence_count.store(0, .monotonic);
++        self.precise_normal_cursor_sequence_count.store(0, .monotonic);
++        self.precise_read_escape_byte_count.store(0, .monotonic);
++        self.precise_read_printable_byte_count.store(0, .monotonic);
++        self.precise_read_newline_byte_count.store(0, .monotonic);
++    }
++
++    fn markFirstElapsedMs(self: *AlternateScrollTelemetry, field: *AtomicU64) void {
++        const reset_ns = self.reset_time_ns.load(.monotonic);
++        if (reset_ns == 0) return;
++
++        const now_ns: u64 = @intCast(std.time.nanoTimestamp());
++        const elapsed_ms = if (now_ns > reset_ns)
++            (now_ns - reset_ns) / std.time.ns_per_ms
++        else
++            0;
++
++        _ = field.cmpxchgWeak(
++            unset_elapsed_ms,
++            elapsed_ms,
++            .monotonic,
++            .monotonic,
++        );
++    }
++
++    fn snapshotElapsedMs(field: *const AtomicU64) u64 {
++        const value = field.load(.monotonic);
++        return if (value == unset_elapsed_ms) 0 else value;
 +    }
 +
 +    fn snapshot(self: *const AlternateScrollTelemetry) AlternateScrollTelemetrySnapshot {
 +        return .{
 +            .precise_event_count = self.precise_event_count.load(.monotonic),
 +            .precise_step_count = self.precise_step_count.load(.monotonic),
++            .precise_first_event_elapsed_ms = snapshotElapsedMs(&self.precise_first_event_elapsed_ms),
 +            .precise_message_queue_count = self.precise_message_queue_count.load(.monotonic),
++            .precise_first_message_queue_elapsed_ms = snapshotElapsedMs(&self.precise_first_message_queue_elapsed_ms),
 +            .precise_mailbox_notify_count = self.precise_mailbox_notify_count.load(.monotonic),
++            .precise_first_mailbox_notify_elapsed_ms = snapshotElapsedMs(&self.precise_first_mailbox_notify_elapsed_ms),
++            .precise_write_queue_count = self.precise_write_queue_count.load(.monotonic),
++            .precise_write_queue_bytes = self.precise_write_queue_bytes.load(.monotonic),
++            .precise_first_write_queue_elapsed_ms = snapshotElapsedMs(&self.precise_first_write_queue_elapsed_ms),
++            .precise_write_completed_count = self.precise_write_completed_count.load(.monotonic),
++            .precise_write_completed_bytes = self.precise_write_completed_bytes.load(.monotonic),
++            .precise_first_write_completed_elapsed_ms = snapshotElapsedMs(&self.precise_first_write_completed_elapsed_ms),
 +            .precise_drain_turn_count = self.precise_drain_turn_count.load(.monotonic),
 +            .precise_drained_message_count = self.precise_drained_message_count.load(.monotonic),
 +            .precise_drain_requeue_count = self.precise_drain_requeue_count.load(.monotonic),
++            .precise_first_drain_turn_elapsed_ms = snapshotElapsedMs(&self.precise_first_drain_turn_elapsed_ms),
 +            .precise_read_chunk_count = self.precise_read_chunk_count.load(.monotonic),
 +            .precise_read_chunk_bytes = self.precise_read_chunk_bytes.load(.monotonic),
 +            .precise_read_chunk_max_bytes = self.precise_read_chunk_max_bytes.load(.monotonic),
++            .precise_first_read_chunk_elapsed_ms = snapshotElapsedMs(&self.precise_first_read_chunk_elapsed_ms),
++            .precise_up_sequence_count = self.precise_up_sequence_count.load(.monotonic),
++            .precise_down_sequence_count = self.precise_down_sequence_count.load(.monotonic),
++            .precise_application_cursor_sequence_count = self.precise_application_cursor_sequence_count.load(.monotonic),
++            .precise_normal_cursor_sequence_count = self.precise_normal_cursor_sequence_count.load(.monotonic),
++            .precise_read_escape_byte_count = self.precise_read_escape_byte_count.load(.monotonic),
++            .precise_read_printable_byte_count = self.precise_read_printable_byte_count.load(.monotonic),
++            .precise_read_newline_byte_count = self.precise_read_newline_byte_count.load(.monotonic),
 +        };
 +    }
 +};
@@ -4216,11 +4611,14 @@ index e41fe33a9..216469f0c 100644
  /// Initialize the termio state.
  ///
  /// This will also start the child process if the termio is configured
-@@ -408,10 +475,17 @@ pub fn queueMessage(
+@@ -408,10 +574,23 @@ pub fn queueMessage(
      msg: termio.Message,
      mutex: enum { locked, unlocked },
  ) void {
 +    if (msg == .write_scroll_step) {
++        self.alternate_scroll_telemetry.markFirstElapsedMs(
++            &self.alternate_scroll_telemetry.precise_first_message_queue_elapsed_ms,
++        );
 +        _ = self.alternate_scroll_telemetry.precise_message_queue_count.fetchAdd(1, .monotonic);
 +        _ = self.precise_alternate_scroll_read_budget.fetchAdd(1, .monotonic);
 +    }
@@ -4229,21 +4627,44 @@ index e41fe33a9..216469f0c 100644
          .unlocked => null,
      });
 +    if (msg == .write_scroll_step) {
++        self.alternate_scroll_telemetry.markFirstElapsedMs(
++            &self.alternate_scroll_telemetry.precise_first_mailbox_notify_elapsed_ms,
++        );
 +        _ = self.alternate_scroll_telemetry.precise_mailbox_notify_count.fetchAdd(1, .monotonic);
 +    }
      self.mailbox.notify();
  }
-
-@@ -431,6 +505,71 @@ pub inline fn queueWrite(
+ 
+@@ -431,6 +610,141 @@ pub inline fn queueWrite(
      try self.backend.queueWrite(self.alloc, td, data, linefeed);
  }
-
+ 
 +pub fn notePreciseAlternateScrollEvent(
 +    self: *Termio,
 +    step_count: usize,
 +) void {
++    self.alternate_scroll_telemetry.markFirstElapsedMs(
++        &self.alternate_scroll_telemetry.precise_first_event_elapsed_ms,
++    );
 +    _ = self.alternate_scroll_telemetry.precise_event_count.fetchAdd(1, .monotonic);
 +    _ = self.alternate_scroll_telemetry.precise_step_count.fetchAdd(step_count, .monotonic);
++}
++
++pub fn notePreciseAlternateScrollSequence(
++    self: *Termio,
++    seq: []const u8,
++) void {
++    if (std.mem.eql(u8, seq, "\x1bOA") or std.mem.eql(u8, seq, "\x1b[A")) {
++        _ = self.alternate_scroll_telemetry.precise_up_sequence_count.fetchAdd(1, .monotonic);
++    } else if (std.mem.eql(u8, seq, "\x1bOB") or std.mem.eql(u8, seq, "\x1b[B")) {
++        _ = self.alternate_scroll_telemetry.precise_down_sequence_count.fetchAdd(1, .monotonic);
++    }
++
++    if (std.mem.startsWith(u8, seq, "\x1bO")) {
++        _ = self.alternate_scroll_telemetry.precise_application_cursor_sequence_count.fetchAdd(1, .monotonic);
++    } else if (std.mem.startsWith(u8, seq, "\x1b[")) {
++        _ = self.alternate_scroll_telemetry.precise_normal_cursor_sequence_count.fetchAdd(1, .monotonic);
++    }
 +}
 +
 +pub fn notePreciseAlternateScrollDrain(
@@ -4252,6 +4673,9 @@ index e41fe33a9..216469f0c 100644
 +    requeued: bool,
 +) void {
 +    if (drained_count == 0) return;
++    self.alternate_scroll_telemetry.markFirstElapsedMs(
++        &self.alternate_scroll_telemetry.precise_first_drain_turn_elapsed_ms,
++    );
 +    _ = self.alternate_scroll_telemetry.precise_drain_turn_count.fetchAdd(1, .monotonic);
 +    _ = self.alternate_scroll_telemetry.precise_drained_message_count.fetchAdd(drained_count, .monotonic);
 +    if (requeued) {
@@ -4259,7 +4683,32 @@ index e41fe33a9..216469f0c 100644
 +    }
 +}
 +
++pub fn notePreciseAlternateScrollWriteQueued(
++    self: *Termio,
++    byte_count: usize,
++) void {
++    self.alternate_scroll_telemetry.markFirstElapsedMs(
++        &self.alternate_scroll_telemetry.precise_first_write_queue_elapsed_ms,
++    );
++    _ = self.alternate_scroll_telemetry.precise_write_queue_count.fetchAdd(1, .monotonic);
++    _ = self.alternate_scroll_telemetry.precise_write_queue_bytes.fetchAdd(byte_count, .monotonic);
++}
++
++pub fn notePreciseAlternateScrollWriteCompleted(
++    self: *Termio,
++    byte_count: usize,
++) void {
++    self.alternate_scroll_telemetry.markFirstElapsedMs(
++        &self.alternate_scroll_telemetry.precise_first_write_completed_elapsed_ms,
++    );
++    _ = self.alternate_scroll_telemetry.precise_write_completed_count.fetchAdd(1, .monotonic);
++    _ = self.alternate_scroll_telemetry.precise_write_completed_bytes.fetchAdd(byte_count, .monotonic);
++}
++
 +pub fn notePreciseAlternateScrollReadChunk(self: *Termio, byte_count: usize) void {
++    self.alternate_scroll_telemetry.markFirstElapsedMs(
++        &self.alternate_scroll_telemetry.precise_first_read_chunk_elapsed_ms,
++    );
 +    _ = self.alternate_scroll_telemetry.precise_read_chunk_count.fetchAdd(1, .monotonic);
 +    _ = self.alternate_scroll_telemetry.precise_read_chunk_bytes.fetchAdd(byte_count, .monotonic);
 +
@@ -4272,6 +4721,28 @@ index e41fe33a9..216469f0c 100644
 +            .monotonic,
 +        ) == null) break;
 +        current_max = self.alternate_scroll_telemetry.precise_read_chunk_max_bytes.load(.monotonic);
++    }
++}
++
++pub fn notePreciseAlternateScrollReadByteClasses(self: *Termio, buf: []const u8) void {
++    var escape_count: usize = 0;
++    var printable_count: usize = 0;
++    var newline_count: usize = 0;
++
++    for (buf) |byte| {
++        if (byte == 0x1B) escape_count += 1;
++        if (byte == '\n' or byte == '\r') newline_count += 1;
++        if (byte >= 0x20 and byte != 0x7F) printable_count += 1;
++    }
++
++    if (escape_count > 0) {
++        _ = self.alternate_scroll_telemetry.precise_read_escape_byte_count.fetchAdd(escape_count, .monotonic);
++    }
++    if (printable_count > 0) {
++        _ = self.alternate_scroll_telemetry.precise_read_printable_byte_count.fetchAdd(printable_count, .monotonic);
++    }
++    if (newline_count > 0) {
++        _ = self.alternate_scroll_telemetry.precise_read_newline_byte_count.fetchAdd(newline_count, .monotonic);
 +    }
 +}
 +
@@ -4306,7 +4777,7 @@ index e41fe33a9..216469f0c 100644
  /// Update the configuration.
  pub fn changeConfig(self: *Termio, td: *ThreadData, config: *DerivedConfig) !void {
      // The remainder of this function is modifying terminal state or
-@@ -680,6 +819,22 @@ pub fn focusGained(self: *Termio, td: *ThreadData, focused: bool) !void {
+@@ -680,6 +994,22 @@ pub fn focusGained(self: *Termio, td: *ThreadData, focused: bool) !void {
  /// call with pty data but it is also called by the read thread when using
  /// an exec subprocess.
  pub fn processOutput(self: *Termio, buf: []const u8) void {
@@ -4330,18 +4801,19 @@ index e41fe33a9..216469f0c 100644
      // the lock to grab our read data.
      self.renderer_state.mutex.lock();
 diff --git a/src/termio/Thread.zig b/src/termio/Thread.zig
-index bb616e623..33ee2bdf4 100644
+index bb616e623..c65af19e1 100644
 --- a/src/termio/Thread.zig
 +++ b/src/termio/Thread.zig
-@@ -306,6 +306,7 @@ fn drainMailbox(
+@@ -306,6 +306,8 @@ fn drainMailbox(
      // expectation is that all our message handlers will be non-blocking
      // ENOUGH to not mess up throughput on producers.
      var redraw: bool = false;
 +    var drained_scroll_steps: usize = 0;
++    var requeued_precise_scroll_drain: bool = false;
      while (mailbox.pop()) |message| {
          // If we have a message we always redraw
          redraw = true;
-@@ -338,6 +339,14 @@ fn drainMailbox(
+@@ -338,6 +340,20 @@ fn drainMailbox(
                  v.data[0..v.len],
                  self.flags.linefeed_mode,
              ),
@@ -4351,30 +4823,37 @@ index bb616e623..33ee2bdf4 100644
 +                    v.data[0..v.len],
 +                    self.flags.linefeed_mode,
 +                );
++                try data.backend.exec.precise_write_lengths.append(data.backend.exec.alloc, @intCast(v.len));
++                io.notePreciseAlternateScrollWriteQueued(v.len);
 +                drained_scroll_steps += 1;
++                if (drained_scroll_steps >= 1) {
++                    requeued_precise_scroll_drain = true;
++                    break;
++                }
 +            },
              .write_stable => |v| try io.queueWrite(
                  data,
                  v,
-@@ -355,10 +364,18 @@ fn drainMailbox(
+@@ -354,11 +370,18 @@ fn drainMailbox(
+         }
      }
-
-     // Trigger a redraw after we've drained so we don't waste cyces
+ 
+-    // Trigger a redraw after we've drained so we don't waste cyces
 -    // messaging a redraw.
-+    // messaging a redraw. Precise alternate-scroll steps also request an
-+    // immediate renderer-owned draw after the frame update so successive
-+    // cursor-key responses are less likely to clump into one presented step.
++    // Trigger a redraw after we've drained so we don't waste cycles
++    // messaging a redraw. Embedded hosts need the renderer thread to own the
++    // follow-on draw as well, otherwise terminal state can advance before the
++    // host ever presents a frame.
      if (redraw) {
-+        if (drained_scroll_steps > 0) {
-+            if (io.renderer_mailbox.push(.{ .render_and_draw = {} }, .{ .instant = {} }) == 0) {
-+                _ = io.renderer_mailbox.push(.{ .render_and_draw = {} }, .{ .forever = {} });
-+            }
++        if (io.renderer_mailbox.push(.{ .render_and_draw = {} }, .{ .instant = {} }) == 0) {
++            _ = io.renderer_mailbox.push(.{ .render_and_draw = {} }, .{ .forever = {} });
 +        }
          try io.renderer_wakeup.notify();
      }
-+    io.notePreciseAlternateScrollDrain(drained_scroll_steps, false);
++    if (requeued_precise_scroll_drain) cb.io.mailbox.notify();
++    io.notePreciseAlternateScrollDrain(drained_scroll_steps, requeued_precise_scroll_drain);
  }
-
+ 
  fn startSynchronizedOutput(self: *Thread, cb: *CallbackData) void {
 diff --git a/src/termio/message.zig b/src/termio/message.zig
 index ee6dbcc0f..ef1306575 100644
@@ -4383,7 +4862,7 @@ index ee6dbcc0f..ef1306575 100644
 @@ -71,6 +71,11 @@ pub const Message = union(enum) {
      /// Write where the data fits in the union.
      write_small: WriteReq.Small,
-
+ 
 +    /// Precise alternate-scroll cursor-key step. The IO thread treats this as
 +    /// a single-step message and yields after one drain turn so repeated
 +    /// trackpad events do not clump into visible multi-line jumps.
@@ -4391,7 +4870,7 @@ index ee6dbcc0f..ef1306575 100644
 +
      /// Write where the data pointer is stable.
      write_stable: WriteReq.Stable,
-
+ 
 diff --git a/src/termio/stream_handler.zig b/src/termio/stream_handler.zig
 index 25bf29533..ea1033820 100644
 --- a/src/termio/stream_handler.zig
@@ -4399,7 +4878,7 @@ index 25bf29533..ea1033820 100644
 @@ -1185,6 +1185,19 @@ pub const StreamHandler = struct {
          }
      }
-
+ 
 +    pub fn customOSC(
 +        self: *StreamHandler,
 +        osc_payload: terminal.osc.Command.CustomOSC,

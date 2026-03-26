@@ -44,7 +44,7 @@ Add or harden measurement around five seams:
 Use renderer-owned cadence where it actually fires, but keep a narrow host-side
 interactive draw fast path for the seams where telemetry proves it does not.
 
-- internal scroll bursts currently show `renderCallbackCount == 0` and
+- internal scroll bursts currently show `rendererFrameCompletedCount == 0` and
   `renderRequestCount == 0` unless the host explicitly requests presentation
 - keyboard input and precise scroll therefore keep a coalesced immediate draw
   path on the current visible surface
@@ -61,6 +61,19 @@ interactive draw fast path for the seams where telemetry proves it does not.
 - matched-version AX typing now shows the input-side improvement from the armed
   pump, but the renderer-owned path is still absent on both typing and trackpad
   benches, so the remaining FPS gap is still a host-cadence problem
+- normal viewport scroll should not schedule extra app-thread Ghostty ticks;
+  embedded scrollback already mutates surface state synchronously and should
+  hand presentation straight to the renderer thread
+- explicit keypress and scroll-to-bottom redraw paths in vendored Ghostty
+  should use `queueRenderAndDraw()` so typing does not rely on a later,
+  unrelated repaint to make new output visible
+- app-side render callbacks should request refresh on the current main-actor
+  turn; an additional run-loop hop before `ghostty_surface_refresh(...)`
+  directly adds visible presentation latency after tmux/PTy output arrives
+- continuation and recovery draw pumps must not schedule a fresh
+  `ghostty_app_tick(...)` for every frame; once input has handed work to
+  libghostty, follow-up presentation should stay on draw-only recovery unless
+  telemetry proves another runtime tick is required
 - the host fast path remains an escape hatch, not a return to generalized
   multi-surface scheduling
 - keep pane-retarget and blank-frame recovery fixes separate from steady-state

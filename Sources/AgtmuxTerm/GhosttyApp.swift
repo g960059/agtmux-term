@@ -19,6 +19,7 @@ final class GhosttyApp {
 
     struct SurfaceDrawTelemetrySnapshot: Codable, Equatable {
         let renderCallbackCount: Int
+        let rendererFrameCompletedCount: Int
         let scheduledDirectDrawPassCount: Int
         let immediateDirectDrawPassCount: Int
         let dirtyDrawPassCount: Int
@@ -117,6 +118,8 @@ final class GhosttyApp {
     @MainActor
     private static var renderCallbackCount = 0
     @MainActor
+    private static var rendererFrameCompletedCount = 0
+    @MainActor
     private static var scheduledDirectDrawPassCount = 0
     @MainActor
     private static var immediateDirectDrawPassCount = 0
@@ -131,6 +134,11 @@ final class GhosttyApp {
 
     private(set) var app: ghostty_app_t?
     private var notificationObserverTokens: [NSObjectProtocol] = []
+    private lazy var tickScheduler = GhosttyTickScheduler(
+        scheduleOnMainRunLoop: Self.scheduleOnMainRunLoopCommonModes
+    ) { [weak self] in
+        self?.tick()
+    }
 
     static var sharedIfInitialized: GhosttyApp? {
         initializedShared
@@ -148,10 +156,6 @@ final class GhosttyApp {
         CFRunLoopWakeUp(mainRunLoop)
     }
 
-    // Wakeup coalescing: prevents N queue items from accumulating when
-    // libghostty fires wakeup_cb multiple times before tick() runs.
-    private let wakeupLock = NSLock()
-    private var wakeupPending = false
     @MainActor
     private var tickExecutionDepth = 0
 
@@ -235,7 +239,6 @@ final class GhosttyApp {
 
     @MainActor
     static func scheduleTickIfInitialized() {
-        guard shouldScheduleTickOnMain() else { return }
         tickScheduleObserver()
         initializedShared?.enqueueTick()
     }
@@ -270,6 +273,8 @@ final class GhosttyApp {
             return true
         case GHOSTTY_ACTION_RENDER:
             return handleRender(target: target)
+        case GHOSTTY_ACTION_RENDERER_FRAME_COMPLETED:
+            return handleRendererFrameCompleted(target: target)
         case GHOSTTY_ACTION_CUSTOM_OSC:
             return handleCustomOSC(target: target, action: action)
 
@@ -335,6 +340,33 @@ final class GhosttyApp {
 
         scheduleOnMainRunLoopCommonModes {
             applyRenderCallback()
+        }
+        return true
+    }
+
+    private static func handleRendererFrameCompleted(target: ghostty_target_s) -> Bool {
+        guard target.tag == GHOSTTY_TARGET_SURFACE,
+              let rawSurface = target.target.surface else { return true }
+        let surfaceHandle = GhosttySurfaceHandle(surface: rawSurface)
+
+        @MainActor
+        func applyRendererFrameCompleted() {
+            if surfaceDrawTelemetryEnabled {
+                rendererFrameCompletedCount += 1
+            }
+            SurfacePool.shared.view(forSurfaceHandle: surfaceHandle)?
+                .noteRendererFrameCompletedTelemetry()
+        }
+
+        if Thread.isMainThread {
+            MainActor.assumeIsolated {
+                applyRendererFrameCompleted()
+            }
+            return true
+        }
+
+        scheduleOnMainRunLoopCommonModes {
+            applyRendererFrameCompleted()
         }
         return true
     }
@@ -448,6 +480,7 @@ final class GhosttyApp {
         pendingSurfaceDrawGapState = nil
         directDrawPassPending = false
         renderCallbackCount = 0
+        rendererFrameCompletedCount = 0
         scheduledDirectDrawPassCount = 0
         immediateDirectDrawPassCount = 0
         dirtyDrawPassCount = 0
@@ -460,6 +493,7 @@ final class GhosttyApp {
     static func surfaceDrawTelemetrySnapshotForTesting() -> SurfaceDrawTelemetrySnapshot {
         SurfaceDrawTelemetrySnapshot(
             renderCallbackCount: renderCallbackCount,
+            rendererFrameCompletedCount: rendererFrameCompletedCount,
             scheduledDirectDrawPassCount: scheduledDirectDrawPassCount,
             immediateDirectDrawPassCount: immediateDirectDrawPassCount,
             dirtyDrawPassCount: dirtyDrawPassCount,
@@ -494,9 +528,6 @@ final class GhosttyApp {
                 AgtmuxSignpost.ghosttyTick.endInterval("tick", tickState)
             }
         }
-        wakeupLock.lock()
-        wakeupPending = false
-        wakeupLock.unlock()
         tickExecutionDepth += 1
         defer { tickExecutionDepth -= 1 }
         let tickStart = ProcessInfo.processInfo.systemUptime
@@ -591,15 +622,7 @@ final class GhosttyApp {
     }
 
     private func enqueueTick() {
-        wakeupLock.lock()
-        let shouldSchedule = !wakeupPending
-        wakeupPending = true
-        wakeupLock.unlock()
-        guard shouldSchedule else { return }
-
-        Self.scheduleOnMainRunLoopCommonModes {
-            GhosttyApp.shared.tick()
-        }
+        tickScheduler.enqueueTick()
     }
 
     @MainActor

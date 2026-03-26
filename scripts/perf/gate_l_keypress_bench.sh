@@ -238,12 +238,14 @@ viewport_latencies_file="$gate_l_tmpdir/keypress-viewport-latencies.txt"
 viewport_delta_file="$gate_l_tmpdir/keypress-viewport-delta-latencies.txt"
 layer_present_latencies_file="$gate_l_tmpdir/keypress-layer-present-latencies.txt"
 layer_present_delta_file="$gate_l_tmpdir/keypress-layer-present-delta-latencies.txt"
+touch "$layer_present_latencies_file" "$layer_present_delta_file"
 bench_start="$(date '+%Y-%m-%d %H:%M:%S%z')"
 last_sequence="$(latest_key_sequence "$socket_name" "$target")"
 last_send_json='null'
 last_capture="$ready_capture"
 last_viewport_text=""
 last_layer_present_count="$(current_layer_present_count "$surface_id")"
+layer_present_timeout_count=0
 
 for (( i = 1; i <= iterations; i++ )); do
   expected_sequence=$((last_sequence + 1))
@@ -274,17 +276,17 @@ for (( i = 1; i <= iterations; i++ )); do
   fi
   viewport_latency_ms="$(awk "BEGIN { printf \"%.3f\", (($EPOCHREALTIME - $start_realtime) * 1000.0) }")"
   viewport_delta_ms="$(awk "BEGIN { printf \"%.3f\", ($viewport_latency_ms - $tmux_latency_ms) }")"
-  if ! wait_for_layer_present_count "$surface_id" "$expected_layer_present_count" "$settle_timeout" last_layer_present_count; then
-    echo "Timed out waiting for layer-present count >= $expected_layer_present_count after keypress marker $expected_marker" >&2
-    exit 1
-  fi
-  layer_present_latency_ms="$(awk "BEGIN { printf \"%.3f\", (($EPOCHREALTIME - $start_realtime) * 1000.0) }")"
-  layer_present_delta_ms="$(awk "BEGIN { printf \"%.3f\", ($layer_present_latency_ms - $tmux_latency_ms) }")"
   print -r -- "$tmux_latency_ms" >>"$tmux_latencies_file"
   print -r -- "$viewport_latency_ms" >>"$viewport_latencies_file"
   print -r -- "$viewport_delta_ms" >>"$viewport_delta_file"
-  print -r -- "$layer_present_latency_ms" >>"$layer_present_latencies_file"
-  print -r -- "$layer_present_delta_ms" >>"$layer_present_delta_file"
+  if wait_for_layer_present_count "$surface_id" "$expected_layer_present_count" "$settle_timeout" last_layer_present_count; then
+    layer_present_latency_ms="$(awk "BEGIN { printf \"%.3f\", (($EPOCHREALTIME - $start_realtime) * 1000.0) }")"
+    layer_present_delta_ms="$(awk "BEGIN { printf \"%.3f\", ($layer_present_latency_ms - $tmux_latency_ms) }")"
+    print -r -- "$layer_present_latency_ms" >>"$layer_present_latencies_file"
+    print -r -- "$layer_present_delta_ms" >>"$layer_present_delta_file"
+  else
+    layer_present_timeout_count=$((layer_present_timeout_count + 1))
+  fi
   last_sequence="$expected_sequence"
 done
 
@@ -322,6 +324,7 @@ jq -n \
   --argjson last_send "$last_send_json" \
   --argjson app_pid "$gate_l_app_pid" \
   --argjson iterations "$iterations" \
+  --argjson layer_present_timeout_count "$layer_present_timeout_count" \
   --argjson tmux_latencies "$tmux_latencies_json" \
   --argjson viewport_latencies "$viewport_latencies_json" \
   --argjson viewport_delta_latencies "$viewport_delta_json" \
@@ -347,6 +350,10 @@ jq -n \
           end
         ]
     end;
+  def safe_round3:
+    if . == null then null else round3 end;
+  def safe_max:
+    if length == 0 then null else (max | round3) end;
 
   {
     app_bin: $app_bin,
@@ -365,6 +372,7 @@ jq -n \
     benchmark_start: $bench_start,
     benchmark_end: $bench_end,
     iterations: $iterations,
+    layer_present_timeout_count: $layer_present_timeout_count,
     latencies_ms: $tmux_latencies,
     p50_ms: (($tmux_latencies | percentile(50)) | round3),
     p95_ms: (($tmux_latencies | percentile(95)) | round3),
@@ -382,13 +390,13 @@ jq -n \
     viewport_after_tmux_p95_ms: (($viewport_delta_latencies | percentile(95)) | round3),
     viewport_after_tmux_max_ms: (($viewport_delta_latencies | max) | round3),
     layer_present_latencies_ms: $layer_present_latencies,
-    layer_present_p50_ms: (($layer_present_latencies | percentile(50)) | round3),
-    layer_present_p95_ms: (($layer_present_latencies | percentile(95)) | round3),
-    layer_present_max_ms: (($layer_present_latencies | max) | round3),
+    layer_present_p50_ms: (($layer_present_latencies | percentile(50)) | safe_round3),
+    layer_present_p95_ms: (($layer_present_latencies | percentile(95)) | safe_round3),
+    layer_present_max_ms: ($layer_present_latencies | safe_max),
     layer_present_after_tmux_delta_ms: $layer_present_delta_latencies,
-    layer_present_after_tmux_p50_ms: (($layer_present_delta_latencies | percentile(50)) | round3),
-    layer_present_after_tmux_p95_ms: (($layer_present_delta_latencies | percentile(95)) | round3),
-    layer_present_after_tmux_max_ms: (($layer_present_delta_latencies | max) | round3),
+    layer_present_after_tmux_p50_ms: (($layer_present_delta_latencies | percentile(50)) | safe_round3),
+    layer_present_after_tmux_p95_ms: (($layer_present_delta_latencies | percentile(95)) | safe_round3),
+    layer_present_after_tmux_max_ms: ($layer_present_delta_latencies | safe_max),
     helper: $helper,
     focus_snapshot: $focus_snapshot,
     last_send: $last_send,

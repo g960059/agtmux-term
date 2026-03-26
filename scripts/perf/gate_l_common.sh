@@ -493,6 +493,12 @@ function gate_l_activate_app() {
     if "$GATE_L_ROOT/scripts/perf/gate_l_ax_key_sender.sh" --app-pid "$gate_l_app_pid" --activate-app >/dev/null 2>&1; then
       return 0
     fi
+    local app_bundle=""
+    if app_bundle="$(gate_l_app_bundle_path)"; then
+      perl -e 'alarm shift @ARGV; exec @ARGV' 2 \
+        open -a "$app_bundle" >/dev/null 2>&1 || true
+      return 0
+    fi
   fi
   perl -e 'alarm shift @ARGV; exec @ARGV' 2 \
     osascript -e 'tell application id "com.g960059.agtmux.term" to activate' >/dev/null 2>&1 || true

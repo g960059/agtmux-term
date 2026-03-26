@@ -130,7 +130,7 @@ the real frontmost live client path and requires tmux `mouse` mode to be on.
   remaining app-side presentation gap after tmux has already received the key,
   and `layer_present_after_tmux_*` to see whether the visible surface still
   trails the viewport state.
-- If `tmux_capture_*` stays near native but `renderCallbackCount == 0` and
+- If `tmux_capture_*` stays near native but `rendererFrameCompletedCount == 0` and
   `immediatePresentationDrawCount` climbs sharply, the embedded terminal is
   still running on the host draw pump rather than renderer-owned cadence. That
   is currently the main explanation for the remaining FPS gap versus native.

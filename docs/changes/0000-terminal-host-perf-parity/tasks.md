@@ -39,5 +39,15 @@
   delayed tmux echo does not wait for a later pane or focus repaint
 - [x] make Gate-L benches default to the installed app bundle and fail fast on
   empty async bridge JSON results
+- [x] stop scheduling app-thread Ghostty ticks for normal scroll gestures and
+  move embedded viewport scroll to renderer-owned immediate draw
+- [x] move explicit keypress and scroll-to-bottom redraw paths onto
+  `queueRenderAndDraw()` in the vendored Ghostty surface
+- [x] remove the extra main-run-loop hop from visible render callbacks before
+  they request `ghostty_surface_refresh(...)`
+- [x] fix UI/perf launch helpers to target the real app bundle id and kill
+  orphaned executable-path processes before starting a fresh test instance
+- [x] stop scheduling `ghostty_app_tick(...)` from interactive and scroll
+  continuation/recovery draw pumps so follow-up frames stay draw-only
 - [ ] thin the embedded cadence path further if matched-version cadence still
   trails native or user feel

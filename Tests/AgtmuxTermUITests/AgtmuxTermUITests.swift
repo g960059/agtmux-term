@@ -1904,19 +1904,19 @@ final class AgtmuxTermUITests: XCTestCase {
         let telemetry = try waitForAppTerminalPresentation(
             control: control,
             surfaceID: snapshot.surfaceID,
-            minImmediatePresentationDrawCount: 1,
+            minImmediatePresentationDrawCount: 0,
             minLayerPresentCount: 1,
-            failureContext: "terminal key input layer presentation"
+            failureContext: "terminal key input frame completion"
         )
-        XCTAssertGreaterThanOrEqual(
+        XCTAssertEqual(
             telemetry.scroll.immediatePresentationDrawCount,
-            1,
-            "Terminal key input must schedule an immediate presentation draw"
+            0,
+            "Terminal key input should not fall back to the old host immediate-draw pump"
         )
         XCTAssertGreaterThanOrEqual(
             telemetry.scroll.layerPresentCount,
             1,
-            "Terminal key input must reach layer-present without a pane/focus change"
+            "Terminal key input must complete a renderer-owned frame without waiting for pane or focus changes"
         )
     }
 
@@ -2040,19 +2040,19 @@ final class AgtmuxTermUITests: XCTestCase {
         let telemetry = try waitForAppTerminalPresentation(
             control: control,
             surfaceID: snapshot.surfaceID,
-            minImmediatePresentationDrawCount: 1,
+            minImmediatePresentationDrawCount: 0,
             minLayerPresentCount: 1,
-            failureContext: "AX terminal key input layer presentation"
+            failureContext: "AX terminal key input frame completion"
         )
-        XCTAssertGreaterThanOrEqual(
+        XCTAssertEqual(
             telemetry.scroll.immediatePresentationDrawCount,
-            1,
-            "AX terminal key input must schedule an immediate presentation draw"
+            0,
+            "AX terminal key input should not fall back to the old host immediate-draw pump"
         )
         XCTAssertGreaterThanOrEqual(
             telemetry.scroll.layerPresentCount,
             1,
-            "AX terminal key input must reach layer-present without a pane/focus change"
+            "AX terminal key input must complete a renderer-owned frame without waiting for pane or focus changes"
         )
     }
 
@@ -3111,10 +3111,17 @@ final class AgtmuxTermUITests: XCTestCase {
     private struct GhosttyScrollTelemetrySnapshot: Decodable {
         let immediatePresentationDrawCount: Int
         let layerPresentCount: Int
+        let refreshDrawRequestCount: Int
+    }
+
+    private struct GhosttyAppTelemetrySnapshot: Decodable {
+        let renderCallbackCount: Int
+        let rendererFrameCompletedCount: Int
     }
 
     private struct ScrollBenchTelemetrySnapshot: Decodable {
         let scroll: GhosttyScrollTelemetrySnapshot
+        let app: GhosttyAppTelemetrySnapshot
         let island: GhosttyIslandTelemetrySnapshot
     }
 
@@ -3507,6 +3514,8 @@ final class AgtmuxTermUITests: XCTestCase {
         surfaceID: String,
         minImmediatePresentationDrawCount: Int,
         minLayerPresentCount: Int,
+        minRefreshDrawRequestCount: Int = 0,
+        minRenderCallbackCount: Int = 0,
         timeout: TimeInterval = 5.0,
         failureContext: String
     ) throws -> ScrollBenchTelemetrySnapshot {
@@ -3517,7 +3526,9 @@ final class AgtmuxTermUITests: XCTestCase {
             if let snapshot = try? dumpAppScrollTelemetry(control: control, surfaceID: surfaceID) {
                 lastSnapshot = snapshot
                 if snapshot.scroll.immediatePresentationDrawCount >= minImmediatePresentationDrawCount,
-                   snapshot.scroll.layerPresentCount >= minLayerPresentCount {
+                   snapshot.scroll.layerPresentCount >= minLayerPresentCount,
+                   snapshot.scroll.refreshDrawRequestCount >= minRefreshDrawRequestCount,
+                   snapshot.app.renderCallbackCount >= minRenderCallbackCount {
                     return snapshot
                 }
             }
@@ -3527,7 +3538,10 @@ final class AgtmuxTermUITests: XCTestCase {
         XCTFail(
             "\(failureContext) timed out waiting for presentation counts. " +
             "Last telemetry: immediateDraws=\(lastSnapshot?.scroll.immediatePresentationDrawCount ?? -1) " +
-            "layerPresents=\(lastSnapshot?.scroll.layerPresentCount ?? -1)"
+            "layerPresents=\(lastSnapshot?.scroll.layerPresentCount ?? -1) " +
+            "refreshDraws=\(lastSnapshot?.scroll.refreshDrawRequestCount ?? -1) " +
+            "renderCallbacks=\(lastSnapshot?.app.renderCallbackCount ?? -1) " +
+            "frameCompletes=\(lastSnapshot?.app.rendererFrameCompletedCount ?? -1)"
         )
         throw NSError(
             domain: "AgtmuxTermUITests",
@@ -4034,7 +4048,7 @@ final class AgtmuxTermUITests: XCTestCase {
     }
 
     private func waitForRunningAppProcessID(
-        bundleIDs: [String] = ["com.g960059.agtmux.term", "local.agtmux.term.app"],
+        bundleIDs: [String] = ["com.g960059.agtmux.term"],
         timeout: TimeInterval = 5.0
     ) throws -> pid_t {
         let deadline = Date().addingTimeInterval(timeout)

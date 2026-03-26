@@ -34,7 +34,8 @@ Current state:
 - same-session pane retarget stays on one visible surface and now confirms that
   the pane-switch path repaints via an immediate presentation draw instead of
   recreating the Ghostty surface
-- internal scroll telemetry still shows zero renderer-owned render callbacks on
+- internal scroll telemetry still shows zero renderer-owned frame-completion
+  signals on
   burst input, so keyboard/scroll input now keep a coalesced host immediate
   draw fast path until upstream render-callback cadence is trustworthy again
 - the real typing path now arms the interactive draw pump on the initial
@@ -51,9 +52,27 @@ Current state:
   that tmux delivery is already near native while the remaining lag is mostly
   viewport presentation after tmux output arrives
 - matched-version trackpad parity still passes on the tmux-visible proxy, but
-  embedded telemetry continues to show `renderCallbackCount == 0`; scroll and
-  typing are therefore still running on a host-pumped cadence rather than a
-  native renderer-owned one
+  embedded telemetry continues to show `rendererFrameCompletedCount == 0`;
+  scroll and typing are therefore still running on a host-pumped cadence
+  rather than a native renderer-owned one
+- normal viewport scroll no longer schedules extra app-thread Ghostty ticks;
+  it now stays on the local surface mutation path and asks the renderer thread
+  for an immediate draw on each accumulated scroll step
+- explicit typing paths in the vendored Ghostty surface now request
+  `queueRenderAndDraw()` instead of a plain renderer wakeup, and
+  `scrollToBottom()` follows the same immediate renderer-owned path so typed
+  output does not wait for a later focus or pane change before becoming visible
+- visible render callbacks now re-enter the existing
+  `triggerRendererOwnedRenderCallback(...)` path on the current main-actor turn
+  instead of taking an extra run-loop hop before calling
+  `ghostty_surface_refresh(...)`
+- scroll and interactive continuation/recovery pumps no longer schedule a
+  fresh `ghostty_app_tick(...)` for every follow-up frame; after the initial
+  input-triggered wakeup, continuation frames stay on draw-only recovery so
+  repeated main-thread runtime ticks stop competing with visible presentation
+- UI/perf launch helpers now target the real `com.g960059.agtmux.term` bundle
+  id and kill orphaned `AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm` processes by
+  executable path before launching a fresh test instance
 - user-perceived keyboard, scroll, and pane-switch smoothness still trail
   native Ghostty; the remaining work is real hot-path thinning and scheduler
   cleanup, not compatibility preservation
