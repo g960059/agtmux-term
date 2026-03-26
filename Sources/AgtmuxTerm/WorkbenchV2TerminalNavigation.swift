@@ -73,6 +73,27 @@ enum WorkbenchV2TerminalNavigationResolver {
     }
 
     static func liveTarget(
+        sessionRef: SessionRef,
+        windowID: String,
+        hostsConfig: HostsConfig
+    ) async throws -> WorkbenchV2TerminalLiveTarget {
+        let source = try tmuxSource(for: sessionRef.target, hostsConfig: hostsConfig)
+        let output = try await TmuxCommandRunner.shared.run(
+            [
+                "list-panes",
+                "-t", windowID,
+                "-F", "#{session_name}|#{window_id}|#{pane_id}|#{pane_active}"
+            ],
+            source: source
+        )
+        return try parseLiveTarget(
+            output: output,
+            expectedSessionName: sessionRef.sessionName,
+            expectedWindowID: windowID
+        )
+    }
+
+    static func liveTarget(
         renderedClientTTY: String,
         target: TargetRef,
         hostsConfig: HostsConfig
@@ -119,6 +140,30 @@ enum WorkbenchV2TerminalNavigationResolver {
             guard fields.count == 5 else { continue }
             guard fields[0] == expectedSessionName else { continue }
             guard fields[3] == "1", fields[4] == "1" else { continue }
+            return WorkbenchV2TerminalLiveTarget(
+                sessionName: fields[0],
+                windowID: fields[1],
+                paneID: fields[2]
+            )
+        }
+
+        throw WorkbenchV2TerminalNavigationError.activePaneUnavailable(
+            sessionName: expectedSessionName,
+            output: output
+        )
+    }
+
+    static func parseLiveTarget(
+        output: String,
+        expectedSessionName: String,
+        expectedWindowID: String
+    ) throws -> WorkbenchV2TerminalLiveTarget {
+        for line in output.split(separator: "\n") {
+            let fields = line.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+            guard fields.count == 4 else { continue }
+            guard fields[0] == expectedSessionName else { continue }
+            guard fields[1] == expectedWindowID else { continue }
+            guard fields[3] == "1" else { continue }
             return WorkbenchV2TerminalLiveTarget(
                 sessionName: fields[0],
                 windowID: fields[1],

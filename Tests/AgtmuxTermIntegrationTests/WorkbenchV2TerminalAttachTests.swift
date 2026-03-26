@@ -191,6 +191,30 @@ final class WorkbenchV2TerminalAttachTests: XCTestCase {
         )
     }
 
+    func testParseLiveTargetRequiresActivePaneForExpectedWindow() throws {
+        let output = """
+        feature branch|@12|%34|0
+        feature branch|@12|%35|1
+        feature branch|@13|%36|1
+        scratch|@12|%88|1
+        """
+
+        let target = try WorkbenchV2TerminalNavigationResolver.parseLiveTarget(
+            output: output,
+            expectedSessionName: "feature branch",
+            expectedWindowID: "@12"
+        )
+
+        XCTAssertEqual(
+            target,
+            WorkbenchV2TerminalLiveTarget(
+                sessionName: "feature branch",
+                windowID: "@12",
+                paneID: "%35"
+            )
+        )
+    }
+
     func testParseLiveTargetResolvesExactRenderedClientTTY() throws {
         let output = """
         /dev/ttys000|feature branch|@12|%34

@@ -101,12 +101,14 @@ enum MainTerminalAttachError: LocalizedError, Equatable {
 enum MainTerminalAttachResolver {
     static func resolve(
         sessionRef: SessionRef,
+        activePaneRef: ActivePaneRef? = nil,
         hostsConfig: HostsConfig,
         env: [String: String] = ProcessInfo.processInfo.environment
     ) -> Result<MainTerminalAttachPlan, MainTerminalAttachError> {
         let baseCommand = telemetryWrappedCommand(
             directAttachCommand(
                 sessionRef: sessionRef,
+                activePaneRef: activePaneRef,
                 env: env
             )
         )
@@ -153,6 +155,7 @@ enum MainTerminalAttachResolver {
 
     private static func directAttachCommand(
         sessionRef: SessionRef,
+        activePaneRef: ActivePaneRef?,
         env: [String: String]
     ) -> String {
         let configSegment = LocalTmuxTarget.shellEscapedConfigArguments(from: env)
@@ -160,7 +163,23 @@ enum MainTerminalAttachResolver {
         let socketSegment = LocalTmuxTarget.shellEscapedSocketArguments(from: env)
         let socketArgs = socketSegment.isEmpty ? "" : " " + socketSegment
         let escapedSessionName = LocalTmuxTarget.shellEscaped(sessionRef.sessionName)
-        return "env -u TMUX -u TMUX_PANE tmux\(configArgs)\(socketArgs) attach-session -t \(escapedSessionName)"
+        var command = "env -u TMUX -u TMUX_PANE tmux\(configArgs)\(socketArgs)"
+        if let activePaneRef,
+           activePaneRef.target == sessionRef.target,
+           activePaneRef.sessionName == sessionRef.sessionName {
+            let normalizedWindowID = activePaneRef.windowID.trimmingCharacters(in: .whitespacesAndNewlines)
+            let normalizedPaneID = activePaneRef.paneID.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !normalizedWindowID.isEmpty, !normalizedPaneID.isEmpty else {
+                command += " attach-session -t \(escapedSessionName)"
+                return command
+            }
+            let escapedWindowID = LocalTmuxTarget.shellEscaped(normalizedWindowID)
+            let escapedPaneID = LocalTmuxTarget.shellEscaped(normalizedPaneID)
+            command += " select-window -t \(escapedWindowID) \\;"
+            command += " select-pane -t \(escapedPaneID) \\;"
+        }
+        command += " attach-session -t \(escapedSessionName)"
+        return command
     }
 
     private static func telemetryWrappedCommand(_ command: String) -> String {
@@ -186,6 +205,7 @@ enum MainTerminalAttachResolver {
 
 struct MainTerminalStoreDependencies {
     var liveTarget: @Sendable (SessionRef, HostsConfig) async throws -> WorkbenchV2TerminalLiveTarget
+    var liveWindowTarget: @Sendable (SessionRef, String, HostsConfig) async throws -> WorkbenchV2TerminalLiveTarget
     var renderedLiveTarget: @Sendable (String, TargetRef, HostsConfig) async throws -> WorkbenchV2TerminalLiveTarget
     var renderedState: @MainActor (UUID) -> GhosttyRenderedTerminalSurfaceState?
     var applyNavigationIntent: @Sendable (ActivePaneRef, String, HostsConfig) async throws -> Void
@@ -196,6 +216,13 @@ struct MainTerminalStoreDependencies {
             liveTarget: { sessionRef, hostsConfig in
                 try await WorkbenchV2TerminalNavigationResolver.liveTarget(
                     sessionRef: sessionRef,
+                    hostsConfig: hostsConfig
+                )
+            },
+            liveWindowTarget: { sessionRef, windowID, hostsConfig in
+                try await WorkbenchV2TerminalNavigationResolver.liveTarget(
+                    sessionRef: sessionRef,
+                    windowID: windowID,
                     hostsConfig: hostsConfig
                 )
             },
@@ -232,6 +259,7 @@ final class MainTerminalStore {
     private(set) var mode: MainTerminalMode
     private(set) var focusRequestNonce: UInt64
     private(set) var diagnostic: MainTerminalDiagnostic?
+    private(set) var attachSurfaceGeneration: UInt64
 
     @ObservationIgnored private let dependencies: MainTerminalStoreDependencies
     @ObservationIgnored private var lastRestoreTargetBySession: [SessionRef: ActivePaneRef]
@@ -244,6 +272,7 @@ final class MainTerminalStore {
         mode: MainTerminalMode = .plainShell,
         focusRequestNonce: UInt64 = 0,
         diagnostic: MainTerminalDiagnostic? = nil,
+        attachSurfaceGeneration: UInt64 = 0,
         lastRestoreTargetBySession: [SessionRef: ActivePaneRef] = [:],
         dependencies: MainTerminalStoreDependencies = .live()
     ) {
@@ -252,6 +281,7 @@ final class MainTerminalStore {
         self.mode = mode
         self.focusRequestNonce = focusRequestNonce
         self.diagnostic = diagnostic
+        self.attachSurfaceGeneration = attachSurfaceGeneration
         self.lastRestoreTargetBySession = lastRestoreTargetBySession
         self.dependencies = dependencies
         self.navigationGeneration = 0
@@ -294,8 +324,12 @@ final class MainTerminalStore {
 
     var attachResolution: Result<MainTerminalAttachPlan, MainTerminalAttachError>? {
         guard let sessionRef else { return nil }
+        if let preservedAttachPlan = preservedAttachPlan(sessionRef: sessionRef) {
+            return .success(preservedAttachPlan)
+        }
         return MainTerminalAttachResolver.resolve(
             sessionRef: sessionRef,
+            activePaneRef: highlightedPaneRef,
             hostsConfig: currentHostsConfig
         )
     }
@@ -326,6 +360,7 @@ final class MainTerminalStore {
         navigationGeneration &+= 1
         navigationTask?.cancel()
         navigationTask = nil
+        attachSurfaceGeneration &+= 1
         mode = .plainShell
         focusRequestNonce &+= 1
     }
@@ -372,40 +407,37 @@ final class MainTerminalStore {
             return
         }
         let sessionRef = Self.sessionRef(for: fallbackPane, hostsConfig: hostsConfig)
-        let requestedPaneRef: ActivePaneRef
-        let diagnostic: MainTerminalDiagnostic?
-        if let liveTarget = try? await dependencies.liveTarget(sessionRef, hostsConfig),
-           liveTarget.windowID == window.windowId {
-            requestedPaneRef = Self.activePaneRef(
-                target: sessionRef.target,
-                sessionName: sessionRef.sessionName,
-                windowID: liveTarget.windowID,
-                paneID: liveTarget.paneID
-            )
-            diagnostic = nil
-        } else if let restoredPaneRef = lastRestoreTargetBySession[sessionRef],
-                  restoredPaneRef.windowID == window.windowId {
-            requestedPaneRef = restoredPaneRef
-            diagnostic = .restoreFallbackUsed(requested: nil, resolved: restoredPaneRef)
-        } else {
-            requestedPaneRef = Self.activePaneRef(for: fallbackPane, hostsConfig: hostsConfig)
-            diagnostic = .restoreFallbackUsed(requested: nil, resolved: requestedPaneRef)
-        }
+        let fallbackPaneRef = Self.activePaneRef(for: fallbackPane, hostsConfig: hostsConfig)
+        let target = await resolveWindowTarget(
+            sessionRef: sessionRef,
+            windowID: window.windowId,
+            fallbackPaneRef: fallbackPaneRef,
+            requestedPaneRefForDiagnostic: nil,
+            hostsConfig: hostsConfig
+        )
         activateTmux(
             sessionRef: sessionRef,
-            requestedPaneRef: requestedPaneRef,
+            requestedPaneRef: target.paneRef,
             hostsConfig: hostsConfig,
-            diagnostic: diagnostic
+            diagnostic: target.diagnostic
         )
     }
 
-    func activate(pane: AgtmuxPane, hostsConfig: HostsConfig) {
+    func activate(pane: AgtmuxPane, hostsConfig: HostsConfig) async {
         let sessionRef = Self.sessionRef(for: pane, hostsConfig: hostsConfig)
         let requestedPaneRef = Self.activePaneRef(for: pane, hostsConfig: hostsConfig)
+        let target = await resolveWindowTarget(
+            sessionRef: sessionRef,
+            windowID: pane.windowId,
+            fallbackPaneRef: requestedPaneRef,
+            requestedPaneRefForDiagnostic: requestedPaneRef,
+            hostsConfig: hostsConfig
+        )
         activateTmux(
             sessionRef: sessionRef,
-            requestedPaneRef: requestedPaneRef,
-            hostsConfig: hostsConfig
+            requestedPaneRef: target.paneRef,
+            hostsConfig: hostsConfig,
+            diagnostic: target.diagnostic
         )
     }
 
@@ -427,6 +459,9 @@ final class MainTerminalStore {
         hostsConfig: HostsConfig,
         diagnostic: MainTerminalDiagnostic? = nil
     ) {
+        if shouldResetSurface(for: sessionRef) {
+            attachSurfaceGeneration &+= 1
+        }
         currentHostsConfig = hostsConfig
         self.diagnostic = diagnostic
         mode = .tmux(
@@ -470,6 +505,43 @@ final class MainTerminalStore {
         return (
             paneRef: fallbackPaneRef,
             diagnostic: .restoreFallbackUsed(requested: nil, resolved: fallbackPaneRef)
+        )
+    }
+
+    private func resolveWindowTarget(
+        sessionRef: SessionRef,
+        windowID: String,
+        fallbackPaneRef: ActivePaneRef,
+        requestedPaneRefForDiagnostic: ActivePaneRef?,
+        hostsConfig: HostsConfig
+    ) async -> (paneRef: ActivePaneRef, diagnostic: MainTerminalDiagnostic?) {
+        if let liveTarget = try? await dependencies.liveWindowTarget(sessionRef, windowID, hostsConfig) {
+            return (
+                paneRef: Self.activePaneRef(
+                    target: sessionRef.target,
+                    sessionName: sessionRef.sessionName,
+                    windowID: liveTarget.windowID,
+                    paneID: liveTarget.paneID
+                ),
+                diagnostic: nil
+            )
+        }
+        if let restoredPaneRef = lastRestoreTargetBySession[sessionRef],
+           restoredPaneRef.windowID == windowID {
+            return (
+                paneRef: restoredPaneRef,
+                diagnostic: fallbackDiagnostic(
+                    requestedPaneRef: requestedPaneRefForDiagnostic,
+                    resolvedPaneRef: restoredPaneRef
+                )
+            )
+        }
+        return (
+            paneRef: fallbackPaneRef,
+            diagnostic: fallbackDiagnostic(
+                requestedPaneRef: requestedPaneRefForDiagnostic,
+                resolvedPaneRef: fallbackPaneRef
+            )
         )
     }
 
@@ -558,7 +630,7 @@ final class MainTerminalStore {
                 lastRestoreTargetBySession[sessionRef] = livePaneRef
                 clearTransientDiagnosticIfNeeded()
                 do {
-                    try await dependencies.sleep(.milliseconds(1500))
+                    try await dependencies.sleep(.milliseconds(100))
                 } catch {
                     return
                 }
@@ -581,7 +653,7 @@ final class MainTerminalStore {
                     clearTransientDiagnosticIfNeeded()
                 }
                 do {
-                    try await dependencies.sleep(.milliseconds(1500))
+                    try await dependencies.sleep(.milliseconds(100))
                 } catch {
                     return
                 }
@@ -622,6 +694,46 @@ final class MainTerminalStore {
         case .restoreFallbackUsed, .terminalSidebarDrift, .none:
             break
         }
+    }
+
+    private func shouldResetSurface(for nextSessionRef: SessionRef) -> Bool {
+        let renderedClientTTY = dependencies.renderedState(surfaceID)?.clientTTY?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        switch mode {
+        case .plainShell:
+            return true
+        case .tmux(let currentSessionRef, _, _):
+            if currentSessionRef != nextSessionRef {
+                return true
+            }
+            return renderedClientTTY?.isEmpty != false
+        }
+    }
+
+    private func preservedAttachPlan(sessionRef: SessionRef) -> MainTerminalAttachPlan? {
+        guard let renderedState = dependencies.renderedState(surfaceID) else {
+            return nil
+        }
+        guard renderedState.context.sessionRef == sessionRef else {
+            return nil
+        }
+        guard let clientTTY = renderedState.clientTTY?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              clientTTY.isEmpty == false else {
+            return nil
+        }
+        guard case .success(let basePlan) = MainTerminalAttachResolver.resolve(
+            sessionRef: sessionRef,
+            hostsConfig: currentHostsConfig
+        ) else {
+            return nil
+        }
+        return MainTerminalAttachPlan(
+            command: renderedState.attachCommand,
+            surfaceKey: basePlan.surfaceKey,
+            transport: basePlan.transport,
+            displayTarget: basePlan.displayTarget
+        )
     }
 
     private static func sessionRef(
@@ -712,5 +824,18 @@ final class MainTerminalStore {
         default:
             return true
         }
+    }
+
+    private func fallbackDiagnostic(
+        requestedPaneRef: ActivePaneRef?,
+        resolvedPaneRef: ActivePaneRef
+    ) -> MainTerminalDiagnostic? {
+        guard let requestedPaneRef else {
+            return .restoreFallbackUsed(requested: nil, resolved: resolvedPaneRef)
+        }
+        guard !Self.samePane(lhs: requestedPaneRef, rhs: resolvedPaneRef) else {
+            return nil
+        }
+        return .restoreFallbackUsed(requested: requestedPaneRef, resolved: resolvedPaneRef)
     }
 }

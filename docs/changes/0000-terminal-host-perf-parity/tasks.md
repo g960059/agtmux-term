@@ -16,9 +16,13 @@
 - [x] isolate direct live launches from competing `AgtmuxTerm` bridge readers
 - [x] align live focus-host timeout with the terminal registration budget
 - [x] skip impossible fresh-launch active-target waits before opening the live pane
+- [x] align pane-row open semantics with selected-window attach plus active-pane focus
 - [x] produce the first measured parity table for `legacy` / `next` / native
 - [x] add a cadence-sensitive parity table that can explain user-visible
   smoothness gaps beyond step granularity
 - [x] remove always-on telemetry collection from the normal hot path
+- [x] stop main-terminal steady-state tmux polling after navigation converges
+- [x] remove per-row repeat-forever sidebar animation from the normal hot path
+- [x] add explicit `next` host-mode E2E coverage for initial attach and preserved-surface viewport repaint
 - [ ] thin the `next` cadence path further if matched-version cadence still
   trails native or user feel

@@ -54,8 +54,9 @@ Current state:
   opening the bundle, and the live bench derives its focus-host timeout from
   the registration budget
 - fresh-launch direct live runs no longer wait for an impossible
-  `active-terminal-target` on plain-shell startup; they open the requested pane
-  first and only fall back to active-target probing if the open path fails
+  `active-terminal-target` on plain-shell startup; they open the selected
+  session/window target first, focusing that window's active pane, and only
+  fall back to active-target probing if the open path fails
 - after those fixes, the direct live `next` path also reaches measurement again
   on `gate-normal-scroll/%1` (`changed_sample_count=13`,
   `first_changed_elapsed_ms≈536.6ms`)
@@ -125,4 +126,29 @@ Current state:
     `AGTMUX_HOST_SIGNPOSTS_ENABLED=1`
   - a short cadence rerun after this change stayed mixed instead of cleanly
     improving, so signpost emission was not the dominant remaining tail
+- the terminal-first mainline also had a separate steady-state churn issue:
+  - `MainTerminalStore` kept polling tmux `list-clients` / `list-panes` even
+    after the requested main-terminal target had already converged
+  - that background loop kept waking the app, updating main-terminal state, and
+    invalidating SwiftUI layout even while the terminal should have been idle
+  - the current fix no longer keeps reapplying stale navigation intent after
+    the visible pane matches the requested target
+  - the loop now stays in a low-rate same-session drift watch so terminal-
+    originated pane changes still retarget the sidebar and main-terminal
+    selection without rebuilding the rendered surface
+- another installed-app hot-path issue also surfaced after the tmux-poll fix:
+  - each running managed pane row rendered a `repeatForever` SwiftUI spinner
+  - idle installed-app samples still showed `NSHostingView.layout()` and
+    `AnimatableAttribute.updateValue()` churn in the sidebar while the
+    terminal was otherwise idle
+  - the current fix keeps the running badge visible but static, so the sidebar
+    no longer drives continuous animation work across every running pane row
+- another correctness blind spot also showed up in regression coverage:
+  - the installed app on this machine runs with `TerminalHostMode=next`, but
+    the UI suite had been forcing `legacy` unless a test overrode it
+  - that meant passing direct-attach E2Es still did not prove the real
+    installed-app host path that users were actually running
+  - the current fix keeps `legacy` as the suite default but preserves an
+    explicit host-mode override, and the attach E2Es now include an explicit
+    `next` proof plus a preserved-surface viewport-content assertion
 - the next work is a perf-parity program, not another UX rewrite

@@ -18,6 +18,13 @@ struct MainTerminalView: View {
         terminalHostModeRuntime.resolved(environment: ProcessInfo.processInfo.environment)
     }
 
+    private var hostViewIdentity: String {
+        TerminalHostContainer.hostViewIdentity(
+            surfaceID: terminalStore.surfaceID,
+            mode: terminalHostMode
+        ) + ":\(terminalStore.attachSurfaceGeneration)"
+    }
+
     var body: some View {
         ZStack(alignment: .topLeading) {
             RoundedRectangle(cornerRadius: 0, style: .continuous)
@@ -82,10 +89,7 @@ struct MainTerminalView: View {
                     focusRestoreNonce: terminalStore.focusRequestNonce
                 )
             )
-            .id(TerminalHostContainer.hostViewIdentity(
-                surfaceID: terminalStore.surfaceID,
-                mode: terminalHostMode
-            ))
+            .id(hostViewIdentity)
             .accessibilityIdentifier(AccessibilityID.terminalMainSurface)
 
         case .tmux(let sessionRef, _, _):
@@ -109,10 +113,7 @@ struct MainTerminalView: View {
                         focusRestoreNonce: terminalStore.focusRequestNonce
                     )
                 )
-                .id(TerminalHostContainer.hostViewIdentity(
-                    surfaceID: terminalStore.surfaceID,
-                    mode: terminalHostMode
-                ))
+                .id(hostViewIdentity)
                 .accessibilityIdentifier(AccessibilityID.terminalMainSurface)
 
             case .failure(let error):

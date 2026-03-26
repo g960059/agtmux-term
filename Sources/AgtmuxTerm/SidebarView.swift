@@ -492,6 +492,7 @@ struct WindowBlockView: View {
 
     private var rowID: String { "window:\(window.id)" }
     private var isHighlighted: Bool { highlightedRowID == rowID }
+    private var isSelected: Bool { containsSelectedPane(selectedPaneId) }
 
     var windowLabel: String {
         if let name = window.windowName, !name.isEmpty {
@@ -535,11 +536,11 @@ struct WindowBlockView: View {
             )
             .background(
                 RoundedRectangle(cornerRadius: SidebarRowStyle.cornerRadius, style: .continuous)
-                    .fill(isHighlighted ? SidebarRowStyle.hoverBackground : Color.clear)
+                    .fill((isSelected || isHighlighted) ? SidebarRowStyle.selectedBackground : Color.clear)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: SidebarRowStyle.cornerRadius, style: .continuous)
-                    .stroke(isHighlighted ? SidebarRowStyle.hoverStroke : Color.clear, lineWidth: 1)
+                    .stroke((isSelected || isHighlighted) ? SidebarRowStyle.selectedStroke : Color.clear, lineWidth: 1)
             )
             .contentShape(Rectangle())
             .onHover { hovering in
@@ -772,7 +773,12 @@ struct PaneRowView: View {
         .contextMenu {
             let isPinned = viewModel.isPanePinned(pane)
             Button {
-                mainTerminalStore.activate(pane: pane, hostsConfig: runtimeStore.hostsConfig)
+                Task {
+                    await mainTerminalStore.activate(
+                        pane: pane,
+                        hostsConfig: runtimeStore.hostsConfig
+                    )
+                }
             } label: {
                 Label("Open", systemImage: "arrow.up.right.square")
             }
@@ -924,27 +930,23 @@ private struct StatBadge: View {
 
 // MARK: - SpinnerView
 
-/// Continuously rotating arc — used for the "running" activity state.
+/// Static arc indicator for the "running" activity state.
+///
+/// The sidebar can show many managed panes at once, so a per-row repeat-forever
+/// SwiftUI animation quickly turns into steady-state layout churn that competes
+/// with terminal input and rendering on the main thread.
 struct SpinnerView: View {
     let color: Color
     let size: CGFloat
     var lineWidth: CGFloat = 1.5
     var trimRange: ClosedRange<CGFloat> = 0.15...0.85
-    var duration: Double = 0.8
-
-    @State private var angle: Double = 0
 
     var body: some View {
         Circle()
             .trim(from: trimRange.lowerBound, to: trimRange.upperBound)
             .stroke(color, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
             .frame(width: size, height: size)
-            .rotationEffect(.degrees(angle))
-            .onAppear {
-                withAnimation(.linear(duration: duration).repeatForever(autoreverses: false)) {
-                    angle = 360
-                }
-            }
+            .rotationEffect(.degrees(-90))
     }
 }
 
@@ -1720,10 +1722,12 @@ struct SidebarView: View {
                                             }
                                         },
                                         onSelectPane: { pane in
-                                            mainTerminalStore.activate(
-                                                pane: pane,
-                                                hostsConfig: runtimeStore.hostsConfig
-                                            )
+                                            Task {
+                                                await mainTerminalStore.activate(
+                                                    pane: pane,
+                                                    hostsConfig: runtimeStore.hostsConfig
+                                                )
+                                            }
                                         }
                                     )
                                 }

@@ -775,6 +775,9 @@ final class UITestTmuxBridge {
             case bridgeReadyCommand:
                 stdout = "ready"
             case sidebarStateCommand:
+                if request.refreshInventory ?? false {
+                    await viewModel.fetchAll()
+                }
                 let bootstrapProbeSummary: UITestBootstrapProbeSummary
                 let bootstrapTargetSummary: UITestBootstrapTargetSummary?
                 let requestedSessionName = request.args.dropFirst().first
@@ -946,6 +949,7 @@ final class UITestTmuxBridge {
             )
         }
         let effectivePaneRef = resolvedPaneRef ?? observedPaneRef ?? requestedPaneRef
+        let desiredPaneRef = requestedPaneRef ?? effectivePaneRef
         let attachCommand = (try? mainTerminalStore.attachResolution?.get().command)
             ?? renderedState?.attachCommand
             ?? ""
@@ -972,8 +976,8 @@ final class UITestTmuxBridge {
             sessionName: sessionRef.sessionName,
             windowID: effectivePaneRef?.windowID ?? "",
             paneID: effectivePaneRef?.paneID ?? "",
-            desiredWindowID: requestedPaneRef?.windowID ?? "",
-            desiredPaneID: requestedPaneRef?.paneID ?? "",
+            desiredWindowID: desiredPaneRef?.windowID ?? "",
+            desiredPaneID: desiredPaneRef?.paneID ?? "",
             observedWindowID: observedPaneRef?.windowID ?? effectivePaneRef?.windowID ?? "",
             observedPaneID: observedPaneRef?.paneID ?? effectivePaneRef?.paneID ?? "",
             focusRequestNonce: mainTerminalStore.focusRequestNonce,
@@ -1561,9 +1565,8 @@ final class UITestTmuxBridge {
             "openTerminalForPaneForTesting main-terminal currentSession=\(String(describing: currentSessionRef?.sessionName)) currentPane=\(String(describing: mainTerminalStore.highlightedPaneRef?.paneID))"
         )
         let sessionRef = sessionRef(forPane: pane, hostsConfig: hostsConfig)
-        let requestedPaneRef = activePaneRef(forPane: pane, hostsConfig: hostsConfig)
         let disposition = currentSessionRef == sessionRef ? "revealedExisting" : "opened"
-        mainTerminalStore.activate(pane: pane, hostsConfig: hostsConfig)
+        await mainTerminalStore.activate(pane: pane, hostsConfig: hostsConfig)
         uiTestBridgeDebugLog(
             "openTerminalForPaneForTesting main-terminal-activated tile=\(mainTerminalStore.surfaceID.uuidString)"
         )
@@ -1573,10 +1576,13 @@ final class UITestTmuxBridge {
                 timeoutMilliseconds: terminalViewRegistrationTimeoutMilliseconds
             )
         }
-        if mainTerminalStore.requestedPaneRef != requestedPaneRef,
-           mainTerminalStore.resolvedPaneRef != requestedPaneRef {
+        let requestedWindowID = pane.windowId
+        let resolvedWindowID = mainTerminalStore.resolvedPaneRef?.windowID
+        let desiredWindowID = mainTerminalStore.requestedPaneRef?.windowID
+        if resolvedWindowID != requestedWindowID,
+           desiredWindowID != requestedWindowID {
             uiTestBridgeDebugLog(
-                "openTerminalForPaneForTesting main-terminal target mismatch requested=\(requestedPaneRef.paneID) actualRequested=\(String(describing: mainTerminalStore.requestedPaneRef?.paneID)) actualResolved=\(String(describing: mainTerminalStore.resolvedPaneRef?.paneID))"
+                "openTerminalForPaneForTesting main-terminal window mismatch requestedWindow=\(requestedWindowID) actualRequestedWindow=\(String(describing: desiredWindowID)) actualResolvedWindow=\(String(describing: resolvedWindowID))"
             )
         }
 
