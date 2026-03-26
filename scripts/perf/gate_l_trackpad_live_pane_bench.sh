@@ -36,19 +36,19 @@ function viewport_sample_count() {
 }
 
 function wait_for_terminal_viewport_ready() {
-  local tile_id="$1"
+  local surface_id="$1"
   local timeout="${2:-15}"
   local deadline=$((EPOCHREALTIME + timeout))
 
   while (( EPOCHREALTIME < deadline )); do
-    if gate_l_send_bridge_json_command false 5 "__agtmux_dump_terminal_viewport_text__" "$tile_id" \
+    if gate_l_send_bridge_json_command false 5 "__agtmux_dump_terminal_viewport_text__" "$surface_id" \
       >/dev/null 2>"$gate_l_tmpdir/viewport-ready.last-error.log"; then
       return 0
     fi
     sleep 0.05
   done
 
-  echo "Timed out waiting for terminal viewport readiness for tileID $tile_id" >&2
+  echo "Timed out waiting for terminal viewport readiness for surfaceID $surface_id" >&2
   if [[ -s "$gate_l_tmpdir/viewport-ready.last-error.log" ]]; then
     cat "$gate_l_tmpdir/viewport-ready.last-error.log" >&2
   fi
@@ -166,23 +166,23 @@ gate_l_wait_for_bridge_ready "$settle_timeout"
 gate_l_activate_app
 
 open_json="$(gate_l_send_bridge_json_command true "$settle_timeout" "__agtmux_open_terminal_for_pane__" "local" "$session_name" "$pane_id")"
-tile_id="$(jq -r '.tileID // empty' <<<"$open_json")"
-if [[ -z "$tile_id" ]]; then
+surface_id="$(jq -r '.surfaceID // empty' <<<"$open_json")"
+if [[ -z "$surface_id" ]]; then
   echo "Failed to open live pane $session_name $pane_id: $open_json" >&2
   exit 1
 fi
 
-if ! wait_for_terminal_viewport_ready "$tile_id" "$settle_timeout"; then
+if ! wait_for_terminal_viewport_ready "$surface_id" "$settle_timeout"; then
   exit 1
 fi
-gate_l_send_bridge_command false 10 "__agtmux_focus_terminal_host__" "$tile_id" >/dev/null
+gate_l_send_bridge_command false 10 "__agtmux_focus_terminal_host__" "$surface_id" >/dev/null
 gate_l_activate_app
 
-focus_json="$(gate_l_send_bridge_json_command false 10 "__agtmux_dump_focus_state__" "$tile_id")"
+focus_json="$(gate_l_send_bridge_json_command false 10 "__agtmux_dump_focus_state__" "$surface_id")"
 terminal_ax_identifier="$(jq -r '.terminalAccessibilityIdentifier // empty' <<<"$focus_json")"
 resolved_terminal_ax_identifier="$terminal_ax_identifier"
 if [[ -z "$resolved_terminal_ax_identifier" ]]; then
-  resolved_terminal_ax_identifier="workspace.terminalHost.${tile_id}"
+  resolved_terminal_ax_identifier="workspace.terminalHost.${surface_id}"
 fi
 
 typeset -a scroll_sender_args
@@ -215,15 +215,15 @@ burst_metrics_path="$gate_l_tmpdir/live-pane-burst-metrics.jsonl"
 rm -f "$burst_metrics_path"
 
 for (( burst = 1; burst <= bursts; burst++ )); do
-  gate_l_send_bridge_command false 10 "__agtmux_focus_terminal_host__" "$tile_id" >/dev/null
+  gate_l_send_bridge_command false 10 "__agtmux_focus_terminal_host__" "$surface_id" >/dev/null
   gate_l_activate_app
 
-  gate_l_send_bridge_command false 10 "__agtmux_reset_scroll_telemetry__" "$tile_id" >/dev/null
+  gate_l_send_bridge_command false 10 "__agtmux_reset_scroll_telemetry__" "$surface_id" >/dev/null
 
   sample_json_path="$gate_l_tmpdir/live-pane-samples-${burst}.json"
   sample_count="$(viewport_sample_count)"
   send_json_path="$gate_l_tmpdir/live-pane-send-${burst}.json"
-  sample_request_id="$(gate_l_start_async_bridge_command false "__agtmux_sample_terminal_viewport_text__" "$tile_id" "$sample_count" "$sample_interval_ms")"
+  sample_request_id="$(gate_l_start_async_bridge_command false "__agtmux_sample_terminal_viewport_text__" "$surface_id" "$sample_count" "$sample_interval_ms")"
   sleep_ms 20
   if ! perl -e 'alarm shift @ARGV; exec @ARGV' 8 \
     "$SCRIPT_DIR/gate_l_ax_key_sender.sh" \
@@ -248,7 +248,7 @@ for (( burst = 1; burst <= bursts; burst++ )); do
 
   step_metrics_path="$gate_l_tmpdir/live-pane-step-metrics-${burst}.json"
   python3 "$STEP_METRICS_PY" "$sample_json_path" >"$step_metrics_path"
-  scroll_telemetry_json="$(gate_l_send_bridge_json_command false 10 "__agtmux_dump_scroll_telemetry__" "$tile_id")"
+  scroll_telemetry_json="$(gate_l_send_bridge_json_command false 10 "__agtmux_dump_scroll_telemetry__" "$surface_id")"
 
   python3 - "$burst" "$step_metrics_path" "$scroll_telemetry_json" <<'PY' >>"$burst_metrics_path"
 import json

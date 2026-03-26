@@ -159,14 +159,14 @@ if ! wait_for_first_visible_line_number "$socket_name" "$target" 1 "$settle_time
   exit 1
 fi
 ready_capture="$(gate_l_tmux capture-pane -p -t "$target" -S -200 2>/dev/null || true)"
-gate_l_send_bridge_command false 10 "__agtmux_open_terminal_for_pane__" "local" "$session_name" "$pane_id" >/dev/null
+gate_l_send_bridge_command true 30 "__agtmux_open_terminal_for_pane__" "local" "$session_name" "$pane_id" >/dev/null
 gate_l_activate_app
 
 active_snapshot="$(gate_l_wait_for_active_snapshot "$session_name" "$settle_timeout")"
-tile_id="$(jq -r '.tileID' <<<"$active_snapshot")"
-focus_snapshot="$(gate_l_send_bridge_command false 10 "__agtmux_dump_focus_state__" "$tile_id")"
+surface_id="$(jq -r '.surfaceID' <<<"$active_snapshot")"
+focus_snapshot="$(gate_l_send_bridge_command false 10 "__agtmux_dump_focus_state__" "$surface_id")"
 terminal_ax_identifier="$(jq -r '.terminalAccessibilityIdentifier // empty' <<<"$focus_snapshot")"
-terminal_ax_fallback_identifier="workspace.terminalHost.${tile_id}"
+terminal_ax_fallback_identifier="workspace.terminalHost.${surface_id}"
 resolved_terminal_ax_identifier="$terminal_ax_identifier"
 if [[ -z "$resolved_terminal_ax_identifier" ]]; then
   resolved_terminal_ax_identifier="$terminal_ax_fallback_identifier"
@@ -261,7 +261,7 @@ jq -n \
   --arg socket_name "$socket_name" \
   --arg target "$target" \
   --arg pane_id "$pane_id" \
-  --arg tile_id "$tile_id" \
+  --arg surface_id "$surface_id" \
   --arg bench_start "$bench_start" \
   --arg bench_end "$bench_end" \
   --arg ready_capture "$ready_capture" \
@@ -305,7 +305,7 @@ jq -n \
     socket_name: $socket_name,
     target: $target,
     pane_id: $pane_id,
-    tile_id: $tile_id,
+    surface_id: $surface_id,
     line_count: $line_count,
     warmup_scrolls: $warmup_scrolls,
     scroll_lines_per_event: $scroll_lines_per_event,

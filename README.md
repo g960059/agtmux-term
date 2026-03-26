@@ -8,14 +8,14 @@ Ghostty terminal and a tmux/agent sidebar overlay in the same window.
 ## Features
 
 - **Terminal-first main panel** — the main terminal starts as a plain shell and stays in the same app window as the sidebar
-- **Sidebar overlay** — live tmux session list grouped by session/window/pane, plus agent status (Running / Waiting / Idle / Attention) and conversation titles
+- **Sidebar overlay** — live tmux session list grouped by session/window/pane, with optional agent metadata when the local metadata lane is enabled
 - **Retarget current terminal** — clicking a session or pane reuses the main terminal in place instead of jumping to a separate Ghostty window
 - **Native Ghostty runtime** — terminal rendering, input, and IME behavior come from GhosttyKit/libghostty rather than a custom terminal implementation
-- **Real-time state** — agtmux daemon pushes agent state every second over Unix socket JSON-RPC
+- **Opt-in local metadata** — the bundled agtmux daemon can enrich the sidebar with agent state, health, and conversation titles when enabled
 - **SSH targets** — connect to remote hosts (SSH/Mosh) and manage their sessions from one window
 - **Claude hooks** — register/unregister/verify Claude Code hooks directly from the Settings sheet
 - **Optional auto-launch** — can create a configured tmux session automatically when no local sessions are running
-- **Daemon bundled** — XPC service manages the agtmux daemon lifecycle; zero manual setup
+- **Daemon bundled** — XPC service can manage the agtmux daemon lifecycle when the local metadata lane is enabled
 
 ## Install
 
@@ -47,6 +47,20 @@ Download the latest `AgtmuxTerm-vx.y.z.dmg` from [Releases](https://github.com/g
 
 - macOS 14 (Sonoma) or later
 - tmux available in PATH (for local sessions)
+
+## Current Runtime Default
+
+Normal app launches currently default to the tmux-inventory fast path while the
+local metadata hot path is being rewritten for performance. That means the main
+terminal and sidebar session inventory work without starting the bundled
+`agtmux` daemon.
+
+If you explicitly want the current local metadata lane during this rewrite,
+launch with:
+
+```bash
+AGTMUX_ENABLE_LOCAL_METADATA=1 open -na /Applications/AgtmuxTerm.app
+```
 
 ## Build from Source
 
@@ -80,7 +94,8 @@ open AgtmuxTerm.xcodeproj
 
 ### Claude Code Hooks
 
-For live agent state updates, agtmux hooks into Claude Code's event system:
+For live agent state updates, agtmux hooks into Claude Code's event system when
+the local metadata lane is enabled:
 
 1. Open agtmux-term
 2. Go to **Settings** (gear icon at sidebar bottom)
@@ -120,14 +135,14 @@ agtmux-term (Swift macOS tmux cockpit)
 ├── Main embedded terminal + sidebar overlay
 ├── Session retarget / restore state
 ├── AgtmuxDaemonService.xpc        ← XPC service managing daemon lifecycle
-├── agtmux daemon (UDS RPC)        ← Agent state estimation engine
+├── agtmux daemon (UDS RPC, opt-in) ← Agent state estimation engine
 ├── tmux (PTY / SSH target truth)  ← Session multiplexer and source of session existence
 └── GhosttyKit / libghostty        ← Terminal runtime engine inside the app
 ```
 
-The repository still contains generic workbench and migration-only paths, but
-the mainline product direction is a terminal-first embedded Ghostty cockpit
-with a supplementary tmux/agent sidebar, not separate Ghostty app windows.
+The mainline product is a terminal-first embedded Ghostty cockpit with a
+supplementary tmux/agent sidebar, not separate Ghostty app windows or generic
+workspace state.
 
 ## Documentation and Workflow
 

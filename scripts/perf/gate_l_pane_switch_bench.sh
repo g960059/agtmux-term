@@ -12,7 +12,7 @@ session_name=""
 mode="bridge"
 terminal_ax_identifier=""
 terminal_ax_fallback_identifier=""
-tile_id=""
+surface_id=""
 rendered_client_tty=""
 helper_json='null'
 
@@ -160,7 +160,7 @@ gate_l_activate_app
 initial_rendered_snapshot="$(gate_l_wait_for_active_snapshot "$session_name" "$settle_timeout")"
 first_pane_id="$(jq -r '.renderedClientPaneID' <<<"$initial_rendered_snapshot")"
 initial_snapshot="$(gate_l_wait_for_active_target "$session_name" "$window_id" "$first_pane_id" "$settle_timeout")"
-tile_id="$(jq -r '.tileID' <<<"$initial_snapshot")"
+surface_id="$(jq -r '.surfaceID' <<<"$initial_snapshot")"
 rendered_client_tty="$(jq -r '.renderedClientTTY // empty' <<<"$initial_snapshot")"
 if [[ "$mode" == "client" && -z "$rendered_client_tty" ]]; then
   echo "Could not resolve rendered client tty for client-mode pane-switch benchmark" >&2
@@ -194,7 +194,7 @@ for (( i = 1; i <= iterations; i++ )); do
     gate_l_send_bridge_command false 10 "__agtmux_open_terminal_for_pane__" "$source_name" "$session_name" "$target_pane_id" >/dev/null
     gate_l_activate_app
   elif [[ "$mode" == "key" ]]; then
-    gate_l_send_bridge_command false 10 "__agtmux_send_tmux_next_pane_keys__" "$tile_id" >/dev/null
+    gate_l_send_bridge_command false 10 "__agtmux_send_tmux_next_pane_keys__" "$surface_id" >/dev/null
   else
     switch_rendered_client_to_pane "$rendered_client_tty" "$target_pane_id"
   fi

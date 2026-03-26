@@ -1,13 +1,13 @@
 import Foundation
 import AgtmuxTermCore
 
-struct WorkbenchV2TerminalLiveTarget: Equatable {
+struct TerminalLiveTarget: Equatable {
     let sessionName: String
     let windowID: String
     let paneID: String
 }
 
-enum WorkbenchV2TerminalNavigationError: LocalizedError, Equatable {
+enum MainTerminalNavigationError: LocalizedError, Equatable {
     case missingRemoteHostKey(String)
     case activePaneUnavailable(sessionName: String, output: String)
     case renderedClientUnavailable(sessionName: String, clientTTY: String, output: String)
@@ -27,19 +27,45 @@ enum WorkbenchV2TerminalNavigationError: LocalizedError, Equatable {
     }
 }
 
-enum WorkbenchV2TerminalNavigationResolver {
-    static func navigationCommand(
-        for activePaneRef: ActivePaneRef,
-        tmuxClientName: String
-    ) -> [String] {
-        [
-            "switch-client",
-            "-c", tmuxClientName,
-            "-t", activePaneRef.paneID,
-        ]
+enum MainTerminalNavigationResolver {
+    static func globalNavigationCommands(for activePaneRef: ActivePaneRef) -> [[String]] {
+        var commands: [[String]] = []
+        let normalizedWindowID = activePaneRef.windowID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedPaneID = activePaneRef.paneID.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if normalizedWindowID.isEmpty == false {
+            commands.append(["select-window", "-t", normalizedWindowID])
+        }
+        if normalizedPaneID.isEmpty == false {
+            commands.append(["select-pane", "-t", normalizedPaneID])
+        }
+
+        return commands
+    }
+
+    static func applySessionNavigationIntent(
+        activePaneRef: ActivePaneRef,
+        hostsConfig: HostsConfig
+    ) async throws {
+        let source = try tmuxSource(for: activePaneRef.target, hostsConfig: hostsConfig)
+        for command in globalNavigationCommands(for: activePaneRef) {
+            _ = try await TmuxCommandRunner.shared.run(command, source: source)
+        }
     }
 
     static func applyNavigationIntent(
+        activePaneRef: ActivePaneRef,
+        renderedClientTTY: String,
+        hostsConfig: HostsConfig
+    ) async throws {
+        _ = renderedClientTTY
+        try await applySessionNavigationIntent(
+            activePaneRef: activePaneRef,
+            hostsConfig: hostsConfig
+        )
+    }
+
+    static func applyRenderedClientNavigationIntent(
         activePaneRef: ActivePaneRef,
         renderedClientTTY: String,
         hostsConfig: HostsConfig
@@ -51,7 +77,11 @@ enum WorkbenchV2TerminalNavigationResolver {
             hostsConfig: hostsConfig
         )
         _ = try await TmuxCommandRunner.shared.run(
-            navigationCommand(for: activePaneRef, tmuxClientName: tmuxClientName),
+            [
+                "switch-client",
+                "-c", tmuxClientName,
+                "-t", activePaneRef.paneID,
+            ],
             source: source
         )
     }
@@ -59,7 +89,7 @@ enum WorkbenchV2TerminalNavigationResolver {
     static func liveTarget(
         sessionRef: SessionRef,
         hostsConfig: HostsConfig
-    ) async throws -> WorkbenchV2TerminalLiveTarget {
+    ) async throws -> TerminalLiveTarget {
         let source = try tmuxSource(for: sessionRef.target, hostsConfig: hostsConfig)
         let output = try await TmuxCommandRunner.shared.run(
             [
@@ -76,7 +106,7 @@ enum WorkbenchV2TerminalNavigationResolver {
         sessionRef: SessionRef,
         windowID: String,
         hostsConfig: HostsConfig
-    ) async throws -> WorkbenchV2TerminalLiveTarget {
+    ) async throws -> TerminalLiveTarget {
         let source = try tmuxSource(for: sessionRef.target, hostsConfig: hostsConfig)
         let output = try await TmuxCommandRunner.shared.run(
             [
@@ -97,7 +127,7 @@ enum WorkbenchV2TerminalNavigationResolver {
         renderedClientTTY: String,
         target: TargetRef,
         hostsConfig: HostsConfig
-    ) async throws -> WorkbenchV2TerminalLiveTarget {
+    ) async throws -> TerminalLiveTarget {
         let source = try tmuxSource(for: target, hostsConfig: hostsConfig)
         let output = try await TmuxCommandRunner.shared.run(
             [
@@ -134,20 +164,20 @@ enum WorkbenchV2TerminalNavigationResolver {
     static func parseLiveTarget(
         output: String,
         expectedSessionName: String
-    ) throws -> WorkbenchV2TerminalLiveTarget {
+    ) throws -> TerminalLiveTarget {
         for line in output.split(separator: "\n") {
             let fields = line.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
             guard fields.count == 5 else { continue }
             guard fields[0] == expectedSessionName else { continue }
             guard fields[3] == "1", fields[4] == "1" else { continue }
-            return WorkbenchV2TerminalLiveTarget(
+            return TerminalLiveTarget(
                 sessionName: fields[0],
                 windowID: fields[1],
                 paneID: fields[2]
             )
         }
 
-        throw WorkbenchV2TerminalNavigationError.activePaneUnavailable(
+        throw MainTerminalNavigationError.activePaneUnavailable(
             sessionName: expectedSessionName,
             output: output
         )
@@ -157,21 +187,21 @@ enum WorkbenchV2TerminalNavigationResolver {
         output: String,
         expectedSessionName: String,
         expectedWindowID: String
-    ) throws -> WorkbenchV2TerminalLiveTarget {
+    ) throws -> TerminalLiveTarget {
         for line in output.split(separator: "\n") {
             let fields = line.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
             guard fields.count == 4 else { continue }
             guard fields[0] == expectedSessionName else { continue }
             guard fields[1] == expectedWindowID else { continue }
             guard fields[3] == "1" else { continue }
-            return WorkbenchV2TerminalLiveTarget(
+            return TerminalLiveTarget(
                 sessionName: fields[0],
                 windowID: fields[1],
                 paneID: fields[2]
             )
         }
 
-        throw WorkbenchV2TerminalNavigationError.activePaneUnavailable(
+        throw MainTerminalNavigationError.activePaneUnavailable(
             sessionName: expectedSessionName,
             output: output
         )
@@ -180,19 +210,19 @@ enum WorkbenchV2TerminalNavigationResolver {
     static func parseLiveTarget(
         output: String,
         expectedClientTTY: String
-    ) throws -> WorkbenchV2TerminalLiveTarget {
+    ) throws -> TerminalLiveTarget {
         for line in output.split(separator: "\n") {
             let fields = line.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
             guard fields.count == 4 else { continue }
             guard fields[0] == expectedClientTTY else { continue }
-            return WorkbenchV2TerminalLiveTarget(
+            return TerminalLiveTarget(
                 sessionName: fields[1],
                 windowID: fields[2],
                 paneID: fields[3]
             )
         }
 
-        throw WorkbenchV2TerminalNavigationError.renderedClientUnavailable(
+        throw MainTerminalNavigationError.renderedClientUnavailable(
             sessionName: "",
             clientTTY: expectedClientTTY,
             output: output
@@ -211,14 +241,14 @@ enum WorkbenchV2TerminalNavigationResolver {
             return fields[0]
         }
 
-        throw WorkbenchV2TerminalNavigationError.renderedClientUnavailable(
+        throw MainTerminalNavigationError.renderedClientUnavailable(
             sessionName: "",
             clientTTY: expectedClientTTY,
             output: output
         )
     }
 
-    static func sourceHostname(
+    static func tmuxSource(
         for target: TargetRef,
         hostsConfig: HostsConfig
     ) throws -> String {
@@ -227,22 +257,7 @@ enum WorkbenchV2TerminalNavigationResolver {
             return "local"
         case .remote(let hostKey):
             guard let host = hostsConfig.host(id: hostKey) else {
-                throw WorkbenchV2TerminalNavigationError.missingRemoteHostKey(hostKey)
-            }
-            return host.hostname
-        }
-    }
-
-    private static func tmuxSource(
-        for target: TargetRef,
-        hostsConfig: HostsConfig
-    ) throws -> String {
-        switch target {
-        case .local:
-            return "local"
-        case .remote(let hostKey):
-            guard let host = hostsConfig.host(id: hostKey) else {
-                throw WorkbenchV2TerminalNavigationError.missingRemoteHostKey(hostKey)
+                throw MainTerminalNavigationError.missingRemoteHostKey(hostKey)
             }
             return host.sshTarget
         }

@@ -273,7 +273,7 @@ function viewport_sample_count() {
 }
 
 function sample_terminal_viewport_text_json() {
-  local tile_id="$1"
+  local surface_id="$1"
   local sample_count="$2"
   local interval_ms="$3"
   local output_path="$4"
@@ -281,7 +281,7 @@ function sample_terminal_viewport_text_json() {
   local bridge_output=""
   local bridge_error_path="$gate_l_tmpdir/viewport-sample.last-error.log"
   local request_id=""
-  request_id="$(gate_l_start_async_bridge_command false "__agtmux_sample_terminal_viewport_text__" "$tile_id" "$sample_count" "$interval_ms")"
+  request_id="$(gate_l_start_async_bridge_command false "__agtmux_sample_terminal_viewport_text__" "$surface_id" "$sample_count" "$interval_ms")"
   if bridge_output="$(gate_l_wait_for_async_bridge_json_result "$request_id" 20 2>"$bridge_error_path")"; then
     print -r -- "$bridge_output" >"$output_path"
     return 0
@@ -293,7 +293,7 @@ function sample_terminal_viewport_text_json() {
   local index snapshot_json elapsed_ms
 
   for (( index = 0; index < sample_count; index++ )); do
-    snapshot_json="$(gate_l_send_bridge_json_command false 5 "__agtmux_dump_terminal_viewport_text__" "$tile_id")" || return 1
+    snapshot_json="$(gate_l_send_bridge_json_command false 5 "__agtmux_dump_terminal_viewport_text__" "$surface_id")" || return 1
     elapsed_ms="$(elapsed_ms_since "$started_at")"
     jq -cn \
       --argjson sampleIndex "$index" \
@@ -310,19 +310,19 @@ function sample_terminal_viewport_text_json() {
 }
 
 function wait_for_terminal_viewport_ready() {
-  local tile_id="$1"
+  local surface_id="$1"
   local timeout="${2:-15}"
   local deadline=$((EPOCHREALTIME + timeout))
 
   while (( EPOCHREALTIME < deadline )); do
-    if gate_l_send_bridge_json_command false 5 "__agtmux_dump_terminal_viewport_text__" "$tile_id" \
+    if gate_l_send_bridge_json_command false 5 "__agtmux_dump_terminal_viewport_text__" "$surface_id" \
       >/dev/null 2>"$gate_l_tmpdir/viewport-ready.last-error.log"; then
       return 0
     fi
     sleep 0.05
   done
 
-  echo "Timed out waiting for terminal viewport readiness for tileID $tile_id" >&2
+  echo "Timed out waiting for terminal viewport readiness for surfaceID $surface_id" >&2
   if [[ -s "$gate_l_tmpdir/viewport-ready.last-error.log" ]]; then
     cat "$gate_l_tmpdir/viewport-ready.last-error.log" >&2
   fi
@@ -330,13 +330,13 @@ function wait_for_terminal_viewport_ready() {
 }
 
 function wait_for_terminal_focus_ready() {
-  local tile_id="$1"
+  local surface_id="$1"
   local timeout="${2:-5}"
   local deadline=$(( EPOCHREALTIME + timeout ))
   local last_snapshot=""
 
   while (( EPOCHREALTIME < deadline )); do
-    if last_snapshot="$(gate_l_send_bridge_json_command false 5 "__agtmux_dump_focus_state__" "$tile_id" 2>"$gate_l_tmpdir/focus-ready.last-error.log")"; then
+    if last_snapshot="$(gate_l_send_bridge_json_command false 5 "__agtmux_dump_focus_state__" "$surface_id" 2>"$gate_l_tmpdir/focus-ready.last-error.log")"; then
       local app_is_active window_is_key terminal_is_first_responder
       app_is_active="$(jq -r '.appIsActive // false' <<<"$last_snapshot")"
       window_is_key="$(jq -r '.windowIsKey // false' <<<"$last_snapshot")"
@@ -349,7 +349,7 @@ function wait_for_terminal_focus_ready() {
     sleep 0.05
   done
 
-  echo "Timed out waiting for terminal focus readiness for tileID $tile_id" >&2
+  echo "Timed out waiting for terminal focus readiness for surfaceID $surface_id" >&2
   if [[ -n "$last_snapshot" ]]; then
     echo "Last focus snapshot: $last_snapshot" >&2
   elif [[ -s "$gate_l_tmpdir/focus-ready.last-error.log" ]]; then
@@ -561,16 +561,16 @@ ready_capture="$(gate_l_tmux capture-pane -p -t "$target" -S -200 2>/dev/null ||
 
 gate_l_activate_app
 open_terminal_json="$(gate_l_send_bridge_json_command false 10 "__agtmux_open_terminal_for_pane__" "local" "$session_name" "$pane_id")"
-tile_id="$(jq -r '.tileID // empty' <<<"$open_terminal_json")"
-if [[ -z "$tile_id" ]]; then
-  echo "Failed to resolve tile from __agtmux_open_terminal_for_pane__: $open_terminal_json" >&2
+surface_id="$(jq -r '.surfaceID // empty' <<<"$open_terminal_json")"
+if [[ -z "$surface_id" ]]; then
+  echo "Failed to resolve surface from __agtmux_open_terminal_for_pane__: $open_terminal_json" >&2
   exit 1
 fi
-if ! wait_for_terminal_viewport_ready "$tile_id" "$settle_timeout"; then
+if ! wait_for_terminal_viewport_ready "$surface_id" "$settle_timeout"; then
   exit 1
 fi
 gate_l_activate_app
-gate_l_send_bridge_command false 10 "__agtmux_focus_terminal_host__" "$tile_id" >/dev/null
+gate_l_send_bridge_command false 10 "__agtmux_focus_terminal_host__" "$surface_id" >/dev/null
 gate_l_activate_app
 
 if [[ "$fixture_mode" == "scrollback" && "$scrollback_defer_replay" == "1" ]]; then
@@ -581,13 +581,13 @@ if [[ "$fixture_mode" == "scrollback" && "$scrollback_defer_replay" == "1" ]]; t
   fi
   ready_capture="$(gate_l_tmux capture-pane -p -t "$target" -S -200 2>/dev/null || true)"
   gate_l_activate_app
-  gate_l_send_bridge_command false 10 "__agtmux_focus_terminal_host__" "$tile_id" >/dev/null
+  gate_l_send_bridge_command false 10 "__agtmux_focus_terminal_host__" "$surface_id" >/dev/null
   sleep 0.2
 fi
 
-focus_snapshot="$(gate_l_send_bridge_json_command false 10 "__agtmux_dump_focus_state__" "$tile_id")"
+focus_snapshot="$(gate_l_send_bridge_json_command false 10 "__agtmux_dump_focus_state__" "$surface_id")"
 terminal_ax_identifier="$(jq -r '.terminalAccessibilityIdentifier // empty' <<<"$focus_snapshot")"
-terminal_ax_fallback_identifier="workspace.terminalHost.${tile_id}"
+terminal_ax_fallback_identifier="workspace.terminalHost.${surface_id}"
 resolved_terminal_ax_identifier="$terminal_ax_identifier"
 if [[ -z "$resolved_terminal_ax_identifier" ]]; then
   resolved_terminal_ax_identifier="$terminal_ax_fallback_identifier"
@@ -633,7 +633,7 @@ measure_scroll_sender_args=(
   --point-x "$scroll_point_x"
   --point-y "$scroll_point_y"
 )
-if ! wait_for_terminal_focus_ready "$tile_id" 5 >/dev/null; then
+if ! wait_for_terminal_focus_ready "$surface_id" 5 >/dev/null; then
   exit 1
 fi
 sleep 0.05
@@ -654,7 +654,7 @@ for (( burst = 1; burst <= bursts; burst++ )); do
     exit 1
   fi
 
-  if ! gate_l_send_bridge_command false 10 "__agtmux_focus_terminal_host__" "$tile_id" >/dev/null; then
+  if ! gate_l_send_bridge_command false 10 "__agtmux_focus_terminal_host__" "$surface_id" >/dev/null; then
     echo "Failed to refocus terminal host before burst $burst" >&2
     exit 1
   fi
@@ -677,7 +677,7 @@ for (( burst = 1; burst <= bursts; burst++ )); do
     --point-x "$scroll_point_x"
     --point-y "$scroll_point_y"
   )
-  if ! wait_for_terminal_focus_ready "$tile_id" 5 >/dev/null; then
+  if ! wait_for_terminal_focus_ready "$surface_id" 5 >/dev/null; then
     exit 1
   fi
   warmup_position_for_upscroll "$socket_name" "$target"
@@ -685,9 +685,9 @@ for (( burst = 1; burst <= bursts; burst++ )); do
 baseline_capture="$(visible_rows_capture "$socket_name" "$target")"
   baseline_line="$(first_visible_line_number_from_text "$baseline_capture")"
   baseline_tmux_alternate_on="$(tmux_alternate_on "$socket_name" "$target")"
-  baseline_viewport_snapshot_json="$(gate_l_send_bridge_json_command false 10 "__agtmux_dump_terminal_viewport_text__" "$tile_id")"
-  gate_l_send_bridge_command false 10 "__agtmux_reset_scroll_telemetry__" "$tile_id" >/dev/null
-  burst_scroll_telemetry_before_json="$(gate_l_send_bridge_json_command false 10 "__agtmux_dump_scroll_telemetry__" "$tile_id")"
+  baseline_viewport_snapshot_json="$(gate_l_send_bridge_json_command false 10 "__agtmux_dump_terminal_viewport_text__" "$surface_id")"
+  gate_l_send_bridge_command false 10 "__agtmux_reset_scroll_telemetry__" "$surface_id" >/dev/null
+  burst_scroll_telemetry_before_json="$(gate_l_send_bridge_json_command false 10 "__agtmux_dump_scroll_telemetry__" "$surface_id")"
 
   sample_json_path="$gate_l_tmpdir/upscroll-samples-${burst}.json"
   burst_capture_json_path="$gate_l_tmpdir/upscroll-capture-${burst}.json"
@@ -695,7 +695,7 @@ baseline_capture="$(visible_rows_capture "$socket_name" "$target")"
   send_json_path="$gate_l_tmpdir/upscroll-send-${burst}.json"
   send_result_json_path="$gate_l_tmpdir/upscroll-send-result-${burst}.json"
   if [[ "$fixture_mode" == "scrollback" && "$scrollback_sampler_mode" == "bridge" ]]; then
-    sample_request_id="$(gate_l_start_async_bridge_command false "__agtmux_sample_terminal_viewport_text__" "$tile_id" "$sample_count" "$sample_interval_ms")"
+    sample_request_id="$(gate_l_start_async_bridge_command false "__agtmux_sample_terminal_viewport_text__" "$surface_id" "$sample_count" "$sample_interval_ms")"
     python3 "$RUN_SENDER_PY" \
       --output "$send_result_json_path" \
       --start-delay-ms 20 \
@@ -820,9 +820,9 @@ baseline_capture="$(visible_rows_capture "$socket_name" "$target")"
   first_changed_text_json="$(jq -Rs '.' < <(jq -r '.summary.first_changed_text // ""' "$burst_step_metrics_path"))"
   last_changed_text_json="$(jq -Rs '.' < <(jq -r '.summary.last_changed_text // ""' "$burst_step_metrics_path"))"
 
-  burst_scroll_telemetry_json="$(gate_l_send_bridge_json_command false 10 "__agtmux_dump_scroll_telemetry__" "$tile_id")"
+  burst_scroll_telemetry_json="$(gate_l_send_bridge_json_command false 10 "__agtmux_dump_scroll_telemetry__" "$surface_id")"
   final_tmux_alternate_on="$(tmux_alternate_on "$socket_name" "$target")"
-  final_viewport_snapshot_json="$(gate_l_send_bridge_json_command false 10 "__agtmux_dump_terminal_viewport_text__" "$tile_id")"
+  final_viewport_snapshot_json="$(gate_l_send_bridge_json_command false 10 "__agtmux_dump_terminal_viewport_text__" "$surface_id")"
   burst_alternate_scroll_delta="$(jq -n \
     --argjson prev "$burst_scroll_telemetry_before_json" \
     --argjson curr "$burst_scroll_telemetry_json" \
@@ -916,8 +916,8 @@ baseline_capture="$(visible_rows_capture "$socket_name" "$target")"
 done
 
 bench_end="$(date '+%Y-%m-%d %H:%M:%S%z')"
-post_scroll_focus_snapshot="$(gate_l_send_bridge_json_command false 10 "__agtmux_dump_focus_state__" "$tile_id")"
-post_scroll_telemetry="$(gate_l_send_bridge_json_command false 10 "__agtmux_dump_scroll_telemetry__" "$tile_id")"
+post_scroll_focus_snapshot="$(gate_l_send_bridge_json_command false 10 "__agtmux_dump_focus_state__" "$surface_id")"
+post_scroll_telemetry="$(gate_l_send_bridge_json_command false 10 "__agtmux_dump_scroll_telemetry__" "$surface_id")"
 
 jq -n \
   --arg app_bin "$GATE_L_APP_BIN" \
@@ -926,7 +926,7 @@ jq -n \
   --arg socket_name "$socket_name" \
   --arg target "$target" \
   --arg pane_id "$pane_id" \
-  --arg tile_id "$tile_id" \
+  --arg surface_id "$surface_id" \
   --arg benchmark_start "$bench_start" \
   --arg benchmark_end "$bench_end" \
   --arg ready_capture "$ready_capture" \
@@ -1000,7 +1000,7 @@ jq -n \
       socket_name: $socket_name,
       target: $target,
       pane_id: $pane_id,
-      tile_id: $tile_id,
+      surface_id: $surface_id,
       benchmark_start: $benchmark_start,
       benchmark_end: $benchmark_end,
       bursts: $bursts,

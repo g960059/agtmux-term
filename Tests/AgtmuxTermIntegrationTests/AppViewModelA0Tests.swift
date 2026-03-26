@@ -4675,6 +4675,103 @@ final class AppViewModelA0Tests: XCTestCase {
     }
 
     @MainActor
+    func testInventoryOnlyProjectionModeSkipsLocalMetadataOnInitialSyncAndPolling() async {
+        let inventoryPane = makeInventoryPane(
+            paneId: "%880",
+            sessionName: "inventory-only",
+            windowId: "@88"
+        )
+        let client = StubMetadataClient(bootstrapSteps: [])
+        let authority = StubLocalInventoryAuthority()
+        let model = AppViewModel(
+            localClient: client,
+            localInventoryClient: StubInventoryClient(panes: [inventoryPane]),
+            localInventoryAuthority: authority,
+            localMetadataProjectionMode: .inventoryOnly,
+            hostsConfig: .empty,
+            binaryURLResolver: { nil },
+            pollingInterval: 60.0
+        )
+
+        await model.performInitialSync()
+        let initialInventoryApplied = await waitUntil {
+            model.panes.first?.paneId == inventoryPane.paneId
+        }
+        XCTAssertTrue(initialInventoryApplied)
+
+        model.startPolling()
+        defer { model.stopPolling() }
+        try? await Task.sleep(for: .milliseconds(120))
+
+        let counts = await client.metadataCallCounts()
+        let healthFetches = await client.healthFetches()
+        XCTAssertEqual(counts.bootstrapV3, 0)
+        XCTAssertEqual(counts.changesV3, 0)
+        XCTAssertEqual(counts.waitV3, 0)
+        XCTAssertEqual(healthFetches, 0)
+        XCTAssertEqual(authority.startCount, 1)
+        XCTAssertEqual(model.hookSetupStatus, .unknown)
+        XCTAssertNil(model.localDaemonIssue)
+    }
+
+    @MainActor
+    func testEnableLocalMetadataProjectionPromotesInventoryOnlyPollingToLiveProjection() async {
+        let inventoryPane = makeInventoryPane(
+            paneId: "%881",
+            sessionName: "promote-live",
+            windowId: "@89"
+        )
+        let client = StubMetadataClient(
+            bootstrapSteps: [
+                BootstrapStep(
+                    delayMs: 10,
+                    result: .success(makeBootstrap(panes: [makeManagedMetadataPane(paneId: inventoryPane.paneId, sessionName: inventoryPane.sessionName, windowId: inventoryPane.windowId)]))
+                )
+            ],
+            healthSteps: [
+                HealthStep(
+                    delayMs: 10,
+                    result: .success(
+                        makeHealthSnapshot(
+                            runtime: AgtmuxUIComponentHealth(
+                                status: .ok,
+                                detail: "live",
+                                lastUpdatedAt: Date(timeIntervalSince1970: 1_778_822_260)
+                            )
+                        )
+                    )
+                )
+            ]
+        )
+        let model = AppViewModel(
+            localClient: client,
+            localInventoryClient: StubInventoryClient(panes: [inventoryPane]),
+            localInventoryAuthority: StubLocalInventoryAuthority(),
+            localMetadataProjectionMode: .inventoryOnly,
+            hostsConfig: .empty,
+            binaryURLResolver: { nil },
+            pollingInterval: 60.0
+        )
+
+        await model.performInitialSync()
+        model.startPolling()
+        defer { model.stopPolling() }
+
+        let countsBefore = await client.metadataCallCounts()
+        XCTAssertEqual(countsBefore.bootstrapV3, 0)
+
+        model.enableLocalMetadataProjection()
+
+        let promoted = await waitUntilAsync(timeout: 2.0) {
+            let counts = await client.metadataCallCounts()
+            let healthFetches = await client.healthFetches()
+            return counts.bootstrapV3 >= 1 && healthFetches >= 1
+        }
+
+        XCTAssertTrue(promoted)
+    }
+
+    @MainActor
     func testStartPollingUsesLocalInventoryAuthorityForSteadyStateConvergence() async {
         let inventoryPane = makeInventoryPane(
             paneId: "%12",
@@ -4794,6 +4891,46 @@ final class AppViewModelA0Tests: XCTestCase {
         try? await Task.sleep(for: .milliseconds(120))
 
         XCTAssertFalse(model.isRemotePollingActiveForTesting)
+    }
+
+    @MainActor
+    func testRefreshLocalPaneInventoryOnlyForTestingSkipsRemoteBroadFetch() async throws {
+        let localPane = makeInventoryPane(paneId: "%611", sessionName: "local-only-refresh", windowId: "@61")
+        let remotePane = AgtmuxPane(
+            source: "remote-host",
+            paneId: "%612",
+            sessionName: "remote",
+            windowId: "@62",
+            windowName: "shell",
+            activityState: .unknown,
+            presence: .unmanaged,
+            evidenceMode: .none,
+            currentCmd: "zsh"
+        )
+        let inventoryClient = StubInventoryClient(panes: [localPane])
+        let remoteProbe = RemoteFetchProbe(panes: [remotePane])
+        let remoteSource = RemotePaneInventorySource(
+            source: "remote-host",
+            fetchPanes: {
+                await remoteProbe.fetch()
+            }
+        )
+        let model = AppViewModel(
+            localClient: StubMetadataClient(bootstrapSteps: []),
+            localInventoryClient: inventoryClient,
+            hostsConfig: .empty,
+            remotePaneSources: [remoteSource],
+            binaryURLResolver: { nil }
+        )
+
+        try await model.refreshLocalPaneInventoryOnlyForTesting()
+
+        XCTAssertEqual(model.panes, [localPane])
+        XCTAssertTrue(model.hasCompletedInitialFetch)
+        let inventoryCalls = await inventoryClient.calls()
+        XCTAssertEqual(inventoryCalls, 1)
+        let remoteCalls = await remoteProbe.calls()
+        XCTAssertEqual(remoteCalls, 0)
     }
 
     @MainActor

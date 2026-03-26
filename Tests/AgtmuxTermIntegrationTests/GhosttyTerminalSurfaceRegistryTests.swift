@@ -9,7 +9,7 @@ final class GhosttyTerminalSurfaceRegistryTests: XCTestCase {
         let registry = GhosttyTerminalSurfaceRegistry()
         let surfaceHandle = GhosttySurfaceHandle(rawValue: 0x101)
         let context = makeContext(
-            tileID: UUID(),
+            surfaceID: UUID(),
             target: .remote(hostKey: "edge"),
             sessionName: "backend",
             repoRoot: "/srv/backend"
@@ -37,17 +37,17 @@ final class GhosttyTerminalSurfaceRegistryTests: XCTestCase {
     @MainActor
     func testRegisterOverwritesExistingSurfaceMappingWhenTileReattaches() {
         let registry = GhosttyTerminalSurfaceRegistry()
-        let tileID = UUID()
+        let surfaceID = UUID()
         let firstHandle = GhosttySurfaceHandle(rawValue: 0x201)
         let secondHandle = GhosttySurfaceHandle(rawValue: 0x202)
         let first = makeContext(
-            tileID: tileID,
+            surfaceID: surfaceID,
             target: .local,
             sessionName: "main",
             repoRoot: "/tmp/old"
         )
         let second = makeContext(
-            tileID: tileID,
+            surfaceID: surfaceID,
             target: .local,
             sessionName: "main",
             repoRoot: "/tmp/new"
@@ -59,27 +59,27 @@ final class GhosttyTerminalSurfaceRegistryTests: XCTestCase {
         XCTAssertNil(registry.context(forSurfaceHandle: firstHandle))
         XCTAssertEqual(registry.context(forSurfaceHandle: secondHandle), second)
         XCTAssertEqual(registry.context(forSurfaceHandle: secondHandle)?.lastSeenRepoRoot, "/tmp/new")
-        XCTAssertEqual(registry.surfaceHandle(forTileID: tileID), secondHandle)
+        XCTAssertEqual(registry.surfaceHandle(forSurfaceID: surfaceID), secondHandle)
         XCTAssertEqual(
-            registry.renderedState(forTileID: tileID)?.attachCommand,
+            registry.renderedState(forSurfaceID: surfaceID)?.attachCommand,
             "tmux select-pane -t %4 \\; attach-session -t main"
         )
-        XCTAssertEqual(registry.renderedState(forTileID: tileID)?.generation, 2)
+        XCTAssertEqual(registry.renderedState(forSurfaceID: surfaceID)?.generation, 2)
     }
 
     @MainActor
     func testRegisterOverwritesExistingTileMappingWhenSurfaceHandleIsReused() {
         let registry = GhosttyTerminalSurfaceRegistry()
         let surfaceHandle = GhosttySurfaceHandle(rawValue: 0x301)
-        let firstTileID = UUID()
-        let secondTileID = UUID()
+        let firstSurfaceID = UUID()
+        let secondSurfaceID = UUID()
         let first = makeContext(
-            tileID: firstTileID,
+            surfaceID: firstSurfaceID,
             target: .local,
             sessionName: "main"
         )
         let second = makeContext(
-            tileID: secondTileID,
+            surfaceID: secondSurfaceID,
             target: .remote(hostKey: "ops"),
             sessionName: "release"
         )
@@ -87,8 +87,8 @@ final class GhosttyTerminalSurfaceRegistryTests: XCTestCase {
         registry.register(surfaceHandle: surfaceHandle, context: first, attachCommand: "tmux attach-session -t main")
         registry.register(surfaceHandle: surfaceHandle, context: second, attachCommand: "tmux attach-session -t release")
 
-        XCTAssertNil(registry.surfaceHandle(forTileID: firstTileID))
-        XCTAssertEqual(registry.surfaceHandle(forTileID: secondTileID), surfaceHandle)
+        XCTAssertNil(registry.surfaceHandle(forSurfaceID: firstSurfaceID))
+        XCTAssertEqual(registry.surfaceHandle(forSurfaceID: secondSurfaceID), surfaceHandle)
         XCTAssertEqual(registry.context(forSurfaceHandle: surfaceHandle), second)
         XCTAssertEqual(registry.renderedState(forSurfaceHandle: surfaceHandle)?.generation, 1)
     }
@@ -96,25 +96,25 @@ final class GhosttyTerminalSurfaceRegistryTests: XCTestCase {
     @MainActor
     func testGenerationOnlyAdvancesWhenAttachCommandOrTileChanges() {
         let registry = GhosttyTerminalSurfaceRegistry()
-        let tileID = UUID()
+        let surfaceID = UUID()
         let firstHandle = GhosttySurfaceHandle(rawValue: 0x401)
         let secondHandle = GhosttySurfaceHandle(rawValue: 0x402)
         let context = makeContext(
-            tileID: tileID,
+            surfaceID: surfaceID,
             target: .local,
             sessionName: "main"
         )
 
         registry.register(surfaceHandle: firstHandle, context: context, attachCommand: "tmux attach-session -t main")
         registry.register(surfaceHandle: secondHandle, context: context, attachCommand: "tmux attach-session -t main")
-        XCTAssertEqual(registry.renderedState(forTileID: tileID)?.generation, 1)
+        XCTAssertEqual(registry.renderedState(forSurfaceID: surfaceID)?.generation, 1)
 
         registry.register(
             surfaceHandle: secondHandle,
             context: context,
             attachCommand: "tmux select-pane -t %5 \\; attach-session -t main"
         )
-        XCTAssertEqual(registry.renderedState(forTileID: tileID)?.generation, 2)
+        XCTAssertEqual(registry.renderedState(forSurfaceID: surfaceID)?.generation, 2)
     }
 
     @MainActor
@@ -122,7 +122,7 @@ final class GhosttyTerminalSurfaceRegistryTests: XCTestCase {
         let registry = GhosttyTerminalSurfaceRegistry()
         let surfaceHandle = GhosttySurfaceHandle(rawValue: 0x501)
         let context = makeContext(
-            tileID: UUID(),
+            surfaceID: UUID(),
             target: .local,
             sessionName: "main"
         )
@@ -141,55 +141,16 @@ final class GhosttyTerminalSurfaceRegistryTests: XCTestCase {
         XCTAssertEqual(renderedState.generation, 1)
     }
 
-    @MainActor
-    func testHostModeChangeAdvancesGenerationAndDropsPreservedClientTTY() throws {
-        let registry = GhosttyTerminalSurfaceRegistry()
-        let tileID = UUID()
-        let legacyHandle = GhosttySurfaceHandle(rawValue: 0x601)
-        let nextHandle = GhosttySurfaceHandle(rawValue: 0x602)
-        let sessionRef = SessionRef(target: .local, sessionName: "main")
-
-        registry.register(
-            surfaceHandle: legacyHandle,
-            context: GhosttyTerminalSurfaceContext(
-                workbenchID: UUID(),
-                tileID: tileID,
-                surfaceKey: "workbench-v2:main",
-                sessionRef: sessionRef,
-                terminalHostMode: .legacy
-            ),
-            attachCommand: "tmux attach-session -t main"
-        )
-        try registry.register(clientTTY: "/dev/ttys019", forSurfaceHandle: legacyHandle)
-
-        registry.register(
-            surfaceHandle: nextHandle,
-            context: GhosttyTerminalSurfaceContext(
-                workbenchID: UUID(),
-                tileID: tileID,
-                surfaceKey: "workbench-v2:main",
-                sessionRef: sessionRef,
-                terminalHostMode: .next
-            ),
-            attachCommand: "tmux attach-session -t main"
-        )
-
-        let renderedState = try XCTUnwrap(registry.renderedState(forTileID: tileID))
-        XCTAssertEqual(renderedState.context.terminalHostMode, .next)
-        XCTAssertEqual(renderedState.generation, 2)
-        XCTAssertNil(renderedState.clientTTY)
-    }
-
     private func makeContext(
-        tileID: UUID,
+        surfaceID: UUID,
         target: TargetRef,
         sessionName: String,
         repoRoot: String? = nil
     ) -> GhosttyTerminalSurfaceContext {
         GhosttyTerminalSurfaceContext(
-            workbenchID: UUID(),
-            tileID: tileID,
-            surfaceKey: "workbench-v2:\(sessionName)",
+            viewportID: UUID(),
+            surfaceID: surfaceID,
+            surfaceKey: "main-terminal:test:\(sessionName)",
             sessionRef: SessionRef(
                 target: target,
                 sessionName: sessionName,

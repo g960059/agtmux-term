@@ -83,8 +83,14 @@ enum MainTerminalDiagnostic: Equatable {
 struct MainTerminalAttachPlan: Equatable {
     let command: String
     let surfaceKey: String
-    let transport: WorkbenchV2TerminalTransport
+    let transport: TerminalTransport
     let displayTarget: String
+}
+
+enum TerminalTransport: String, Equatable {
+    case local
+    case ssh
+    case mosh
 }
 
 enum MainTerminalAttachError: LocalizedError, Equatable {
@@ -131,7 +137,7 @@ enum MainTerminalAttachResolver {
 
             let remoteCommand = LocalTmuxTarget.shellEscaped(baseCommand)
             let command: String
-            let transport: WorkbenchV2TerminalTransport
+            let transport: TerminalTransport
 
             switch host.transport {
             case .ssh:
@@ -204,9 +210,9 @@ enum MainTerminalAttachResolver {
 }
 
 struct MainTerminalStoreDependencies {
-    var liveTarget: @Sendable (SessionRef, HostsConfig) async throws -> WorkbenchV2TerminalLiveTarget
-    var liveWindowTarget: @Sendable (SessionRef, String, HostsConfig) async throws -> WorkbenchV2TerminalLiveTarget
-    var renderedLiveTarget: @Sendable (String, TargetRef, HostsConfig) async throws -> WorkbenchV2TerminalLiveTarget
+    var liveTarget: @Sendable (SessionRef, HostsConfig) async throws -> TerminalLiveTarget
+    var liveWindowTarget: @Sendable (SessionRef, String, HostsConfig) async throws -> TerminalLiveTarget
+    var renderedLiveTarget: @Sendable (String, TargetRef, HostsConfig) async throws -> TerminalLiveTarget
     var renderedState: @MainActor (UUID) -> GhosttyRenderedTerminalSurfaceState?
     var applyNavigationIntent: @Sendable (ActivePaneRef, String, HostsConfig) async throws -> Void
     var sleep: @Sendable (Duration) async throws -> Void
@@ -214,32 +220,31 @@ struct MainTerminalStoreDependencies {
     static func live() -> Self {
         Self(
             liveTarget: { sessionRef, hostsConfig in
-                try await WorkbenchV2TerminalNavigationResolver.liveTarget(
+                try await MainTerminalNavigationResolver.liveTarget(
                     sessionRef: sessionRef,
                     hostsConfig: hostsConfig
                 )
             },
             liveWindowTarget: { sessionRef, windowID, hostsConfig in
-                try await WorkbenchV2TerminalNavigationResolver.liveTarget(
+                try await MainTerminalNavigationResolver.liveTarget(
                     sessionRef: sessionRef,
                     windowID: windowID,
                     hostsConfig: hostsConfig
                 )
             },
             renderedLiveTarget: { renderedClientTTY, target, hostsConfig in
-                try await WorkbenchV2TerminalNavigationResolver.liveTarget(
+                try await MainTerminalNavigationResolver.liveTarget(
                     renderedClientTTY: renderedClientTTY,
                     target: target,
                     hostsConfig: hostsConfig
                 )
             },
-            renderedState: { tileID in
-                GhosttyTerminalSurfaceRegistry.shared.renderedState(forTileID: tileID)
+            renderedState: { surfaceID in
+                GhosttyTerminalSurfaceRegistry.shared.renderedState(forSurfaceID: surfaceID)
             },
             applyNavigationIntent: { activePaneRef, renderedClientTTY, hostsConfig in
-                try await WorkbenchV2TerminalNavigationResolver.applyNavigationIntent(
+                try await MainTerminalNavigationResolver.applySessionNavigationIntent(
                     activePaneRef: activePaneRef,
-                    renderedClientTTY: renderedClientTTY,
                     hostsConfig: hostsConfig
                 )
             },
@@ -311,7 +316,7 @@ final class MainTerminalStore {
     }
 
     var visiblePaneIdentity: String? {
-        WorkbenchTerminalPaneIdentity.visiblePaneIdentity(for: highlightedPaneRef)
+        TerminalPaneIdentity.visiblePaneIdentity(for: highlightedPaneRef)
     }
 
     var diagnosticMessage: String? {
@@ -348,7 +353,12 @@ final class MainTerminalStore {
         case .plainShell:
             return "Local shell"
         case .tmux(let sessionRef, _, _):
-            return sessionRef.target.label
+            switch sessionRef.target {
+            case .local:
+                return "local"
+            case .remote(let hostKey):
+                return hostKey
+            }
         }
     }
 
@@ -426,18 +436,11 @@ final class MainTerminalStore {
     func activate(pane: AgtmuxPane, hostsConfig: HostsConfig) async {
         let sessionRef = Self.sessionRef(for: pane, hostsConfig: hostsConfig)
         let requestedPaneRef = Self.activePaneRef(for: pane, hostsConfig: hostsConfig)
-        let target = await resolveWindowTarget(
-            sessionRef: sessionRef,
-            windowID: pane.windowId,
-            fallbackPaneRef: requestedPaneRef,
-            requestedPaneRefForDiagnostic: requestedPaneRef,
-            hostsConfig: hostsConfig
-        )
         activateTmux(
             sessionRef: sessionRef,
-            requestedPaneRef: target.paneRef,
+            requestedPaneRef: requestedPaneRef,
             hostsConfig: hostsConfig,
-            diagnostic: target.diagnostic
+            diagnostic: nil
         )
     }
 
@@ -446,7 +449,7 @@ final class MainTerminalStore {
         hostsConfig: HostsConfig
     ) -> String? {
         guard let paneRef = highlightedPaneRef else { return nil }
-        return WorkbenchV2ActivePaneSelectionResolver.resolvePaneInventoryID(
+        return PaneSelectionResolver.resolvePaneInventoryID(
             source: Self.source(for: paneRef.target, hostsConfig: hostsConfig),
             activePaneRef: paneRef,
             panes: panes
@@ -466,7 +469,7 @@ final class MainTerminalStore {
         self.diagnostic = diagnostic
         mode = .tmux(
             sessionRef: sessionRef,
-            requestedPaneRef: WorkbenchTerminalPaneIdentity.normalized(requestedPaneRef),
+            requestedPaneRef: TerminalPaneIdentity.normalized(requestedPaneRef),
             resolvedPaneRef: nil
         )
         focusRequestNonce &+= 1
@@ -563,35 +566,26 @@ final class MainTerminalStore {
         while !Task.isCancelled {
             guard navigationGeneration == generation else { return }
             guard case .tmux(let sessionRef, _, _) = mode else { return }
-            guard let renderedClientTTY = dependencies.renderedState(surfaceID)?.clientTTY else {
-                do {
-                    try await dependencies.sleep(.milliseconds(100))
-                } catch {
-                    return
-                }
-                continue
-            }
 
-            let liveTarget: WorkbenchV2TerminalLiveTarget
+            let liveTarget: TerminalLiveTarget
             do {
-                liveTarget = try await dependencies.renderedLiveTarget(
-                    renderedClientTTY,
-                    sessionRef.target,
+                liveTarget = try await dependencies.liveTarget(
+                    sessionRef,
                     currentHostsConfig
                 )
-            } catch let error as WorkbenchV2TerminalNavigationError {
+            } catch let error as MainTerminalNavigationError {
                 switch error {
-                case .renderedClientUnavailable:
+                case .activePaneUnavailable:
                     do {
-                        try await dependencies.sleep(.milliseconds(100))
+                        try await dependencies.sleep(.milliseconds(20))
                     } catch {
                         return
                     }
                     continue
-                case .missingRemoteHostKey, .activePaneUnavailable:
+                case .missingRemoteHostKey, .renderedClientUnavailable:
                     diagnostic = .attachFailed(sessionRef, detail: error.localizedDescription)
                     do {
-                        try await dependencies.sleep(.milliseconds(250))
+                        try await dependencies.sleep(.milliseconds(50))
                     } catch {
                         return
                     }
@@ -600,7 +594,7 @@ final class MainTerminalStore {
             } catch {
                 diagnostic = .attachFailed(sessionRef, detail: error.localizedDescription)
                 do {
-                    try await dependencies.sleep(.milliseconds(250))
+                    try await dependencies.sleep(.milliseconds(50))
                 } catch {
                     return
                 }
@@ -620,70 +614,45 @@ final class MainTerminalStore {
                 paneID: liveTarget.paneID
             )
 
-            if let currentRequestedPaneRef,
-               Self.samePane(lhs: currentRequestedPaneRef, rhs: livePaneRef) {
+            if let currentRequestedPaneRef {
+                if Self.samePane(lhs: currentRequestedPaneRef, rhs: livePaneRef) {
+                    mode = .tmux(
+                        sessionRef: currentSessionRef,
+                        requestedPaneRef: nil,
+                        resolvedPaneRef: livePaneRef
+                    )
+                    lastRestoreTargetBySession[sessionRef] = livePaneRef
+                    clearTransientDiagnosticIfNeeded()
+                    return
+                }
+
+                do {
+                    try await dependencies.applyNavigationIntent(
+                        currentRequestedPaneRef,
+                        dependencies.renderedState(surfaceID)?.clientTTY ?? "",
+                        currentHostsConfig
+                    )
+                    try await dependencies.sleep(.milliseconds(20))
+                } catch {
+                    diagnostic = .retargetFailed(
+                        currentRequestedPaneRef,
+                        detail: error.localizedDescription
+                    )
+                    try? await dependencies.sleep(.milliseconds(50))
+                }
+                continue
+            }
+
+            if !Self.samePane(lhs: currentResolvedPaneRef, rhs: livePaneRef) {
                 mode = .tmux(
                     sessionRef: currentSessionRef,
                     requestedPaneRef: nil,
                     resolvedPaneRef: livePaneRef
                 )
                 lastRestoreTargetBySession[sessionRef] = livePaneRef
-                clearTransientDiagnosticIfNeeded()
-                do {
-                    try await dependencies.sleep(.milliseconds(100))
-                } catch {
-                    return
-                }
-                continue
             }
-
-            if currentRequestedPaneRef == nil {
-                if !Self.samePane(lhs: currentResolvedPaneRef, rhs: livePaneRef) {
-                    mode = .tmux(
-                        sessionRef: currentSessionRef,
-                        requestedPaneRef: nil,
-                        resolvedPaneRef: livePaneRef
-                    )
-                    diagnostic = .terminalSidebarDrift(
-                        requested: currentResolvedPaneRef,
-                        resolved: livePaneRef
-                    )
-                    lastRestoreTargetBySession[sessionRef] = livePaneRef
-                } else {
-                    clearTransientDiagnosticIfNeeded()
-                }
-                do {
-                    try await dependencies.sleep(.milliseconds(100))
-                } catch {
-                    return
-                }
-                continue
-            }
-
-            guard let currentRequestedPaneRef,
-                  liveTarget.sessionName == sessionRef.sessionName else {
-                do {
-                    try await dependencies.sleep(.milliseconds(100))
-                } catch {
-                    return
-                }
-                continue
-            }
-
-            do {
-                try await dependencies.applyNavigationIntent(
-                    currentRequestedPaneRef,
-                    renderedClientTTY,
-                    currentHostsConfig
-                )
-                try await dependencies.sleep(.milliseconds(100))
-            } catch {
-                diagnostic = .retargetFailed(
-                    currentRequestedPaneRef,
-                    detail: error.localizedDescription
-                )
-                try? await dependencies.sleep(.milliseconds(250))
-            }
+            clearTransientDiagnosticIfNeeded()
+            return
         }
     }
 

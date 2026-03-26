@@ -7,7 +7,13 @@ zmodload zsh/datetime
 : "${GATE_L_ROOT:?GATE_L_ROOT must be set by the caller}"
 
 if [[ -z "${GATE_L_APP_BIN:-}" ]]; then
-  GATE_L_APP_BIN="${AGTMUX_PERF_APP_BIN:-$GATE_L_ROOT/.build/arm64-apple-macosx/debug/AgtmuxTerm}"
+  if [[ -n "${AGTMUX_PERF_APP_BIN:-}" ]]; then
+    GATE_L_APP_BIN="$AGTMUX_PERF_APP_BIN"
+  elif [[ -x "/Applications/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm" ]]; then
+    GATE_L_APP_BIN="/Applications/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm"
+  else
+    GATE_L_APP_BIN="$GATE_L_ROOT/.build/arm64-apple-macosx/debug/AgtmuxTerm"
+  fi
 fi
 
 gate_l_bridge_defaults_active=0
@@ -117,27 +123,6 @@ function gate_l_require_app_bin() {
     echo "Gate-L perf app binary is not executable: $GATE_L_APP_BIN" >&2
     return 1
   fi
-}
-
-function gate_l_require_explicit_terminal_host_mode() {
-  local host_mode="$1"
-  local context="${2:-this bench}"
-
-  if [[ -z "$host_mode" ]]; then
-    echo "Explicit terminal host mode is required for $context." >&2
-    echo "Pass --host-mode legacy|next or set AGTMUX_PERF_TERMINAL_HOST_MODE." >&2
-    return 1
-  fi
-
-  case "$host_mode" in
-    legacy|next)
-      return 0
-      ;;
-    *)
-      echo "Unsupported host mode for $context: $host_mode" >&2
-      return 1
-      ;;
-  esac
 }
 
 function gate_l_read_plist_value() {
@@ -328,10 +313,9 @@ function gate_l_launch_app() {
   local inventory_only="${AGTMUX_PERF_UITEST_INVENTORY_ONLY:-1}"
   local use_default_local_tmux="${AGTMUX_PERF_USE_DEFAULT_LOCAL_TMUX:-0}"
   local allow_default_local_tmux_scenario="${AGTMUX_PERF_ALLOW_DEFAULT_LOCAL_TMUX_SCENARIO:-0}"
-  local terminal_host_mode="${AGTMUX_PERF_TERMINAL_HOST_MODE:-}"
   local disable_app_state_restore="${AGTMUX_PERF_DISABLE_APP_STATE_RESTORE:-1}"
   local scenario_json
-  local -a tmux_socket_env host_mode_env extra_uitest_env
+  local -a tmux_socket_env extra_uitest_env
 
   if [[ "$use_default_local_tmux" == "1" && "$allow_default_local_tmux_scenario" != "1" ]]; then
     echo "Refusing to bootstrap a tmux scenario on the default local tmux server." >&2
@@ -345,11 +329,6 @@ function gate_l_launch_app() {
     tmux_socket_env=()
   else
     tmux_socket_env=(AGTMUX_TMUX_SOCKET_NAME="$socket_name")
-  fi
-  if [[ -n "$terminal_host_mode" ]]; then
-    host_mode_env=(AGTMUX_TERMINAL_HOST_MODE="$terminal_host_mode")
-  else
-    host_mode_env=()
   fi
   extra_uitest_env=()
   if [[ -n "${AGTMUX_UITEST_TERMINAL_VIEW_REGISTRATION_TIMEOUT_MS:-}" ]]; then
@@ -376,7 +355,6 @@ function gate_l_launch_app() {
     AGTMUX_UITEST_ENABLE_GHOSTTY_SURFACES=1 \
     AGTMUX_PERF_DISABLE_APP_STATE_RESTORE="$disable_app_state_restore" \
     "${tmux_socket_env[@]}" \
-    "${host_mode_env[@]}" \
     "${extra_uitest_env[@]}" \
     AGTMUX_DAEMON_SOCKET_PATH="$gate_l_daemon_socket_path" \
     AGTMUX_UITEST_MANAGED_DAEMON_STDERR_PATH="$gate_l_managed_daemon_stderr_path" \
@@ -440,10 +418,9 @@ function gate_l_launch_app_without_bootstrap() {
   local socket_name="$1"
   local inventory_only="${2:-0}"
   local use_default_local_tmux="${AGTMUX_PERF_USE_DEFAULT_LOCAL_TMUX:-0}"
-  local terminal_host_mode="${AGTMUX_PERF_TERMINAL_HOST_MODE:-}"
   local disable_app_state_restore="${AGTMUX_PERF_DISABLE_APP_STATE_RESTORE:-1}"
   local bridge_config_mode="${AGTMUX_PERF_BRIDGE_CONFIG_MODE:-env}"
-  local -a tmux_socket_env host_mode_env extra_uitest_env
+  local -a tmux_socket_env extra_uitest_env
 
   gate_l_socket_name="$socket_name"
   if [[ "$use_default_local_tmux" == "1" ]]; then
@@ -451,11 +428,6 @@ function gate_l_launch_app_without_bootstrap() {
     bridge_config_mode="defaults"
   else
     tmux_socket_env=(AGTMUX_TMUX_SOCKET_NAME="$socket_name")
-  fi
-  if [[ -n "$terminal_host_mode" ]]; then
-    host_mode_env=(AGTMUX_TERMINAL_HOST_MODE="$terminal_host_mode")
-  else
-    host_mode_env=()
   fi
   extra_uitest_env=()
   if [[ -n "${AGTMUX_UITEST_TERMINAL_VIEW_REGISTRATION_TIMEOUT_MS:-}" ]]; then
@@ -482,7 +454,6 @@ function gate_l_launch_app_without_bootstrap() {
     AGTMUX_UITEST_ENABLE_GHOSTTY_SURFACES=1 \
     AGTMUX_PERF_DISABLE_APP_STATE_RESTORE="$disable_app_state_restore" \
     "${tmux_socket_env[@]}" \
-    "${host_mode_env[@]}" \
     "${extra_uitest_env[@]}" \
     AGTMUX_DAEMON_SOCKET_PATH="$gate_l_daemon_socket_path" \
     AGTMUX_UITEST_MANAGED_DAEMON_STDERR_PATH="$gate_l_managed_daemon_stderr_path" \
@@ -721,6 +692,11 @@ function gate_l_poll_async_bridge_json_result() {
       rm -f "$response_path"
       return 1
     fi
+    if [[ -z "$normalized_output" ]]; then
+      echo "App-side tmux command returned empty JSON stdout for request $request_id" >&2
+      rm -f "$response_path"
+      return 1
+    fi
     print -r -- "$normalized_output"
     rm -f "$response_path"
     return 0
@@ -760,29 +736,24 @@ function gate_l_wait_for_bridge_json_command_until() {
 
   local deadline=$((EPOCHREALTIME + timeout))
   local last_error=""
-  local async_request=""
-  local output=""
 
   while (( EPOCHREALTIME < deadline )); do
-    if [[ -z "$async_request" ]]; then
-      async_request="$(gate_l_start_async_bridge_command false "$@")"
-    fi
+    local output
+    local remaining_timeout
+    remaining_timeout="$(awk -v deadline="$deadline" -v now="$EPOCHREALTIME" 'BEGIN {
+      remaining = deadline - now
+      if (remaining < 0.05) remaining = 0.05
+      printf "%.3f", remaining
+    }')"
 
-    if output="$(gate_l_poll_async_bridge_json_result "$async_request" 2>"$error_log_path")"; then
+    if output="$(gate_l_send_bridge_json_command false "$remaining_timeout" "$@" 2>"$error_log_path")"; then
       print -r -- "$output"
       return 0
-    fi
-
-    local poll_status=$?
-    if (( poll_status == 2 )); then
-      sleep 0.05
-      continue
     fi
 
     if [[ -s "$error_log_path" ]]; then
       last_error="$(<"$error_log_path")"
     fi
-    async_request=""
     sleep 0.05
   done
 
@@ -861,9 +832,9 @@ function gate_l_wait_for_active_target() {
   if [[ -n "$last_output" ]]; then
     echo "Last active-target snapshot: $last_output" >&2
 
-    local rendered_client_tty tile_id
+    local rendered_client_tty surface_id
     rendered_client_tty="$(jq -r '.renderedClientTTY // empty' <<<"$last_output")"
-    tile_id="$(jq -r '.tileID // empty' <<<"$last_output")"
+    surface_id="$(jq -r '.surfaceID // empty' <<<"$last_output")"
 
     if [[ -n "$rendered_client_tty" ]]; then
       local clients_output
@@ -872,9 +843,9 @@ function gate_l_wait_for_active_target() {
       fi
     fi
 
-    if [[ -n "$tile_id" ]]; then
+    if [[ -n "$surface_id" ]]; then
       local focus_output
-      if focus_output="$(gate_l_send_bridge_json_command false 2 "__agtmux_dump_focus_state__" "$tile_id" 2>/dev/null)"; then
+      if focus_output="$(gate_l_send_bridge_json_command false 2 "__agtmux_dump_focus_state__" "$surface_id" 2>/dev/null)"; then
         echo "Terminal focus snapshot: $focus_output" >&2
       fi
     fi

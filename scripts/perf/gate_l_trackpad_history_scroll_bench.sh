@@ -263,17 +263,17 @@ gate_l_activate_app
 
 # Read the successful open response directly so the bench does not depend on an
 # active-target snapshot appearing on plain-shell startup.
-tile_id="$(jq -r '.tileID // empty' <<<"$open_terminal_json")"
-if [[ -z "$tile_id" || "$tile_id" == "null" ]]; then
-  echo "Failed to resolve tileID from open_terminal_for_pane result" >&2
+surface_id="$(jq -r '.surfaceID // empty' <<<"$open_terminal_json")"
+if [[ -z "$surface_id" || "$surface_id" == "null" ]]; then
+  echo "Failed to resolve surfaceID from open_terminal_for_pane result" >&2
   echo "$open_terminal_json" >&2
   exit 1
 fi
-gate_l_send_bridge_command false 10 "__agtmux_focus_terminal_host__" "$tile_id" >/dev/null
+gate_l_send_bridge_command false 10 "__agtmux_focus_terminal_host__" "$surface_id" >/dev/null
 gate_l_activate_app
-focus_snapshot="$(gate_l_send_bridge_json_command false 10 "__agtmux_dump_focus_state__" "$tile_id")"
+focus_snapshot="$(gate_l_send_bridge_json_command false 10 "__agtmux_dump_focus_state__" "$surface_id")"
 terminal_ax_identifier="$(jq -r '.terminalAccessibilityIdentifier // empty' <<<"$focus_snapshot")"
-terminal_ax_fallback_identifier="workspace.terminalHost.${tile_id}"
+terminal_ax_fallback_identifier="workspace.terminalHost.${surface_id}"
 resolved_terminal_ax_identifier="$terminal_ax_identifier"
 if [[ -z "$resolved_terminal_ax_identifier" ]]; then
   resolved_terminal_ax_identifier="$terminal_ax_fallback_identifier"
@@ -303,7 +303,7 @@ for (( i = 1; i <= warmup_bursts; i++ )); do
   sleep 0.2
 done
 
-gate_l_send_bridge_command false 10 "__agtmux_reset_scroll_telemetry__" "$tile_id" >/dev/null
+gate_l_send_bridge_command false 10 "__agtmux_reset_scroll_telemetry__" "$surface_id" >/dev/null
 sleep 0.2
 
 empty_burst_count=0
@@ -320,7 +320,7 @@ previous_scroll_presentation_pump_wake_lateness_sample_count=0
 previous_scroll_presentation_recovery_probe_wake_lateness_sample_count=0
 previous_layer_present_gap_sample_count=0
 bench_start="$(date '+%Y-%m-%d %H:%M:%S%z')"
-last_scroll_telemetry_json="$(gate_l_send_bridge_json_command false 10 "__agtmux_dump_scroll_telemetry__" "$tile_id")"
+last_scroll_telemetry_json="$(gate_l_send_bridge_json_command false 10 "__agtmux_dump_scroll_telemetry__" "$surface_id")"
 
 for (( i = 1; i <= iterations; i++ )); do
   if ! gate_l_app_is_running; then
@@ -349,7 +349,7 @@ for (( i = 1; i <= iterations; i++ )); do
     continue
   fi
 
-  if ! gate_l_send_bridge_command false 10 "__agtmux_focus_terminal_host__" "$tile_id" >/dev/null; then
+  if ! gate_l_send_bridge_command false 10 "__agtmux_focus_terminal_host__" "$surface_id" >/dev/null; then
     terminated_early=true
     termination_reason="focus-terminal-host-failed-before-burst-${i}"
     break
@@ -379,7 +379,7 @@ for (( i = 1; i <= iterations; i++ )); do
     empty_burst_count=$((empty_burst_count + 1))
   fi
 
-  if ! burst_scroll_telemetry_json="$(gate_l_send_bridge_json_command false 10 "__agtmux_dump_scroll_telemetry__" "$tile_id")"; then
+  if ! burst_scroll_telemetry_json="$(gate_l_send_bridge_json_command false 10 "__agtmux_dump_scroll_telemetry__" "$surface_id")"; then
     terminated_early=true
     termination_reason="scroll-telemetry-bridge-failed-after-burst-${i}"
     break
@@ -502,7 +502,7 @@ sleep 1
 
 scroll_telemetry_json="$last_scroll_telemetry_json"
 if gate_l_app_is_running; then
-  if final_scroll_telemetry_json="$(gate_l_send_bridge_json_command false 10 "__agtmux_dump_scroll_telemetry__" "$tile_id")"; then
+  if final_scroll_telemetry_json="$(gate_l_send_bridge_json_command false 10 "__agtmux_dump_scroll_telemetry__" "$surface_id")"; then
     scroll_telemetry_json="$final_scroll_telemetry_json"
   elif [[ "$terminated_early" == "false" ]]; then
     terminated_early=true
@@ -527,7 +527,7 @@ jq -n \
   --arg socket_name "$socket_name" \
   --arg target "$target" \
   --arg pane_id "$pane_id" \
-  --arg tile_id "$tile_id" \
+  --arg surface_id "$surface_id" \
   --arg benchmark_start "$bench_start" \
   --arg benchmark_end "$bench_end" \
   --argjson iterations "$iterations" \
@@ -592,7 +592,7 @@ jq -n \
     socket_name: $socket_name,
     target: $target,
     pane_id: $pane_id,
-    tile_id: $tile_id,
+    surface_id: $surface_id,
     benchmark_start: $benchmark_start,
     benchmark_end: $benchmark_end,
     iterations: $iterations,

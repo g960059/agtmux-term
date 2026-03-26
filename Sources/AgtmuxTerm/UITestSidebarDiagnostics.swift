@@ -132,6 +132,18 @@ enum UITestSidebarDiagnostics {
         )
     }
 
+    static func skippedBootstrapProbeSummary(
+        reason: String
+    ) -> UITestBootstrapProbeSummary {
+        UITestBootstrapProbeSummary(
+            ok: false,
+            transportVersion: "sync-v3",
+            totalPanes: nil,
+            managedPanes: nil,
+            error: reason
+        )
+    }
+
     static func bootstrapTargetSummary(
         from bootstrap: AgtmuxSyncV3Bootstrap,
         requestedSessionName: String?,

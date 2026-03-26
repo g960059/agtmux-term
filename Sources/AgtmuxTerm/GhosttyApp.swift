@@ -1,6 +1,6 @@
 import AppKit
-import GhosttyKit
 import CoreFoundation
+import GhosttyKit
 import os
 
 /// Singleton that owns the ghostty_app_t lifecycle.
@@ -29,8 +29,6 @@ final class GhosttyApp {
 
     static let shared = GhosttyApp()
     private static var initializedShared: GhosttyApp?
-    private static let schedulerExperimentDisabled =
-        ProcessInfo.processInfo.environment["AGTMUX_GHOSTTY_SCHEDULER_EXPERIMENT_DISABLED"] == "1"
     private static let hostSignpostsEnabled =
         ProcessInfo.processInfo.environment["AGTMUX_HOST_SIGNPOSTS_ENABLED"] == "1"
     @MainActor
@@ -99,7 +97,6 @@ final class GhosttyApp {
         try GhosttyCLIOSCBridge.dispatchIfBridgeAction(
             target: target,
             action: action,
-            store: workbenchStoreV2,
             registry: .shared
         )
     }
@@ -133,9 +130,22 @@ final class GhosttyApp {
     private static var dirtyDrawPassDurationSamplesMs: [Double] = []
 
     private(set) var app: ghostty_app_t?
+    private var notificationObserverTokens: [NSObjectProtocol] = []
 
     static var sharedIfInitialized: GhosttyApp? {
         initializedShared
+    }
+
+    private static func scheduleOnMainRunLoopCommonModes(
+        _ action: @escaping @MainActor () -> Void
+    ) {
+        let mainRunLoop = CFRunLoopGetMain()
+        CFRunLoopPerformBlock(mainRunLoop, CFRunLoopMode.commonModes.rawValue) {
+            MainActor.assumeIsolated {
+                action()
+            }
+        }
+        CFRunLoopWakeUp(mainRunLoop)
     }
 
     // Wakeup coalescing: prevents N queue items from accumulating when
@@ -190,6 +200,37 @@ final class GhosttyApp {
         ghostty_config_finalize(config)
 
         app = ghostty_app_new(&runtimeConfig, config)
+
+        if let app {
+            ghostty_app_set_focus(app, NSApp.isActive)
+            let center = NotificationCenter.default
+            notificationObserverTokens = [
+                center.addObserver(
+                    forName: NSTextInputContext.keyboardSelectionDidChangeNotification,
+                    object: nil,
+                    queue: nil
+                ) { [weak self] _ in
+                    guard let app = self?.app else { return }
+                    ghostty_app_keyboard_changed(app)
+                },
+                center.addObserver(
+                    forName: NSApplication.didBecomeActiveNotification,
+                    object: nil,
+                    queue: nil
+                ) { [weak self] _ in
+                    guard let app = self?.app else { return }
+                    ghostty_app_set_focus(app, true)
+                },
+                center.addObserver(
+                    forName: NSApplication.didResignActiveNotification,
+                    object: nil,
+                    queue: nil
+                ) { [weak self] _ in
+                    guard let app = self?.app else { return }
+                    ghostty_app_set_focus(app, false)
+                }
+            ]
+        }
     }
 
     @MainActor
@@ -277,23 +318,12 @@ final class GhosttyApp {
             view?.noteRenderRequestTelemetry()
             let now = ProcessInfo.processInfo.systemUptime
 
-            if let view, view.prefersRendererOwnedRenderCallbackDispatch(now: now) {
-                if SurfacePool.shared.isDrawable(surfaceHandle: surfaceHandle) {
-                    view.triggerRendererOwnedRenderCallback(now: now)
-                } else {
-                    _ = SurfacePool.shared.markDirtyForDirectDraw(surfaceHandle: surfaceHandle)
-                }
+            if let view, SurfacePool.shared.isDrawable(surfaceHandle: surfaceHandle) {
+                view.triggerRendererOwnedRenderCallback(now: now)
                 return
             }
 
-            let isDrawable = SurfacePool.shared.markDirtyForDirectDraw(surfaceHandle: surfaceHandle)
-            if isDrawable {
-                if view?.prefersImmediateDirtyDrawForRenderCallback(now: now) == true {
-                    _ = runDirectDrawPassImmediatelyIfPossible()
-                } else {
-                    scheduleDirectDrawPassIfNeeded()
-                }
-            }
+            _ = SurfacePool.shared.markDirtyForDirectDraw(surfaceHandle: surfaceHandle)
         }
 
         if Thread.isMainThread {
@@ -303,10 +333,8 @@ final class GhosttyApp {
             return true
         }
 
-        DispatchQueue.main.async {
-            MainActor.assumeIsolated {
-                applyRenderCallback()
-            }
+        scheduleOnMainRunLoopCommonModes {
+            applyRenderCallback()
         }
         return true
     }
@@ -442,6 +470,11 @@ final class GhosttyApp {
     }
 
     deinit {
+        let center = NotificationCenter.default
+        for token in notificationObserverTokens {
+            center.removeObserver(token)
+        }
+        notificationObserverTokens.removeAll()
         if let app { ghostty_app_free(app) }
     }
 
@@ -490,14 +523,10 @@ final class GhosttyApp {
         }
         directDrawScheduleObserver()
 
-        let mainRunLoop = CFRunLoopGetMain()
-        CFRunLoopPerformBlock(mainRunLoop, CFRunLoopMode.commonModes.rawValue) {
-            MainActor.assumeIsolated {
-                directDrawPassPending = false
-                runDirtyDrawPass()
-            }
+        scheduleOnMainRunLoopCommonModes {
+            directDrawPassPending = false
+            runDirtyDrawPass()
         }
-        CFRunLoopWakeUp(mainRunLoop)
     }
 
     @MainActor
@@ -568,20 +597,9 @@ final class GhosttyApp {
         wakeupLock.unlock()
         guard shouldSchedule else { return }
 
-        if Self.schedulerExperimentDisabled {
-            DispatchQueue.main.async {
-                GhosttyApp.shared.tick()
-            }
-            return
+        Self.scheduleOnMainRunLoopCommonModes {
+            GhosttyApp.shared.tick()
         }
-
-        let mainRunLoop = CFRunLoopGetMain()
-        CFRunLoopPerformBlock(mainRunLoop, CFRunLoopMode.commonModes.rawValue) {
-            MainActor.assumeIsolated {
-                GhosttyApp.shared.tick()
-            }
-        }
-        CFRunLoopWakeUp(mainRunLoop)
     }
 
     @MainActor

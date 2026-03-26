@@ -11,6 +11,7 @@ session_name=""
 key_code=0
 key_hex="61"
 key_label="a"
+delivery="ax"
 
 function wait_for_pane_text() {
   local socket_name="$1"
@@ -31,6 +32,57 @@ function wait_for_pane_text() {
   done
 
   typeset -g "$output_var_name=$captured"
+  return 1
+}
+
+function wait_for_viewport_text() {
+  local surface_id="$1"
+  local expected="$2"
+  local timeout="$3"
+  local output_var_name="$4"
+  local deadline=$(( EPOCHREALTIME + timeout ))
+  local viewport_json=""
+  local viewport_text=""
+
+  while (( EPOCHREALTIME < deadline )); do
+    viewport_json="$(gate_l_send_bridge_json_command false 3 "__agtmux_dump_terminal_viewport_text__" "$surface_id" 2>/dev/null || true)"
+    viewport_text="$(jq -r '.text // empty' <<<"$viewport_json" 2>/dev/null || true)"
+    if [[ "$viewport_text" == *"$expected"* ]]; then
+      typeset -g "$output_var_name=$viewport_text"
+      return 0
+    fi
+    sleep 0.01
+  done
+
+  typeset -g "$output_var_name=$viewport_text"
+  return 1
+}
+
+function current_layer_present_count() {
+  local surface_id="$1"
+  local telemetry_json
+  telemetry_json="$(gate_l_send_bridge_json_command false 3 "__agtmux_dump_scroll_telemetry__" "$surface_id" 2>/dev/null || true)"
+  jq -r '.scroll.layerPresentCount // 0' <<<"$telemetry_json" 2>/dev/null || print -r -- "0"
+}
+
+function wait_for_layer_present_count() {
+  local surface_id="$1"
+  local minimum_count="$2"
+  local timeout="$3"
+  local output_var_name="$4"
+  local deadline=$(( EPOCHREALTIME + timeout ))
+  local latest="0"
+
+  while (( EPOCHREALTIME < deadline )); do
+    latest="$(current_layer_present_count "$surface_id")"
+    if [[ -n "$latest" && "$latest" != "null" && "$latest" -ge "$minimum_count" ]]; then
+      typeset -g "$output_var_name=$latest"
+      return 0
+    fi
+    sleep 0.01
+  done
+
+  typeset -g "$output_var_name=$latest"
   return 1
 }
 
@@ -56,8 +108,12 @@ while (( $# > 0 )); do
       session_name="$2"
       shift 2
       ;;
+    --delivery)
+      delivery="$2"
+      shift 2
+      ;;
     *)
-      echo "Usage: $0 [--iterations COUNT] [--timeout SECONDS] [--session-name NAME]" >&2
+      echo "Usage: $0 [--iterations COUNT] [--timeout SECONDS] [--session-name NAME] [--delivery bridge|ax]" >&2
       exit 1
       ;;
   esac
@@ -65,10 +121,18 @@ done
 
 gate_l_require_app_bin
 
-helper_json="$("$SCRIPT_DIR/gate_l_ax_key_sender.sh" --dry-run)"
-if [[ "$(jq -r '.trusted' <<<"$helper_json")" != "true" ]]; then
-  echo "AX helper is not trusted: $helper_json" >&2
-  exit 2
+if [[ "$delivery" != "bridge" && "$delivery" != "ax" ]]; then
+  echo "Unsupported keypress delivery mode: $delivery" >&2
+  exit 1
+fi
+
+helper_json='null'
+if [[ "$delivery" == "ax" ]]; then
+  helper_json="$("$SCRIPT_DIR/gate_l_ax_key_sender.sh" --dry-run)"
+  if [[ "$(jq -r '.trusted' <<<"$helper_json")" != "true" ]]; then
+    echo "AX helper is not trusted: $helper_json" >&2
+    exit 2
+  fi
 fi
 
 token="$(uuidgen | tr '[:upper:]' '[:lower:]' | cut -c1-8)"
@@ -141,58 +205,99 @@ gate_l_send_bridge_command false 10 "__agtmux_open_terminal_for_pane__" "local" 
 gate_l_activate_app
 
 active_snapshot="$(gate_l_wait_for_active_snapshot "$session_name" "$settle_timeout")"
-tile_id="$(jq -r '.tileID' <<<"$active_snapshot")"
-focus_snapshot="$(gate_l_send_bridge_command false 10 "__agtmux_dump_focus_state__" "$tile_id")"
+surface_id="$(jq -r '.surfaceID' <<<"$active_snapshot")"
+focus_snapshot="$(gate_l_send_bridge_command false 10 "__agtmux_dump_focus_state__" "$surface_id")"
 terminal_ax_identifier="$(jq -r '.terminalAccessibilityIdentifier // empty' <<<"$focus_snapshot")"
-terminal_ax_fallback_identifier="workspace.terminalHost.${tile_id}"
+terminal_ax_fallback_identifier="workspace.terminalHost.${surface_id}"
 resolved_terminal_ax_identifier="$terminal_ax_identifier"
 if [[ -z "$resolved_terminal_ax_identifier" ]]; then
   resolved_terminal_ax_identifier="$terminal_ax_fallback_identifier"
 fi
 
-initial_focus_json="$("$SCRIPT_DIR/gate_l_ax_key_sender.sh" \
-  --app-pid "$gate_l_app_pid" \
-  --click-identifier "$resolved_terminal_ax_identifier" \
-  --x-frac 0.5 \
-  --y-frac 0.5)"
-keypress_point_x="$(jq -r '.clickPoint.x // empty' <<<"$initial_focus_json")"
-keypress_point_y="$(jq -r '.clickPoint.y // empty' <<<"$initial_focus_json")"
-if [[ -z "$keypress_point_x" || -z "$keypress_point_y" ]]; then
-  echo "Failed to resolve initial keypress target point" >&2
-  exit 1
+keypress_point_x=""
+keypress_point_y=""
+if [[ "$delivery" == "ax" ]]; then
+  initial_focus_json="$("$SCRIPT_DIR/gate_l_ax_key_sender.sh" \
+    --app-pid "$gate_l_app_pid" \
+    --click-identifier "$resolved_terminal_ax_identifier" \
+    --x-frac 0.5 \
+    --y-frac 0.5)"
+  keypress_point_x="$(jq -r '.clickPoint.x // empty' <<<"$initial_focus_json")"
+  keypress_point_y="$(jq -r '.clickPoint.y // empty' <<<"$initial_focus_json")"
+  if [[ -z "$keypress_point_x" || -z "$keypress_point_y" ]]; then
+    echo "Failed to resolve initial keypress target point" >&2
+    exit 1
+  fi
+  sleep 0.2
+  focus_snapshot="$(gate_l_send_bridge_command false 10 "__agtmux_dump_focus_state__" "$surface_id")"
 fi
-sleep 0.2
+gate_l_send_bridge_command false 10 "__agtmux_reset_scroll_telemetry__" "$surface_id" >/dev/null
 
-latencies_file="$gate_l_tmpdir/keypress-latencies.txt"
+tmux_latencies_file="$gate_l_tmpdir/keypress-tmux-latencies.txt"
+viewport_latencies_file="$gate_l_tmpdir/keypress-viewport-latencies.txt"
+viewport_delta_file="$gate_l_tmpdir/keypress-viewport-delta-latencies.txt"
+layer_present_latencies_file="$gate_l_tmpdir/keypress-layer-present-latencies.txt"
+layer_present_delta_file="$gate_l_tmpdir/keypress-layer-present-delta-latencies.txt"
 bench_start="$(date '+%Y-%m-%d %H:%M:%S%z')"
 last_sequence="$(latest_key_sequence "$socket_name" "$target")"
 last_send_json='null'
 last_capture="$ready_capture"
+last_viewport_text=""
+last_layer_present_count="$(current_layer_present_count "$surface_id")"
 
 for (( i = 1; i <= iterations; i++ )); do
   expected_sequence=$((last_sequence + 1))
   expected_marker="__GATE_L_KEY__:${expected_sequence}:${key_hex}"
+  expected_layer_present_count=$((last_layer_present_count + 1))
   start_realtime="$EPOCHREALTIME"
-  last_send_json="$("$SCRIPT_DIR/gate_l_ax_key_sender.sh" \
-    --app-pid "$gate_l_app_pid" \
-    --focus-key-point \
-    --point-x "$keypress_point_x" \
-    --point-y "$keypress_point_y" \
-    --key-code "$key_code")"
+  if [[ "$delivery" == "bridge" ]]; then
+    gate_l_send_bridge_command false 10 "__agtmux_send_terminal_key_down__" "$surface_id" "$key_label" "$key_code" >/dev/null
+    last_send_json="$(jq -nc \
+      --arg action "bridge-key-down" \
+      --arg surface_id "$surface_id" \
+      --arg characters "$key_label" \
+      --argjson keyCode "$key_code" \
+      '{action:$action, surfaceID:$surface_id, characters:$characters, keyCode:$keyCode, sent:true}')"
+  else
+    last_send_json="$("$SCRIPT_DIR/gate_l_ax_key_sender.sh" \
+      --app-pid "$gate_l_app_pid" \
+      --key-code "$key_code")"
+  fi
   if ! wait_for_pane_text "$socket_name" "$target" "$expected_marker" "$settle_timeout" last_capture; then
     echo "Timed out waiting for keypress marker $expected_marker" >&2
     exit 1
   fi
-  latency_ms="$(awk "BEGIN { printf \"%.3f\", (($EPOCHREALTIME - $start_realtime) * 1000.0) }")"
-  print -r -- "$latency_ms" >>"$latencies_file"
+  tmux_latency_ms="$(awk "BEGIN { printf \"%.3f\", (($EPOCHREALTIME - $start_realtime) * 1000.0) }")"
+  if ! wait_for_viewport_text "$surface_id" "$expected_marker" "$settle_timeout" last_viewport_text; then
+    echo "Timed out waiting for viewport marker $expected_marker" >&2
+    exit 1
+  fi
+  viewport_latency_ms="$(awk "BEGIN { printf \"%.3f\", (($EPOCHREALTIME - $start_realtime) * 1000.0) }")"
+  viewport_delta_ms="$(awk "BEGIN { printf \"%.3f\", ($viewport_latency_ms - $tmux_latency_ms) }")"
+  if ! wait_for_layer_present_count "$surface_id" "$expected_layer_present_count" "$settle_timeout" last_layer_present_count; then
+    echo "Timed out waiting for layer-present count >= $expected_layer_present_count after keypress marker $expected_marker" >&2
+    exit 1
+  fi
+  layer_present_latency_ms="$(awk "BEGIN { printf \"%.3f\", (($EPOCHREALTIME - $start_realtime) * 1000.0) }")"
+  layer_present_delta_ms="$(awk "BEGIN { printf \"%.3f\", ($layer_present_latency_ms - $tmux_latency_ms) }")"
+  print -r -- "$tmux_latency_ms" >>"$tmux_latencies_file"
+  print -r -- "$viewport_latency_ms" >>"$viewport_latencies_file"
+  print -r -- "$viewport_delta_ms" >>"$viewport_delta_file"
+  print -r -- "$layer_present_latency_ms" >>"$layer_present_latencies_file"
+  print -r -- "$layer_present_delta_ms" >>"$layer_present_delta_file"
   last_sequence="$expected_sequence"
 done
 
 bench_end="$(date '+%Y-%m-%d %H:%M:%S%z')"
 sleep 1
 
-latencies_json="$(jq -Rsc 'split("\n")[:-1] | map(select(length > 0) | tonumber)' <"$latencies_file")"
+tmux_latencies_json="$(jq -Rsc 'split("\n")[:-1] | map(select(length > 0) | tonumber)' <"$tmux_latencies_file")"
+viewport_latencies_json="$(jq -Rsc 'split("\n")[:-1] | map(select(length > 0) | tonumber)' <"$viewport_latencies_file")"
+viewport_delta_json="$(jq -Rsc 'split("\n")[:-1] | map(select(length > 0) | tonumber)' <"$viewport_delta_file")"
+layer_present_latencies_json="$(jq -Rsc 'split("\n")[:-1] | map(select(length > 0) | tonumber)' <"$layer_present_latencies_file")"
+layer_present_delta_json="$(jq -Rsc 'split("\n")[:-1] | map(select(length > 0) | tonumber)' <"$layer_present_delta_file")"
 signpost_json="$("$SCRIPT_DIR/gate_l_signpost_summary.sh" --start "$bench_start" --end "$bench_end" --pid "$gate_l_app_pid" --allow-empty)"
+final_scroll_telemetry_json="$(gate_l_send_bridge_json_command false 3 "__agtmux_dump_scroll_telemetry__" "$surface_id" 2>/dev/null || echo '{}')"
 
 jq -n \
   --arg app_bin "$GATE_L_APP_BIN" \
@@ -200,9 +305,10 @@ jq -n \
   --arg socket_name "$socket_name" \
   --arg target "$target" \
   --arg pane_id "$pane_id" \
-  --arg tile_id "$tile_id" \
+  --arg surface_id "$surface_id" \
   --arg key_label "$key_label" \
   --arg key_hex "$key_hex" \
+  --arg delivery "$delivery" \
   --arg terminal_ax_identifier "$terminal_ax_identifier" \
   --arg terminal_ax_fallback_identifier "$terminal_ax_fallback_identifier" \
   --arg resolved_terminal_ax_identifier "$resolved_terminal_ax_identifier" \
@@ -210,12 +316,18 @@ jq -n \
   --arg bench_end "$bench_end" \
   --arg ready_capture "$ready_capture" \
   --arg final_capture "$last_capture" \
+  --arg final_viewport_text "$last_viewport_text" \
   --argjson helper "$helper_json" \
   --argjson focus_snapshot "$focus_snapshot" \
   --argjson last_send "$last_send_json" \
   --argjson app_pid "$gate_l_app_pid" \
   --argjson iterations "$iterations" \
-  --argjson latencies "$latencies_json" \
+  --argjson tmux_latencies "$tmux_latencies_json" \
+  --argjson viewport_latencies "$viewport_latencies_json" \
+  --argjson viewport_delta_latencies "$viewport_delta_json" \
+  --argjson layer_present_latencies "$layer_present_latencies_json" \
+  --argjson layer_present_delta_latencies "$layer_present_delta_json" \
+  --argjson final_scroll_telemetry "$final_scroll_telemetry_json" \
   --argjson signposts "$signpost_json" '
   def round3:
     ((. * 1000.0) | round) / 1000.0;
@@ -243,23 +355,46 @@ jq -n \
     socket_name: $socket_name,
     target: $target,
     pane_id: $pane_id,
-    tile_id: $tile_id,
+    surface_id: $surface_id,
     key_label: $key_label,
     key_hex: $key_hex,
+    delivery: $delivery,
     terminal_ax_identifier: (if $terminal_ax_identifier == "" then null else $terminal_ax_identifier end),
     terminal_ax_fallback_identifier: $terminal_ax_fallback_identifier,
     resolved_terminal_ax_identifier: $resolved_terminal_ax_identifier,
     benchmark_start: $bench_start,
     benchmark_end: $bench_end,
     iterations: $iterations,
-    latencies_ms: $latencies,
-    p50_ms: (($latencies | percentile(50)) | round3),
-    p95_ms: (($latencies | percentile(95)) | round3),
-    max_ms: (($latencies | max) | round3),
+    latencies_ms: $tmux_latencies,
+    p50_ms: (($tmux_latencies | percentile(50)) | round3),
+    p95_ms: (($tmux_latencies | percentile(95)) | round3),
+    max_ms: (($tmux_latencies | max) | round3),
+    tmux_capture_latencies_ms: $tmux_latencies,
+    tmux_capture_p50_ms: (($tmux_latencies | percentile(50)) | round3),
+    tmux_capture_p95_ms: (($tmux_latencies | percentile(95)) | round3),
+    tmux_capture_max_ms: (($tmux_latencies | max) | round3),
+    viewport_latencies_ms: $viewport_latencies,
+    viewport_p50_ms: (($viewport_latencies | percentile(50)) | round3),
+    viewport_p95_ms: (($viewport_latencies | percentile(95)) | round3),
+    viewport_max_ms: (($viewport_latencies | max) | round3),
+    viewport_after_tmux_delta_ms: $viewport_delta_latencies,
+    viewport_after_tmux_p50_ms: (($viewport_delta_latencies | percentile(50)) | round3),
+    viewport_after_tmux_p95_ms: (($viewport_delta_latencies | percentile(95)) | round3),
+    viewport_after_tmux_max_ms: (($viewport_delta_latencies | max) | round3),
+    layer_present_latencies_ms: $layer_present_latencies,
+    layer_present_p50_ms: (($layer_present_latencies | percentile(50)) | round3),
+    layer_present_p95_ms: (($layer_present_latencies | percentile(95)) | round3),
+    layer_present_max_ms: (($layer_present_latencies | max) | round3),
+    layer_present_after_tmux_delta_ms: $layer_present_delta_latencies,
+    layer_present_after_tmux_p50_ms: (($layer_present_delta_latencies | percentile(50)) | round3),
+    layer_present_after_tmux_p95_ms: (($layer_present_delta_latencies | percentile(95)) | round3),
+    layer_present_after_tmux_max_ms: (($layer_present_delta_latencies | max) | round3),
     helper: $helper,
     focus_snapshot: $focus_snapshot,
     last_send: $last_send,
     ready_capture: $ready_capture,
     final_capture: $final_capture,
+    final_viewport_text: $final_viewport_text,
+    final_scroll_telemetry: $final_scroll_telemetry,
     signposts: $signposts
   }'

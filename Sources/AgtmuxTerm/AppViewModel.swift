@@ -75,12 +75,18 @@ struct RemotePaneInventorySource {
     let fetchPanes: @Sendable () async throws -> [AgtmuxPane]
 }
 
+enum LocalMetadataProjectionMode: Equatable {
+    case live
+    case inventoryOnly
+}
+
 // MARK: - AppViewModel
 
 /// Central state holder for the agtmux-term UI.
 ///
 /// Performs explicit local inventory refreshes and runs a 1-second remote broad poll.
-/// Local steady-state metadata/health are owned by `LocalProjectionCoordinator`.
+/// Local steady-state metadata/health are owned by `LocalProjectionCoordinator`
+/// only when local metadata projection is enabled.
 /// Remote hosts are discovered via SSH + `tmux list-panes` — no agtmux required on remote.
 ///
 /// T-PERF-P12 (Phase C): @Published storage has been replaced with computed forwarders
@@ -477,6 +483,7 @@ final class AppViewModel: ObservableObject {
     private let localHealthClient: (any LocalHealthClient)?
     private let localInventoryClient: any LocalPaneInventoryClient
     private let localInventoryAuthority: any LocalPaneInventoryAuthorityProtocol
+    private var localMetadataProjectionMode: LocalMetadataProjectionMode
     private var remotePaneSources: [RemotePaneInventorySource] = []
     var hostsConfig: HostsConfig {
         get { runtimeStore.hostsConfig }
@@ -521,6 +528,10 @@ final class AppViewModel: ObservableObject {
         localInventoryClient: localInventoryClient,
         transportBridge: localMetadataTransportBridge
     )
+
+    private var localMetadataProjectionEnabled: Bool {
+        localMetadataProjectionMode == .live
+    }
 
     private func logLocalFetch(_ message: String) {
         guard let data = "AgtmuxTerm local-fetch: \(message)\n".data(using: .utf8) else { return }
@@ -849,6 +860,7 @@ final class AppViewModel: ObservableObject {
     init(localClient: any ProductLocalMetadataClient = AgtmuxDaemonClient(),
          localInventoryClient: any LocalPaneInventoryClient = LocalTmuxInventoryClient(),
          localInventoryAuthority: (any LocalPaneInventoryAuthorityProtocol)? = nil,
+         localMetadataProjectionMode: LocalMetadataProjectionMode = .live,
          hostsConfig: HostsConfig? = nil,
          remotePaneSources: [RemotePaneInventorySource]? = nil,
          binaryURLResolver: @escaping () -> URL? = AgtmuxBinaryResolver.resolveBinaryURL,
@@ -859,6 +871,7 @@ final class AppViewModel: ObservableObject {
         self.localClient = localClient
         self.localHealthClient = localClient as? any LocalHealthClient
         self.localInventoryClient = localInventoryClient
+        self.localMetadataProjectionMode = localMetadataProjectionMode
         self.binaryURLResolver = binaryURLResolver
         self.publishSnapshotAssembler = publishSnapshotAssembler ?? { input in
             await AppViewModel.defaultPublishSnapshotAssembler(input)
@@ -926,19 +939,13 @@ final class AppViewModel: ObservableObject {
     /// Guarded against double-start: calling startPolling() while already running is a no-op.
     func startPolling() {
         isPolling = true
-        localProjectionCoordinator.startSteadyState(
-            runtime: makeLocalProjectionRuntime(),
-            classifyLocalDaemonIssue: { [weak self] error in
-                self?.classifyLocalDaemonIssue(from: error)
-            },
-            classifyHealthFailure: { [weak self] error in
-                self?.classifyLocalHealthRefreshFailure(from: error) ?? .transientFailure
-            }
-        )
+        startLocalProjectionSteadyStateIfEnabled()
         startLocalInventoryAuthorityIfNeeded()
         startRemotePollingIfNeeded()
-        Task { [weak self] in
-            await self?.performStartupHookCheck()
+        if localMetadataProjectionEnabled {
+            Task { [weak self] in
+                await self?.performStartupHookCheck()
+            }
         }
     }
 
@@ -953,8 +960,12 @@ final class AppViewModel: ObservableObject {
         localMetadataUseLongPoll = nil
         nextLocalMetadataRefreshAt = .distantPast
         nextLocalHealthRefreshAt = .distantPast
-        Task {
-            await localClient.resetUIChangesV3()
+        syncLocalDaemonIssue(nil)
+        syncLocalDaemonHealth(nil)
+        if localMetadataProjectionEnabled {
+            Task {
+                await localClient.resetUIChangesV3()
+            }
         }
     }
 
@@ -1022,6 +1033,7 @@ final class AppViewModel: ObservableObject {
 
     func enableUITestMetadataMode() {
         uiTestMetadataModeEnabled = true
+        enableLocalMetadataProjection()
         localInventoryAuthority.stop()
         localProjectionCoordinator.stop()
         localMetadataSyncPrimed = false
@@ -1031,7 +1043,25 @@ final class AppViewModel: ObservableObject {
         nextLocalHealthRefreshAt = .distantPast
     }
 
+    func enableLocalMetadataProjection() {
+        guard !localMetadataProjectionEnabled else { return }
+        localMetadataProjectionMode = .live
+        nextLocalMetadataRefreshAt = .distantPast
+        nextLocalHealthRefreshAt = .distantPast
+
+        if isPolling {
+            startLocalProjectionSteadyStateIfEnabled()
+            Task { [weak self] in
+                await self?.performStartupHookCheck()
+            }
+        }
+    }
+
     func performStartupHookCheck() async {
+        guard localMetadataProjectionEnabled else {
+            syncHookSetupStatus(.unknown)
+            return
+        }
         guard let binaryURL = binaryURLResolver() else {
             syncHookSetupStatus(.unavailable)
             return
@@ -1062,6 +1092,19 @@ final class AppViewModel: ObservableObject {
             return
         }
         await performStartupHookCheck()
+    }
+
+    private func startLocalProjectionSteadyStateIfEnabled() {
+        guard localMetadataProjectionEnabled else { return }
+        localProjectionCoordinator.startSteadyState(
+            runtime: makeLocalProjectionRuntime(),
+            classifyLocalDaemonIssue: { [weak self] error in
+                self?.classifyLocalDaemonIssue(from: error)
+            },
+            classifyHealthFailure: { [weak self] error in
+                self?.classifyLocalHealthRefreshFailure(from: error) ?? .transientFailure
+            }
+        )
     }
 
     func unregisterHooks() async {
@@ -1374,15 +1417,7 @@ final class AppViewModel: ObservableObject {
         await publishFromSnapshotCache(offlineHosts: newOffline)
 
         if pollingTask != nil {
-            localProjectionCoordinator.startSteadyState(
-                runtime: makeLocalProjectionRuntime(),
-                classifyLocalDaemonIssue: { [weak self] error in
-                    self?.classifyLocalDaemonIssue(from: error)
-                },
-                classifyHealthFailure: { [weak self] error in
-                    self?.classifyLocalHealthRefreshFailure(from: error) ?? .transientFailure
-                }
-            )
+            startLocalProjectionSteadyStateIfEnabled()
         }
         if !hasCompletedInitialFetch { syncHasCompletedInitialFetch(true) }
         maybeAutoLaunchSession()
@@ -1390,7 +1425,7 @@ final class AppViewModel: ObservableObject {
 
     private func applyLocalInventoryFailure() async {
         let wasOffline = offlineHosts.contains("local")
-        if !wasOffline {
+        if !wasOffline && localMetadataProjectionEnabled {
             localProjectionCoordinator.stopMetadataSteadyState()
             localMetadataSyncPrimed = false
             localMetadataTransportVersion = nil
@@ -1406,6 +1441,12 @@ final class AppViewModel: ObservableObject {
     }
 
     private func fetchLocalPanes() async throws -> [AgtmuxPane] {
+        if !localMetadataProjectionEnabled {
+            let inventory = try await localInventoryClient.fetchPanes()
+            cacheLocalInventory(inventory)
+            return inventory
+        }
+
         let inventory = try await localProjectionCoordinator.refreshOnce(
             state: makeLocalProjectionState(),
             runtime: makeLocalProjectionRuntime(),
@@ -1418,6 +1459,22 @@ final class AppViewModel: ObservableObject {
         )
         cacheLocalInventory(inventory)
         return inventory
+    }
+
+    func refreshLocalPaneInventoryOnlyForTesting() async throws {
+        do {
+            let inventory = try await localInventoryClient.fetchPanes()
+            cacheLocalInventory(inventory)
+
+            var newOffline = offlineHosts
+            newOffline.remove("local")
+            await publishFromSnapshotCache(offlineHosts: newOffline)
+
+            if !hasCompletedInitialFetch { syncHasCompletedInitialFetch(true) }
+        } catch {
+            await applyLocalInventoryFailure()
+            throw error
+        }
     }
 
     private func knownSources() -> Set<String> {
@@ -1738,7 +1795,7 @@ final class AppViewModel: ObservableObject {
         for (source, panes) in successfulRemoteBySource {
             lastSuccessfulRemotePanesBySource[source] = panes
         }
-        if newOffline.contains("local") {
+        if newOffline.contains("local") && localMetadataProjectionEnabled {
             localProjectionCoordinator.stopMetadataSteadyState()
             localMetadataSyncPrimed = false
             localMetadataTransportVersion = nil
@@ -1755,15 +1812,7 @@ final class AppViewModel: ObservableObject {
                 startLocalInventoryAuthorityIfNeeded()
                 localInventoryAuthority.updateSeedInventory(lastSuccessfulLocalInventory)
             }
-            localProjectionCoordinator.startSteadyState(
-                runtime: makeLocalProjectionRuntime(),
-                classifyLocalDaemonIssue: { [weak self] error in
-                    self?.classifyLocalDaemonIssue(from: error)
-                },
-                classifyHealthFailure: { [weak self] error in
-                    self?.classifyLocalHealthRefreshFailure(from: error) ?? .transientFailure
-                }
-            )
+            startLocalProjectionSteadyStateIfEnabled()
         }
         if !hasCompletedInitialFetch { syncHasCompletedInitialFetch(true) }
         maybeAutoLaunchSession()

@@ -3,24 +3,21 @@ import GhosttyKit
 import AgtmuxTermCore
 
 struct GhosttyTerminalSurfaceContext: Equatable, Sendable {
-    let workbenchID: UUID
-    let tileID: UUID
+    let viewportID: UUID
+    let surfaceID: UUID
     let surfaceKey: String
     let sessionRef: SessionRef
-    let terminalHostMode: TerminalHostMode
 
     init(
-        workbenchID: UUID,
-        tileID: UUID,
+        viewportID: UUID,
+        surfaceID: UUID,
         surfaceKey: String,
-        sessionRef: SessionRef,
-        terminalHostMode: TerminalHostMode = .legacy
+        sessionRef: SessionRef
     ) {
-        self.workbenchID = workbenchID
-        self.tileID = tileID
+        self.viewportID = viewportID
+        self.surfaceID = surfaceID
         self.surfaceKey = surfaceKey
         self.sessionRef = sessionRef
-        self.terminalHostMode = terminalHostMode
     }
 
     var sourceTarget: TargetRef {
@@ -76,8 +73,8 @@ final class GhosttyTerminalSurfaceRegistry {
     static let shared = GhosttyTerminalSurfaceRegistry()
 
     private var statesBySurfaceHandle: [GhosttySurfaceHandle: GhosttyRenderedTerminalSurfaceState] = [:]
-    private var surfaceHandlesByTileID: [UUID: GhosttySurfaceHandle] = [:]
-    private var latestGenerationByTileID: [UUID: UInt64] = [:]
+    private var surfaceHandlesBySurfaceID: [UUID: GhosttySurfaceHandle] = [:]
+    private var latestGenerationBySurfaceID: [UUID: UInt64] = [:]
     private var stagedClientTTYBySurfaceHandle: [GhosttySurfaceHandle: String] = [:]
 
     func register(
@@ -85,46 +82,42 @@ final class GhosttyTerminalSurfaceRegistry {
         context: GhosttyTerminalSurfaceContext,
         attachCommand: String
     ) {
-        let previousTileState = surfaceHandlesByTileID[context.tileID].flatMap { statesBySurfaceHandle[$0] }
+        let previousTileState = surfaceHandlesBySurfaceID[context.surfaceID].flatMap { statesBySurfaceHandle[$0] }
         let stagedClientTTY = stagedClientTTYBySurfaceHandle.removeValue(forKey: surfaceHandle)
 
-        if let previousHandle = surfaceHandlesByTileID[context.tileID],
+        if let previousHandle = surfaceHandlesBySurfaceID[context.surfaceID],
            previousHandle != surfaceHandle {
             statesBySurfaceHandle.removeValue(forKey: previousHandle)
         }
 
         if let previousState = statesBySurfaceHandle[surfaceHandle],
-           previousState.context.tileID != context.tileID {
-            surfaceHandlesByTileID.removeValue(forKey: previousState.context.tileID)
+           previousState.context.surfaceID != context.surfaceID {
+            surfaceHandlesBySurfaceID.removeValue(forKey: previousState.context.surfaceID)
         }
 
         let generation: UInt64
         if let existingState = statesBySurfaceHandle[surfaceHandle],
-           existingState.context.tileID == context.tileID,
-           existingState.context.terminalHostMode == context.terminalHostMode,
+           existingState.context.surfaceID == context.surfaceID,
            existingState.attachCommand == attachCommand {
             generation = existingState.generation
         } else if let previousTileState,
-           previousTileState.context.tileID == context.tileID,
-           previousTileState.context.terminalHostMode == context.terminalHostMode,
+           previousTileState.context.surfaceID == context.surfaceID,
            previousTileState.attachCommand == attachCommand {
             generation = previousTileState.generation
         } else {
-            generation = (latestGenerationByTileID[context.tileID] ?? 0) + 1
+            generation = (latestGenerationBySurfaceID[context.surfaceID] ?? 0) + 1
         }
 
-        latestGenerationByTileID[context.tileID] = generation
+        latestGenerationBySurfaceID[context.surfaceID] = generation
         let preservedClientTTY: String?
         if let stagedClientTTY {
             preservedClientTTY = stagedClientTTY
         } else if let existingState = statesBySurfaceHandle[surfaceHandle],
-                  existingState.context.tileID == context.tileID,
-                  existingState.context.terminalHostMode == context.terminalHostMode,
+                  existingState.context.surfaceID == context.surfaceID,
                   existingState.attachCommand == attachCommand {
             preservedClientTTY = existingState.clientTTY
         } else if let previousTileState,
-                  previousTileState.context.tileID == context.tileID,
-                  previousTileState.context.terminalHostMode == context.terminalHostMode,
+                  previousTileState.context.surfaceID == context.surfaceID,
                   previousTileState.attachCommand == attachCommand {
             preservedClientTTY = previousTileState.clientTTY
         } else {
@@ -136,7 +129,7 @@ final class GhosttyTerminalSurfaceRegistry {
             clientTTY: preservedClientTTY,
             generation: generation
         )
-        surfaceHandlesByTileID[context.tileID] = surfaceHandle
+        surfaceHandlesBySurfaceID[context.surfaceID] = surfaceHandle
     }
 
     func register(
@@ -154,8 +147,8 @@ final class GhosttyTerminalSurfaceRegistry {
         statesBySurfaceHandle[surfaceHandle]
     }
 
-    func renderedState(forTileID tileID: UUID) -> GhosttyRenderedTerminalSurfaceState? {
-        guard let surfaceHandle = surfaceHandlesByTileID[tileID] else { return nil }
+    func renderedState(forSurfaceID surfaceID: UUID) -> GhosttyRenderedTerminalSurfaceState? {
+        guard let surfaceHandle = surfaceHandlesBySurfaceID[surfaceID] else { return nil }
         return statesBySurfaceHandle[surfaceHandle]
     }
 
@@ -182,8 +175,8 @@ final class GhosttyTerminalSurfaceRegistry {
         return context
     }
 
-    func surfaceHandle(forTileID tileID: UUID) -> GhosttySurfaceHandle? {
-        surfaceHandlesByTileID[tileID]
+    func surfaceHandle(forSurfaceID surfaceID: UUID) -> GhosttySurfaceHandle? {
+        surfaceHandlesBySurfaceID[surfaceID]
     }
 
     func register(
@@ -215,8 +208,8 @@ final class GhosttyTerminalSurfaceRegistry {
     func unregister(surfaceHandle: GhosttySurfaceHandle) {
         stagedClientTTYBySurfaceHandle.removeValue(forKey: surfaceHandle)
         guard let removedState = statesBySurfaceHandle.removeValue(forKey: surfaceHandle) else { return }
-        if surfaceHandlesByTileID[removedState.context.tileID] == surfaceHandle {
-            surfaceHandlesByTileID.removeValue(forKey: removedState.context.tileID)
+        if surfaceHandlesBySurfaceID[removedState.context.surfaceID] == surfaceHandle {
+            surfaceHandlesBySurfaceID.removeValue(forKey: removedState.context.surfaceID)
         }
     }
 
@@ -226,8 +219,8 @@ final class GhosttyTerminalSurfaceRegistry {
 
     func resetForTesting() {
         statesBySurfaceHandle.removeAll()
-        surfaceHandlesByTileID.removeAll()
-        latestGenerationByTileID.removeAll()
+        surfaceHandlesBySurfaceID.removeAll()
+        latestGenerationBySurfaceID.removeAll()
         stagedClientTTYBySurfaceHandle.removeAll()
     }
 }

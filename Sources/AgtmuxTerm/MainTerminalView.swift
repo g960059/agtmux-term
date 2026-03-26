@@ -12,17 +12,9 @@ private enum MainTerminalChrome {
 
 struct MainTerminalView: View {
     @Environment(MainTerminalStore.self) private var terminalStore
-    @ObservedObject private var terminalHostModeRuntime = TerminalHostModeRuntime.shared
-
-    private var terminalHostMode: TerminalHostMode {
-        terminalHostModeRuntime.resolved(environment: ProcessInfo.processInfo.environment)
-    }
 
     private var hostViewIdentity: String {
-        TerminalHostContainer.hostViewIdentity(
-            surfaceID: terminalStore.surfaceID,
-            mode: terminalHostMode
-        ) + ":\(terminalStore.attachSurfaceGeneration)"
+        "main-terminal:\(terminalStore.surfaceID.uuidString):\(terminalStore.attachSurfaceGeneration)"
     }
 
     var body: some View {
@@ -77,17 +69,14 @@ struct MainTerminalView: View {
     private var terminalSurface: some View {
         switch terminalStore.mode {
         case .plainShell:
-            TerminalHostContainer(
-                mode: terminalHostMode,
-                model: TerminalHostRenderModel(
-                    surfaceID: terminalStore.surfaceID,
-                    poolKey: "main-terminal:plain-shell",
-                    attachCommand: nil,
-                    surfaceContext: nil,
-                    visiblePaneIdentity: nil,
-                    isFocused: true,
-                    focusRestoreNonce: terminalStore.focusRequestNonce
-                )
+            GhosttyIslandRepresentable(
+                surfaceID: terminalStore.surfaceID,
+                poolKey: "main-terminal:plain-shell",
+                attachCommand: nil,
+                surfaceContext: nil,
+                visiblePaneIdentity: nil,
+                isFocused: true,
+                focusRestoreNonce: terminalStore.focusRequestNonce
             )
             .id(hostViewIdentity)
             .accessibilityIdentifier(AccessibilityID.terminalMainSurface)
@@ -95,18 +84,16 @@ struct MainTerminalView: View {
         case .tmux(let sessionRef, _, _):
             switch terminalStore.attachResolution {
             case .success(let plan):
-                TerminalHostContainer(
-                    mode: terminalHostMode,
+                MainTerminalFastHostContainer(
                     model: TerminalHostRenderModel(
                         surfaceID: terminalStore.surfaceID,
                         poolKey: plan.surfaceKey,
                         attachCommand: plan.command,
                         surfaceContext: GhosttyTerminalSurfaceContext(
-                            workbenchID: terminalStore.viewportID,
-                            tileID: terminalStore.surfaceID,
+                            viewportID: terminalStore.viewportID,
+                            surfaceID: terminalStore.surfaceID,
                             surfaceKey: plan.surfaceKey,
-                            sessionRef: sessionRef,
-                            terminalHostMode: terminalHostMode
+                            sessionRef: sessionRef
                         ),
                         visiblePaneIdentity: terminalStore.visiblePaneIdentity,
                         isFocused: true,
@@ -123,6 +110,23 @@ struct MainTerminalView: View {
                 MainTerminalFailureState(message: "Attach plan unavailable.")
             }
         }
+    }
+}
+
+private struct MainTerminalFastHostContainer: View, Equatable {
+    let model: TerminalHostRenderModel
+
+    var body: some View {
+        GhosttyIslandRepresentable(
+            surfaceID: model.surfaceID,
+            poolKey: model.poolKey,
+            attachCommand: model.attachCommand,
+            surfaceContext: model.surfaceContext,
+            visiblePaneIdentity: model.visiblePaneIdentity,
+            isFocused: model.isFocused,
+            focusRestoreNonce: model.focusRestoreNonce
+        )
+        .equatable()
     }
 }
 

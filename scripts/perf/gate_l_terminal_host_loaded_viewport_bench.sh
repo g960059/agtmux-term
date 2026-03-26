@@ -9,7 +9,6 @@ STEP_METRICS_PY="$SCRIPT_DIR/gate_l_step_metrics.py"
 EMITTER_PY="$SCRIPT_DIR/gate_l_emit_loaded_history_fixture.py"
 CURSES_HISTORY_VIEWER_PY="$SCRIPT_DIR/gate_l_curses_history_viewer.py"
 
-host_mode="${AGTMUX_PERF_TERMINAL_HOST_MODE:-}"
 settle_timeout="${AGTMUX_PERF_LIVE_TIMEOUT:-30}"
 fixture_lines="${AGTMUX_PERF_LOADED_FIXTURE_LINES:-12000}"
 fixture_wrap_columns="${AGTMUX_PERF_LOADED_FIXTURE_WRAP_COLUMNS:-180}"
@@ -44,7 +43,7 @@ function viewport_sample_count() {
 }
 
 function wait_for_terminal_viewport_ready() {
-  local tile_id="$1"
+  local surface_id="$1"
   local timeout="${2:-15}"
   local deadline=$((EPOCHREALTIME + timeout))
 
@@ -55,14 +54,14 @@ function wait_for_terminal_viewport_ready() {
       if (remaining < 0.05) remaining = 0.05
       printf "%.3f", remaining
     }')"
-    if gate_l_wait_for_bridge_json_command_until "$remaining_timeout" "$gate_l_tmpdir/viewport-ready.last-error.log" "__agtmux_dump_terminal_viewport_text__" "$tile_id" \
+    if gate_l_wait_for_bridge_json_command_until "$remaining_timeout" "$gate_l_tmpdir/viewport-ready.last-error.log" "__agtmux_dump_terminal_viewport_text__" "$surface_id" \
       >/dev/null; then
       return 0
     fi
     sleep 0.05
   done
 
-  echo "Timed out waiting for terminal viewport readiness for tileID $tile_id" >&2
+  echo "Timed out waiting for terminal viewport readiness for surfaceID $surface_id" >&2
   if [[ -s "$gate_l_tmpdir/viewport-ready.last-error.log" ]]; then
     cat "$gate_l_tmpdir/viewport-ready.last-error.log" >&2
   fi
@@ -70,7 +69,7 @@ function wait_for_terminal_viewport_ready() {
 }
 
 function wait_for_viewport_marker() {
-  local tile_id="$1"
+  local surface_id="$1"
   local marker="$2"
   local timeout="${3:-20}"
   local deadline=$((EPOCHREALTIME + timeout))
@@ -83,7 +82,7 @@ function wait_for_viewport_marker() {
       if (remaining < 0.05) remaining = 0.05
       printf "%.3f", remaining
     }')"
-    if output="$(gate_l_wait_for_bridge_json_command_until "$remaining_timeout" "$gate_l_tmpdir/viewport-marker.last-error.log" "__agtmux_dump_terminal_viewport_text__" "$tile_id")"; then
+    if output="$(gate_l_wait_for_bridge_json_command_until "$remaining_timeout" "$gate_l_tmpdir/viewport-marker.last-error.log" "__agtmux_dump_terminal_viewport_text__" "$surface_id")"; then
       if jq -er --arg marker "$marker" '.text | contains($marker)' >/dev/null <<<"$output"; then
         return 0
       fi
@@ -100,22 +99,16 @@ function wait_for_viewport_marker() {
 
 while (( $# > 0 )); do
   case "$1" in
-    --host-mode)
-      host_mode="$2"
-      shift 2
-      ;;
     --timeout)
       settle_timeout="$2"
       shift 2
       ;;
     *)
-      echo "Usage: $0 [--host-mode legacy|next] [--timeout SECONDS]" >&2
+      echo "Usage: $0 [--timeout SECONDS]" >&2
       exit 1
       ;;
   esac
 done
-
-gate_l_require_explicit_terminal_host_mode "$host_mode" "$0" || exit 1
 
 case "$focus_mode" in
   identifier|front-window)
@@ -135,11 +128,10 @@ case "$scroll_mode" in
     ;;
 esac
 
-token="loaded-view-${host_mode}-$(uuidgen | tr '[:upper:]' '[:lower:]' | cut -c1-8)"
+token="loaded-view-$(uuidgen | tr '[:upper:]' '[:lower:]' | cut -c1-8)"
 socket_name="agtmux-gate-l-$token"
 session_name="agtmux-loaded-$token"
 gate_l_setup_paths "$token"
-export AGTMUX_PERF_TERMINAL_HOST_MODE="$host_mode"
 export AGTMUX_PERF_UITEST_INVENTORY_ONLY=0
 
 fixture_file="$gate_l_tmpdir/loaded-history-fixture.txt"
@@ -197,37 +189,37 @@ fi
 gate_l_activate_app
 open_json="$(gate_l_send_bridge_json_command false 10 "__agtmux_open_terminal_for_pane__" "local" "$session_name" "$pane_id")"
 printf '%s\n' "$open_json" >"$open_json_path"
-tile_id="$(jq -r '.tileID // empty' <<<"$open_json")"
-if [[ -z "$tile_id" ]]; then
-  echo "Failed to resolve tile from __agtmux_open_terminal_for_pane__: $open_json" >&2
+surface_id="$(jq -r '.surfaceID // empty' <<<"$open_json")"
+if [[ -z "$surface_id" ]]; then
+  echo "Failed to resolve surface from __agtmux_open_terminal_for_pane__: $open_json" >&2
   exit 1
 fi
-if ! wait_for_terminal_viewport_ready "$tile_id" "$settle_timeout"; then
+if ! wait_for_terminal_viewport_ready "$surface_id" "$settle_timeout"; then
   exit 1
 fi
 
 active_json="$(gate_l_wait_for_active_target "$session_name" "$window_id" "$pane_id" "$settle_timeout")"
 printf '%s\n' "$active_json" >"$active_json_path"
 
-gate_l_send_bridge_command false 10 "__agtmux_focus_terminal_host__" "$tile_id" >/dev/null
+gate_l_send_bridge_command false 10 "__agtmux_focus_terminal_host__" "$surface_id" >/dev/null
 gate_l_activate_app
 
-focus_json="$(gate_l_send_bridge_json_command false 10 "__agtmux_dump_focus_state__" "$tile_id")"
+focus_json="$(gate_l_send_bridge_json_command false 10 "__agtmux_dump_focus_state__" "$surface_id")"
 printf '%s\n' "$focus_json" >"$focus_json_path"
 terminal_ax_identifier="$(jq -r '.terminalAccessibilityIdentifier // empty' <<<"$focus_json")"
 resolved_terminal_ax_identifier="$terminal_ax_identifier"
 if [[ -z "$resolved_terminal_ax_identifier" ]]; then
-  resolved_terminal_ax_identifier="workspace.terminalHost.${tile_id}"
+  resolved_terminal_ax_identifier="workspace.terminalHost.${surface_id}"
 fi
 
-if ! wait_for_viewport_marker "$tile_id" "$fixture_marker" "$settle_timeout"; then
+if ! wait_for_viewport_marker "$surface_id" "$fixture_marker" "$settle_timeout"; then
   exit 1
 fi
 sleep_ms "$fixture_settle_ms"
 
-baseline_viewport_json="$(gate_l_send_bridge_json_command false 10 "__agtmux_dump_terminal_viewport_text__" "$tile_id")"
+baseline_viewport_json="$(gate_l_send_bridge_json_command false 10 "__agtmux_dump_terminal_viewport_text__" "$surface_id")"
 printf '%s\n' "$baseline_viewport_json" >"$baseline_viewport_json_path"
-gate_l_send_bridge_command false 10 "__agtmux_reset_scroll_telemetry__" "$tile_id" >/dev/null
+gate_l_send_bridge_command false 10 "__agtmux_reset_scroll_telemetry__" "$surface_id" >/dev/null
 
 gate_l_activate_app
 if [[ "$focus_mode" == "identifier" ]]; then
@@ -257,7 +249,7 @@ if [[ "$scroll_mode" == "point" ]]; then
 fi
 sleep_ms "$focus_settle_ms"
 sample_count="$(viewport_sample_count)"
-sample_request_id="$(gate_l_start_async_bridge_command false "__agtmux_sample_terminal_viewport_text__" "$tile_id" "$sample_count" "$sample_interval_ms")"
+sample_request_id="$(gate_l_start_async_bridge_command false "__agtmux_sample_terminal_viewport_text__" "$surface_id" "$sample_count" "$sample_interval_ms")"
 sleep_ms 20
 if [[ "$scroll_mode" == "point" ]]; then
   "$SCRIPT_DIR/gate_l_ax_key_sender.sh" \
@@ -292,9 +284,9 @@ if ! gate_l_wait_for_async_bridge_json_result "$sample_request_id" "$sample_time
 fi
 
 python3 "$STEP_METRICS_PY" "$sample_json_path" >"$metrics_json_path"
-final_viewport_json="$(gate_l_send_bridge_json_command false 10 "__agtmux_dump_terminal_viewport_text__" "$tile_id")"
+final_viewport_json="$(gate_l_send_bridge_json_command false 10 "__agtmux_dump_terminal_viewport_text__" "$surface_id")"
 printf '%s\n' "$final_viewport_json" >"$final_viewport_json_path"
-scroll_telemetry_json="$(gate_l_send_bridge_json_command false 10 "__agtmux_dump_scroll_telemetry__" "$tile_id")"
+scroll_telemetry_json="$(gate_l_send_bridge_json_command false 10 "__agtmux_dump_scroll_telemetry__" "$surface_id")"
 printf '%s\n' "$scroll_telemetry_json" >"$scroll_telemetry_json_path"
 jq -n \
   --slurpfile payload "$fixture_event_log_path" \
@@ -315,11 +307,10 @@ jq -n \
    }' >"$fixture_event_summary_json_path"
 
 jq -n \
-  --arg host_mode "$host_mode" \
   --arg session_name "$session_name" \
   --arg window_id "$window_id" \
   --arg pane_id "$pane_id" \
-  --arg tile_id "$tile_id" \
+  --arg surface_id "$surface_id" \
   --arg app_bin "$GATE_L_APP_BIN" \
   --argjson app_pid "$gate_l_app_pid" \
   --arg fixture_marker "$fixture_marker" \
@@ -349,13 +340,12 @@ jq -n \
   --slurpfile fixture_event_summary "$fixture_event_summary_json_path" \
   --arg tmpdir "$gate_l_tmpdir" \
   '{
-    hostMode: $host_mode,
     appBin: $app_bin,
     appPID: $app_pid,
     sessionName: $session_name,
     windowID: $window_id,
     paneID: $pane_id,
-    tileID: $tile_id,
+    surfaceID: $surface_id,
     fixture: {
       lines: $fixture_lines,
       wrapColumns: $fixture_wrap_columns,

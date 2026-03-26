@@ -27,7 +27,7 @@ final class MainTerminalStoreTests: XCTestCase {
         let store = MainTerminalStore(
             dependencies: makeDependencies(
                 liveTarget: { _, _ in
-                    WorkbenchV2TerminalLiveTarget(
+                    TerminalLiveTarget(
                         sessionName: "main",
                         windowID: "@1",
                         paneID: "%2"
@@ -135,21 +135,11 @@ final class MainTerminalStoreTests: XCTestCase {
         )
     }
 
-    func testPaneActivationHighlightsWindowActiveInventoryPane() async {
+    func testPaneActivationHighlightsClickedInventoryPane() async {
         let firstPane = makePane(sessionName: "shared", windowID: "@1", paneID: "%1")
         let secondPane = makePane(sessionName: "shared", windowID: "@1", paneID: "%2")
         let store = MainTerminalStore(
-            dependencies: makeDependencies(
-                liveWindowTarget: { sessionRef, windowID, _ in
-                    XCTAssertEqual(sessionRef.sessionName, "shared")
-                    XCTAssertEqual(windowID, "@1")
-                    return WorkbenchV2TerminalLiveTarget(
-                        sessionName: "shared",
-                        windowID: "@1",
-                        paneID: "%1"
-                    )
-                }
-            )
+            dependencies: makeDependencies()
         )
 
         await store.activate(pane: secondPane, hostsConfig: .empty)
@@ -159,10 +149,10 @@ final class MainTerminalStoreTests: XCTestCase {
                 panes: [firstPane, secondPane],
                 hostsConfig: .empty
             ),
-            firstPane.id
+            secondPane.id
         )
         XCTAssertEqual(store.requestedPaneRef?.windowID, "@1")
-        XCTAssertEqual(store.requestedPaneRef?.paneID, "%1")
+        XCTAssertEqual(store.requestedPaneRef?.paneID, "%2")
 
         store.startPlainShell()
     }
@@ -217,17 +207,10 @@ final class MainTerminalStoreTests: XCTestCase {
                 liveTarget: { _, _ in
                     throw StubError.unexpectedSessionLiveTargetLookup
                 },
-                liveWindowTarget: { _, _, _ in
-                    WorkbenchV2TerminalLiveTarget(
-                        sessionName: "shared",
-                        windowID: "@2",
-                        paneID: "%9"
-                    )
-                },
-                renderedState: { tileID in
-                    XCTAssertEqual(tileID, surfaceID)
+                renderedState: { renderedSurfaceID in
+                    XCTAssertEqual(renderedSurfaceID, surfaceID)
                     return self.makeRenderedState(
-                        tileID: surfaceID,
+                        surfaceID: renderedSurfaceID,
                         sessionRef: sessionRef,
                         clientTTY: nil,
                         attachCommand: "tmux attach-session -t shared"
@@ -243,7 +226,7 @@ final class MainTerminalStoreTests: XCTestCase {
         XCTAssertTrue(plan.command.contains("select-window -t"))
         XCTAssertTrue(plan.command.contains("@2"))
         XCTAssertTrue(plan.command.contains("select-pane -t"))
-        XCTAssertTrue(plan.command.contains("%9"))
+        XCTAssertTrue(plan.command.contains("%8"))
 
         store.startPlainShell()
     }
@@ -258,7 +241,7 @@ final class MainTerminalStoreTests: XCTestCase {
         let store = MainTerminalStore(
             dependencies: makeDependencies(
                 liveTarget: { _, _ in
-                    WorkbenchV2TerminalLiveTarget(
+                    TerminalLiveTarget(
                         sessionName: "feature branch",
                         windowID: "@1",
                         paneID: "%2"
@@ -280,21 +263,21 @@ final class MainTerminalStoreTests: XCTestCase {
         store.startPlainShell()
     }
 
-    func testSameSessionRetargetUsesWindowActivePaneAndClearsRequestedPane() async throws {
+    func testSameSessionRetargetUsesClickedPaneAndClearsRequestedPane() async throws {
         let clickedPane = makePane(
             sessionName: "shared",
             windowID: "@2",
             paneID: "%8"
         )
-        let initialLiveTarget = WorkbenchV2TerminalLiveTarget(
+        let initialLiveTarget = TerminalLiveTarget(
             sessionName: "shared",
             windowID: "@1",
             paneID: "%1"
         )
-        let resolvedLiveTarget = WorkbenchV2TerminalLiveTarget(
+        let resolvedLiveTarget = TerminalLiveTarget(
             sessionName: "shared",
             windowID: "@2",
-            paneID: "%9"
+            paneID: "%8"
         )
         let renderedTargets = LiveTargetSequence([initialLiveTarget, resolvedLiveTarget])
         let navigationRecorder = NavigationRecorder()
@@ -305,22 +288,12 @@ final class MainTerminalStoreTests: XCTestCase {
             surfaceID: surfaceID,
             dependencies: makeDependencies(
                 liveTarget: { _, _ in
-                    throw StubError.unexpectedSessionLiveTargetLookup
+                    await renderedTargets.next()
                 },
-                liveWindowTarget: { sessionRef, windowID, _ in
-                    XCTAssertEqual(sessionRef.sessionName, "shared")
-                    XCTAssertEqual(windowID, "@2")
-                    return resolvedLiveTarget
-                },
-                renderedLiveTarget: { renderedClientTTY, target, _ in
-                    XCTAssertEqual(renderedClientTTY, "/dev/ttys001")
-                    XCTAssertEqual(target, .local)
-                    return await renderedTargets.next()
-                },
-                renderedState: { tileID in
-                    XCTAssertEqual(tileID, surfaceID)
+                renderedState: { renderedSurfaceID in
+                    XCTAssertEqual(renderedSurfaceID, surfaceID)
                     return self.makeRenderedState(
-                        tileID: surfaceID,
+                        surfaceID: renderedSurfaceID,
                         sessionRef: sessionRef,
                         clientTTY: "/dev/ttys001"
                     )
@@ -341,17 +314,17 @@ final class MainTerminalStoreTests: XCTestCase {
 
         let didResolve = try await waitUntil {
             store.requestedPaneRef == nil
-                && store.resolvedPaneRef?.paneID == "%9"
+                && store.resolvedPaneRef?.paneID == "%8"
                 && store.resolvedPaneRef?.windowID == "@2"
         }
 
-        XCTAssertTrue(didResolve, "Expected the main terminal to resolve the window-active pane")
+        XCTAssertTrue(didResolve, "Expected the main terminal to resolve the clicked pane")
         XCTAssertNil(store.diagnostic)
 
         let calls = await navigationRecorder.calls()
         XCTAssertEqual(calls.count, 1)
         XCTAssertEqual(calls[0].paneRef.windowID, "@2")
-        XCTAssertEqual(calls[0].paneRef.paneID, "%9")
+        XCTAssertEqual(calls[0].paneRef.paneID, "%8")
         XCTAssertEqual(calls[0].renderedClientTTY, "/dev/ttys001")
 
         store.startPlainShell()
@@ -363,15 +336,10 @@ final class MainTerminalStoreTests: XCTestCase {
             windowID: "@2",
             paneID: "%8"
         )
-        let liveTarget = WorkbenchV2TerminalLiveTarget(
+        let liveTarget = TerminalLiveTarget(
             sessionName: "shared",
             windowID: "@1",
             paneID: "%1"
-        )
-        let requestedWindowTarget = WorkbenchV2TerminalLiveTarget(
-            sessionName: "shared",
-            windowID: "@2",
-            paneID: "%9"
         )
         let surfaceID = UUID()
         let sessionRef = SessionRef(target: .local, sessionName: "shared")
@@ -380,20 +348,12 @@ final class MainTerminalStoreTests: XCTestCase {
             surfaceID: surfaceID,
             dependencies: makeDependencies(
                 liveTarget: { _, _ in
-                    throw StubError.unexpectedSessionLiveTargetLookup
-                },
-                liveWindowTarget: { sessionRef, windowID, _ in
-                    XCTAssertEqual(sessionRef.sessionName, "shared")
-                    XCTAssertEqual(windowID, "@2")
-                    return requestedWindowTarget
-                },
-                renderedLiveTarget: { _, _, _ in
                     liveTarget
                 },
-                renderedState: { tileID in
-                    XCTAssertEqual(tileID, surfaceID)
+                renderedState: { renderedSurfaceID in
+                    XCTAssertEqual(renderedSurfaceID, surfaceID)
                     return self.makeRenderedState(
-                        tileID: surfaceID,
+                        surfaceID: renderedSurfaceID,
                         sessionRef: sessionRef,
                         clientTTY: "/dev/ttys002"
                     )
@@ -415,7 +375,7 @@ final class MainTerminalStoreTests: XCTestCase {
                     target: .local,
                     sessionName: "shared",
                     windowID: "@2",
-                    paneID: "%9"
+                    paneID: "%8"
                 ),
                 detail: StubError.renderedLiveTargetUnavailable.localizedDescription
             )
@@ -425,59 +385,42 @@ final class MainTerminalStoreTests: XCTestCase {
         store.startPlainShell()
     }
 
-    func testResolvedNavigationKeepsPollingForDriftWithoutReapplyingIntent() async throws {
+    func testResolvedNavigationStopsPollingAfterConvergence() async throws {
         let clickedPane = makePane(
             sessionName: "shared",
             windowID: "@2",
             paneID: "%8"
         )
-        let initialLiveTarget = WorkbenchV2TerminalLiveTarget(
+        let initialLiveTarget = TerminalLiveTarget(
             sessionName: "shared",
             windowID: "@1",
             paneID: "%1"
         )
-        let resolvedLiveTarget = WorkbenchV2TerminalLiveTarget(
+        let resolvedLiveTarget = TerminalLiveTarget(
             sessionName: "shared",
             windowID: "@2",
-            paneID: "%9"
-        )
-        let driftLiveTarget = WorkbenchV2TerminalLiveTarget(
-            sessionName: "shared",
-            windowID: "@2",
-            paneID: "%10"
+            paneID: "%8"
         )
         let renderedTargets = LiveTargetSequence([
             initialLiveTarget,
-            resolvedLiveTarget,
-            driftLiveTarget,
-            driftLiveTarget
+            resolvedLiveTarget
         ])
-        let renderedLiveTargetCalls = Counter()
+        let liveTargetCalls = Counter()
         let navigationRecorder = NavigationRecorder()
-        let sleepController = SleepController(allowedSleeps: 4)
+        let sleepController = SleepController(allowedSleeps: 2)
         let surfaceID = UUID()
         let sessionRef = SessionRef(target: .local, sessionName: "shared")
         let store = MainTerminalStore(
             surfaceID: surfaceID,
             dependencies: makeDependencies(
                 liveTarget: { _, _ in
-                    throw StubError.unexpectedSessionLiveTargetLookup
-                },
-                liveWindowTarget: { sessionRef, windowID, _ in
-                    XCTAssertEqual(sessionRef.sessionName, "shared")
-                    XCTAssertEqual(windowID, "@2")
-                    return resolvedLiveTarget
-                },
-                renderedLiveTarget: { renderedClientTTY, target, _ in
-                    XCTAssertEqual(renderedClientTTY, "/dev/ttys009")
-                    XCTAssertEqual(target, .local)
-                    await renderedLiveTargetCalls.increment()
+                    await liveTargetCalls.increment()
                     return await renderedTargets.next()
                 },
-                renderedState: { tileID in
-                    XCTAssertEqual(tileID, surfaceID)
+                renderedState: { renderedSurfaceID in
+                    XCTAssertEqual(renderedSurfaceID, surfaceID)
                     return self.makeRenderedState(
-                        tileID: surfaceID,
+                        surfaceID: renderedSurfaceID,
                         sessionRef: sessionRef,
                         clientTTY: "/dev/ttys009"
                     )
@@ -499,52 +442,36 @@ final class MainTerminalStoreTests: XCTestCase {
         let didObserveDrift = try await waitUntil {
             store.requestedPaneRef == nil
                 && store.resolvedPaneRef?.windowID == "@2"
-                && store.resolvedPaneRef?.paneID == "%10"
+                && store.resolvedPaneRef?.paneID == "%8"
         }
         let calls = await navigationRecorder.calls()
-        let renderedLiveTargetCallCount = await renderedLiveTargetCalls.value()
+        let liveTargetCallCount = await liveTargetCalls.value()
 
         XCTAssertTrue(
             didObserveDrift,
-            "Expected navigation loop to keep observing same-session drift after the initial attach converged"
+            "Expected navigation loop to converge on the clicked pane"
         )
-        XCTAssertGreaterThanOrEqual(
-            renderedLiveTargetCallCount,
-            3,
-            "Resolved navigation should keep polling the rendered client so later pane drift is observed"
+        XCTAssertEqual(
+            liveTargetCallCount,
+            2,
+            "Converged navigation should stop polling the session live target after the clicked pane is visible"
         )
         XCTAssertEqual(calls.count, 1)
         XCTAssertEqual(calls[0].paneRef.windowID, "@2")
-        XCTAssertEqual(calls[0].paneRef.paneID, "%9")
-        XCTAssertEqual(
-            store.diagnostic,
-            .terminalSidebarDrift(
-                requested: ActivePaneRef(
-                    target: .local,
-                    sessionName: "shared",
-                    windowID: "@2",
-                    paneID: "%9"
-                ),
-                resolved: ActivePaneRef(
-                    target: .local,
-                    sessionName: "shared",
-                    windowID: "@2",
-                    paneID: "%10"
-                )
-            )
-        )
+        XCTAssertEqual(calls[0].paneRef.paneID, "%8")
+        XCTAssertNil(store.diagnostic)
 
         store.startPlainShell()
     }
 
     private func makeDependencies(
-        liveTarget: @escaping @Sendable (SessionRef, HostsConfig) async throws -> WorkbenchV2TerminalLiveTarget = { _, _ in
+        liveTarget: @escaping @Sendable (SessionRef, HostsConfig) async throws -> TerminalLiveTarget = { _, _ in
             throw StubError.liveTargetUnavailable
         },
-        liveWindowTarget: @escaping @Sendable (SessionRef, String, HostsConfig) async throws -> WorkbenchV2TerminalLiveTarget = { _, _, _ in
+        liveWindowTarget: @escaping @Sendable (SessionRef, String, HostsConfig) async throws -> TerminalLiveTarget = { _, _, _ in
             throw StubError.liveTargetUnavailable
         },
-        renderedLiveTarget: @escaping @Sendable (String, TargetRef, HostsConfig) async throws -> WorkbenchV2TerminalLiveTarget = { _, _, _ in
+        renderedLiveTarget: @escaping @Sendable (String, TargetRef, HostsConfig) async throws -> TerminalLiveTarget = { _, _, _ in
             throw StubError.renderedLiveTargetUnavailable
         },
         renderedState: @escaping @MainActor (UUID) -> GhosttyRenderedTerminalSurfaceState? = { _ in nil },
@@ -616,15 +543,15 @@ final class MainTerminalStoreTests: XCTestCase {
     }
 
     private func makeRenderedState(
-        tileID: UUID,
+        surfaceID: UUID,
         sessionRef: SessionRef,
         clientTTY: String?,
         attachCommand: String? = nil
     ) -> GhosttyRenderedTerminalSurfaceState {
         GhosttyRenderedTerminalSurfaceState(
             context: GhosttyTerminalSurfaceContext(
-                workbenchID: UUID(),
-                tileID: tileID,
+                viewportID: UUID(),
+                surfaceID: surfaceID,
                 surfaceKey: "main-terminal:test",
                 sessionRef: sessionRef
             ),
@@ -668,16 +595,16 @@ private enum StubError: LocalizedError {
 }
 
 private actor LiveTargetSequence {
-    private var remaining: [WorkbenchV2TerminalLiveTarget]
-    private var last: WorkbenchV2TerminalLiveTarget
+    private var remaining: [TerminalLiveTarget]
+    private var last: TerminalLiveTarget
 
-    init(_ values: [WorkbenchV2TerminalLiveTarget]) {
+    init(_ values: [TerminalLiveTarget]) {
         precondition(!values.isEmpty, "LiveTargetSequence requires at least one value")
         self.remaining = values
         self.last = values[0]
     }
 
-    func next() -> WorkbenchV2TerminalLiveTarget {
+    func next() -> TerminalLiveTarget {
         guard remaining.isEmpty == false else {
             return last
         }

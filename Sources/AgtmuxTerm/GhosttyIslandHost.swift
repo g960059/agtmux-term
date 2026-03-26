@@ -30,48 +30,48 @@ final class GhosttyIslandUpdateTelemetry {
 
     static let shared = GhosttyIslandUpdateTelemetry()
 
-    private var statesByTileID: [UUID: State] = [:]
+    private var statesBySurfaceID: [UUID: State] = [:]
 
     func recordUpdate(
-        tileID: UUID,
+        surfaceID: UUID,
         commandChanged: Bool,
         surfaceContextChanged: Bool,
         focusStateChanged: Bool,
         focusRestoreChanged: Bool
     ) {
-        var state = statesByTileID[tileID] ?? State()
+        var state = statesBySurfaceID[surfaceID] ?? State()
         state.updateCount += 1
         if commandChanged { state.commandChangeCount += 1 }
         if surfaceContextChanged { state.surfaceContextChangeCount += 1 }
         if focusStateChanged { state.focusChangeCount += 1 }
         if focusRestoreChanged { state.focusRestoreChangeCount += 1 }
-        statesByTileID[tileID] = state
+        statesBySurfaceID[surfaceID] = state
     }
 
-    func recordApplyCommand(tileID: UUID) {
-        var state = statesByTileID[tileID] ?? State()
+    func recordApplyCommand(surfaceID: UUID) {
+        var state = statesBySurfaceID[surfaceID] ?? State()
         state.applyCommandCount += 1
-        statesByTileID[tileID] = state
+        statesBySurfaceID[surfaceID] = state
     }
 
-    func recordPaneRetargetRefresh(tileID: UUID) {
-        var state = statesByTileID[tileID] ?? State()
+    func recordPaneRetargetRefresh(surfaceID: UUID) {
+        var state = statesBySurfaceID[surfaceID] ?? State()
         state.paneRetargetRefreshCount += 1
-        statesByTileID[tileID] = state
+        statesBySurfaceID[surfaceID] = state
     }
 
-    func recordRetry(tileID: UUID) {
-        var state = statesByTileID[tileID] ?? State()
+    func recordRetry(surfaceID: UUID) {
+        var state = statesBySurfaceID[surfaceID] ?? State()
         state.retryCount += 1
-        statesByTileID[tileID] = state
+        statesBySurfaceID[surfaceID] = state
     }
 
-    func reset(tileID: UUID) {
-        statesByTileID[tileID] = State()
+    func reset(surfaceID: UUID) {
+        statesBySurfaceID[surfaceID] = State()
     }
 
-    func snapshot(tileID: UUID) -> Snapshot {
-        let state = statesByTileID[tileID] ?? State()
+    func snapshot(surfaceID: UUID) -> Snapshot {
+        let state = statesBySurfaceID[surfaceID] ?? State()
         return Snapshot(
             updateCount: state.updateCount,
             commandChangeCount: state.commandChangeCount,
@@ -178,11 +178,11 @@ final class GhosttyIslandViewController: NSViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         view.setAccessibilityElement(false)
+        TerminalHostActiveSurfaceRegistry.shared.setActiveLeafID(surfaceID, forSurfaceID: surfaceID)
         let tv = GhosttyTerminalView()
         if let pendingSurfaceContext {
-            tv.setTerminalHostMode(pendingSurfaceContext.terminalHostMode)
             tv.configureAccessibility(
-                identifier: AccessibilityID.workspaceTerminalHostPrefix + pendingSurfaceContext.tileID.uuidString,
+                identifier: AccessibilityID.workspaceTerminalHostPrefix + pendingSurfaceContext.surfaceID.uuidString,
                 label: "Terminal \(pendingSurfaceContext.sessionRef.sessionName)"
             )
         }
@@ -246,7 +246,7 @@ final class GhosttyIslandViewController: NSViewController {
             commandChanged: commandChanged
         ) {
             terminalView?.schedulePaneRetargetPresentationRefreshIfNeeded()
-            GhosttyIslandUpdateTelemetry.shared.recordPaneRetargetRefresh(tileID: surfaceID)
+            GhosttyIslandUpdateTelemetry.shared.recordPaneRetargetRefresh(surfaceID: surfaceID)
         }
 
         // Update surface context registration if it changed
@@ -254,9 +254,8 @@ final class GhosttyIslandViewController: NSViewController {
         if surfaceContextChanged,
            let surfaceContext,
            let terminalView {
-            terminalView.setTerminalHostMode(surfaceContext.terminalHostMode)
             terminalView.configureAccessibility(
-                identifier: AccessibilityID.workspaceTerminalHostPrefix + surfaceContext.tileID.uuidString,
+                identifier: AccessibilityID.workspaceTerminalHostPrefix + surfaceContext.surfaceID.uuidString,
                 label: "Terminal \(surfaceContext.sessionRef.sessionName)"
             )
         }
@@ -276,7 +275,7 @@ final class GhosttyIslandViewController: NSViewController {
         let focusStateChanged = lastAppliedFocus != isFocused
         let focusRestoreChanged = lastFocusRestoreNonce != focusRestoreNonce
         GhosttyIslandUpdateTelemetry.shared.recordUpdate(
-            tileID: surfaceID,
+            surfaceID: surfaceID,
             commandChanged: commandChanged,
             surfaceContextChanged: surfaceContextChanged,
             focusStateChanged: focusStateChanged,
@@ -311,6 +310,7 @@ final class GhosttyIslandViewController: NSViewController {
             } else if let surface = capturedView?.surface {
                 GhosttyTerminalSurfaceRegistry.shared.unregister(surface: surface)
             }
+            TerminalHostActiveSurfaceRegistry.shared.clearActiveLeafID(forSurfaceID: capturedSurfaceID)
             SurfacePool.shared.release(
                 leafID: capturedSurfaceID,
                 expectedViewID: capturedViewID
@@ -374,7 +374,7 @@ final class GhosttyIslandViewController: NSViewController {
         }
 
         currentCommand = command
-        GhosttyIslandUpdateTelemetry.shared.recordApplyCommand(tileID: surfaceID)
+        GhosttyIslandUpdateTelemetry.shared.recordApplyCommand(surfaceID: surfaceID)
         pendingAttachCommand = nil
         pendingSurfaceContext = nil
         cancelPendingRetry()
@@ -387,7 +387,7 @@ final class GhosttyIslandViewController: NSViewController {
 
         cancelPendingRetry()
         pendingAttachRetryCommand = commandIdentity
-        GhosttyIslandUpdateTelemetry.shared.recordRetry(tileID: surfaceID)
+        GhosttyIslandUpdateTelemetry.shared.recordRetry(surfaceID: surfaceID)
 
         let retry = DispatchWorkItem { [weak self] in
             guard let self else { return }

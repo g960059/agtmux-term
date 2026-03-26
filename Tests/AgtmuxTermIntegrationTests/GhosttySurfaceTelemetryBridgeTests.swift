@@ -9,8 +9,8 @@ final class GhosttySurfaceTelemetryBridgeTests: XCTestCase {
         let registry = GhosttyTerminalSurfaceRegistry()
         let surfaceHandle = GhosttySurfaceHandle(rawValue: 0x9912)
         let context = GhosttyTerminalSurfaceContext(
-            workbenchID: UUID(),
-            tileID: UUID(),
+            viewportID: UUID(),
+            surfaceID: UUID(),
             surfaceKey: "wb:main",
             sessionRef: SessionRef(target: .local, sessionName: "main")
         )
@@ -38,8 +38,8 @@ final class GhosttySurfaceTelemetryBridgeTests: XCTestCase {
         let registry = GhosttyTerminalSurfaceRegistry()
         let surfaceHandle = GhosttySurfaceHandle(rawValue: 0x9913)
         let context = GhosttyTerminalSurfaceContext(
-            workbenchID: UUID(),
-            tileID: UUID(),
+            viewportID: UUID(),
+            surfaceID: UUID(),
             surfaceKey: "wb:main",
             sessionRef: SessionRef(target: .local, sessionName: "main")
         )

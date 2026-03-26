@@ -91,6 +91,12 @@ if requiresGhosttyRuntime {
 let xpcClient: AgtmuxDaemonXPCClient? = useXPCDaemonService ? AgtmuxDaemonXPCClient() : nil
 let daemonSupervisor = AgtmuxDaemonSupervisor()
 let enableBroadPolling = !isUITest || enableUITestPolling
+let enableLocalMetadataByDefault =
+    ProcessInfo.processInfo.environment["AGTMUX_ENABLE_LOCAL_METADATA"] == "1"
+    || UserDefaults.standard.bool(forKey: "EnableLocalMetadata")
+let uiTestBridgeRequested = UITestTmuxBridge.bridgeRequested(
+    environment: ProcessInfo.processInfo.environment
+)
 
 let interruptCleanupQueue = DispatchQueue(label: "local.agtmux.term.sigint-cleanup")
 signal(SIGINT, SIG_IGN)
@@ -195,33 +201,25 @@ if let xpcClient {
 }
 
 let viewModel: AppViewModel = MainActor.assumeIsolated {
-    let vm = AppViewModel(localClient: localMetadataClient)
+    let vm = AppViewModel(
+        localClient: localMetadataClient,
+        localMetadataProjectionMode: enableLocalMetadataByDefault ? .live : .inventoryOnly
+    )
     return vm
-}
-
-// 4. Create the Workbench V2 store for the normal cockpit path.
-let workbenchStoreV2: WorkbenchStoreV2 = MainActor.assumeIsolated {
-    do {
-        return try WorkbenchStoreV2(
-            env: ProcessInfo.processInfo.environment,
-            persistence: isUITest ? nil : .live()
-        )
-    } catch {
-        fatalError("WorkbenchStoreV2 init failed: \(error)")
-    }
 }
 
 let mainTerminalStore: MainTerminalStore = MainActor.assumeIsolated {
     MainTerminalStore()
 }
 
-let uiTestTmuxBridge: UITestTmuxBridge? = MainActor.assumeIsolated {
+let uiTestTmuxBridge: UITestTmuxBridge? = MainActor.assumeIsolated { () -> UITestTmuxBridge? in
+    guard uiTestBridgeRequested else { return nil }
     return UITestTmuxBridge(
         viewModel: viewModel,
         mainTerminalStore: mainTerminalStore,
-        workbenchStore: workbenchStoreV2,
         enableMetadataMode: {
             viewModel.enableUITestMetadataMode()
+            viewModel.enableLocalMetadataProjection()
             kickOffManagedDaemonBringUp()
             viewModel.startPolling()
         }
@@ -257,7 +255,6 @@ let cockpit = CockpitView()
     .environment(viewModel.runtimeStore)
     .environment(viewModel.healthStore)
     .environment(mainTerminalStore)
-    .environment(workbenchStoreV2)
     .environment(chromeState)
 
 let hostingView = NonDraggableHostingView(rootView: cockpit)
@@ -339,7 +336,11 @@ DispatchQueue.main.async {
                     await viewModel.performInitialSync()
                 }
             },
-            kickOffManagedDaemonBringUp: kickOffManagedDaemonBringUp,
+            kickOffManagedDaemonBringUp: {
+                if enableLocalMetadataByDefault {
+                    kickOffManagedDaemonBringUp()
+                }
+            },
             startPolling: {
                 viewModel.startPolling()
             }

@@ -13,7 +13,7 @@ import Darwin
 /// They test: sidebar population, filter logic, empty state, tab creation.
 ///
 /// ## Category B — Requires tmux binary
-/// These tests create real tmux sessions to test terminal tile creation.
+/// These tests create real tmux sessions to test main-terminal surface creation.
 /// They require tmux to be installed. Guarded by XCTSkip when tmux unavailable.
 ///
 /// ## Category C — Requires agtmux daemon + running sessions
@@ -41,8 +41,7 @@ final class AgtmuxTermUITests: XCTestCase {
     private static let allowLockedSessionSentinelPath = "/tmp/agtmux-uitest-allow-locked-session"
     private static let liveRunningScrollConfigPath = "/tmp/agtmux-live-ui-scroll-config.json"
     private static let appTmuxBridgeReadyCommand = "__agtmux_tmux_bridge_ready__"
-    private static let activeDocumentTileCommand = "__agtmux_dump_active_document_tile__"
-    private static let replaceFocusedTextCommand = "__agtmux_replace_focused_text__"
+    private static let sendTerminalKeyDownCommand = "__agtmux_send_terminal_key_down__"
 
     private var app: XCUIApplication!
     private var tmuxPath: String? = nil
@@ -60,12 +59,6 @@ final class AgtmuxTermUITests: XCTestCase {
 
     private func shellQuote(_ value: String) -> String {
         "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
-    }
-
-    private func skipLegacyWorkbenchUITest() throws {
-        throw XCTSkip(
-            "Legacy workbench UI is migration-only under the terminal-first mainline."
-        )
     }
 
     // MARK: - setUp / tearDown
@@ -223,7 +216,7 @@ final class AgtmuxTermUITests: XCTestCase {
         )
     }
 
-    /// T-E2E-002: Launch shows the single main terminal and no visible workbench chrome.
+    /// T-E2E-002: Launch shows the single main terminal and no legacy tab chrome.
     func testEmptyStateOnLaunch() {
         app.launchEnvironment["AGTMUX_JSON"] = #"{"version":1,"panes":[]}"#
         app.launchForUITest()
@@ -236,541 +229,9 @@ final class AgtmuxTermUITests: XCTestCase {
             app.descendants(matching: .any).matching(
                 NSPredicate(format: "identifier == %@", AccessibilityID.workspaceTabBar)
             ).firstMatch.exists,
-            "Visible workbench tab UI should not be exposed on terminal-first launch"
+            "Legacy tab UI should not be exposed on terminal-first launch"
         )
         XCTAssertTrue(mainTerminalNewShellButton().exists, "New Shell should be available on launch")
-    }
-
-    /// T-E2E-002c: The default cockpit path opens a direct real-session V2 tile
-    /// from the sidebar without creating any linked session.
-    func testDefaultSidebarOpenUsesWorkbenchV2RealSessionTerminalTile() throws {
-        try skipLegacyWorkbenchUITest()
-        let token = String(UUID().uuidString.prefix(8)).lowercased()
-        let sessionName = "agtmux-v2-real-\(token)"
-        let socket = "agtmux-v2-\(token)"
-        let control = try makeAppTmuxControlPaths(token: token)
-        let scenario = AppTmuxScenario(
-            sessionName: sessionName,
-            windowName: "v2-real",
-            paneCount: 1,
-            shellCommand: "/bin/sleep 600"
-        )
-
-        app.launchEnvironment.removeValue(forKey: "AGTMUX_JSON")
-        app.launchEnvironment["AGTMUX_UITEST_ENABLE_GHOSTTY_SURFACES"] = "1"
-        configureAppDrivenTmux(socketName: socket, control: control, scenario: scenario)
-        app.launchForUITest()
-
-        let bootstrap = try waitForAppTmuxBootstrapResult(control: control)
-        guard bootstrap.ok,
-              let bootstrapSession = bootstrap.sessionName,
-              bootstrapSession == sessionName,
-              let paneID = bootstrap.paneIDs.first else {
-            throw XCTSkip("App-driven tmux bootstrap failed for V2 real-session open test")
-        }
-
-        let row = paneRow(source: "local", sessionName: sessionName, paneID: paneID)
-        XCTAssertTrue(
-            row.waitForExistence(timeout: TestConstants.sidebarPopulateTimeout),
-            "Pane must appear in sidebar before V2 real-session open can be asserted"
-        )
-
-        let linkedBefore = try listLinkedSessionsViaApp(control: control)
-        XCTAssertTrue(linkedBefore.isEmpty, "V2 open should start without any linked session")
-
-        assertWorkspaceStartsEmpty()
-        XCTAssertTrue(
-            clickSidebarPaneRow(row),
-            "Pane row must still exist before default V2 open"
-        )
-        waitForWorkspaceToLeaveEmptyState()
-
-        let tile = workbenchV2TerminalTile(sessionName: sessionName)
-        XCTAssertTrue(
-            tile.waitForExistence(timeout: TestConstants.settleTimeout),
-            "Mainline V2 path should render a real-session terminal tile"
-        )
-
-        let statusText = app.descendants(matching: .any).matching(
-            NSPredicate(
-                format: "identifier BEGINSWITH %@ AND identifier ENDSWITH %@ AND label == %@",
-                AccessibilityID.workspaceTilePrefix,
-                ".status",
-                "Direct attach: local session \(sessionName)"
-            )
-        ).firstMatch
-        XCTAssertTrue(
-            statusText.waitForExistence(timeout: TestConstants.settleTimeout),
-            "V2 real-session tile must surface direct-attach status text"
-        )
-
-        let linkedAfter = try listLinkedSessionsViaApp(control: control)
-        XCTAssertEqual(
-            linkedAfter,
-            linkedBefore,
-            "V2 direct attach must not create any linked session"
-        )
-
-        let loadingOverlay = app.descendants(matching: .any).matching(
-            NSPredicate(
-                format: "identifier == %@",
-                AccessibilityID.workspaceLoadingPrefix +
-                AccessibilityID.paneKey(source: "local", sessionName: sessionName, paneID: paneID)
-            )
-        ).firstMatch
-        XCTAssertFalse(
-            loadingOverlay.exists,
-            "V2 direct attach must not enter the V1 linked-session loading overlay path"
-        )
-    }
-
-    /// T-E2E-002d: Reopening the same session on the default cockpit path must
-    /// reveal the existing V2 tile rather than creating a second visible tile.
-    func testDefaultDuplicateSessionOpenRevealsExistingWorkbenchV2Tile() throws {
-        try skipLegacyWorkbenchUITest()
-        let token = String(UUID().uuidString.prefix(8)).lowercased()
-        let sessionName = "agtmux-v2-dup-\(token)"
-        let socket = "agtmux-v2-\(token)"
-        let control = try makeAppTmuxControlPaths(token: token)
-        let scenario = AppTmuxScenario(
-            sessionName: sessionName,
-            windowName: "v2-dup",
-            paneCount: 1,
-            shellCommand: "/bin/sleep 600"
-        )
-
-        app.launchEnvironment.removeValue(forKey: "AGTMUX_JSON")
-        configureAppDrivenTmux(socketName: socket, control: control, scenario: scenario)
-        app.launchForUITest()
-
-        let bootstrap = try waitForAppTmuxBootstrapResult(control: control)
-        guard bootstrap.ok,
-              let bootstrapSession = bootstrap.sessionName,
-              bootstrapSession == sessionName,
-              let paneID = bootstrap.paneIDs.first else {
-            throw XCTSkip("App-driven tmux bootstrap failed for V2 duplicate-open test")
-        }
-
-        let row = paneRow(source: "local", sessionName: sessionName, paneID: paneID)
-        XCTAssertTrue(
-            row.waitForExistence(timeout: TestConstants.sidebarPopulateTimeout),
-            "Pane must exist before duplicate-open proof can run"
-        )
-
-        let linkedBefore = try listLinkedSessionsViaApp(control: control)
-        XCTAssertTrue(linkedBefore.isEmpty, "V2 duplicate-open test should start without linked sessions")
-
-        XCTAssertTrue(
-            clickSidebarPaneRow(row),
-            "Pane row must still exist before default V2 open"
-        )
-        let tile = workbenchV2TerminalTile(sessionName: sessionName)
-        XCTAssertTrue(
-            tile.waitForExistence(timeout: TestConstants.settleTimeout),
-            "Initial V2 open must render its terminal tile"
-        )
-
-        guard clickSidebarPaneRow(row) else {
-            throw XCTSkip("Pane row disappeared before duplicate-open click; app-driven inventory did not stabilize in time")
-        }
-
-        let tileQuery = app.descendants(matching: .any).matching(
-            NSPredicate(
-                format: "identifier BEGINSWITH %@ AND label == %@",
-                AccessibilityID.workspaceTilePrefix,
-                sessionName
-            )
-        )
-        let duplicatePredicate = NSPredicate(format: "count > 1")
-        let noDuplicateExpectation = XCTNSPredicateExpectation(
-            predicate: duplicatePredicate,
-            object: tileQuery
-        )
-        noDuplicateExpectation.isInverted = true
-        wait(for: [noDuplicateExpectation], timeout: TestConstants.settleTimeout)
-
-        XCTAssertEqual(
-            tileQuery.count,
-            1,
-            "Duplicate V2 session open must reveal the existing tile instead of creating another one"
-        )
-
-        let linkedAfter = try listLinkedSessionsViaApp(control: control)
-        XCTAssertEqual(
-            linkedAfter,
-            linkedBefore,
-            "Duplicate V2 open must not create any linked session"
-        )
-
-        let loadingOverlay = app.descendants(matching: .any).matching(
-            NSPredicate(
-                format: "identifier == %@",
-                AccessibilityID.workspaceLoadingPrefix +
-                AccessibilityID.paneKey(source: "local", sessionName: sessionName, paneID: paneID)
-            )
-        ).firstMatch
-        XCTAssertFalse(
-            loadingOverlay.exists,
-            "Duplicate V2 open must stay off the V1 loading overlay path"
-        )
-    }
-
-    /// T-E2E-002e: Restored broken V2 terminal tiles must remain visible with
-    /// explicit recovery actions instead of silently disappearing.
-    func testV2RestoredBrokenTerminalTileShowsPlaceholderAndCanBeRemoved() throws {
-        try skipLegacyWorkbenchUITest()
-        let sessionName = "agtmux-v2-restore-missing"
-        let terminalTile = WorkbenchTile(
-            kind: .terminal(
-                sessionRef: SessionRef(
-                    target: .local,
-                    sessionName: sessionName,
-                    lastSeenRepoRoot: "/tmp/restore-repo"
-                )
-            )
-        )
-        let fixtureWorkbench = Workbench(
-            title: "Restore",
-            root: .tile(terminalTile),
-            focusedTileID: terminalTile.id
-        )
-
-        app.launchEnvironment["AGTMUX_WORKBENCH_V2_FIXTURE_JSON"] = try workbenchFixtureJSON([fixtureWorkbench])
-        app.launchEnvironment["AGTMUX_JSON"] = #"{"version":1,"panes":[]}"#
-        app.launchForUITest()
-
-        let tile = workbenchV2TerminalTile(sessionName: sessionName)
-        XCTAssertTrue(
-            tile.waitForExistence(timeout: TestConstants.settleTimeout),
-            "Persisted V2 terminal tile should remain visible while broken"
-        )
-
-        let statusText = app.descendants(matching: .any).matching(
-            NSPredicate(
-                format: "identifier BEGINSWITH %@ AND identifier ENDSWITH %@ AND label == %@",
-                AccessibilityID.workspaceTilePrefix,
-                ".status",
-                "Session missing: tmux session '\(sessionName)' no longer exists."
-            )
-        ).firstMatch
-        XCTAssertTrue(
-            statusText.waitForExistence(timeout: TestConstants.settleTimeout),
-            "Broken restored tile must surface the explicit Session missing placeholder"
-        )
-
-        let retryButton = app.buttons["Retry"]
-        let rebindButton = app.buttons["Rebind"]
-        let removeButton = app.buttons["Remove Tile"]
-        XCTAssertTrue(retryButton.waitForExistence(timeout: TestConstants.settleTimeout))
-        XCTAssertTrue(rebindButton.waitForExistence(timeout: TestConstants.settleTimeout))
-        XCTAssertTrue(removeButton.waitForExistence(timeout: TestConstants.settleTimeout))
-
-        removeButton.click()
-
-        let tileRemoved = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "exists == false"),
-            object: tile
-        )
-        wait(for: [tileRemoved], timeout: TestConstants.settleTimeout)
-    }
-
-    /// T-E2E-002f: A healthy restored V2 terminal tile must wait for inventory
-    /// truth and settle into direct-attach state, not a false broken placeholder.
-    func testV2RestoredHealthyTerminalTileDoesNotSurfaceBrokenPlaceholder() throws {
-        try skipLegacyWorkbenchUITest()
-        let paneID = "%55"
-        let sessionName = "agtmux-v2-restore-healthy"
-        let terminalTile = WorkbenchTile(
-            kind: .terminal(
-                sessionRef: SessionRef(
-                    target: .local,
-                    sessionName: sessionName,
-                    lastSeenRepoRoot: "/tmp/restore-repo"
-                )
-            )
-        )
-        let fixtureWorkbench = Workbench(
-            title: "Restore",
-            root: .tile(terminalTile),
-            focusedTileID: terminalTile.id
-        )
-        let json = """
-        {"version":1,"panes":[
-          {"pane_id":"\(paneID)","session_name":"\(sessionName)","window_id":"@1",
-           "window_index":1,"window_name":"restore","activity_state":"idle",
-           "presence":"unmanaged","evidence_mode":"none",
-           "current_cmd":"zsh","updated_at":"2026-03-07T09:00:00Z","age_secs":0}
-        ]}
-        """
-
-        app.launchEnvironment["AGTMUX_WORKBENCH_V2_FIXTURE_JSON"] = try workbenchFixtureJSON([fixtureWorkbench])
-        app.launchEnvironment["AGTMUX_JSON"] = json
-        app.launchForUITest()
-
-        let tile = workbenchV2TerminalTile(sessionName: sessionName)
-        XCTAssertTrue(
-            tile.waitForExistence(timeout: TestConstants.settleTimeout),
-            "Persisted V2 terminal tile should restore into view"
-        )
-
-        let directAttachStatus = app.descendants(matching: .any).matching(
-            NSPredicate(
-                format: "identifier BEGINSWITH %@ AND identifier ENDSWITH %@ AND label == %@",
-                AccessibilityID.workspaceTilePrefix,
-                ".status",
-                "Direct attach: local session \(sessionName)"
-            )
-        ).firstMatch
-        XCTAssertTrue(
-            directAttachStatus.waitForExistence(timeout: TestConstants.settleTimeout),
-            "Healthy restored terminal tile must settle into direct-attach state"
-        )
-
-        let brokenStatus = app.descendants(matching: .any).matching(
-            NSPredicate(
-                format: "identifier BEGINSWITH %@ AND identifier ENDSWITH %@ AND label == %@",
-                AccessibilityID.workspaceTilePrefix,
-                ".status",
-                "Session missing: tmux session '\(sessionName)' no longer exists."
-            )
-        ).firstMatch
-        XCTAssertFalse(
-            brokenStatus.exists,
-            "Healthy restored terminal tile must not expose a false Session missing placeholder"
-        )
-    }
-
-    func testV2RestoredBrokenTerminalTileCanRebindToLiveSession() throws {
-        try skipLegacyWorkbenchUITest()
-        let missingSession = "agtmux-v2-restore-missing-rebind"
-        let reboundSession = "agtmux-v2-restore-rebound"
-        let terminalTile = WorkbenchTile(
-            kind: .terminal(
-                sessionRef: SessionRef(
-                    target: .local,
-                    sessionName: missingSession,
-                    lastSeenRepoRoot: "/tmp/restore-repo"
-                )
-            )
-        )
-        let fixtureWorkbench = Workbench(
-            title: "Restore",
-            root: .tile(terminalTile),
-            focusedTileID: terminalTile.id
-        )
-        let json = """
-        {"version":1,"panes":[
-          {"pane_id":"%56","session_name":"\(reboundSession)","window_id":"@1",
-           "window_index":1,"window_name":"restore","activity_state":"idle",
-           "presence":"unmanaged","evidence_mode":"none",
-           "current_cmd":"zsh","updated_at":"2026-03-07T09:00:00Z","age_secs":0}
-        ]}
-        """
-
-        app.launchEnvironment["AGTMUX_WORKBENCH_V2_FIXTURE_JSON"] = try workbenchFixtureJSON([fixtureWorkbench])
-        app.launchEnvironment["AGTMUX_JSON"] = json
-        app.launchForUITest()
-
-        let tile = workbenchV2TerminalTile(sessionName: missingSession)
-        XCTAssertTrue(tile.waitForExistence(timeout: TestConstants.settleTimeout))
-
-        let brokenStatus = app.descendants(matching: .any).matching(
-            NSPredicate(
-                format: "identifier BEGINSWITH %@ AND identifier ENDSWITH %@ AND label == %@",
-                AccessibilityID.workspaceTilePrefix,
-                ".status",
-                "Session missing: tmux session '\(missingSession)' no longer exists."
-            )
-        ).firstMatch
-        XCTAssertTrue(brokenStatus.waitForExistence(timeout: TestConstants.settleTimeout))
-
-        let rebindButton = app.buttons["Rebind"]
-        XCTAssertTrue(rebindButton.waitForExistence(timeout: TestConstants.settleTimeout))
-        rebindButton.click()
-
-        let sheetRebindButton = app.buttons[AccessibilityID.workspaceTerminalRebindApply]
-        XCTAssertTrue(sheetRebindButton.waitForExistence(timeout: TestConstants.settleTimeout))
-        sheetRebindButton.click()
-
-        let reboundTile = workbenchV2TerminalTile(sessionName: reboundSession)
-        XCTAssertTrue(
-            reboundTile.waitForExistence(timeout: TestConstants.settleTimeout),
-            "Terminal rebind should retarget the tile to the selected live session"
-        )
-
-        let directAttachStatus = app.descendants(matching: .any).matching(
-            NSPredicate(
-                format: "identifier BEGINSWITH %@ AND identifier ENDSWITH %@ AND label == %@",
-                AccessibilityID.workspaceTilePrefix,
-                ".status",
-                "Direct attach: local session \(reboundSession)"
-            )
-        ).firstMatch
-        XCTAssertTrue(
-            directAttachStatus.waitForExistence(timeout: TestConstants.settleTimeout),
-            "Terminal rebind should settle into direct attach for the selected session"
-        )
-    }
-
-    func testV2RestoredBrokenDocumentTileRetryCanRecover() throws {
-        try skipLegacyWorkbenchUITest()
-        let tempDirectory = try makeTemporaryDirectory()
-        let documentPath = tempDirectory.appendingPathComponent("restore-retry.md").path
-        let expectedText = "Recovered by retry"
-        let documentTile = WorkbenchTile(
-            kind: .document(ref: DocumentRef(target: .local, path: documentPath)),
-            pinned: true
-        )
-        let fixtureWorkbench = Workbench(
-            title: "Docs",
-            root: .tile(documentTile),
-            focusedTileID: documentTile.id
-        )
-
-        app.launchEnvironment["AGTMUX_WORKBENCH_V2_FIXTURE_JSON"] = try workbenchFixtureJSON([fixtureWorkbench])
-        app.launchEnvironment["AGTMUX_JSON"] = #"{"version":1,"panes":[]}"#
-        app.launchForUITest()
-
-        let retryButton = app.buttons["Retry"]
-        let rebindButton = app.buttons["Rebind"]
-        let removeButton = app.buttons["Remove Tile"]
-        let issueTitle = app.staticTexts["Path missing"]
-        XCTAssertTrue(issueTitle.waitForExistence(timeout: TestConstants.settleTimeout))
-        XCTAssertTrue(retryButton.waitForExistence(timeout: TestConstants.settleTimeout))
-        XCTAssertTrue(rebindButton.waitForExistence(timeout: TestConstants.settleTimeout))
-        XCTAssertTrue(removeButton.waitForExistence(timeout: TestConstants.settleTimeout))
-
-        try expectedText.write(toFile: documentPath, atomically: true, encoding: .utf8)
-        retryButton.click()
-
-        let recoveryExpectation = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "exists == false"),
-            object: retryButton
-        )
-        let issueClearedExpectation = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "exists == false"),
-            object: issueTitle
-        )
-        wait(
-            for: [recoveryExpectation, issueClearedExpectation],
-            timeout: TestConstants.settleTimeout
-        )
-        XCTAssertTrue(
-            !retryButton.exists,
-            "Retry recovery should leave the broken-placeholder action row"
-        )
-        XCTAssertFalse(
-            issueTitle.exists,
-            "Retry recovery should clear the broken-placeholder issue title"
-        )
-    }
-
-    func testV2RestoredBrokenDocumentTileCanRebindToExistingPath() throws {
-        try skipLegacyWorkbenchUITest()
-        let tempDirectory = try makeTemporaryDirectory()
-        let missingPath = tempDirectory.appendingPathComponent("missing.md").path
-        let reboundPath = tempDirectory.appendingPathComponent("rebound.md").path
-        let expectedText = "Recovered by rebind"
-        try expectedText.write(toFile: reboundPath, atomically: true, encoding: .utf8)
-
-        let documentTile = WorkbenchTile(
-            kind: .document(ref: DocumentRef(target: .local, path: missingPath)),
-            pinned: true
-        )
-        let fixtureWorkbench = Workbench(
-            title: "Docs",
-            root: .tile(documentTile),
-            focusedTileID: documentTile.id
-        )
-        let control = try makeAppTmuxControlPaths(token: "doc-\(String(UUID().uuidString.prefix(8)).lowercased())")
-
-        app.launchEnvironment["AGTMUX_WORKBENCH_V2_FIXTURE_JSON"] = try workbenchFixtureJSON([fixtureWorkbench])
-        app.launchEnvironment["AGTMUX_JSON"] = #"{"version":1,"panes":[]}"#
-        app.launchEnvironment["AGTMUX_UITEST_TMUX_COMMAND_PATH"] = control.commandPath
-        app.launchEnvironment["AGTMUX_UITEST_TMUX_COMMAND_RESULT_PATH"] = control.commandResultPath
-        app.launchForUITest()
-        try waitForAppTmuxBridgeReady(control: control)
-
-        let rebindButton = app.buttons["Rebind"]
-        let issueTitle = app.staticTexts["Path missing"]
-        XCTAssertTrue(issueTitle.waitForExistence(timeout: TestConstants.settleTimeout))
-        XCTAssertTrue(rebindButton.waitForExistence(timeout: TestConstants.settleTimeout))
-        rebindButton.click()
-
-        let pathField = app.textFields[AccessibilityID.workspaceDocumentRebindPath]
-        XCTAssertTrue(pathField.waitForExistence(timeout: TestConstants.settleTimeout))
-        pathField.click()
-        try replaceFocusedText(reboundPath, control: control)
-
-        let applyButton = app.buttons[AccessibilityID.workspaceDocumentRebindApply]
-        XCTAssertTrue(applyButton.waitForExistence(timeout: TestConstants.settleTimeout))
-        applyButton.click()
-
-        let activeDocumentTile = try fetchActiveDocumentTileSnapshot(control: control)
-        XCTAssertEqual(
-            activeDocumentTile.path,
-            reboundPath,
-            "Document rebind should update the focused document tile ref in store"
-        )
-
-        let recoveryExpectation = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "exists == false"),
-            object: rebindButton
-        )
-        let issueClearedExpectation = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "exists == false"),
-            object: issueTitle
-        )
-        wait(
-            for: [recoveryExpectation, issueClearedExpectation],
-            timeout: TestConstants.settleTimeout
-        )
-        XCTAssertFalse(
-            rebindButton.exists,
-            "Successful document rebind should leave the broken-placeholder action row"
-        )
-        XCTAssertFalse(
-            issueTitle.exists,
-            "Successful document rebind should clear the broken document placeholder"
-        )
-    }
-
-    func testV2RestoredBrokenDocumentTileCanBeRemoved() throws {
-        try skipLegacyWorkbenchUITest()
-        let tempDirectory = try makeTemporaryDirectory()
-        let missingPath = tempDirectory.appendingPathComponent("remove.md").path
-        let documentTile = WorkbenchTile(
-            kind: .document(ref: DocumentRef(target: .local, path: missingPath)),
-            pinned: true
-        )
-        let fixtureWorkbench = Workbench(
-            title: "Docs",
-            root: .tile(documentTile),
-            focusedTileID: documentTile.id
-        )
-
-        app.launchEnvironment["AGTMUX_WORKBENCH_V2_FIXTURE_JSON"] = try workbenchFixtureJSON([fixtureWorkbench])
-        app.launchEnvironment["AGTMUX_JSON"] = #"{"version":1,"panes":[]}"#
-        app.launchForUITest()
-
-        let removeButton = app.buttons["Remove Tile"]
-        let issueTitle = app.staticTexts["Path missing"]
-        XCTAssertTrue(issueTitle.waitForExistence(timeout: TestConstants.settleTimeout))
-        XCTAssertTrue(removeButton.waitForExistence(timeout: TestConstants.settleTimeout))
-        removeButton.click()
-
-        let removalExpectation = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "exists == false"),
-            object: removeButton
-        )
-        let issueClearedExpectation = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "exists == false"),
-            object: issueTitle
-        )
-        wait(
-            for: [removalExpectation, issueClearedExpectation],
-            timeout: TestConstants.settleTimeout
-        )
     }
 
     /// T-E2E-002b: Selecting a pane updates the main terminal status without surfacing tab chrome.
@@ -814,7 +275,7 @@ final class AgtmuxTermUITests: XCTestCase {
             app.descendants(matching: .any).matching(
                 NSPredicate(format: "identifier == %@", AccessibilityID.workspaceTabBar)
             ).firstMatch.exists,
-            "Visible workbench tab bar should stay absent after pane selection"
+            "Legacy tab bar should stay absent after pane selection"
         )
     }
 
@@ -1717,7 +1178,7 @@ final class AgtmuxTermUITests: XCTestCase {
             "Session-row selection must highlight the session's active pane in the sidebar"
         )
 
-        let snapshot = waitForAppWorkbenchTerminalTarget(
+        let snapshot = waitForAppMainTerminalTarget(
             control: control,
             sessionName: session,
             windowID: windowID,
@@ -1761,9 +1222,9 @@ final class AgtmuxTermUITests: XCTestCase {
         )
     }
 
-    /// T-E2E-009g: pane-row selection must open the containing window on initial attach
-    /// and focus that window's active pane instead of the clicked inactive pane.
-    func testPaneSelectionTargetsContainingWindowActivePaneOnInitialAttach() throws {
+    /// T-E2E-009g: pane-row selection must open directly to the clicked pane on
+    /// initial attach, even when that pane starts inactive.
+    func testPaneSelectionTargetsClickedPaneOnInitialAttach() throws {
         let token = String(UUID().uuidString.prefix(8)).lowercased()
         let session = "agtmux-e2e-pane-open-\(token)"
         let socket = "agtmux-e2e-\(token)"
@@ -1836,7 +1297,7 @@ final class AgtmuxTermUITests: XCTestCase {
         )
         XCTAssertTrue(
             activePaneOutput.contains("\(secondWindowInactivePaneID)|0"),
-            "tmux must keep the clicked pane inactive so the test proves window-active targeting"
+            "tmux must keep the clicked pane inactive so the test proves direct inactive-pane targeting"
         )
 
         try waitForAppSidebarPanePresentation(
@@ -1849,57 +1310,57 @@ final class AgtmuxTermUITests: XCTestCase {
             "Inactive pane row must be clickable before initial attach proof"
         )
         XCTAssertTrue(
-            selectedPaneMarker(sessionName: session, paneID: secondWindowActivePaneID)
+            selectedPaneMarker(sessionName: session, paneID: secondWindowInactivePaneID)
                 .waitForExistence(timeout: TestConstants.sidebarPopulateTimeout),
-            "Pane-row selection must highlight the selected window's active pane in the sidebar"
+            "Pane-row selection must highlight the clicked pane in the sidebar"
         )
 
-        let snapshot = waitForAppWorkbenchTerminalTarget(
+        let snapshot = waitForAppMainTerminalTarget(
             control: control,
             sessionName: session,
             windowID: secondWindowSplitSnapshot.windowID,
-            paneID: secondWindowActivePaneID,
+            paneID: secondWindowInactivePaneID,
             selectedPaneInventoryID: paneInventoryID(
                 source: "local",
                 sessionName: session,
-                paneID: secondWindowActivePaneID
+                paneID: secondWindowInactivePaneID
             )
         )
         XCTAssertEqual(snapshot.desiredWindowID, secondWindowSplitSnapshot.windowID)
-        XCTAssertEqual(snapshot.desiredPaneID, secondWindowActivePaneID)
+        XCTAssertEqual(snapshot.desiredPaneID, secondWindowInactivePaneID)
         XCTAssertTrue(
             attachCommandTargetsPane(
                 snapshot.attachCommand,
                 sessionName: session,
                 windowID: secondWindowSplitSnapshot.windowID,
-                paneID: secondWindowActivePaneID
+                paneID: secondWindowInactivePaneID
             ),
-            "Initial pane-row attach command must preselect the selected window and its active pane"
+            "Initial pane-row attach command must preselect the clicked pane"
         )
         XCTAssertTrue(
             attachCommandTargetsPane(
                 snapshot.renderedAttachCommand,
                 sessionName: session,
                 windowID: secondWindowSplitSnapshot.windowID,
-                paneID: secondWindowActivePaneID
+                paneID: secondWindowInactivePaneID
             ),
-            "Rendered main-terminal surface must keep the window-active pane attach command"
+            "Rendered main-terminal surface must keep the clicked-pane attach command"
         )
         waitForRenderedClientTmuxTarget(
             control: control,
             clientTTY: snapshot.renderedClientTTY,
             sessionName: session,
             windowID: secondWindowSplitSnapshot.windowID,
-            paneID: secondWindowActivePaneID
+            paneID: secondWindowInactivePaneID
         )
 
         let viewport = try dumpAppTerminalViewportText(
             control: control,
-            tileID: snapshot.tileID
+            surfaceID: snapshot.surfaceID
         )
         XCTAssertTrue(
-            viewport.text.contains(activePaneToken),
-            "Initial pane-row attach must render content from the selected window"
+            viewport.text.contains(inactivePaneToken),
+            "Initial pane-row attach must render content from the clicked pane"
         )
     }
 
@@ -1907,22 +1368,10 @@ final class AgtmuxTermUITests: XCTestCase {
     /// tmux session name contains spaces. This guards the normal local `vm agtmux-term`
     /// style data path that the existing synthetic session names did not cover.
     func testSessionSelectionTargetsActivePaneOnInitialAttachForSessionNameWithSpaces() throws {
-        try assertSessionSelectionTargetsActivePaneOnInitialAttachForSessionNameWithSpaces(
-            hostMode: "legacy"
-        )
+        try assertSessionSelectionTargetsActivePaneOnInitialAttachForSessionNameWithSpaces()
     }
 
-    /// T-E2E-009i: the spaced-session initial attach proof must also hold on the
-    /// installed-app `next` host path so legacy-only UI launches do not mask regressions.
-    func testSessionSelectionTargetsActivePaneOnInitialAttachForSessionNameWithSpacesInNextHostMode() throws {
-        try assertSessionSelectionTargetsActivePaneOnInitialAttachForSessionNameWithSpaces(
-            hostMode: "next"
-        )
-    }
-
-    private func assertSessionSelectionTargetsActivePaneOnInitialAttachForSessionNameWithSpaces(
-        hostMode: String
-    ) throws {
+    private func assertSessionSelectionTargetsActivePaneOnInitialAttachForSessionNameWithSpaces() throws {
         let token = String(UUID().uuidString.prefix(8)).lowercased()
         let session = "agtmux e2e session \(token)"
         let socket = "agtmux-e2e-\(token)"
@@ -1935,7 +1384,6 @@ final class AgtmuxTermUITests: XCTestCase {
         )
 
         app.launchEnvironment.removeValue(forKey: "AGTMUX_JSON")
-        app.launchEnvironment["AGTMUX_TERMINAL_HOST_MODE"] = hostMode
         configureAppDrivenTmux(socketName: socket, control: control, scenario: scenario)
         app.launchForUITest()
 
@@ -1999,7 +1447,7 @@ final class AgtmuxTermUITests: XCTestCase {
             "Spaced session-row selection must highlight the session's active pane in the sidebar"
         )
 
-        let snapshot = waitForAppWorkbenchTerminalTarget(
+        let snapshot = waitForAppMainTerminalTarget(
             control: control,
             sessionName: session,
             windowID: windowID,
@@ -2009,11 +1457,6 @@ final class AgtmuxTermUITests: XCTestCase {
                 sessionName: session,
                 paneID: firstPaneID
             )
-        )
-        XCTAssertEqual(
-            snapshot.terminalHostMode,
-            hostMode,
-            "Spaced session-row attach must be verified on the requested terminal host mode"
         )
         XCTAssertTrue(
             attachCommandTargetsPane(
@@ -2043,7 +1486,7 @@ final class AgtmuxTermUITests: XCTestCase {
 
         let viewport = try dumpAppTerminalViewportText(
             control: control,
-            tileID: snapshot.tileID
+            surfaceID: snapshot.surfaceID
         )
         XCTAssertTrue(
             viewport.text.contains(activePaneToken),
@@ -2051,9 +1494,9 @@ final class AgtmuxTermUITests: XCTestCase {
         )
     }
 
-    /// T-E2E-010: same-session pane selection must retarget the existing V2 tile
-    /// to the clicked pane's window while focusing that window's active pane,
-    /// without creating linked sessions or recreating the surface.
+    /// T-E2E-010: same-session pane selection must retarget the existing surface
+    /// directly to the clicked pane without creating linked sessions or recreating
+    /// the surface.
     func testPaneSelectionWithMockDaemonAndRealTmux() throws {
         let token = String(UUID().uuidString.prefix(8)).lowercased()
         let session = "agtmux-e2e-retarget-\(token)"
@@ -2145,7 +1588,7 @@ final class AgtmuxTermUITests: XCTestCase {
                 .waitForExistence(timeout: TestConstants.sidebarPopulateTimeout),
             "Initial pane click must update sidebar selection state"
         )
-        let firstSnapshot = waitForAppWorkbenchTerminalTarget(
+        let firstSnapshot = waitForAppMainTerminalTarget(
             control: control,
             sessionName: session,
             windowID: firstWindowID,
@@ -2157,7 +1600,7 @@ final class AgtmuxTermUITests: XCTestCase {
             )
         )
 
-        waitForSingleWorkbenchV2TerminalTile(sessionName: session)
+        waitForSingleMainTerminalSurface(sessionName: session)
         waitForRenderedClientTmuxTarget(
             control: control,
             clientTTY: firstSnapshot.renderedClientTTY,
@@ -2176,19 +1619,19 @@ final class AgtmuxTermUITests: XCTestCase {
             "Inactive pane row in the target window must be clickable before retarget proof"
         )
         XCTAssertTrue(
-            selectedPaneMarker(sessionName: session, paneID: secondWindowActivePaneID)
+            selectedPaneMarker(sessionName: session, paneID: secondWindowInactivePaneID)
                 .waitForExistence(timeout: TestConstants.sidebarPopulateTimeout),
-            "Pane-row click must select the clicked pane's window and highlight that window's active pane"
+            "Pane-row click must highlight the clicked pane"
         )
-        let secondSnapshot = waitForAppWorkbenchTerminalTarget(
+        let secondSnapshot = waitForAppMainTerminalTarget(
             control: control,
             sessionName: session,
             windowID: secondWindowSplitSnapshot.windowID,
-            paneID: secondWindowActivePaneID,
+            paneID: secondWindowInactivePaneID,
             selectedPaneInventoryID: paneInventoryID(
                 source: "local",
                 sessionName: session,
-                paneID: secondWindowActivePaneID
+                paneID: secondWindowInactivePaneID
             )
         )
         XCTAssertEqual(
@@ -2196,27 +1639,27 @@ final class AgtmuxTermUITests: XCTestCase {
             firstSnapshot.renderedSurfaceGeneration,
             "Same-session window retarget must preserve the rendered Ghostty surface"
         )
-        waitForSingleWorkbenchV2TerminalTile(sessionName: session)
+        waitForSingleMainTerminalSurface(sessionName: session)
         waitForRenderedClientTmuxTarget(
             control: control,
             clientTTY: secondSnapshot.renderedClientTTY,
             sessionName: session,
             windowID: secondWindowSplitSnapshot.windowID,
-            paneID: secondWindowActivePaneID
+            paneID: secondWindowInactivePaneID
         )
         XCTAssertEqual(
             secondSnapshot.desiredWindowID,
             secondWindowSplitSnapshot.windowID,
-            "Pane-row retarget must request the clicked pane's containing window"
+            "Pane-row retarget must keep the clicked pane's window"
         )
-        XCTAssertEqual(secondSnapshot.desiredPaneID, secondWindowActivePaneID)
+        XCTAssertEqual(secondSnapshot.desiredPaneID, secondWindowInactivePaneID)
         let viewport = try dumpAppTerminalViewportText(
             control: control,
-            tileID: secondSnapshot.tileID
+            surfaceID: secondSnapshot.surfaceID
         )
         XCTAssertTrue(
-            viewport.text.contains("__agtmux_second_window_active_\(token)__"),
-            "Same-session window retarget must repaint the preserved surface with the destination window's active pane"
+            viewport.text.contains("__agtmux_second_window_inactive_\(token)__"),
+            "Same-session pane retarget must repaint the preserved surface with the clicked pane"
         )
 
         XCTAssertEqual(
@@ -2228,15 +1671,15 @@ final class AgtmuxTermUITests: XCTestCase {
         XCTAssertEqual(
             linkedAfter,
             linkedBefore,
-            "Window-active retarget must reuse the same real-session tile without linked sessions"
+            "Window-active retarget must reuse the same real-session surface without linked sessions"
         )
     }
 
-    /// T-E2E-014: live tmux pane changes must update sidebar selection on the single visible session tile
-    /// while preserving the same rendered Ghostty client.
-    func testTerminalPaneChangeUpdatesSidebarSelectionWithRealTmux() throws {
+    /// T-E2E-014: terminal-originated pane changes must keep the rendered Ghostty
+    /// surface alive and avoid surfacing a main-terminal diagnostic.
+    func testTerminalPaneChangePreservesSurfaceWithoutDiagnosticWithRealTmux() throws {
         guard let tmuxPath else {
-            throw XCTSkip("tmux not available for reverse-sync E2E")
+            throw XCTSkip("tmux not available for pane-switch E2E")
         }
         _ = tmuxPath
 
@@ -2264,7 +1707,7 @@ final class AgtmuxTermUITests: XCTestCase {
         guard bootstrap.ok,
               bootstrap.sessionName == session,
               let firstPaneID = bootstrap.paneIDs.first else {
-            throw XCTSkip("App-driven tmux bootstrap failed for reverse-sync test")
+            throw XCTSkip("App-driven tmux bootstrap failed for pane-switch test")
         }
 
         let paneIDsBeforeSplit = Set(bootstrap.paneIDs)
@@ -2280,7 +1723,7 @@ final class AgtmuxTermUITests: XCTestCase {
         )
         let paneIDsAfterSplit = Set(mainWindowSnapshot.paneIDs)
         guard let secondPaneID = paneIDsAfterSplit.subtracting(paneIDsBeforeSplit).first else {
-            throw XCTSkip("Could not resolve pane identity for reverse-sync split pane")
+            throw XCTSkip("Could not resolve pane identity for pane-switch split pane")
         }
         _ = try sendAppTmuxCommand(
             ["select-pane", "-t", firstPaneID],
@@ -2294,23 +1737,23 @@ final class AgtmuxTermUITests: XCTestCase {
         )
         XCTAssertTrue(
             activePaneOutput.contains("\(firstPaneID)|1"),
-            "Reverse-sync setup must keep the clicked pane active before the initial sidebar click"
+            "Pane-switch setup must keep the clicked pane active before the initial sidebar click"
         )
         XCTAssertTrue(
             activePaneOutput.contains("\(secondPaneID)|0"),
-            "Reverse-sync setup must keep the later terminal-originated pane inactive before the initial sidebar click"
+            "Pane-switch setup must keep the later terminal-originated pane inactive before the initial sidebar click"
         )
 
         XCTAssertTrue(
             clickSidebarPaneRow(source: "local", sessionName: session, paneID: firstPaneID),
-            "Initial pane must appear in sidebar before reverse-sync proof"
+            "Initial pane must appear in sidebar before pane-switch proof"
         )
         XCTAssertTrue(
             selectedPaneMarker(sessionName: session, paneID: firstPaneID)
                 .waitForExistence(timeout: TestConstants.sidebarPopulateTimeout),
             "Initial pane click must update sidebar selection state"
         )
-        let firstSnapshot = waitForAppWorkbenchTerminalTarget(
+        let firstSnapshot = waitForAppMainTerminalTarget(
             control: control,
             sessionName: session,
             windowID: mainWindowSnapshot.windowID,
@@ -2321,7 +1764,7 @@ final class AgtmuxTermUITests: XCTestCase {
                 paneID: firstPaneID
             )
         )
-        waitForSingleWorkbenchV2TerminalTile(sessionName: session)
+        waitForSingleMainTerminalSurface(sessionName: session)
         waitForRenderedClientTmuxTarget(
             control: control,
             clientTTY: firstSnapshot.renderedClientTTY,
@@ -2343,33 +1786,280 @@ final class AgtmuxTermUITests: XCTestCase {
             paneID: secondPaneID
         )
 
-        let secondSnapshot = waitForAppWorkbenchTerminalTarget(
-            control: control,
-            sessionName: session,
-            windowID: mainWindowSnapshot.windowID,
-            paneID: secondPaneID,
-            selectedPaneInventoryID: paneInventoryID(
-                source: "local",
-                sessionName: session,
-                paneID: secondPaneID
-            )
-        )
+        let secondSnapshot = try appMainTerminalTargetSnapshot(control: control)
         XCTAssertTrue(
-            selectedPaneMarker(sessionName: session, paneID: secondPaneID)
-                .waitForExistence(timeout: TestConstants.focusSyncLatencyBudget),
-            "Terminal-originated pane change must retarget sidebar selection to the active pane"
+            secondSnapshot.diagnosticCode.isEmpty,
+            "Terminal-originated pane change must not surface a main-terminal diagnostic"
         )
         XCTAssertEqual(
             secondSnapshot.renderedSurfaceGeneration,
             firstSnapshot.renderedSurfaceGeneration,
             "Terminal-originated pane change must preserve the rendered Ghostty surface"
         )
+        XCTAssertEqual(
+            secondSnapshot.renderedClientPaneID,
+            secondPaneID,
+            "Terminal-originated pane change must move the rendered client to the next tmux pane"
+        )
     }
 
-    /// T-E2E-015: metadata-enabled launch must still preserve same-session window retarget
-    /// and reverse-sync on a real rendered client. This guards the normal app path where
+    /// T-E2E-015: metadata-enabled launch must still preserve same-session pane retarget
+    /// on a real rendered client. This guards the normal app path where
     /// inventory and daemon polling are both active, instead of the inventory-only UITest mode.
-    func testMetadataEnabledPaneSelectionAndReverseSyncWithRealTmux() throws {
+    func testTerminalKeyInputRepaintsViewportWithoutPaneChange() throws {
+        let token = String(UUID().uuidString.prefix(8)).lowercased()
+        let session = "agtmux-e2e-key-\(token)"
+        let socket = "agtmux-key-\(token)"
+        let control = try makeAppTmuxControlPaths(token: token)
+        let readyToken = "__agtmux_key_ready_\(token)__"
+        let inputToken = "__agtmux_key__"
+        let driverScript = """
+        import sys, termios, tty
+        fd = sys.stdin.fileno()
+        old = termios.tcgetattr(fd)
+        tty.setraw(fd)
+        seq = 0
+        try:
+            print(\(String(reflecting: readyToken)), flush=True)
+            while True:
+                chunk = sys.stdin.buffer.read(1)
+                if not chunk:
+                    break
+                seq += 1
+                sys.stdout.write(f\"\(inputToken):{seq}:{chunk.hex()}\\n\")
+                sys.stdout.flush()
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        """
+        let driverCommand = "python3 -u -c " + shellQuote(driverScript)
+        let scenario = AppTmuxScenario(
+            sessionName: session,
+            windowName: "main",
+            paneCount: 1,
+            shellCommand: "/bin/sh -lc " + shellQuote(driverCommand)
+        )
+
+        configureAppDrivenTmux(socketName: socket, control: control, scenario: scenario)
+        app.launchForUITest()
+
+        let bootstrap = try waitForAppTmuxBootstrapResult(control: control)
+        guard bootstrap.ok,
+              bootstrap.sessionName == session,
+              let paneID = bootstrap.paneIDs.first,
+              let windowID = bootstrap.windowID else {
+            throw XCTSkip("App-driven tmux bootstrap failed for terminal key input E2E")
+        }
+
+        try openMainTerminalForPane(
+            control: control,
+            source: "local",
+            sessionName: session,
+            paneID: paneID
+        )
+
+        let snapshot = waitForAppMainTerminalTarget(
+            control: control,
+            sessionName: session,
+            windowID: windowID,
+            paneID: paneID,
+            selectedPaneInventoryID: paneInventoryID(
+                source: "local",
+                sessionName: session,
+                paneID: paneID
+            )
+        )
+        waitForRenderedClientTmuxTarget(
+            control: control,
+            clientTTY: snapshot.renderedClientTTY,
+            sessionName: session,
+            windowID: windowID,
+            paneID: paneID
+        )
+        _ = try waitForAppTerminalViewportTextContains(
+            control: control,
+            surfaceID: snapshot.surfaceID,
+            expected: readyToken,
+            failureContext: "initial raw key driver readiness"
+        )
+        try resetAppScrollTelemetry(control: control, surfaceID: snapshot.surfaceID)
+
+        _ = try sendAppTmuxCommand(
+            [Self.sendTerminalKeyDownCommand, snapshot.surfaceID, "a", "0"],
+            refreshInventory: false,
+            control: control,
+            timeout: 2.0
+        )
+
+        let viewport = try waitForAppTerminalViewportTextContains(
+            control: control,
+            surfaceID: snapshot.surfaceID,
+            expected: "\(inputToken):1:61",
+            failureContext: "terminal key input viewport repaint"
+        )
+        XCTAssertTrue(
+            viewport.text.contains("\(inputToken):1:61"),
+            "Terminal key input must repaint the current viewport without a pane/focus change"
+        )
+
+        let telemetry = try waitForAppTerminalPresentation(
+            control: control,
+            surfaceID: snapshot.surfaceID,
+            minImmediatePresentationDrawCount: 1,
+            minLayerPresentCount: 1,
+            failureContext: "terminal key input layer presentation"
+        )
+        XCTAssertGreaterThanOrEqual(
+            telemetry.scroll.immediatePresentationDrawCount,
+            1,
+            "Terminal key input must schedule an immediate presentation draw"
+        )
+        XCTAssertGreaterThanOrEqual(
+            telemetry.scroll.layerPresentCount,
+            1,
+            "Terminal key input must reach layer-present without a pane/focus change"
+        )
+    }
+
+    func testAXTerminalKeyInputRepaintsViewportWithoutPaneChange() throws {
+        let token = String(UUID().uuidString.prefix(8)).lowercased()
+        let session = "agtmux-e2e-ax-key-\(token)"
+        let socket = "agtmux-ax-key-\(token)"
+        let control = try makeAppTmuxControlPaths(token: token)
+        let readyToken = "__agtmux_ax_key_ready_\(token)__"
+        let inputToken = "__agtmux_ax_key__"
+        let driverScript = """
+        import sys, termios, tty
+        fd = sys.stdin.fileno()
+        old = termios.tcgetattr(fd)
+        tty.setraw(fd)
+        seq = 0
+        try:
+            print(\(String(reflecting: readyToken)), flush=True)
+            while True:
+                chunk = sys.stdin.buffer.read(1)
+                if not chunk:
+                    break
+                seq += 1
+                sys.stdout.write(f\"\(inputToken):{seq}:{chunk.hex()}\\n\")
+                sys.stdout.flush()
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        """
+        let driverCommand = "python3 -u -c " + shellQuote(driverScript)
+        let scenario = AppTmuxScenario(
+            sessionName: session,
+            windowName: "main",
+            paneCount: 1,
+            shellCommand: "/bin/sh -lc " + shellQuote(driverCommand)
+        )
+
+        configureAppDrivenTmux(socketName: socket, control: control, scenario: scenario)
+        app.launchForUITest()
+
+        let bootstrap = try waitForAppTmuxBootstrapResult(control: control)
+        guard bootstrap.ok,
+              bootstrap.sessionName == session,
+              let paneID = bootstrap.paneIDs.first,
+              let windowID = bootstrap.windowID else {
+            throw XCTSkip("App-driven tmux bootstrap failed for AX terminal key input E2E")
+        }
+
+        try openMainTerminalForPane(
+            control: control,
+            source: "local",
+            sessionName: session,
+            paneID: paneID
+        )
+
+        let snapshot = waitForAppMainTerminalTarget(
+            control: control,
+            sessionName: session,
+            windowID: windowID,
+            paneID: paneID,
+            selectedPaneInventoryID: paneInventoryID(
+                source: "local",
+                sessionName: session,
+                paneID: paneID
+            )
+        )
+        waitForRenderedClientTmuxTarget(
+            control: control,
+            clientTTY: snapshot.renderedClientTTY,
+            sessionName: session,
+            windowID: windowID,
+            paneID: paneID
+        )
+        _ = try waitForAppTerminalViewportTextContains(
+            control: control,
+            surfaceID: snapshot.surfaceID,
+            expected: readyToken,
+            failureContext: "initial AX raw key driver readiness"
+        )
+        try resetAppScrollTelemetry(control: control, surfaceID: snapshot.surfaceID)
+
+        do {
+            try sendAXKeyToTerminal(
+                control: control,
+                surfaceID: snapshot.surfaceID,
+                keyCode: 0
+            )
+        } catch {
+            throw XCTSkip(
+                "External AX sender could not drive the app under XCUITest automation mode: \(error.localizedDescription)"
+            )
+        }
+
+        let focusSnapshot = try dumpAppTerminalFocusState(
+            control: control,
+            surfaceID: snapshot.surfaceID
+        )
+        XCTAssertTrue(
+            focusSnapshot.appIsActive,
+            "AX key input proof requires the app to stay active"
+        )
+        XCTAssertTrue(
+            focusSnapshot.windowIsKey,
+            "AX key input proof requires the terminal window to stay key"
+        )
+        XCTAssertTrue(
+            focusSnapshot.terminalIsFirstResponder,
+            "AX key input proof requires the terminal to own first responder"
+        )
+
+        let viewport = try waitForAppTerminalViewportTextContains(
+            control: control,
+            surfaceID: snapshot.surfaceID,
+            expected: "\(inputToken):1:61",
+            failureContext: "AX terminal key input viewport repaint"
+        )
+        XCTAssertTrue(
+            viewport.text.contains("\(inputToken):1:61"),
+            "AX terminal key input must repaint the current viewport without a pane/focus change"
+        )
+
+        let telemetry = try waitForAppTerminalPresentation(
+            control: control,
+            surfaceID: snapshot.surfaceID,
+            minImmediatePresentationDrawCount: 1,
+            minLayerPresentCount: 1,
+            failureContext: "AX terminal key input layer presentation"
+        )
+        XCTAssertGreaterThanOrEqual(
+            telemetry.scroll.immediatePresentationDrawCount,
+            1,
+            "AX terminal key input must schedule an immediate presentation draw"
+        )
+        XCTAssertGreaterThanOrEqual(
+            telemetry.scroll.layerPresentCount,
+            1,
+            "AX terminal key input must reach layer-present without a pane/focus change"
+        )
+    }
+
+    /// T-E2E-015: metadata-enabled launch must still preserve same-session pane retarget
+    /// on a real rendered client. This guards the normal app path where
+    /// inventory and daemon polling are both active, instead of the inventory-only UITest mode.
+    func testMetadataEnabledPaneSelectionPreservesSurfaceWithRealTmux() throws {
         guard let agtmuxBin = resolveAgtmuxBinaryForUITest() else {
             throw XCTSkip("AGTMUX_BIN is required for metadata-enabled pane-sync E2E")
         }
@@ -2443,7 +2133,7 @@ final class AgtmuxTermUITests: XCTestCase {
                 .waitForExistence(timeout: TestConstants.sidebarPopulateTimeout),
             "Initial sidebar click must update canonical selection under metadata-enabled launch"
         )
-        let firstSnapshot = waitForAppWorkbenchTerminalTarget(
+        let firstSnapshot = waitForAppMainTerminalTarget(
             control: control,
             sessionName: session,
             windowID: firstWindowID,
@@ -2462,7 +2152,7 @@ final class AgtmuxTermUITests: XCTestCase {
             paneID: firstPaneID
         )
 
-        try resetAppScrollTelemetry(control: control, tileID: firstSnapshot.tileID)
+        try resetAppScrollTelemetry(control: control, surfaceID: firstSnapshot.surfaceID)
         try waitForAppSidebarPanePresentation(
             control: control,
             sessionName: session,
@@ -2473,62 +2163,11 @@ final class AgtmuxTermUITests: XCTestCase {
             "Inactive pane row in the destination window must be selectable under metadata-enabled launch"
         )
         XCTAssertTrue(
-            selectedPaneMarker(sessionName: session, paneID: secondWindowActivePaneID)
+            selectedPaneMarker(sessionName: session, paneID: secondWindowInactivePaneID)
                 .waitForExistence(timeout: TestConstants.sidebarPopulateTimeout),
-            "Metadata-enabled pane-row click must highlight the selected window's active pane"
+            "Metadata-enabled pane-row click must highlight the clicked pane"
         )
-        let secondSnapshot = waitForAppWorkbenchTerminalTarget(
-            control: control,
-            sessionName: session,
-            windowID: secondWindowSplitSnapshot.windowID,
-            paneID: secondWindowActivePaneID,
-            selectedPaneInventoryID: paneInventoryID(
-                source: "local",
-                sessionName: session,
-                paneID: secondWindowActivePaneID
-            )
-        )
-        waitForRenderedClientTmuxTarget(
-            control: control,
-            clientTTY: secondSnapshot.renderedClientTTY,
-            sessionName: session,
-            windowID: secondWindowSplitSnapshot.windowID,
-            paneID: secondWindowActivePaneID
-        )
-        XCTAssertEqual(
-            secondSnapshot.renderedSurfaceGeneration,
-            firstSnapshot.renderedSurfaceGeneration,
-            "Metadata-enabled same-session window retarget must preserve the rendered Ghostty surface"
-        )
-        let sidebarRetargetTelemetry = try dumpAppScrollTelemetry(
-            control: control,
-            tileID: firstSnapshot.tileID
-        )
-        XCTAssertEqual(
-            sidebarRetargetTelemetry.island.applyCommandCount,
-            0,
-            "Same-session window retarget must not reattach the Ghostty surface"
-        )
-        XCTAssertGreaterThanOrEqual(
-            sidebarRetargetTelemetry.island.paneRetargetRefreshCount,
-            1,
-            "Same-session window retarget must schedule a presentation refresh on the existing surface"
-        )
-
-        try resetAppScrollTelemetry(control: control, tileID: secondSnapshot.tileID)
-        _ = try sendAppTmuxCommand(
-            ["switch-client", "-c", secondSnapshot.renderedClientTTY, "-t", secondWindowInactivePaneID],
-            refreshInventory: false,
-            control: control
-        )
-        waitForRenderedClientTmuxTarget(
-            control: control,
-            clientTTY: secondSnapshot.renderedClientTTY,
-            sessionName: session,
-            windowID: secondWindowSplitSnapshot.windowID,
-            paneID: secondWindowInactivePaneID
-        )
-        let reverseSyncSnapshot = waitForAppWorkbenchTerminalTarget(
+        let secondSnapshot = waitForAppMainTerminalTarget(
             control: control,
             sessionName: session,
             windowID: secondWindowSplitSnapshot.windowID,
@@ -2539,29 +2178,31 @@ final class AgtmuxTermUITests: XCTestCase {
                 paneID: secondWindowInactivePaneID
             )
         )
-        XCTAssertTrue(
-            selectedPaneMarker(sessionName: session, paneID: secondWindowInactivePaneID)
-                .waitForExistence(timeout: TestConstants.focusSyncLatencyBudget),
-            "Rendered-client pane changes must update sidebar highlight under metadata-enabled launch"
-        )
-        XCTAssertEqual(
-            reverseSyncSnapshot.renderedSurfaceGeneration,
-            secondSnapshot.renderedSurfaceGeneration,
-            "Rendered-client reverse sync must keep the same Ghostty surface alive"
-        )
-        let reverseSyncTelemetry = try dumpAppScrollTelemetry(
+        waitForRenderedClientTmuxTarget(
             control: control,
-            tileID: secondSnapshot.tileID
+            clientTTY: secondSnapshot.renderedClientTTY,
+            sessionName: session,
+            windowID: secondWindowSplitSnapshot.windowID,
+            paneID: secondWindowInactivePaneID
         )
         XCTAssertEqual(
-            reverseSyncTelemetry.island.applyCommandCount,
+            secondSnapshot.renderedSurfaceGeneration,
+            firstSnapshot.renderedSurfaceGeneration,
+            "Metadata-enabled same-session pane retarget must preserve the rendered Ghostty surface"
+        )
+        let sidebarRetargetTelemetry = try dumpAppScrollTelemetry(
+            control: control,
+            surfaceID: firstSnapshot.surfaceID
+        )
+        XCTAssertEqual(
+            sidebarRetargetTelemetry.island.applyCommandCount,
             0,
-            "Same-window rendered-client reverse sync must not reattach the Ghostty surface"
+            "Same-session pane retarget must not reattach the Ghostty surface"
         )
         XCTAssertGreaterThanOrEqual(
-            reverseSyncTelemetry.island.paneRetargetRefreshCount,
+            sidebarRetargetTelemetry.island.paneRetargetRefreshCount,
             1,
-            "Same-window rendered-client reverse sync must schedule a presentation refresh on the existing surface"
+            "Same-session pane retarget must schedule a presentation refresh on the existing surface"
         )
     }
 
@@ -2746,9 +2387,9 @@ final class AgtmuxTermUITests: XCTestCase {
         )
     }
 
-    /// T-E2E-016: terminal-originated tmux session switches must rebind the visible
-    /// tile/session selection in place instead of leaving the sidebar on the stale session.
-    func testTerminalSessionSwitchUpdatesSidebarSelectionWithRealTmux() throws {
+    /// T-E2E-016: terminal-originated tmux session switches must keep the rendered
+    /// Ghostty surface alive and avoid surfacing a main-terminal diagnostic.
+    func testTerminalSessionSwitchPreservesSurfaceWithoutDiagnosticWithRealTmux() throws {
         let token = String(UUID().uuidString.prefix(8)).lowercased()
         let firstSession = "agtmux-e2e-session-a-\(token)"
         let secondSession = "agtmux-e2e-session-b-\(token)"
@@ -2769,14 +2410,14 @@ final class AgtmuxTermUITests: XCTestCase {
               bootstrap.sessionName == firstSession,
               let firstPaneID = bootstrap.paneIDs.first,
               let firstWindowID = bootstrap.windowID else {
-            throw XCTSkip("App-driven tmux bootstrap failed for session-switch reverse-sync test")
+            throw XCTSkip("App-driven tmux bootstrap failed for session-switch test")
         }
 
         XCTAssertTrue(
             clickSidebarPaneRow(source: "local", sessionName: firstSession, paneID: firstPaneID),
-            "Initial session pane must appear before session-switch reverse-sync proof"
+            "Initial session pane must appear before session-switch proof"
         )
-        let firstSnapshot = waitForAppWorkbenchTerminalTarget(
+        let firstSnapshot = waitForAppMainTerminalTarget(
             control: control,
             sessionName: firstSession,
             windowID: firstWindowID,
@@ -2828,28 +2469,20 @@ final class AgtmuxTermUITests: XCTestCase {
             paneID: secondPaneID
         )
 
-        XCTAssertTrue(
-            selectedPaneMarker(sessionName: secondSession, paneID: secondPaneID)
-                .waitForExistence(timeout: TestConstants.focusSyncLatencyBudget),
-            "Rendered-client session switch must move sidebar selection to the destination session"
-        )
-
-        let switchedSnapshot = waitForAppWorkbenchTerminalSessionSwitchTarget(
-            control: control,
-            sessionName: secondSession,
-            windowID: secondSessionSnapshot.windowID,
-            paneID: secondPaneID,
-            selectedPaneInventoryID: paneInventoryID(
-                source: "local",
-                sessionName: secondSession,
-                paneID: secondPaneID
-            ),
-            renderedClientTTY: firstSnapshot.renderedClientTTY
-        )
+        let switchedSnapshot = try appMainTerminalTargetSnapshot(control: control)
         XCTAssertEqual(
             switchedSnapshot.renderedSurfaceGeneration,
             firstSnapshot.renderedSurfaceGeneration,
             "Terminal-originated session switch must preserve the rendered Ghostty surface"
+        )
+        XCTAssertTrue(
+            switchedSnapshot.diagnosticCode.isEmpty,
+            "Terminal-originated session switch must not surface a main-terminal diagnostic"
+        )
+        XCTAssertEqual(
+            switchedSnapshot.renderedClientPaneID,
+            secondPaneID,
+            "Terminal-originated session switch must move the rendered client to the destination session"
         )
     }
 
@@ -2957,99 +2590,6 @@ final class AgtmuxTermUITests: XCTestCase {
         wait(for: [initialGone, newWindowGone], timeout: TestConstants.sidebarPopulateTimeout)
     }
 
-    // MARK: - Category B: Requires agtmux daemon + pane rows in sidebar (legacy)
-
-    /// T-E2E-003: A pane row appears in the sidebar after the daemon discovers the test session.
-    ///
-    /// NOTE: This test depends on the real agtmux daemon having managed panes.
-    /// Use T-E2E-007 (testSidebarShowsDaemonPanes) for isolated testing with mock daemon.
-    func testPaneAppearsInSidebar() throws {
-        app.launchForUITest()
-        let predicate = NSPredicate(format: "identifier BEGINSWITH %@", AccessibilityID.sidebarPanePrefix)
-        let paneRow = app.otherElements.matching(predicate).firstMatch
-        guard paneRow.waitForExistence(timeout: TestConstants.sidebarPopulateTimeout) else {
-            throw XCTSkip(
-                "No pane rows appeared — requires a running agtmux daemon with managed panes."
-            )
-        }
-    }
-
-    /// T-E2E-004: CRASH REGRESSION TEST.
-    func testPaneSelectionCreatesTerminalTile() throws {
-        try skipLegacyWorkbenchUITest()
-        app.launchForUITest()
-        let predicate = NSPredicate(format: "identifier BEGINSWITH %@", AccessibilityID.sidebarPanePrefix)
-        let paneRow = app.otherElements.matching(predicate).firstMatch
-        guard paneRow.waitForExistence(timeout: TestConstants.sidebarPopulateTimeout) else {
-            throw XCTSkip("No pane rows appeared — requires a running agtmux daemon.")
-        }
-
-        assertWorkspaceStartsEmpty()
-        paneRow.click()
-        waitForWorkspaceToLeaveEmptyState()
-
-        let tilePredicate = NSPredicate(format: "identifier BEGINSWITH %@", AccessibilityID.workspaceTilePrefix)
-        let tile = app.otherElements.matching(tilePredicate).firstMatch
-        XCTAssertTrue(
-            tile.waitForExistence(timeout: TestConstants.surfaceReadyTimeout),
-            "Terminal tile should appear after pane tap. App may have crashed."
-        )
-
-        XCTAssertEqual(
-            app.state, .runningForeground,
-            "App is no longer running after pane selection — crashed? State: \(app.state.rawValue)"
-        )
-
-        let readyPredicate = NSPredicate(format: "value == %@", "ready")
-        let readyExpectation = expectation(for: readyPredicate, evaluatedWith: tile)
-        wait(for: [readyExpectation], timeout: TestConstants.surfaceReadyTimeout)
-
-        Thread.sleep(forTimeInterval: 3.0)
-        XCTAssertEqual(
-            app.state, .runningForeground,
-            "App crashed after surface creation (deferred Metal renderer crash)"
-        )
-    }
-
-    /// T-E2E-006: SPLIT REGRESSION TEST.
-    func testSecondPaneSelectionReplacesNotSplits() throws {
-        try skipLegacyWorkbenchUITest()
-        app.launchForUITest()
-        let panePredicate = NSPredicate(format: "identifier BEGINSWITH %@", AccessibilityID.sidebarPanePrefix)
-        let allRows = app.otherElements.matching(panePredicate)
-
-        let twoRowsPredicate = NSPredicate(format: "count >= 2")
-        let twoRowsExp = expectation(for: twoRowsPredicate, evaluatedWith: allRows)
-        let result = XCTWaiter.wait(for: [twoRowsExp], timeout: TestConstants.sidebarPopulateTimeout)
-        guard result == .completed else {
-            throw XCTSkip("Need ≥2 pane rows in sidebar — ensure agtmux daemon is running with ≥2 panes")
-        }
-
-        assertWorkspaceStartsEmpty()
-        allRows.firstMatch.click()
-        waitForWorkspaceToLeaveEmptyState()
-
-        let tilePredicate = NSPredicate(format: "identifier BEGINSWITH %@", AccessibilityID.workspaceTilePrefix)
-        XCTAssertTrue(
-            app.otherElements.matching(tilePredicate).firstMatch.waitForExistence(timeout: TestConstants.surfaceReadyTimeout),
-            "Tile should appear after first pane selection"
-        )
-
-        allRows.element(boundBy: 1).click()
-        Thread.sleep(forTimeInterval: 1.0)
-
-        let tileCount = app.otherElements.matching(tilePredicate).count
-        XCTAssertEqual(
-            tileCount, 1,
-            "Second pane selection must replace the tile (count=1), not add a split (count=\(tileCount))"
-        )
-
-        XCTAssertEqual(
-            app.state, .runningForeground,
-            "App crashed during second pane selection"
-        )
-    }
-
     // MARK: - Private helpers
 
     private func waitForWorkspaceToLeaveEmptyState(timeout: TimeInterval = TestConstants.surfaceReadyTimeout) {
@@ -3149,25 +2689,6 @@ final class AgtmuxTermUITests: XCTestCase {
         ).firstMatch
     }
 
-    private func workbenchV2TerminalTile(sessionName: String) -> XCUIElement {
-        app.descendants(matching: .any).matching(
-            NSPredicate(
-                format: "identifier BEGINSWITH %@ AND label == %@",
-                AccessibilityID.workspaceTilePrefix,
-                sessionName
-            )
-        ).firstMatch
-    }
-
-    private func workbenchV2Tile(id: UUID) -> XCUIElement {
-        app.descendants(matching: .any).matching(
-            NSPredicate(
-                format: "identifier == %@",
-                AccessibilityID.workspaceTilePrefix + id.uuidString
-            )
-        ).firstMatch
-    }
-
     private func waitForAppTmuxBridgeReady(
         control: AppTmuxControlPaths,
         timeout: TimeInterval = TestConstants.sidebarPopulateTimeout
@@ -3195,38 +2716,6 @@ final class AgtmuxTermUITests: XCTestCase {
             code: 3,
             userInfo: [NSLocalizedDescriptionKey: "Timed out waiting for app-side tmux bridge readiness"]
         )
-    }
-
-    private func fetchActiveDocumentTileSnapshot(
-        control: AppTmuxControlPaths
-    ) throws -> ActiveDocumentTileSnapshot {
-        let output = try sendAppTmuxCommand(
-            [Self.activeDocumentTileCommand],
-            refreshInventory: false,
-            control: control
-        )
-        return try JSONDecoder().decode(ActiveDocumentTileSnapshot.self, from: Data(output.utf8))
-    }
-
-    private func replaceFocusedText(
-        _ value: String,
-        control: AppTmuxControlPaths
-    ) throws {
-        _ = try sendAppTmuxCommand(
-            [Self.replaceFocusedTextCommand, value],
-            refreshInventory: false,
-            control: control
-        )
-    }
-
-    private func makeTemporaryDirectory() throws -> URL {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        try FileManager.default.createDirectory(
-            at: directory,
-            withIntermediateDirectories: true
-        )
-        return directory
     }
 
     @discardableResult
@@ -3298,21 +2787,21 @@ final class AgtmuxTermUITests: XCTestCase {
     }
 
     @discardableResult
-    private func waitForAppWorkbenchTerminalTarget(
+    private func waitForAppMainTerminalTarget(
         control: AppTmuxControlPaths,
         sessionName: String,
         windowID: String,
         paneID: String,
         selectedPaneInventoryID: String,
         timeout: TimeInterval = TestConstants.focusSyncLatencyBudget
-    ) -> AppWorkbenchTerminalTargetSnapshot {
+    ) -> AppMainTerminalTargetSnapshot {
         let deadline = Date().addingTimeInterval(timeout)
-        var latest: AppWorkbenchTerminalTargetSnapshot?
+        var latest: AppMainTerminalTargetSnapshot?
         var latestError: String?
 
         while Date() < deadline {
             do {
-                let snapshot = try appWorkbenchTerminalTargetSnapshot(control: control)
+                let snapshot = try appMainTerminalTargetSnapshot(control: control)
                 latest = snapshot
                 latestError = nil
                 if snapshot.sessionName == sessionName,
@@ -3354,31 +2843,10 @@ final class AgtmuxTermUITests: XCTestCase {
             "renderedGeneration=\(latest?.renderedSurfaceGeneration.description ?? "nil") " +
             "latestError=\(latestError ?? "nil")"
         )
-        return latest ?? AppWorkbenchTerminalTargetSnapshot(
-            terminalHostMode: "",
-            workbenchID: "",
-            tileID: "",
-            sessionName: "",
-            windowID: "",
-            paneID: "",
-            desiredWindowID: "",
-            desiredPaneID: "",
-            observedWindowID: "",
-            observedPaneID: "",
-            focusRequestNonce: 0,
-            selectedPaneInventoryID: "",
-            attachCommand: "",
-            renderedAttachCommand: "",
-            renderedClientTTY: "",
-            renderedClientWindowID: "",
-            renderedClientPaneID: "",
-            renderedSurfaceGeneration: 0,
-            controlModeKey: "",
-            controlModeState: ""
-        )
+        return latest ?? AppMainTerminalTargetSnapshot.empty
     }
 
-    private func waitForAppWorkbenchTerminalSessionSwitchTarget(
+    private func waitForAppMainTerminalSessionSwitchTarget(
         control: AppTmuxControlPaths,
         sessionName: String,
         windowID: String,
@@ -3386,14 +2854,14 @@ final class AgtmuxTermUITests: XCTestCase {
         selectedPaneInventoryID: String,
         renderedClientTTY: String,
         timeout: TimeInterval = TestConstants.focusSyncLatencyBudget
-    ) -> AppWorkbenchTerminalTargetSnapshot {
+    ) -> AppMainTerminalTargetSnapshot {
         let deadline = Date().addingTimeInterval(timeout)
-        var latest: AppWorkbenchTerminalTargetSnapshot?
+        var latest: AppMainTerminalTargetSnapshot?
         var latestError: String?
 
         while Date() < deadline {
             do {
-                let snapshot = try appWorkbenchTerminalTargetSnapshot(control: control)
+                let snapshot = try appMainTerminalTargetSnapshot(control: control)
                 latest = snapshot
                 latestError = nil
                 if snapshot.sessionName == sessionName,
@@ -3429,28 +2897,7 @@ final class AgtmuxTermUITests: XCTestCase {
             "renderedPane=\(latest?.renderedClientPaneID ?? "nil") renderedGeneration=\(latest?.renderedSurfaceGeneration.description ?? "nil") " +
             "latestError=\(latestError ?? "nil")"
         )
-        return latest ?? AppWorkbenchTerminalTargetSnapshot(
-            terminalHostMode: "",
-            workbenchID: "",
-            tileID: "",
-            sessionName: "",
-            windowID: "",
-            paneID: "",
-            desiredWindowID: "",
-            desiredPaneID: "",
-            observedWindowID: "",
-            observedPaneID: "",
-            focusRequestNonce: 0,
-            selectedPaneInventoryID: "",
-            attachCommand: "",
-            renderedAttachCommand: "",
-            renderedClientTTY: "",
-            renderedClientWindowID: "",
-            renderedClientPaneID: "",
-            renderedSurfaceGeneration: 0,
-            controlModeKey: "",
-            controlModeState: ""
-        )
+        return latest ?? AppMainTerminalTargetSnapshot.empty
     }
 
     private func attachCommandAttachesSession(
@@ -3474,9 +2921,9 @@ final class AgtmuxTermUITests: XCTestCase {
             && command.contains(paneID)
     }
 
-    private func appWorkbenchTerminalTargetSnapshot(
+    private func appMainTerminalTargetSnapshot(
         control: AppTmuxControlPaths
-    ) throws -> AppWorkbenchTerminalTargetSnapshot {
+    ) throws -> AppMainTerminalTargetSnapshot {
         let output = try sendAppTmuxCommand(
             ["__agtmux_dump_active_terminal_target__"],
             refreshInventory: false,
@@ -3484,7 +2931,7 @@ final class AgtmuxTermUITests: XCTestCase {
             timeout: 2.0
         )
         let data = Data(output.utf8)
-        return try JSONDecoder().decode(AppWorkbenchTerminalTargetSnapshot.self, from: data)
+        return try JSONDecoder().decode(AppMainTerminalTargetSnapshot.self, from: data)
     }
 
     private func sessionRow(source: String = "local", sessionName: String) -> XCUIElement {
@@ -3544,14 +2991,6 @@ final class AgtmuxTermUITests: XCTestCase {
         let ok: Bool
         let stdout: String
         let error: String?
-    }
-
-    private struct ActiveDocumentTileSnapshot: Decodable {
-        let workbenchID: String
-        let tileID: String
-        let path: String
-        let target: String
-        let focused: Bool
     }
 
     private struct SidebarStateSnapshot: Decodable {
@@ -3616,10 +3055,9 @@ final class AgtmuxTermUITests: XCTestCase {
         let runtimeRefNativeID: String?
     }
 
-    private struct AppWorkbenchTerminalTargetSnapshot: Decodable {
-        let terminalHostMode: String
-        let workbenchID: String
-        let tileID: String
+    private struct AppMainTerminalTargetSnapshot: Decodable {
+        let viewportID: String
+        let surfaceID: String
         let sessionName: String
         let windowID: String
         let paneID: String
@@ -3637,6 +3075,32 @@ final class AgtmuxTermUITests: XCTestCase {
         let renderedSurfaceGeneration: UInt64
         let controlModeKey: String
         let controlModeState: String
+        let diagnosticCode: String
+        let diagnosticMessage: String
+
+        static let empty = AppMainTerminalTargetSnapshot(
+            viewportID: "",
+            surfaceID: "",
+            sessionName: "",
+            windowID: "",
+            paneID: "",
+            desiredWindowID: "",
+            desiredPaneID: "",
+            observedWindowID: "",
+            observedPaneID: "",
+            focusRequestNonce: 0,
+            selectedPaneInventoryID: "",
+            attachCommand: "",
+            renderedAttachCommand: "",
+            renderedClientTTY: "",
+            renderedClientWindowID: "",
+            renderedClientPaneID: "",
+            renderedSurfaceGeneration: 0,
+            controlModeKey: "",
+            controlModeState: "",
+            diagnosticCode: "",
+            diagnosticMessage: ""
+        )
     }
 
     private struct GhosttyIslandTelemetrySnapshot: Decodable {
@@ -3644,7 +3108,13 @@ final class AgtmuxTermUITests: XCTestCase {
         let paneRetargetRefreshCount: Int
     }
 
+    private struct GhosttyScrollTelemetrySnapshot: Decodable {
+        let immediatePresentationDrawCount: Int
+        let layerPresentCount: Int
+    }
+
     private struct ScrollBenchTelemetrySnapshot: Decodable {
+        let scroll: GhosttyScrollTelemetrySnapshot
         let island: GhosttyIslandTelemetrySnapshot
     }
 
@@ -3653,6 +3123,19 @@ final class AgtmuxTermUITests: XCTestCase {
         let lineCount: Int
         let characterCount: Int
         let usesAlternateScroll: Bool
+    }
+
+    private struct AppTerminalFocusStateSnapshot: Decodable {
+        let appIsActive: Bool
+        let windowIsKey: Bool
+        let terminalIsFirstResponder: Bool
+        let terminalAccessibilityIdentifier: String?
+    }
+
+    private struct AXKeySenderResult: Decodable {
+        let trusted: Bool
+        let sent: Bool
+        let error: String?
     }
 
     private func mixedEraBootstrapPayloadWithLegacySessionID(
@@ -3982,22 +3465,36 @@ final class AgtmuxTermUITests: XCTestCase {
 
     private func resetAppScrollTelemetry(
         control: AppTmuxControlPaths,
-        tileID: String
+        surfaceID: String
     ) throws {
         _ = try sendAppTmuxCommand(
-            ["__agtmux_reset_scroll_telemetry__", tileID],
+            ["__agtmux_reset_scroll_telemetry__", surfaceID],
             refreshInventory: false,
             control: control,
             timeout: 2.0
         )
     }
 
+    private func openMainTerminalForPane(
+        control: AppTmuxControlPaths,
+        source: String,
+        sessionName: String,
+        paneID: String
+    ) throws {
+        _ = try sendAppTmuxCommand(
+            ["__agtmux_open_terminal_for_pane__", source, sessionName, paneID],
+            refreshInventory: false,
+            control: control,
+            timeout: 5.0
+        )
+    }
+
     private func dumpAppScrollTelemetry(
         control: AppTmuxControlPaths,
-        tileID: String
+        surfaceID: String
     ) throws -> ScrollBenchTelemetrySnapshot {
         let output = try sendAppTmuxCommand(
-            ["__agtmux_dump_scroll_telemetry__", tileID],
+            ["__agtmux_dump_scroll_telemetry__", surfaceID],
             refreshInventory: false,
             control: control,
             timeout: 2.0
@@ -4005,17 +3502,121 @@ final class AgtmuxTermUITests: XCTestCase {
         return try JSONDecoder().decode(ScrollBenchTelemetrySnapshot.self, from: Data(output.utf8))
     }
 
+    private func waitForAppTerminalPresentation(
+        control: AppTmuxControlPaths,
+        surfaceID: String,
+        minImmediatePresentationDrawCount: Int,
+        minLayerPresentCount: Int,
+        timeout: TimeInterval = 5.0,
+        failureContext: String
+    ) throws -> ScrollBenchTelemetrySnapshot {
+        let deadline = Date().addingTimeInterval(timeout)
+        var lastSnapshot: ScrollBenchTelemetrySnapshot?
+
+        while Date() < deadline {
+            if let snapshot = try? dumpAppScrollTelemetry(control: control, surfaceID: surfaceID) {
+                lastSnapshot = snapshot
+                if snapshot.scroll.immediatePresentationDrawCount >= minImmediatePresentationDrawCount,
+                   snapshot.scroll.layerPresentCount >= minLayerPresentCount {
+                    return snapshot
+                }
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        }
+
+        XCTFail(
+            "\(failureContext) timed out waiting for presentation counts. " +
+            "Last telemetry: immediateDraws=\(lastSnapshot?.scroll.immediatePresentationDrawCount ?? -1) " +
+            "layerPresents=\(lastSnapshot?.scroll.layerPresentCount ?? -1)"
+        )
+        throw NSError(
+            domain: "AgtmuxTermUITests",
+            code: 34,
+            userInfo: [NSLocalizedDescriptionKey: failureContext]
+        )
+    }
+
+    private func dumpAppTerminalFocusState(
+        control: AppTmuxControlPaths,
+        surfaceID: String
+    ) throws -> AppTerminalFocusStateSnapshot {
+        let output = try sendAppTmuxCommand(
+            ["__agtmux_dump_focus_state__", surfaceID],
+            refreshInventory: false,
+            control: control,
+            timeout: 2.0
+        )
+        return try JSONDecoder().decode(AppTerminalFocusStateSnapshot.self, from: Data(output.utf8))
+    }
+
+    private func sendAXKeyToTerminal(
+        control: AppTmuxControlPaths,
+        surfaceID: String,
+        keyCode: Int
+    ) throws {
+        _ = try dumpAppTerminalFocusState(
+            control: control,
+            surfaceID: surfaceID
+        )
+        let pid = try waitForRunningAppProcessID()
+        let output = try shellRun([
+            gateLAXKeySenderPath(),
+            "--app-pid", "\(pid)",
+            "--focus-key-front-window",
+            "--x-frac", "0.75",
+            "--y-frac", "0.5",
+            "--key-code", "\(keyCode)",
+        ])
+        let result = try JSONDecoder().decode(AXKeySenderResult.self, from: Data(output.utf8))
+        XCTAssertTrue(result.trusted, "AX key sender must be trusted")
+        XCTAssertTrue(result.sent, "AX key sender must report sent=true: \(result.error ?? "unknown error")")
+    }
+
     private func dumpAppTerminalViewportText(
         control: AppTmuxControlPaths,
-        tileID: String
+        surfaceID: String
     ) throws -> TerminalViewportTextSnapshot {
         let output = try sendAppTmuxCommand(
-            ["__agtmux_dump_terminal_viewport_text__", tileID],
+            ["__agtmux_dump_terminal_viewport_text__", surfaceID],
             refreshInventory: false,
             control: control,
             timeout: 2.0
         )
         return try JSONDecoder().decode(TerminalViewportTextSnapshot.self, from: Data(output.utf8))
+    }
+
+    private func waitForAppTerminalViewportTextContains(
+        control: AppTmuxControlPaths,
+        surfaceID: String,
+        expected: String,
+        timeout: TimeInterval = 5.0,
+        failureContext: String
+    ) throws -> TerminalViewportTextSnapshot {
+        let deadline = Date().addingTimeInterval(timeout)
+        var lastSnapshot: TerminalViewportTextSnapshot?
+
+        while Date() < deadline {
+            if let snapshot = try? dumpAppTerminalViewportText(
+                control: control,
+                surfaceID: surfaceID
+            ) {
+                lastSnapshot = snapshot
+                if snapshot.text.contains(expected) {
+                    return snapshot
+                }
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        }
+
+        XCTFail(
+            "\(failureContext) timed out waiting for viewport text '\(expected)'. " +
+            "Last viewport: \(lastSnapshot?.text ?? "<none>")"
+        )
+        throw NSError(
+            domain: "AgtmuxTermUITests",
+            code: 33,
+            userInfo: [NSLocalizedDescriptionKey: failureContext]
+        )
     }
 
     private func enableAppManagedMetadata(control: AppTmuxControlPaths) throws {
@@ -4194,7 +3795,7 @@ final class AgtmuxTermUITests: XCTestCase {
             "sidebar='\(sidebarStateSummary(sidebarState, sessionName: sessionName, paneID: paneID))'"
     }
 
-    private func waitForSingleWorkbenchV2TerminalTile(
+    private func waitForSingleMainTerminalSurface(
         sessionName: String,
         timeout: TimeInterval = TestConstants.surfaceReadyTimeout
     ) {
@@ -4207,7 +3808,7 @@ final class AgtmuxTermUITests: XCTestCase {
             app.descendants(matching: .any).matching(
                 NSPredicate(format: "identifier == %@", AccessibilityID.workspaceTabBar)
             ).firstMatch.exists,
-            "Visible workbench tab bar should stay absent for \(sessionName)"
+            "Legacy tab bar should stay absent for \(sessionName)"
         )
     }
 
@@ -4300,18 +3901,6 @@ final class AgtmuxTermUITests: XCTestCase {
             }
         }
         return nil
-    }
-
-    private func workbenchFixtureJSON(_ workbenches: [Workbench]) throws -> String {
-        let data = try JSONEncoder().encode(workbenches)
-        guard let json = String(data: data, encoding: .utf8) else {
-            throw NSError(
-                domain: "AgtmuxTermUITests",
-                code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "Failed to encode workbench fixture as UTF-8"]
-            )
-        }
-        return json
     }
 
     private enum RunnerTmuxAccess {
@@ -4442,6 +4031,37 @@ final class AgtmuxTermUITests: XCTestCase {
         }
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         return Int32(trimmed)
+    }
+
+    private func waitForRunningAppProcessID(
+        bundleIDs: [String] = ["com.g960059.agtmux.term", "local.agtmux.term.app"],
+        timeout: TimeInterval = 5.0
+    ) throws -> pid_t {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            let running = bundleIDs.flatMap { bundleID in
+                NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
+            }
+            if let pid = running.first(where: \.isActive)?.processIdentifier
+                ?? running.first?.processIdentifier {
+                return pid
+            }
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+        throw NSError(
+            domain: "AgtmuxTermUITests",
+            code: 52,
+            userInfo: [NSLocalizedDescriptionKey: "Timed out waiting for running app pid for \(bundleIDs.joined(separator: ", "))"]
+        )
+    }
+
+    private func gateLAXKeySenderPath() -> String {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appending(path: "scripts/perf/gate_l_ax_key_sender.sh")
+            .path
     }
 
     @discardableResult

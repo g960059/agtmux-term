@@ -1,6 +1,6 @@
 import Foundation
 
-/// Orientation of a split in tmux/workbench layout models.
+/// Orientation of a split in tmux/layout models.
 ///
 /// Naming follows SwiftUI / tmux convention:
 ///   - horizontal = Left | Right  (divider is a vertical bar, tmux split-window -h)

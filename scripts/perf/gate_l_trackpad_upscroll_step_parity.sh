@@ -10,7 +10,6 @@ settle_timeout=15
 native_app_path=""
 allow_existing=0
 keep_running=0
-host_mode="${AGTMUX_PERF_TERMINAL_HOST_MODE:-}"
 allow_version_mismatch=0
 
 mean_lines_p50_delta_max="${AGTMUX_PERF_UPSTEP_GATE_MEAN_LINES_P50_DELTA_MAX:-0.50}"
@@ -35,10 +34,6 @@ while (( $# > 0 )); do
       native_app_path="$2"
       shift 2
       ;;
-    --host-mode)
-      host_mode="$2"
-      shift 2
-      ;;
     --allow-existing)
       allow_existing=1
       shift
@@ -52,13 +47,11 @@ while (( $# > 0 )); do
       shift
       ;;
     *)
-      echo "Usage: $0 [--bursts COUNT] [--timeout SECONDS] [--app /path/to/Ghostty.app] [--host-mode legacy|next] [--allow-existing] [--allow-version-mismatch] [--keep-running]" >&2
+      echo "Usage: $0 [--bursts COUNT] [--timeout SECONDS] [--app /path/to/Ghostty.app] [--allow-existing] [--allow-version-mismatch] [--keep-running]" >&2
       exit 1
       ;;
   esac
 done
-
-gate_l_require_explicit_terminal_host_mode "$host_mode" "$0" || exit 1
 
 if [[ -z "$native_app_path" ]]; then
   if ! native_app_path="$(gate_l_resolve_native_ghostty_app_path)"; then
@@ -126,7 +119,6 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-AGTMUX_PERF_TERMINAL_HOST_MODE="$host_mode" \
 "$SCRIPT_DIR/gate_l_trackpad_upscroll_step_bench.sh" \
   --bursts "$bursts" \
   --timeout "$settle_timeout" >"$embedded_json_path"
@@ -153,7 +145,6 @@ normalize_bench_json "$native_json_path"
 result_json="$(jq -n \
   --slurpfile embedded "$embedded_json_path" \
   --slurpfile native "$native_json_path" \
-  --arg host_mode "$host_mode" \
   --argjson embedded_ghostty "$embedded_ghostty_json" \
   --argjson native_ghostty "$native_ghostty_json" \
   --argjson version_matched "$version_matched" \
@@ -210,7 +201,6 @@ result_json="$(jq -n \
     ] as $failures
   | {
       bursts: $embedded.bursts,
-      embedded_host_mode: $host_mode,
       sample_interval_ms: $embedded.sample_interval_ms,
       sample_tail_ms: $embedded.sample_tail_ms,
       scroll_phase_mode: $embedded.scroll_phase_mode,

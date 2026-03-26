@@ -3,7 +3,7 @@ import AppKit
 @testable import AgtmuxTerm
 
 @MainActor
-final class WorkbenchGhosttyIslandTests: XCTestCase {
+final class GhosttyIslandHostTests: XCTestCase {
     func testPaneRetargetRefreshSchedulesForSameSurfaceVisiblePaneChange() {
         XCTAssertTrue(
             GhosttyIslandViewController.shouldSchedulePaneRetargetPresentationRefresh(

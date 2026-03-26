@@ -10,16 +10,8 @@ enum GhosttyCLIOSCBridgeError: Error, Equatable, CustomStringConvertible {
     case payloadRootMustBeObject
     case unsupportedVersion(Int)
     case unsupportedAction(String)
-    case unsupportedKind(String)
-    case unsupportedPlacement(String)
-    case emptyTarget
-    case emptyCwd
-    case emptyArgument
     case emptyClientTTY
-    case invalidURL(String)
-    case relativeFilePath(String)
     case surfaceResolution(GhosttyTerminalSurfaceRegistryError)
-    case dispatch(WorkbenchV2BridgeDispatchError)
 
     var description: String {
         switch self {
@@ -37,37 +29,19 @@ enum GhosttyCLIOSCBridgeError: Error, Equatable, CustomStringConvertible {
             return "CLI bridge payload version \(version) is unsupported"
         case .unsupportedAction(let action):
             return "CLI bridge action '\(action)' is unsupported"
-        case .unsupportedKind(let kind):
-            return "CLI bridge kind '\(kind)' is unsupported"
-        case .unsupportedPlacement(let placement):
-            return "CLI bridge placement '\(placement)' is unsupported"
-        case .emptyTarget:
-            return "CLI bridge target must be non-empty"
-        case .emptyCwd:
-            return "CLI bridge cwd must be non-empty"
-        case .emptyArgument:
-            return "CLI bridge argument must be non-empty"
         case .emptyClientTTY:
             return "CLI bridge rendered client tty must be non-empty"
-        case .invalidURL(let argument):
-            return "CLI bridge URL argument '\(argument)' is invalid"
-        case .relativeFilePath(let argument):
-            return "CLI bridge file argument '\(argument)' must be absolute"
         case .surfaceResolution(let error):
-            return error.description
-        case .dispatch(let error):
             return error.description
         }
     }
 }
 
 enum GhosttyCLIOSCBridgeAction: Equatable {
-    case open(WorkbenchV2BridgeRequest)
     case bindClientTTY(String)
 }
 
 enum GhosttyCLIOSCBridgeResult: Equatable {
-    case bridge(WorkbenchV2BridgeDispatchResult)
     case boundClientTTY(String)
 }
 
@@ -78,7 +52,6 @@ enum GhosttyCLIOSCBridge {
     static func dispatchIfBridgeAction(
         target: ghostty_target_s,
         action: ghostty_action_s,
-        store: WorkbenchStoreV2,
         registry: GhosttyTerminalSurfaceRegistry? = nil
     ) throws -> GhosttyCLIOSCBridgeResult? {
         guard action.tag == GHOSTTY_ACTION_CUSTOM_OSC else { return nil }
@@ -95,29 +68,6 @@ enum GhosttyCLIOSCBridge {
                 throw GhosttyCLIOSCBridgeError.surfaceResolution(error)
             }
             return .boundClientTTY(clientTTY)
-
-        case .open(let request):
-            let surfaceContext: GhosttyTerminalSurfaceContext
-            do {
-                surfaceContext = try registry.requireContext(forTarget: target)
-            } catch let error as GhosttyTerminalSurfaceRegistryError {
-                throw GhosttyCLIOSCBridgeError.surfaceResolution(error)
-            }
-            do {
-                let result = try store.dispatchBridgeRequest(request, from: surfaceContext)
-                return .bridge(result)
-            } catch let error as WorkbenchV2BridgeDispatchError {
-                throw GhosttyCLIOSCBridgeError.dispatch(error)
-            }
-        }
-    }
-
-    static func decodeRequest(from data: Data) throws -> WorkbenchV2BridgeRequest {
-        switch try decodeAction(from: data) {
-        case .open(let request):
-            return request
-        case .bindClientTTY:
-            throw GhosttyCLIOSCBridgeError.unsupportedAction("bind_client")
         }
     }
 
@@ -146,8 +96,6 @@ enum GhosttyCLIOSCBridge {
         }
 
         switch header.action {
-        case "open":
-            return .open(try decodeOpenRequest(from: payloadData))
         case "bind_client":
             let payload: BindClientPayload
             do {
@@ -191,80 +139,9 @@ enum GhosttyCLIOSCBridge {
         return Data(payloadText.utf8)
     }
 
-    private static func decodeOpenRequest(from payloadData: Data) throws -> WorkbenchV2BridgeRequest {
-        let rawPayload: OpenPayload
-        do {
-            rawPayload = try JSONDecoder().decode(OpenPayload.self, from: payloadData)
-        } catch {
-            throw GhosttyCLIOSCBridgeError.malformedJSON(error.localizedDescription)
-        }
-
-        guard !rawPayload.target.isEmpty else {
-            throw GhosttyCLIOSCBridgeError.emptyTarget
-        }
-        guard !rawPayload.cwd.isEmpty else {
-            throw GhosttyCLIOSCBridgeError.emptyCwd
-        }
-        guard !rawPayload.argument.isEmpty else {
-            throw GhosttyCLIOSCBridgeError.emptyArgument
-        }
-
-        guard let placement = WorkbenchV2Placement(rawValue: rawPayload.placement) else {
-            throw GhosttyCLIOSCBridgeError.unsupportedPlacement(rawPayload.placement)
-        }
-
-        let target = targetRef(from: rawPayload.target)
-        switch rawPayload.kind {
-        case "url":
-            guard let url = URL(string: rawPayload.argument), url.scheme != nil else {
-                throw GhosttyCLIOSCBridgeError.invalidURL(rawPayload.argument)
-            }
-
-            return .browser(
-                url: url,
-                sourceContext: "\(target.label): \(rawPayload.cwd)",
-                placement: placement,
-                pin: rawPayload.pin
-            )
-
-        case "file":
-            guard rawPayload.argument.hasPrefix("/") else {
-                throw GhosttyCLIOSCBridgeError.relativeFilePath(rawPayload.argument)
-            }
-
-            return .document(
-                ref: DocumentRef(target: target, path: rawPayload.argument),
-                placement: placement,
-                pin: rawPayload.pin
-            )
-
-        default:
-            throw GhosttyCLIOSCBridgeError.unsupportedKind(rawPayload.kind)
-        }
-    }
-
-    private static func targetRef(from rawTarget: String) -> TargetRef {
-        if rawTarget == "local" {
-            return .local
-        }
-
-        return .remote(hostKey: rawTarget)
-    }
-
     private struct RawHeader: Decodable {
         let version: Int
         let action: String
-    }
-
-    private struct OpenPayload: Decodable {
-        let version: Int
-        let action: String
-        let kind: String
-        let target: String
-        let cwd: String
-        let argument: String
-        let placement: String
-        let pin: Bool
     }
 
     private struct BindClientPayload: Decodable {
