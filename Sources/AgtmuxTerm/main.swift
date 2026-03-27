@@ -260,6 +260,12 @@ let cockpit = CockpitView()
 let hostingView = NonDraggableHostingView(rootView: cockpit)
 hostingView.frame = NSRect(x: 0, y: 0, width: 1280, height: 800)
 
+func forceWindowHostingPass(_ window: NSWindow) {
+    window.contentView?.layoutSubtreeIfNeeded()
+    window.contentView?.displayIfNeeded()
+    window.displayIfNeeded()
+}
+
 // 5. Create the window.
 let window = NSWindow(
     contentRect: NSRect(x: 100, y: 100, width: 1280, height: 800),
@@ -283,6 +289,7 @@ window.backgroundColor = NSColor(
 window.isRestorable = false
 window.contentView = hostingView
 window.makeKeyAndOrderFront(nil)
+forceWindowHostingPass(window)
 
 let windowChromeController: WindowChromeController = MainActor.assumeIsolated {
     let controller = WindowChromeController(
@@ -299,6 +306,7 @@ _ = windowChromeController
 func forceForeground(_ app: NSApplication, window: NSWindow) {
     app.unhide(nil)
     NSRunningApplication.current.unhide()
+    forceWindowHostingPass(window)
     window.makeKeyAndOrderFront(nil)
     window.orderFrontRegardless()
     NSRunningApplication.current.activate(options: [.activateAllWindows])

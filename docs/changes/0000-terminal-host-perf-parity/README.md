@@ -34,19 +34,18 @@ Current state:
 - same-session pane retarget stays on one visible surface and now confirms that
   the pane-switch path repaints via an immediate presentation draw instead of
   recreating the Ghostty surface
-- internal scroll telemetry still shows zero renderer-owned frame-completion
-  signals on
-  burst input, so keyboard/scroll input now keep a coalesced host immediate
-  draw fast path until upstream render-callback cadence is trustworthy again
-- the real typing path now arms the interactive draw pump on the initial
-  post-key draw instead of waiting for a later pane/focus repaint; on the
-  March 26 AX keypress bench that moved `viewport_after_tmux_p50_ms` from
-  roughly `317 ms` down to `97 ms` and `layer_present_after_tmux_p50_ms` from
-  roughly `643 ms` down to `425 ms`
+- steady-state viewport scroll no longer schedules host-side presentation draws
+  from `dispatchScrollInput(...)`; embedded scroll and post-bootstrap key input
+  now stay on libghostty's renderer-owned redraw path, with host immediate
+  draw reserved for dirty-draw override and explicit recovery seams only
+- the real typing path no longer treats resettable scroll telemetry as the
+  source of truth for "first visible layer completed"; that lifecycle state is
+  now persistent across telemetry resets, so perf/UI harnesses do not
+  accidentally shove later key input back onto the bootstrap recovery path
 - visible render callbacks on the current main surface no longer bounce through
-  the generic dirty-surface scheduler; once the first layer present lands for a
-  surface, later visible render callbacks coalesce straight to one immediate
-  presentation draw instead of another refresh round-trip
+  the generic dirty-surface scheduler; after the first visible layer they stay
+  on the renderer-owned refresh path instead of re-entering the old immediate
+  presentation draw fallback
 - the keypress perf harness now defaults to the installed app bundle and
   records both tmux-capture latency and viewport-visible latency, which exposed
   that tmux delivery is already near native while the remaining lag is mostly
@@ -70,6 +69,38 @@ Current state:
   fresh `ghostty_app_tick(...)` for every follow-up frame; after the initial
   input-triggered wakeup, continuation frames stay on draw-only recovery so
   repeated main-thread runtime ticks stop competing with visible presentation
+- the first pass of that tick-thinning accidentally removed the real-input
+  immediate-draw entrypoint, the post-first-layer render-callback fallback,
+  and the temporary layer observation gate; those are now restored so typing
+  and scroll regain a live presentation path instead of waiting on unrelated
+  pane/focus redraws
+- after restoring those entrypoints, the March 26 AX keypress bench again sees
+  `layer_present_timeout_count = 0` and non-zero
+  `rendererFrameCompletedCount` / `immediatePresentationDrawCount`, confirming
+  that visible presentation is happening on the current surface instead of
+  stalling until a later repaint
+- with the post-reset first-layer fix in place on March 26, the real XCUITest
+  key-input regression now passes with `immediatePresentationDrawCount == 0`.
+  The latest derived-build AX keypress bench records roughly
+  `viewport_after_tmux_p50_ms = 99.3`,
+  `layer_present_after_tmux_p50_ms = 375.2`, and
+  `immediatePresentationDrawCount = 0`
+- after removing the steady-state host scroll path on March 26, an internal
+  bridge scroll burst now reports `refreshDrawRequestCount = 0`,
+  `immediatePresentationDrawCount = 0`, and `scrollPresentationDrawCount = 0`
+  with non-zero `rendererFrameCompletedCount`; `scroll_to_layer_present_p50_ms`
+  stayed near `11.8 ms`, but `renderCallbackCount` is still `0` and
+  `first_changed_elapsed_ms` is still around `173 ms` p50, so the remaining
+  scroll/FPS gap has moved from host scroll pumping to renderer/frame cadence
+  and viewport observation
+- the latest derived-build trackpad/history bench still keeps
+  `immediatePresentationDrawCount = 0` / `scrollPresentationDrawCount = 0`,
+  and `scroll_to_layer_present_ms` stays renderer-owned with
+  `p50 ≈ 14.7 ms`; the remaining gap is in cadence/jitter (`p95 ≈ 533 ms`),
+  not a return to host scroll pumping
+- the vendored Ghostty baseline is now `v1.3.1`, so the checked-in
+  `GhosttyKit.xcframework` and perf baselines no longer depend on the old
+  `v1.2.3` rebuild workaround
 - UI/perf launch helpers now target the real `com.g960059.agtmux.term` bundle
   id and kill orphaned `AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm` processes by
   executable path before launching a fresh test instance
@@ -83,8 +114,8 @@ Remaining engineering focus:
 - shrink the remaining layer-present gap on real typing after tmux output
 - shrink bridge-side active-target observation and other non-visible hot-path
   costs that still dominate bench-only pane-switch numbers
-- replace the remaining host-pumped cadence on scroll/input once renderer-owned
-  callbacks or a thinner equivalent path can be trusted again
+- explain and reduce the remaining scroll cadence gap now that the steady-state
+  host scroll presentation path is gone
 - keep pane-retarget and blank-frame recovery fixes separate from steady-state
   cadence work
 - continue validating against matched-version native Ghostty baselines

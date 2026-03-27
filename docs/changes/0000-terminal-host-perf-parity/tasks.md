@@ -33,6 +33,8 @@
   presentation draw instead of bouncing through the generic dirty refresh path
 - [x] guard render-callback immediate draws behind first-layer presentation so
   the initial attach path cannot crash inside libghostty
+- [x] bump the vendored Ghostty baseline to `v1.3.1` and regenerate the
+  aggregate patch / xcframework from a clean checkout
 - [x] teach the keypress perf harness to report viewport-visible latency in
   addition to tmux-capture latency
 - [x] arm the real-input interactive draw pump on the first post-key draw so
@@ -49,5 +51,19 @@
   orphaned executable-path processes before starting a fresh test instance
 - [x] stop scheduling `ghostty_app_tick(...)` from interactive and scroll
   continuation/recovery draw pumps so follow-up frames stay draw-only
+- [x] restore the real-input immediate draw, after-first-layer render-callback
+  fallback, and temporary layer observation gate after the cadence-thinning
+  regression removed them together
+- [x] remove steady-state host scroll presentation from `dispatchScrollInput`
+  so embedded viewport scroll stays on libghostty's renderer-owned redraw path
+- [x] separate first-visible-layer completion from resettable telemetry so
+  perf/UI harnesses do not force post-bootstrap key input back onto the old
+  recovery path
+- [x] return post-bootstrap key input and visible render callbacks to the
+  renderer-owned refresh path and make the real XCUITest key-input regression
+  pass with zero host immediate draws
 - [ ] thin the embedded cadence path further if matched-version cadence still
   trails native or user feel
+- [ ] explain why scroll cadence still trails native after the host scroll pump
+  is removed, and cut that remaining gap without reintroducing host-owned draw
+  loops

@@ -286,7 +286,7 @@ final class GhosttyIslandViewController: NSViewController {
         lastFocusRestoreNonce = focusRestoreNonce
         if isFocused {
             SurfacePool.shared.activate(leafID: surfaceID)
-            if let tv = terminalView { tv.window?.makeFirstResponder(tv) }
+            terminalView?.restoreWindowFocus()
         } else {
             SurfacePool.shared.background(leafID: surfaceID)
         }
@@ -415,7 +415,7 @@ final class GhosttyIslandViewController: NSViewController {
             return
         }
         SurfacePool.shared.activate(leafID: surfaceID)
-        terminalView.window?.makeFirstResponder(terminalView)
+        terminalView.restoreWindowFocus()
     }
 
     private func defaultShellRetrySentinel() -> String { "__default_shell__" }

@@ -72,7 +72,8 @@ final class GhosttyTerminalViewIMETests: XCTestCase {
         XCTAssertTrue(view.sentTexts.isEmpty)
         XCTAssertEqual(view.sentRawKeys.count, 1)
         XCTAssertEqual(view.sentRawKeys.first?.characters, "o")
-        XCTAssertEqual(view.scheduledInteractivePresentationCount, 1)
+        XCTAssertEqual(view.scheduledInteractivePresentationCount, 0)
+        XCTAssertEqual(view.scheduledRefreshDrawCount, 1)
     }
 
     func testInsertTextSchedulesInteractivePresentationDraw() {
@@ -82,6 +83,47 @@ final class GhosttyTerminalViewIMETests: XCTestCase {
 
         XCTAssertEqual(view.sentTexts, ["hello"])
         XCTAssertEqual(view.scheduledInteractivePresentationCount, 1)
+    }
+
+    func testKeyDownDoesNotScheduleHostInteractivePresentationRecovery() {
+        let view = GhosttyTerminalViewSpy()
+        view.sendKeyResult = true
+
+        view.keyDown(with: makeKeyDownEvent(characters: "a", keyCode: 0x00))
+
+        XCTAssertEqual(view.scheduledInteractivePresentationCount, 0)
+        XCTAssertEqual(view.scheduledRefreshDrawCount, 1)
+    }
+
+    func testFailedRawKeyDoesNotScheduleHostRefresh() {
+        let view = GhosttyTerminalViewSpy()
+        view.sendKeyResult = false
+
+        view.keyDown(with: makeKeyDownEvent(characters: "a", keyCode: 0x00))
+
+        XCTAssertEqual(view.scheduledInteractivePresentationCount, 0)
+        XCTAssertEqual(view.scheduledRefreshDrawCount, 0)
+    }
+
+    func testModifierKeyChangesDoNotScheduleHostInteractivePresentationRecovery() {
+        let view = GhosttyTerminalViewSpy()
+
+        let flagsDown = NSEvent.keyEvent(
+            with: .flagsChanged,
+            location: .zero,
+            modifierFlags: [.control],
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: 0,
+            context: nil,
+            characters: "",
+            charactersIgnoringModifiers: "",
+            isARepeat: false,
+            keyCode: 0x3B
+        )!
+
+        view.flagsChanged(with: flagsDown)
+
+        XCTAssertEqual(view.scheduledInteractivePresentationCount, 0)
     }
 
     func testInsertTextSchedulesGhosttyRuntimeTick() {
@@ -99,14 +141,66 @@ final class GhosttyTerminalViewIMETests: XCTestCase {
         XCTAssertGreaterThanOrEqual(scheduledTickCount, 1)
     }
 
-    func testInsertTextAvoidsImmediateHostDrawForRealInput() {
+    func testInsertTextAfterFirstLayerSkipsGhosttyRuntimeTick() {
+        let view = GhosttyTerminalViewSpy()
+        view.canScheduleImmediatePresentation = true
+        view.useSuperScheduleInteractivePresentationAfterInput = true
+        view.noteLayerPresentationForTesting(now: ProcessInfo.processInfo.systemUptime)
+        var scheduledTickCount = 0
+
+        GhosttyApp.withTestTickScheduleObserver({
+            scheduledTickCount += 1
+        }) {
+            view.insertText("hello", replacementRange: NSRange(location: NSNotFound, length: 0))
+        }
+
+        XCTAssertEqual(scheduledTickCount, 0)
+    }
+
+    func testInsertTextArmsInteractivePresentationRecoveryProbeForRealInput() {
         let view = GhosttyTerminalViewSpy()
         view.canScheduleImmediatePresentation = true
         view.useSuperScheduleInteractivePresentationAfterInput = true
 
         view.insertText("hello", replacementRange: NSRange(location: NSNotFound, length: 0))
 
+        let continuationState = view.interactivePresentationContinuationStateForTesting()
         XCTAssertEqual(view.scrollTelemetrySnapshotForTesting().immediatePresentationDrawCount, 0)
+        XCTAssertEqual(view.scheduledRefreshDrawCount, 1)
+        XCTAssertFalse(continuationState.pumpScheduled)
+        XCTAssertNil(continuationState.pumpDueUptime)
+        XCTAssertTrue(continuationState.recoveryScheduled)
+        XCTAssertNotNil(continuationState.recoveryDueUptime)
+    }
+
+    func testInsertTextUsesRendererOwnedPresentationPathAfterFirstLayerPresent() {
+        let view = GhosttyTerminalViewSpy()
+        view.canScheduleImmediatePresentation = true
+        view.useSuperScheduleInteractivePresentationAfterInput = true
+        view.noteLayerPresentationForTesting(now: ProcessInfo.processInfo.systemUptime)
+
+        view.insertText("hello", replacementRange: NSRange(location: NSNotFound, length: 0))
+
+        let continuationState = view.interactivePresentationContinuationStateForTesting()
+        XCTAssertEqual(view.scheduledRefreshDrawCount, 0)
+        XCTAssertEqual(view.scrollTelemetrySnapshotForTesting().immediatePresentationDrawCount, 0)
+        XCTAssertFalse(continuationState.recoveryScheduled)
+        XCTAssertNil(continuationState.recoveryDueUptime)
+    }
+
+    func testResetScrollTelemetryPreservesInitialLayerCompletionForInteractiveInput() {
+        let view = GhosttyTerminalViewSpy()
+        view.canScheduleImmediatePresentation = true
+        view.useSuperScheduleInteractivePresentationAfterInput = true
+        view.noteLayerPresentationForTesting(now: ProcessInfo.processInfo.systemUptime)
+        view.resetScrollTelemetryForTesting()
+
+        view.insertText("hello", replacementRange: NSRange(location: NSNotFound, length: 0))
+
+        let continuationState = view.interactivePresentationContinuationStateForTesting()
+        XCTAssertEqual(view.scheduledRefreshDrawCount, 0)
+        XCTAssertEqual(view.scrollTelemetrySnapshotForTesting().immediatePresentationDrawCount, 0)
+        XCTAssertFalse(continuationState.recoveryScheduled)
     }
 
     func testRenderCallbackPresentationFallsBackToRefreshBeforeFirstLayerPresent() {
@@ -119,7 +213,7 @@ final class GhosttyTerminalViewIMETests: XCTestCase {
         XCTAssertEqual(view.scrollTelemetrySnapshotForTesting().immediatePresentationDrawCount, 0)
     }
 
-    func testRenderCallbackPresentationUsesImmediateDrawAfterFirstLayerPresent() {
+    func testRenderCallbackPresentationStaysRendererOwnedAfterFirstLayerPresent() {
         let view = GhosttyTerminalViewSpy()
         view.useSuperRenderCallbackPresentation = true
         view.noteLayerPresentationForTesting(now: ProcessInfo.processInfo.systemUptime)
@@ -130,14 +224,14 @@ final class GhosttyTerminalViewIMETests: XCTestCase {
         XCTAssertEqual(view.scrollTelemetrySnapshotForTesting().immediatePresentationDrawCount, 0)
     }
 
-    func testRendererFrameCompletedTelemetryCountsAsPresentationWithoutLayerObservation() {
+    func testRendererFrameCompletedTelemetryCountsPresentationWhenTelemetryCollectionEnabled() {
         let view = GhosttyTerminalView()
         view.resetScrollTelemetryForTesting()
 
         view.noteRendererFrameCompletedTelemetry()
 
         XCTAssertEqual(view.scrollTelemetrySnapshotForTesting().layerPresentCount, 1)
-        XCTAssertFalse(view.prefersRenderLayerContentsObservationForTesting())
+        XCTAssertTrue(view.prefersRenderLayerContentsObservationForTesting())
     }
 
     func testInteractivePresentationRecoveryProbeRedrawsDelayedInput() {
@@ -271,6 +365,22 @@ final class GhosttyTerminalViewIMETests: XCTestCase {
         XCTAssertFalse(view.interactivePresentationContinuationStateForTesting().recoveryScheduled)
     }
 
+    func testKeyDownUsesRendererOwnedPresentationPathAfterFirstLayerPresent() {
+        let view = GhosttyTerminalViewSpy()
+        view.sendKeyResult = true
+        view.canScheduleImmediatePresentation = true
+        view.noteLayerPresentationForTesting(now: ProcessInfo.processInfo.systemUptime)
+
+        view.keyDown(with: makeKeyDownEvent(characters: "a", keyCode: 0x00))
+
+        let continuationState = view.interactivePresentationContinuationStateForTesting()
+        XCTAssertEqual(view.scheduledInteractivePresentationCount, 0)
+        XCTAssertEqual(view.scheduledRefreshDrawCount, 0)
+        XCTAssertEqual(view.scrollTelemetrySnapshotForTesting().immediatePresentationDrawCount, 0)
+        XCTAssertFalse(continuationState.recoveryScheduled)
+        XCTAssertNil(continuationState.recoveryDueUptime)
+    }
+
     func testRendererOwnedRenderCallbackCoalescesPresentationDrawForVisibleSurface() {
         let view = GhosttyTerminalViewSpy()
         view.setRendererPresentationSurfacePresenceForTesting(true)
@@ -297,7 +407,7 @@ final class GhosttyTerminalViewIMETests: XCTestCase {
         XCTAssertEqual(view.scrollTelemetrySnapshotForTesting().immediatePresentationDrawCount, 1)
     }
 
-    func testRendererOwnedRenderCallbackSchedulesRefreshAfterFirstLayerPresent() {
+    func testRendererOwnedRenderCallbackStaysRendererOwnedAfterFirstLayerPresent() {
         let view = GhosttyTerminalViewSpy()
         view.setRendererPresentationSurfacePresenceForTesting(true)
         view.useSuperRenderCallbackPresentation = true
@@ -312,7 +422,7 @@ final class GhosttyTerminalViewIMETests: XCTestCase {
         XCTAssertFalse(view.rendererPresentationDrawPendingForTesting())
     }
 
-    func testScrollPresentationStatesDisableLegacyLayerObservation() {
+    func testScrollPresentationStatesEnableLayerObservation() {
         let view = GhosttyTerminalView()
 
         view.configureScrollPresentationObservationStateForTesting(
@@ -322,7 +432,7 @@ final class GhosttyTerminalViewIMETests: XCTestCase {
             recoveryScheduled: true
         )
 
-        XCTAssertFalse(view.prefersRenderLayerContentsObservationForTesting())
+        XCTAssertTrue(view.prefersRenderLayerContentsObservationForTesting())
     }
 
     func testScrollPresentationDrawPumpAvoidsGhosttyRuntimeTick() {
@@ -353,6 +463,60 @@ final class GhosttyTerminalViewIMETests: XCTestCase {
 
         XCTAssertEqual(scheduledTickCount, 0)
     }
+
+    func testScrollInputPrefersRendererOwnedPresentationPath() {
+        let view = GhosttyTerminalView()
+
+        XCTAssertFalse(
+            view.shouldUseHostScrollPresentation(
+                usesAlternateScroll: false,
+                precision: false
+            )
+        )
+        XCTAssertFalse(
+            view.shouldUseHostScrollPresentation(
+                usesAlternateScroll: false,
+                precision: true
+            )
+        )
+        XCTAssertFalse(
+            view.shouldUseHostScrollPresentation(
+                usesAlternateScroll: true,
+                precision: true
+            )
+        )
+    }
+
+    func testScrollPresentationRecoveryProbeFallsBackToImmediateDraw() {
+        let view = GhosttyTerminalViewSpy()
+        view.scrollPresentationSurfacePresent = true
+        let startUptime = 70.0
+        let recoveryDue = startUptime + 0.01
+
+        view.updateScrollPresentationGestureStateForTesting(
+            precision: true,
+            phase: [],
+            momentumPhase: [],
+            verticalDelta: -20,
+            now: startUptime
+        )
+        view.noteScrollPresentationDrawForTesting(now: startUptime)
+        view.configureScrollPresentationContinuationForTesting(
+            pumpDue: nil,
+            recoveryDue: recoveryDue,
+            recoveryDrawUptime: startUptime
+        )
+
+        XCTAssertTrue(
+            view.runScrollPresentationRecoveryProbePassForTesting(
+                drawUptime: startUptime,
+                now: recoveryDue
+            )
+        )
+        XCTAssertEqual(view.scheduledRefreshDrawCount, 0)
+        XCTAssertEqual(view.scrollTelemetrySnapshotForTesting().immediatePresentationDrawCount, 1)
+    }
+
     func testTmuxNextPanePerfSeamSendsPrefixThenNextPaneKey() {
         let view = GhosttyTerminalViewSpy()
         view.sendKeyResult = true

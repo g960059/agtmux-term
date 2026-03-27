@@ -7,7 +7,7 @@ if [[ -z "$repo_root" ]]; then
 fi
 cd "$repo_root"
 
-ghostty_ref="${AGTMUX_GHOSTTY_REF:-v1.2.3}"
+ghostty_ref="${AGTMUX_GHOSTTY_REF:-v1.3.1}"
 ghostty_url="${AGTMUX_GHOSTTY_REPO_URL:-https://github.com/ghostty-org/ghostty}"
 vendor_dir="${AGTMUX_VENDOR_GHOSTTY_DIR:-$repo_root/vendor/ghostty}"
 xcframework_dir="${AGTMUX_GHOSTTYKIT_DIR:-$repo_root/GhosttyKit/GhosttyKit.xcframework}"

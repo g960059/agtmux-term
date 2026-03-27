@@ -185,13 +185,12 @@ git push origin v0.2.0
 
 The workflow builds a universal (arm64 + x86_64) app with the `agtmux` daemon bundled. When Apple signing secrets are present it signs, notarizes, creates a DMG, publishes a GitHub Release, and updates the Homebrew tap cask. When those Apple secrets are absent it still publishes a GitHub Release with an unsigned, non-notarized DMG and skips the Homebrew tap update.
 
-`prepare-ghosttykit.sh` rebuilds from pinned upstream Ghostty `v1.2.3` when
+`prepare-ghosttykit.sh` rebuilds from pinned upstream Ghostty `v1.3.1` when
 needed and applies the repo's aggregate Ghostty patch
 (`scripts/patches/ghostty-agtmux.patch`) before producing the checked-in
 `GhosttyKit.xcframework`. That patch carries the custom OSC bridge, the current
-embedded-scroll renderer optimizations, and the minimal `build.zig.zon`
-dependency refresh required because upstream `v1.2.3` now points at a dead
-theme tarball URL.
+embedded-scroll renderer optimizations, and the renderer-owned cadence hooks
+that the embedded main-terminal path relies on.
 
 Required GitHub secrets:
 

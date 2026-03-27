@@ -78,6 +78,97 @@ final class GhosttySurfaceTelemetryBridgeTests: XCTestCase {
         }
     }
 
+    @MainActor
+    func testResolvedTerminalViewFallsBackToRegistrySurfaceIDWhenSurfaceHandleMappingDrifts() {
+        let callbackHandle = GhosttySurfaceHandle(rawValue: 0x9914)
+        let poolHandle = GhosttySurfaceHandle(rawValue: 0x9915)
+        let surfaceID = UUID()
+        let view = GhosttyTerminalView()
+        let context = GhosttyTerminalSurfaceContext(
+            viewportID: UUID(),
+            surfaceID: surfaceID,
+            surfaceKey: "main-terminal:local:alpha",
+            sessionRef: SessionRef(target: .local, sessionName: "alpha")
+        )
+
+        GhosttyTerminalSurfaceRegistry.shared.resetForTesting()
+        SurfacePool.shared.resetForTesting()
+        TerminalHostActiveSurfaceRegistry.shared.resetForTesting()
+        defer {
+            GhosttyTerminalSurfaceRegistry.shared.resetForTesting()
+            SurfacePool.shared.resetForTesting()
+            TerminalHostActiveSurfaceRegistry.shared.resetForTesting()
+        }
+
+        GhosttyTerminalSurfaceRegistry.shared.register(
+            surfaceHandle: callbackHandle,
+            context: context,
+            attachCommand: "tmux attach-session -t alpha"
+        )
+        SurfacePool.shared.register(
+            view: view,
+            leafID: surfaceID,
+            tmuxPaneID: "%1",
+            surfaceHandle: poolHandle
+        )
+
+        XCTAssertTrue(
+            GhosttyApp.resolvedTerminalViewForTesting(surfaceHandle: callbackHandle) === view
+        )
+    }
+
+    @MainActor
+    func testResolvedTerminalViewPrefersActiveSurfaceOverInactiveHandleMapping() {
+        let callbackHandle = GhosttySurfaceHandle(rawValue: 0x9916)
+        let activePoolHandle = GhosttySurfaceHandle(rawValue: 0x9917)
+        let activeSurfaceID = UUID()
+        let inactiveSurfaceID = UUID()
+        let activeView = GhosttyTerminalView()
+        let inactiveView = GhosttyTerminalView()
+        let context = GhosttyTerminalSurfaceContext(
+            viewportID: UUID(),
+            surfaceID: activeSurfaceID,
+            surfaceKey: "main-terminal:local:beta",
+            sessionRef: SessionRef(target: .local, sessionName: "beta")
+        )
+
+        GhosttyTerminalSurfaceRegistry.shared.resetForTesting()
+        SurfacePool.shared.resetForTesting()
+        TerminalHostActiveSurfaceRegistry.shared.resetForTesting()
+        defer {
+            GhosttyTerminalSurfaceRegistry.shared.resetForTesting()
+            SurfacePool.shared.resetForTesting()
+            TerminalHostActiveSurfaceRegistry.shared.resetForTesting()
+        }
+
+        SurfacePool.shared.register(
+            view: activeView,
+            leafID: activeSurfaceID,
+            tmuxPaneID: "%2",
+            surfaceHandle: activePoolHandle
+        )
+        SurfacePool.shared.register(
+            view: inactiveView,
+            leafID: inactiveSurfaceID,
+            tmuxPaneID: "%3",
+            surfaceHandle: callbackHandle
+        )
+        SurfacePool.shared.background(leafID: inactiveSurfaceID)
+        TerminalHostActiveSurfaceRegistry.shared.setActiveLeafID(
+            activeSurfaceID,
+            forSurfaceID: activeSurfaceID
+        )
+        GhosttyTerminalSurfaceRegistry.shared.register(
+            surfaceHandle: callbackHandle,
+            context: context,
+            attachCommand: "tmux attach-session -t beta"
+        )
+
+        XCTAssertTrue(
+            GhosttyApp.resolvedTerminalViewForTesting(surfaceHandle: callbackHandle) === activeView
+        )
+    }
+
     private func withCustomOSCAction<T>(
         osc: UInt16,
         payload: String,

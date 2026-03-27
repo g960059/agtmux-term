@@ -32,8 +32,8 @@ final class GhosttyApp {
     private static var initializedShared: GhosttyApp?
     private static let hostSignpostsEnabled =
         ProcessInfo.processInfo.environment["AGTMUX_HOST_SIGNPOSTS_ENABLED"] == "1"
-    @MainActor
-    private static var surfaceDrawTelemetryEnabled =
+    private static let surfaceDrawTelemetryStateLock = NSLock()
+    private static var _surfaceDrawTelemetryEnabled =
         ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
         || NSClassFromString("XCTestCase") != nil
         || ProcessInfo.processInfo.environment["AGTMUX_SCROLL_TELEMETRY_ENABLED"] == "1"
@@ -156,6 +156,19 @@ final class GhosttyApp {
         CFRunLoopWakeUp(mainRunLoop)
     }
 
+    private static func surfaceDrawTelemetryEnabledSnapshot() -> Bool {
+        surfaceDrawTelemetryStateLock.lock()
+        defer { surfaceDrawTelemetryStateLock.unlock() }
+        return _surfaceDrawTelemetryEnabled
+    }
+
+    @MainActor
+    private static func setSurfaceDrawTelemetryEnabled(_ enabled: Bool) {
+        surfaceDrawTelemetryStateLock.lock()
+        _surfaceDrawTelemetryEnabled = enabled
+        surfaceDrawTelemetryStateLock.unlock()
+    }
+
     @MainActor
     private var tickExecutionDepth = 0
 
@@ -179,9 +192,9 @@ final class GhosttyApp {
         }
         // Clipboard callbacks: non-optional in Zig (*const fn), so nil → crash
         // if clipboard is ever accessed. Provide no-op stubs for MVP.
-        let readClipboard: ghostty_runtime_read_clipboard_cb = { _, _, _ in }
+        let readClipboard: ghostty_runtime_read_clipboard_cb = { _, _, _ in false }
         let confirmReadClipboard: ghostty_runtime_confirm_read_clipboard_cb = { _, _, _, _ in }
-        let writeClipboard: ghostty_runtime_write_clipboard_cb = { _, _, _, _ in }
+        let writeClipboard: ghostty_runtime_write_clipboard_cb = { _, _, _, _, _ in }
         let closeSurface: ghostty_runtime_close_surface_cb = { _, _ in }
         runtimeConfig.read_clipboard_cb = readClipboard
         runtimeConfig.confirm_read_clipboard_cb = confirmReadClipboard
@@ -316,14 +329,14 @@ final class GhosttyApp {
 
         @MainActor
         func applyRenderCallback() {
-            if surfaceDrawTelemetryEnabled {
+            if surfaceDrawTelemetryEnabledSnapshot() {
                 renderCallbackCount += 1
             }
-            let view = SurfacePool.shared.view(forSurfaceHandle: surfaceHandle)
+            let view = resolvedTerminalView(forSurfaceHandle: surfaceHandle)
             view?.noteRenderRequestTelemetry()
             let now = ProcessInfo.processInfo.systemUptime
 
-            if let view, SurfacePool.shared.isDrawable(surfaceHandle: surfaceHandle) {
+            if let view, SurfacePool.shared.isActive(view: view) {
                 view.triggerRendererOwnedRenderCallback(now: now)
                 return
             }
@@ -351,10 +364,10 @@ final class GhosttyApp {
 
         @MainActor
         func applyRendererFrameCompleted() {
-            if surfaceDrawTelemetryEnabled {
+            if surfaceDrawTelemetryEnabledSnapshot() {
                 rendererFrameCompletedCount += 1
             }
-            SurfacePool.shared.view(forSurfaceHandle: surfaceHandle)?
+            resolvedTerminalView(forSurfaceHandle: surfaceHandle)?
                 .noteRendererFrameCompletedTelemetry()
         }
 
@@ -369,6 +382,58 @@ final class GhosttyApp {
             applyRendererFrameCompleted()
         }
         return true
+    }
+
+    @MainActor
+    private static func resolvedTerminalView(
+        forSurfaceHandle surfaceHandle: GhosttySurfaceHandle
+    ) -> GhosttyTerminalView? {
+        if let context = GhosttyTerminalSurfaceRegistry.shared.context(forSurfaceHandle: surfaceHandle) {
+            if let activeLeafID = TerminalHostActiveSurfaceRegistry.shared.activeLeafID(forSurfaceID: context.surfaceID),
+               let activeView = SurfacePool.shared.view(leafID: activeLeafID),
+               SurfacePool.shared.isActive(view: activeView) {
+                return activeView
+            }
+
+            if let activeSurfaceView = SurfacePool.shared.view(leafID: context.surfaceID),
+               SurfacePool.shared.isActive(view: activeSurfaceView) {
+                return activeSurfaceView
+            }
+
+            if let handleMappedView = SurfacePool.shared.view(forSurfaceHandle: surfaceHandle),
+               SurfacePool.shared.isActive(view: handleMappedView) {
+                return handleMappedView
+            }
+
+            if let activeLeafID = TerminalHostActiveSurfaceRegistry.shared.activeLeafID(forSurfaceID: context.surfaceID),
+               let activeView = SurfacePool.shared.view(leafID: activeLeafID) {
+                return activeView
+            }
+
+            if let surfaceView = SurfacePool.shared.view(leafID: context.surfaceID) {
+                return surfaceView
+            }
+
+            return SurfacePool.shared.view(forSurfaceHandle: surfaceHandle)
+        }
+
+        if let handleMappedView = SurfacePool.shared.view(forSurfaceHandle: surfaceHandle),
+           SurfacePool.shared.isActive(view: handleMappedView) {
+            return handleMappedView
+        }
+
+        if let singleActiveView = SurfacePool.shared.singleActiveView() {
+            return singleActiveView
+        }
+
+        return SurfacePool.shared.view(forSurfaceHandle: surfaceHandle)
+    }
+
+    @MainActor
+    static func resolvedTerminalViewForTesting(
+        surfaceHandle: GhosttySurfaceHandle
+    ) -> GhosttyTerminalView? {
+        resolvedTerminalView(forSurfaceHandle: surfaceHandle)
     }
 
     /// Integration-test seam for the real action callback path.
@@ -476,7 +541,7 @@ final class GhosttyApp {
 
     @MainActor
     private static func resetSurfaceDrawTelemetry(enableCollection: Bool) {
-        surfaceDrawTelemetryEnabled = enableCollection
+        setSurfaceDrawTelemetryEnabled(enableCollection)
         pendingSurfaceDrawGapState = nil
         directDrawPassPending = false
         renderCallbackCount = 0
@@ -533,7 +598,7 @@ final class GhosttyApp {
         let tickStart = ProcessInfo.processInfo.systemUptime
         ghostty_app_tick(app)
         let tickEnd = ProcessInfo.processInfo.systemUptime
-        if Self.surfaceDrawTelemetryEnabled {
+        if Self.surfaceDrawTelemetryEnabledSnapshot() {
             Self.ghosttyAppTickDurationSamplesMs.append((tickEnd - tickStart) * 1000.0)
         }
         Self.runDirtyDrawPass()
@@ -549,7 +614,7 @@ final class GhosttyApp {
         guard shouldScheduleTickOnMain() else { return }
         guard directDrawPassPending == false else { return }
         directDrawPassPending = true
-        if surfaceDrawTelemetryEnabled {
+        if surfaceDrawTelemetryEnabledSnapshot() {
             scheduledDirectDrawPassCount += 1
         }
         directDrawScheduleObserver()
@@ -565,7 +630,7 @@ final class GhosttyApp {
     private static func runDirectDrawPassImmediatelyIfPossible() -> Bool {
         guard shouldScheduleTickOnMain() else { return false }
         guard directDrawPassPending == false else { return false }
-        if surfaceDrawTelemetryEnabled {
+        if surfaceDrawTelemetryEnabledSnapshot() {
             immediateDirectDrawPassCount += 1
         }
         runDirtyDrawPass()
@@ -628,12 +693,12 @@ final class GhosttyApp {
     @MainActor
     private static func runDirtyDrawPass() {
         let passStart = ProcessInfo.processInfo.systemUptime
-        if surfaceDrawTelemetryEnabled {
+        if surfaceDrawTelemetryEnabledSnapshot() {
             dirtyDrawPassCount += 1
         }
         let dirtyViews = SurfacePool.shared.consumeDirtyActiveSurfaceViews()
         defer {
-            if surfaceDrawTelemetryEnabled {
+            if surfaceDrawTelemetryEnabledSnapshot() {
                 let passEnd = ProcessInfo.processInfo.systemUptime
                 dirtyDrawPassDurationSamplesMs.append((passEnd - passStart) * 1000.0)
             }
@@ -661,7 +726,7 @@ final class GhosttyApp {
             }
             drawnSurfaceCount += 1
         }
-        if surfaceDrawTelemetryEnabled {
+        if surfaceDrawTelemetryEnabledSnapshot() {
             dirtyDrawnSurfaceCount += drawnSurfaceCount
         }
         SurfacePool.shared.recordDrawPassCount(drawnSurfaceCount)

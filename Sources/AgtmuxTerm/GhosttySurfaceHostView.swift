@@ -94,7 +94,7 @@ struct GhosttySurfaceHostView: NSViewRepresentable {
         context.coordinator.lastFocusRestoreNonce = focusRestoreNonce
         if isFocused {
             SurfacePool.shared.activate(leafID: surfaceID)
-            nsView.window?.makeFirstResponder(nsView)
+            nsView.restoreWindowFocus()
         } else {
             SurfacePool.shared.background(leafID: surfaceID)
         }

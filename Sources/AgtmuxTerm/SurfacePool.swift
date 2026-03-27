@@ -335,6 +335,21 @@ final class SurfacePool {
         return activeSurfaceViewIDs.contains(ObjectIdentifier(managed.view))
     }
 
+    func isActive(view: GhosttyTerminalView) -> Bool {
+        activeSurfaceViewIDs.contains(ObjectIdentifier(view))
+    }
+
+    func singleActiveView() -> GhosttyTerminalView? {
+        guard activeSurfaceViewIDs.count == 1,
+              let activeViewID = activeSurfaceViewIDs.first,
+              let leafID = leafIDsByViewID[activeViewID],
+              let managed = pool[leafID]
+        else {
+            return nil
+        }
+        return managed.view
+    }
+
     func resetForTesting() {
         gcTimer?.invalidate()
         gcTimer = nil

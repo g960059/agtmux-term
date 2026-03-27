@@ -2,6 +2,29 @@ import Foundation
 import AppKit
 import AgtmuxTermCore
 
+enum TerminalViewRegistrationRequirement: String {
+    case terminalViewInWindow
+    case terminalViewInWindowAndRenderedState
+
+    @MainActor
+    func isSatisfied(
+        terminalView: GhosttyTerminalView?,
+        renderedState: GhosttyRenderedTerminalSurfaceState?
+    ) -> Bool {
+        guard let terminalView,
+              terminalView.window != nil else {
+            return false
+        }
+
+        switch self {
+        case .terminalViewInWindow:
+            return true
+        case .terminalViewInWindowAndRenderedState:
+            return renderedState != nil
+        }
+    }
+}
+
 private func uiTestBridgeDebugLog(_ message: @autoclosure () -> String) {
     let line = "[ui-test-bridge] " + message() + "\n"
     if let debugPath = UserDefaults.standard.string(forKey: "UITestBridgeDebugLogPath"),
@@ -1160,7 +1183,8 @@ final class UITestTmuxBridge {
             if waitForRegistration {
                 try await waitForTerminalViewRegistration(
                     surfaceID: mainTerminalStore.surfaceID,
-                    timeoutMilliseconds: terminalViewRegistrationTimeoutMilliseconds
+                    timeoutMilliseconds: terminalViewRegistrationTimeoutMilliseconds,
+                    requirement: .terminalViewInWindow
                 )
             }
             return OpenTerminalForPaneSnapshot(
@@ -1187,7 +1211,8 @@ final class UITestTmuxBridge {
             if waitForRegistration {
                 try await waitForTerminalViewRegistration(
                     surfaceID: mainTerminalStore.surfaceID,
-                    timeoutMilliseconds: terminalViewRegistrationTimeoutMilliseconds
+                    timeoutMilliseconds: terminalViewRegistrationTimeoutMilliseconds,
+                    requirement: .terminalViewInWindow
                 )
             }
             return OpenTerminalForPaneSnapshot(
@@ -1224,7 +1249,8 @@ final class UITestTmuxBridge {
         if waitForRegistration {
             try await waitForTerminalViewRegistration(
                 surfaceID: mainTerminalStore.surfaceID,
-                timeoutMilliseconds: terminalViewRegistrationTimeoutMilliseconds
+                timeoutMilliseconds: terminalViewRegistrationTimeoutMilliseconds,
+                requirement: .terminalViewInWindow
             )
         }
         let requestedWindowID = pane.windowId
@@ -1444,7 +1470,8 @@ final class UITestTmuxBridge {
         let surfaceID = try surfaceID(from: args, command: focusTerminalHostCommand)
         try await waitForTerminalViewRegistration(
             surfaceID: surfaceID,
-            timeoutMilliseconds: terminalViewRegistrationTimeoutMilliseconds
+            timeoutMilliseconds: terminalViewRegistrationTimeoutMilliseconds,
+            requirement: .terminalViewInWindow
         )
         let terminalView = try terminalView(for: args, command: focusTerminalHostCommand)
         guard let window = terminalView.window else {
@@ -1987,18 +2014,21 @@ final class UITestTmuxBridge {
 
     func waitForTerminalViewRegistrationForTesting(
         surfaceID: UUID,
-        timeoutMilliseconds: Int = 5_000
+        timeoutMilliseconds: Int = 5_000,
+        requirement: TerminalViewRegistrationRequirement = .terminalViewInWindowAndRenderedState
     ) async throws {
         try await waitForTerminalViewRegistration(
             surfaceID: surfaceID,
-            timeoutMilliseconds: timeoutMilliseconds
+            timeoutMilliseconds: timeoutMilliseconds,
+            requirement: requirement
         )
     }
 
     private func measuredTerminalViewForTesting(surfaceID: UUID) async throws -> GhosttyTerminalView {
         try await waitForTerminalViewRegistration(
             surfaceID: surfaceID,
-            timeoutMilliseconds: terminalViewRegistrationTimeoutMilliseconds
+            timeoutMilliseconds: terminalViewRegistrationTimeoutMilliseconds,
+            requirement: .terminalViewInWindow
         )
         return try terminalView(
             for: [measureTerminalScrollBurstCommand, surfaceID.uuidString],
@@ -2011,7 +2041,8 @@ final class UITestTmuxBridge {
     ) async throws -> GhosttyTerminalView.ViewportTextSnapshot {
         try await waitForTerminalViewRegistration(
             surfaceID: surfaceID,
-            timeoutMilliseconds: terminalViewRegistrationTimeoutMilliseconds
+            timeoutMilliseconds: terminalViewRegistrationTimeoutMilliseconds,
+            requirement: .terminalViewInWindow
         )
         return try terminalViewportTextSnapshotForTesting(surfaceID: surfaceID)
     }
@@ -2130,26 +2161,46 @@ final class UITestTmuxBridge {
 
     private func waitForTerminalViewRegistration(
         surfaceID: UUID,
-        timeoutMilliseconds: Int = 5_000
+        timeoutMilliseconds: Int = 5_000,
+        requirement: TerminalViewRegistrationRequirement = .terminalViewInWindowAndRenderedState
     ) async throws {
         let deadline = ContinuousClock.now + .milliseconds(timeoutMilliseconds)
         while ContinuousClock.now < deadline {
-            let hasRenderedState = resolvedRenderedState(for: surfaceID) != nil
-            if resolvedTerminalView(for: surfaceID) != nil,
-               hasRenderedState {
+            flushAppWindowHostingIfNeeded()
+            let terminalView = resolvedTerminalView(for: surfaceID)
+            let renderedState = resolvedRenderedState(for: surfaceID)
+            if requirement.isSatisfied(
+                terminalView: terminalView,
+                renderedState: renderedState
+            ) {
                 return
             }
             try await Task.sleep(for: .milliseconds(20))
         }
+
+        let snapshot = terminalRegistrationStateSnapshot(
+            for: [terminalRegistrationStateCommand, surfaceID.uuidString]
+        )
+        let snapshotJSON = (try? JSONEncoder().encode(snapshot))
+            .flatMap { String(data: $0, encoding: .utf8) }
+            ?? "{}"
 
         throw NSError(
             domain: "UITestTmuxBridge",
             code: 41,
             userInfo: [
                 NSLocalizedDescriptionKey:
-                    "Timed out waiting for terminal view registration for surfaceID \(surfaceID.uuidString)"
+                    "Timed out waiting for terminal view registration for surfaceID \(surfaceID.uuidString) requirement=\(requirement.rawValue) snapshot=\(snapshotJSON)"
             ]
         )
+    }
+
+    private func flushAppWindowHostingIfNeeded() {
+        for window in NSApp.windows {
+            window.contentView?.layoutSubtreeIfNeeded()
+            window.contentView?.displayIfNeeded()
+            window.displayIfNeeded()
+        }
     }
 
     private func controlModeKey(for sessionRef: SessionRef) -> String {
