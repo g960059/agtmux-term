@@ -16,8 +16,8 @@ final class NonDraggableHostingView<Content: View>: NSHostingView<Content> {
 // AppViewModel is injected as an EnvironmentObject so every SwiftUI descendant
 // (SidebarView, FilterBarView, SessionRowView, TerminalPanel) can observe it.
 //
-// GhosttyApp singleton is initialised before the window is shown so that
-// ghostty_app_new runs before any surface is created.
+// Ghostty runtime bootstraps lazily on first visible surface attach so launch can
+// reach foreground/key-window state before libghostty/Metal setup starts.
 // ---------------------------------------------------------------------------
 
 // XCUITest calls app.terminate() which sends SIGTERM.
@@ -25,12 +25,17 @@ final class NonDraggableHostingView<Content: View>: NSHostingView<Content> {
 // which can take seconds and leaves the process in a "Running Background" zombie state
 // that blocks the next test's launch(). Exit immediately on SIGTERM to avoid this race.
 // The handler also terminates the daemon child process owned by this app instance.
+let environment = ProcessInfo.processInfo.environment
+let userDefaults = UserDefaults.standard
 let isUITest = CommandLine.arguments.contains { $0.hasPrefix("-XCTest") }
-    || ProcessInfo.processInfo.environment["AGTMUX_UITEST"] == "1"
-let enableUITestGhosttySurfaces = ProcessInfo.processInfo.environment["AGTMUX_UITEST_ENABLE_GHOSTTY_SURFACES"] == "1"
-let enableUITestPolling = isUITest
-    && ProcessInfo.processInfo.environment["AGTMUX_UITEST_INVENTORY_ONLY"] != "1"
-let requiresGhosttyRuntime = !isUITest || enableUITestGhosttySurfaces
+    || UITestTmuxBridge.automationRequested(
+        environment: environment,
+        userDefaults: userDefaults
+    )
+let enableUITestPolling = isUITest && !UITestTmuxBridge.inventoryOnlyRequested(
+    environment: environment,
+    userDefaults: userDefaults
+)
 let xpcDisabled = ProcessInfo.processInfo.environment["AGTMUX_XPC_DISABLED"] == "1"
 let xpcServiceBundled: Bool = {
     // SwiftPM (`swift run`) does not embed XPC services.
@@ -62,29 +67,12 @@ do {
 }
 signal(SIGTERM, agtmuxTermSIGTERMHandler)
 
-// 0. Initialise Ghostty global state (allocator, logging, etc.) in normal runs.
-//
-// UI tests do not require real Ghostty surfaces; skipping init keeps launch stable
-// under XCTest activation timing constraints.
-if requiresGhosttyRuntime {
-    let ghosttyInitResult = ghostty_init(UInt(CommandLine.argc), CommandLine.unsafeArgv)
-    guard ghosttyInitResult == 0 else {
-        fatalError("ghostty_init failed with code \(ghosttyInitResult)")
-    }
-    // Handle CLI subcommands (ghostty +inspect-config, etc.) if present.
-    ghostty_cli_try_action()
-}
-
 // 1. Bootstrap NSApplication.
 let app = NSApplication.shared
 app.setActivationPolicy(.regular)
+app.finishLaunching()
 
-// 2. Initialise GhosttyApp singleton (triggers ghostty_app_new) for normal runs.
-if requiresGhosttyRuntime {
-    _ = GhosttyApp.shared
-}
-
-// 3. Create AppViewModel and start daemon polling.
+// 2. Create AppViewModel and start daemon polling.
 //
 // main.swift top-level code always executes on the main thread, so using
 // MainActor.assumeIsolated is correct and avoids forcing everything async.
@@ -92,10 +80,11 @@ let xpcClient: AgtmuxDaemonXPCClient? = useXPCDaemonService ? AgtmuxDaemonXPCCli
 let daemonSupervisor = AgtmuxDaemonSupervisor()
 let enableBroadPolling = !isUITest || enableUITestPolling
 let enableLocalMetadataByDefault =
-    ProcessInfo.processInfo.environment["AGTMUX_ENABLE_LOCAL_METADATA"] == "1"
-    || UserDefaults.standard.bool(forKey: "EnableLocalMetadata")
+    environment["AGTMUX_ENABLE_LOCAL_METADATA"] == "1"
+    || userDefaults.bool(forKey: "EnableLocalMetadata")
 let uiTestBridgeRequested = UITestTmuxBridge.bridgeRequested(
-    environment: ProcessInfo.processInfo.environment
+    environment: environment,
+    userDefaults: userDefaults
 )
 
 let interruptCleanupQueue = DispatchQueue(label: "local.agtmux.term.sigint-cleanup")
@@ -248,7 +237,7 @@ let terminationCleanupObserver = NotificationCenter.default.addObserver(
 }
 _ = terminationCleanupObserver
 
-// 5. Build the SwiftUI view hierarchy wrapped in NSHostingView.
+// 4. Build the SwiftUI view hierarchy wrapped in NSHostingView.
 let cockpit = CockpitView()
     .environmentObject(viewModel)
     .environment(viewModel.sidebarStore)

@@ -29,10 +29,10 @@
 - [x] delete stale perf host-mode wrappers and align bench payloads/docs with surface-based embedded-only terminology
 - [x] add a coalesced interactive immediate-draw fast path for keyboard and
   scroll input when renderer-owned callbacks fail to fire
-- [x] route visible render callbacks straight to a coalesced immediate
-  presentation draw instead of bouncing through the generic dirty refresh path
-- [x] guard render-callback immediate draws behind first-layer presentation so
-  the initial attach path cannot crash inside libghostty
+- [x] route visible render callbacks back to the renderer-owned refresh path
+  instead of issuing synchronous host draws
+- [x] remove synchronous render-callback host draws from the initial attach
+  path so first-surface startup cannot abort inside libghostty
 - [x] bump the vendored Ghostty baseline to `v1.3.1` and regenerate the
   aggregate patch / xcframework from a clean checkout
 - [x] teach the keypress perf harness to report viewport-visible latency in
@@ -51,6 +51,8 @@
   orphaned executable-path processes before starting a fresh test instance
 - [x] stop scheduling `ghostty_app_tick(...)` from interactive and scroll
   continuation/recovery draw pumps so follow-up frames stay draw-only
+- [x] let real scroll input schedule one coalesced `ghostty_app_tick(...)`
+  so embedded wheel events do not wait on an unrelated later wakeup
 - [x] restore the real-input immediate draw, after-first-layer render-callback
   fallback, and temporary layer observation gate after the cadence-thinning
   regression removed them together
@@ -62,8 +64,72 @@
 - [x] return post-bootstrap key input and visible render callbacks to the
   renderer-owned refresh path and make the real XCUITest key-input regression
   pass with zero host immediate draws
+- [x] arm recovery-only layer/frame-complete observation after post-bootstrap
+  key input so renderer-owned typing still gets a bounded rescue path when no
+  presentation completes after the input edge
+- [x] arm and reschedule a renderer-owned recovery probe for post-first-layer
+  wheel input so stalled scroll frames get one bounded rescue draw without
+  restoring the steady-state host scroll pump
+- [x] finish the custom `NSApplication` launch path before the first
+  foreground push so real XCUITest and AX perf helpers stop getting stuck in
+  `Running Background`
+- [x] make bundle-launched perf runs carry bridge bootstrap config and isolated
+  tmux socket selection through defaults instead of env-only binary launch
+- [x] clear stale perf bridge defaults before and after Gate-L runs so failed
+  benches do not poison later XCUITest launches
+- [x] ignore stale `UITest*` tmux socket/config defaults on normal launches
+  unless the Gate-L enabled marker or `AGTMUX_UITEST=1` is active
+- [x] make the AX keypress harness acquire terminal geometry before strict
+  focus so helper-driven foreground clicks can recover installed-app runs that
+  start with a visible surface but no key window yet
+- [x] replace the one-shot UITest bridge command poll with a long-lived
+  low-latency loop so later perf iterations do not stall behind the 250 ms
+  activation monitor cadence
+- [x] bundle Ghostty runtime resources into the app so embedded surfaces see
+  the same terminfo and shell-integration assets as native Ghostty
+- [x] export app-side terminal screen frames and let the AX helper continue
+  after external activation failure so perf input lanes can fall back from AX
+  tree targeting
+- [x] defer first Ghostty runtime bootstrap / surface attach until the app is
+  active and the host window is visible+key so launch does not spend its first
+  foreground cycle inside libghostty
+- [x] keep app-side `GHOSTTY_ACTION_RENDER` on the dirty-view scheduler, but
+  make the render-callback presentation path request renderer-owned refresh
+  instead of synchronous host draws
+- [x] allow bridge / automation runs to bypass the normal first-surface
+  visibility gate so perf and regression lanes can attach before frontmost
+  ownership settles
+- [x] split perf-harness terminal open/registration from foreground focus so
+  shell-driven lanes no longer hide activation failures inside open-surface
+  waits
+- [x] stop shell-driven Gate-L activation fallbacks from relaunching the
+  installed app while a target pid already exists
+- [x] publish app-side tmux bootstrap results before any post-bootstrap
+  inventory hydration so installed-app perf lanes do not time out on refresh
+- [x] shrink post-bootstrap bridge refresh from `fetchAll()` to local inventory
+  only on the app-driven tmux path
+- [x] make the live client internal scroll bench self-contained by bootstrapping
+  its own isolated history fixture session and waiting only for registration /
+  viewport readiness instead of shell-driven focus
+- [x] move bridge-side internal scroll sampling and injection off shared
+  MainActor tasks so the measurement command itself does not serialize both
+  loops on the UI actor
+- [x] preserve direct-local pane socket identity through the main-terminal
+  attach/navigation path so explicit live-pane opens do not reattach against
+  the wrong tmux server
+- [x] seed fresh tmux attaches with a bounded `capture-pane` history prelude so
+  live-pane wheel input enters real local scrollback instead of staying on a
+  dead fresh client viewport
 - [ ] thin the embedded cadence path further if matched-version cadence still
   trails native or user feel
 - [ ] explain why scroll cadence still trails native after the host scroll pump
   is removed, and cut that remaining gap without reintroducing host-owned draw
   loops
+- [x] align `GHOSTTY_ACTION_RENDER` dirty-draw targeting with the resolved
+  active terminal view so live-pane frame callbacks and draw completion land on
+  the same `GhosttyTerminalView`
+- [ ] shrink the remaining live-pane cadence gap now that fresh attach enters
+  real local scrollback on the real `%1` session path
+- [ ] make foreground activation deterministic across shell-driven AX helpers
+  and real XCUITest launches; `Running Background` is still recurring in this
+  environment

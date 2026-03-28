@@ -37,6 +37,21 @@ final class GhosttyTickSchedulerTests: XCTestCase {
         XCTAssertFalse(scheduler.tickDrainScheduledForTesting())
     }
 
+    func testEnqueueTickIfNeededCoalescesPendingWakeup() {
+        var tickCount = 0
+        let scheduler = makeScheduler {
+            tickCount += 1
+        }
+
+        XCTAssertTrue(scheduler.enqueueTickIfNeeded())
+        XCTAssertFalse(scheduler.enqueueTickIfNeeded())
+        waitForDrain(of: scheduler)
+
+        XCTAssertEqual(tickCount, 1)
+        XCTAssertEqual(scheduler.pendingTickCreditsForTesting(), 0)
+        XCTAssertFalse(scheduler.tickDrainScheduledForTesting())
+    }
+
     private func makeScheduler(
         runTick: @escaping @MainActor () -> Void
     ) -> GhosttyTickScheduler {

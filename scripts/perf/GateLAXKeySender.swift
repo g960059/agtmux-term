@@ -87,6 +87,7 @@ struct GateLAXKeySenderOptions {
 
     enum Action {
         case key
+        case clickPoint
         case clickFrontWindow
         case activateApp
         case sequence
@@ -144,6 +145,9 @@ func parseOptions(arguments: [String]) throws -> GateLAXKeySenderOptions {
             index += 1
         case "--click-front-window":
             options.action = .clickFrontWindow
+            index += 1
+        case "--click-point":
+            options.action = .clickPoint
             index += 1
         case "--focus-key-point":
             options.action = .focusKeyPoint
@@ -410,6 +414,8 @@ func actionName(for options: GateLAXKeySenderOptions) -> String {
     switch options.action {
     case .key:
         return "key"
+    case .clickPoint:
+        return "click-point"
     case .clickFrontWindow:
         return options.targetIdentifier == nil ? "click-front-window" : "click-identifier"
     case .activateApp:
@@ -469,12 +475,64 @@ func activateRequestedApplication(
         throw GateLAXKeySenderError.targetApplicationUnavailable(description)
     }
 
-    let activated = application.activate(options: [.activateAllWindows])
-    guard activated else {
-        throw GateLAXKeySenderError.targetApplicationActivationFailed(description)
+    if application.isActive {
+        usleep(80_000)
+        return
     }
 
-    usleep(120_000)
+    let deadline = Date().addingTimeInterval(2.0)
+    while Date() < deadline {
+        _ = application.activate(options: [.activateAllWindows])
+        if application.isActive {
+            usleep(120_000)
+            return
+        }
+
+        _ = forceFrontmostApplicationViaSystemEvents(processIdentifier: application.processIdentifier)
+        if application.isActive {
+            usleep(180_000)
+            return
+        }
+
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+    }
+
+    throw GateLAXKeySenderError.targetApplicationActivationFailed(description)
+}
+
+@discardableResult
+func forceFrontmostApplicationViaSystemEvents(processIdentifier: pid_t) -> Bool {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+    process.arguments = [
+        "-e",
+        "tell application \"System Events\" to set frontmost of (first application process whose unix id is \(processIdentifier)) to true"
+    ]
+    process.standardOutput = Pipe()
+    process.standardError = Pipe()
+
+    do {
+        try process.run()
+    } catch {
+        return false
+    }
+
+    process.waitUntilExit()
+    return process.terminationStatus == 0
+}
+
+func activateRequestedApplicationIfPossible(
+    appPID: pid_t?,
+    bundleIdentifier: String?
+) throws {
+    do {
+        try activateRequestedApplication(
+            appPID: appPID,
+            bundleIdentifier: bundleIdentifier
+        )
+    } catch GateLAXKeySenderError.targetApplicationActivationFailed(let description) {
+        debugLog("continuing after external activation failure target=\(description)")
+    }
 }
 
 func postKeyStroke(
@@ -839,25 +897,35 @@ func frontWindowClickPoint(
     }
 
     let targetElement: AXUIElement
+    let frameFallbackElement: AXUIElement?
     if let targetIdentifier {
         var visited = Set<CFHashCode>()
         debugLog("search target identifier=\(targetIdentifier)")
         var resolvedMatch: AXUIElement?
+        var resolvedMatchWindow: AXUIElement?
         for rootWindow in rootWindows(for: application) {
             if let match = findElement(matching: targetIdentifier, in: rootWindow, visited: &visited) {
                 resolvedMatch = match
+                resolvedMatchWindow = rootWindow
                 break
             }
         }
-        guard let match = resolvedMatch else {
+        if let match = resolvedMatch {
+            targetElement = match
+            frameFallbackElement = resolvedMatchWindow
+        } else if let fallbackWindow = rootWindows(for: application).first {
+            debugLog("target identifier fallback to root window identifier=\(targetIdentifier)")
+            targetElement = fallbackWindow
+            frameFallbackElement = fallbackWindow
+        } else {
             throw GateLAXKeySenderError.targetElementUnavailable(targetIdentifier)
         }
-        targetElement = match
     } else {
         guard let focusedWindow else {
             throw GateLAXKeySenderError.focusedWindowUnavailable
         }
         targetElement = focusedWindow
+        frameFallbackElement = focusedWindow
     }
 
     let focusResult = AXUIElementSetAttributeValue(
@@ -871,8 +939,15 @@ func frontWindowClickPoint(
 
     var origin = CGPoint.zero
     var size = CGSize.zero
-    guard readCGPoint(targetElement, kAXPositionAttribute as CFString, into: &origin),
-          readCGSize(targetElement, kAXSizeAttribute as CFString, into: &size)
+    let frameElement = [targetElement, frameFallbackElement].compactMap { $0 }.first { element in
+        var testOrigin = CGPoint.zero
+        var testSize = CGSize.zero
+        return readCGPoint(element, kAXPositionAttribute as CFString, into: &testOrigin)
+            && readCGSize(element, kAXSizeAttribute as CFString, into: &testSize)
+    }
+    guard let frameElement,
+          readCGPoint(frameElement, kAXPositionAttribute as CFString, into: &origin),
+          readCGSize(frameElement, kAXSizeAttribute as CFString, into: &size)
     else {
         throw GateLAXKeySenderError.focusedWindowFrameUnavailable
     }
@@ -964,22 +1039,33 @@ enum GateLAXKeySenderMain {
                 throw GateLAXKeySenderError.eventSourceUnavailable
             }
 
-            try activateRequestedApplication(
-                appPID: options.appPID,
-                bundleIdentifier: options.bundleIdentifier
-            )
-
             let clickPoint: ClickPoint?
 
             switch options.action {
             case .key:
+                try activateRequestedApplicationIfPossible(
+                    appPID: options.appPID,
+                    bundleIdentifier: options.bundleIdentifier
+                )
                 try postKeyStroke(
                     source: source,
                     keyCode: options.keyCode,
                     modifiers: options.modifiers
                 )
                 clickPoint = nil
+            case .clickPoint:
+                try activateRequestedApplicationIfPossible(
+                    appPID: options.appPID,
+                    bundleIdentifier: options.bundleIdentifier
+                )
+                let point = try requiredExplicitPoint(for: options)
+                try postClick(source: source, point: point)
+                clickPoint = ClickPoint(x: point.x, y: point.y)
             case .clickFrontWindow:
+                try activateRequestedApplicationIfPossible(
+                    appPID: options.appPID,
+                    bundleIdentifier: options.bundleIdentifier
+                )
                 let point = try frontWindowClickPoint(
                     xFraction: options.xFraction,
                     yFraction: options.yFraction,
@@ -990,17 +1076,26 @@ enum GateLAXKeySenderMain {
                 try postClick(source: source, point: point)
                 clickPoint = ClickPoint(x: point.x, y: point.y)
             case .activateApp:
-                guard options.appPID != nil || options.bundleIdentifier != nil else {
-                    throw GateLAXKeySenderError.targetApplicationUnavailable("missing --app-pid or --bundle-id")
-                }
+                try activateRequestedApplication(
+                    appPID: options.appPID,
+                    bundleIdentifier: options.bundleIdentifier
+                )
                 clickPoint = nil
             case .sequence:
+                try activateRequestedApplicationIfPossible(
+                    appPID: options.appPID,
+                    bundleIdentifier: options.bundleIdentifier
+                )
                 guard let sequenceName = options.sequenceName else {
                     throw GateLAXKeySenderError.invalidArgument("--sequence")
                 }
                 try postSequence(named: sequenceName, source: source)
                 clickPoint = nil
             case .focusKeyPoint:
+                try activateRequestedApplicationIfPossible(
+                    appPID: options.appPID,
+                    bundleIdentifier: options.bundleIdentifier
+                )
                 let point = try requiredExplicitPoint(for: options)
                 try postClick(source: source, point: point)
                 usleep(120_000)
@@ -1011,6 +1106,10 @@ enum GateLAXKeySenderMain {
                 )
                 clickPoint = ClickPoint(x: point.x, y: point.y)
             case .focusKeyFrontWindow:
+                try activateRequestedApplicationIfPossible(
+                    appPID: options.appPID,
+                    bundleIdentifier: options.bundleIdentifier
+                )
                 let point = try frontWindowClickPoint(
                     xFraction: options.xFraction,
                     yFraction: options.yFraction,
@@ -1027,6 +1126,10 @@ enum GateLAXKeySenderMain {
                 )
                 clickPoint = ClickPoint(x: point.x, y: point.y)
             case .focusKeyIdentifier:
+                try activateRequestedApplicationIfPossible(
+                    appPID: options.appPID,
+                    bundleIdentifier: options.bundleIdentifier
+                )
                 guard let targetIdentifier = options.targetIdentifier, !targetIdentifier.isEmpty else {
                     throw GateLAXKeySenderError.elementIdentifierMissing
                 }
@@ -1046,6 +1149,10 @@ enum GateLAXKeySenderMain {
                 )
                 clickPoint = ClickPoint(x: point.x, y: point.y)
             case .scrollPoint:
+                try activateRequestedApplicationIfPossible(
+                    appPID: options.appPID,
+                    bundleIdentifier: options.bundleIdentifier
+                )
                 let point = try requiredExplicitPoint(for: options)
                 try postScroll(
                     source: source,
@@ -1058,6 +1165,10 @@ enum GateLAXKeySenderMain {
                 )
                 clickPoint = ClickPoint(x: point.x, y: point.y)
             case .scrollFrontWindow:
+                try activateRequestedApplicationIfPossible(
+                    appPID: options.appPID,
+                    bundleIdentifier: options.bundleIdentifier
+                )
                 let point = try frontWindowClickPoint(
                     xFraction: options.xFraction,
                     yFraction: options.yFraction,
@@ -1076,6 +1187,10 @@ enum GateLAXKeySenderMain {
                 )
                 clickPoint = ClickPoint(x: point.x, y: point.y)
             case .scrollIdentifier:
+                try activateRequestedApplicationIfPossible(
+                    appPID: options.appPID,
+                    bundleIdentifier: options.bundleIdentifier
+                )
                 guard let targetIdentifier = options.targetIdentifier, !targetIdentifier.isEmpty else {
                     throw GateLAXKeySenderError.elementIdentifierMissing
                 }
@@ -1097,6 +1212,10 @@ enum GateLAXKeySenderMain {
                 )
                 clickPoint = ClickPoint(x: point.x, y: point.y)
             case .focusScrollPoint:
+                try activateRequestedApplicationIfPossible(
+                    appPID: options.appPID,
+                    bundleIdentifier: options.bundleIdentifier
+                )
                 let point = try requiredExplicitPoint(for: options)
                 try postClick(source: source, point: point)
                 usleep(120_000)
@@ -1111,6 +1230,10 @@ enum GateLAXKeySenderMain {
                 )
                 clickPoint = ClickPoint(x: point.x, y: point.y)
             case .focusScrollFrontWindow:
+                try activateRequestedApplicationIfPossible(
+                    appPID: options.appPID,
+                    bundleIdentifier: options.bundleIdentifier
+                )
                 let point = try frontWindowClickPoint(
                     xFraction: options.xFraction,
                     yFraction: options.yFraction,
@@ -1131,6 +1254,10 @@ enum GateLAXKeySenderMain {
                 )
                 clickPoint = ClickPoint(x: point.x, y: point.y)
             case .focusScrollIdentifier:
+                try activateRequestedApplicationIfPossible(
+                    appPID: options.appPID,
+                    bundleIdentifier: options.bundleIdentifier
+                )
                 guard let targetIdentifier = options.targetIdentifier, !targetIdentifier.isEmpty else {
                     throw GateLAXKeySenderError.elementIdentifierMissing
                 }

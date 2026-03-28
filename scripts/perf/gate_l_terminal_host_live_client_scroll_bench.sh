@@ -6,6 +6,7 @@ GATE_L_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd -P)"
 source "$SCRIPT_DIR/gate_l_common.sh"
 
 STEP_METRICS_PY="$SCRIPT_DIR/gate_l_step_metrics.py"
+EMITTER_PY="$SCRIPT_DIR/gate_l_emit_loaded_history_fixture.py"
 
 session_name="${AGTMUX_PERF_LIVE_SESSION_NAME:-}"
 pane_id="${AGTMUX_PERF_LIVE_PANE_ID:-}"
@@ -46,6 +47,9 @@ ui_scroll_sender_lead_ms="${AGTMUX_PERF_LIVE_UI_SCROLL_LEAD_MS:-25000}"
 internal_measurement_retry_count="${AGTMUX_PERF_LIVE_INTERNAL_MEASUREMENT_RETRY_COUNT:-3}"
 internal_measurement_retry_sleep_ms="${AGTMUX_PERF_LIVE_INTERNAL_MEASUREMENT_RETRY_SLEEP_MS:-120}"
 focus_terminal_host_timeout="${AGTMUX_PERF_LIVE_FOCUS_TERMINAL_HOST_TIMEOUT:-}"
+fixture_lines="${AGTMUX_PERF_LIVE_FIXTURE_LINES:-12000}"
+fixture_wrap_columns="${AGTMUX_PERF_LIVE_FIXTURE_WRAP_COLUMNS:-180}"
+fixture_marker="${AGTMUX_PERF_LIVE_FIXTURE_MARKER:-AGTMUX_LIVE_SCROLL_READY}"
 
 if [[ "$attach_running_app" == "1" && -z "${AGTMUX_PERF_LIVE_USE_ACTIVE_TARGET:-}" ]]; then
   use_active_target=1
@@ -55,9 +59,13 @@ if [[ "$attach_running_app" == "1" && -z "${AGTMUX_PERF_LIVE_USE_INTERNAL_SCROLL
   use_internal_scroll_measurement=0
 fi
 
-prefer_direct_open_on_fresh_launch=0
-if [[ "$attach_running_app" != "1" && "$use_internal_scroll_measurement" == "1" ]]; then
-  prefer_direct_open_on_fresh_launch=1
+prefer_direct_open=0
+if [[ "$use_internal_scroll_measurement" == "1" ]]; then
+  prefer_direct_open=1
+fi
+
+if [[ "$prefer_direct_open" == "1" && -z "${AGTMUX_PERF_LIVE_USE_ACTIVE_TARGET:-}" ]]; then
+  use_active_target=1
 fi
 
 if [[ -z "$active_target_initial_timeout" ]]; then
@@ -265,6 +273,37 @@ function wait_for_terminal_viewport_ready() {
   fi
   if [[ -s "$registration_state_path" ]]; then
     cat "$registration_state_path" >&2
+  fi
+  return 1
+}
+
+function wait_for_viewport_marker() {
+  local surface_id="$1"
+  local marker="$2"
+  local timeout="${3:-20}"
+  local deadline=$((EPOCHREALTIME + timeout))
+  local output=""
+
+  while (( EPOCHREALTIME < deadline )); do
+    local remaining_timeout
+    remaining_timeout="$(awk -v deadline="$deadline" -v now="$EPOCHREALTIME" 'BEGIN {
+      remaining = deadline - now
+      if (remaining < 0.05) remaining = 0.05
+      printf "%.3f", remaining
+    }')"
+    if output="$(gate_l_wait_for_bridge_json_command_until "$remaining_timeout" "$gate_l_tmpdir/viewport-marker.last-error.log" "__agtmux_dump_terminal_viewport_text__" "$surface_id")"; then
+      if jq -er --arg marker "$marker" '.text | contains($marker)' >/dev/null <<<"$output"; then
+        return 0
+      fi
+    fi
+    sleep 0.05
+  done
+
+  echo "Timed out waiting for viewport marker '$marker'" >&2
+  if [[ -n "$output" ]]; then
+    echo "$output" >&2
+  elif [[ -s "$gate_l_tmpdir/viewport-marker.last-error.log" ]]; then
+    cat "$gate_l_tmpdir/viewport-marker.last-error.log" >&2
   fi
   return 1
 }
@@ -956,10 +995,21 @@ function open_terminal_for_live_pane() {
   local last_error=""
   local raw_output normalized_output
   local attempt=1
+  local -a open_command_args
+
+  open_command_args=(
+    "__agtmux_open_terminal_for_pane__"
+    "$source"
+    "$session_name"
+    "$pane_id"
+  )
+  if [[ "$use_internal_scroll_measurement" == "1" ]]; then
+    open_command_args+=("nowait")
+  fi
 
   while (( attempt <= open_retry_count )); do
     if raw_output="$(
-      gate_l_send_bridge_json_command "$refresh_inventory_before_open" "$settle_timeout" "__agtmux_open_terminal_for_pane__" "$source" "$session_name" "$pane_id" \
+      gate_l_send_bridge_json_command "$refresh_inventory_before_open" "$settle_timeout" "${open_command_args[@]}" \
         2>"$gate_l_tmpdir/open-terminal.last-error.log"
     )"; then
       if normalized_output="$(extract_last_json_line "$raw_output")"; then
@@ -1077,10 +1127,22 @@ if [[ "${AGTMUX_PERF_KEEP_TMP:-0}" == "1" ]]; then
   echo "Gate-L terminal-host live client-scroll temp dir: $gate_l_tmpdir" >&2
 fi
 
-export AGTMUX_PERF_USE_DEFAULT_LOCAL_TMUX=1
+use_bootstrap_fixture=0
+if [[ "$attach_running_app" != "1" && "$use_internal_scroll_measurement" == "1" ]]; then
+  use_bootstrap_fixture=1
+fi
+
+if [[ "$use_bootstrap_fixture" == "1" ]]; then
+  export AGTMUX_PERF_USE_DEFAULT_LOCAL_TMUX=0
+else
+  export AGTMUX_PERF_USE_DEFAULT_LOCAL_TMUX=1
+fi
 export AGTMUX_PERF_UITEST_INVENTORY_ONLY=0
 export AGTMUX_UITEST_TERMINAL_VIEW_REGISTRATION_TIMEOUT_MS="$registration_timeout_ms"
 export AGTMUX_UITEST_ALLOW_SESSION_ONLY_OPEN_FALLBACK=1
+
+fixture_file="$gate_l_tmpdir/live-history-fixture.txt"
+fixture_build_done_file="$gate_l_tmpdir/live-history-fixture.done"
 
 cleanup() {
   local exit_status=$?
@@ -1090,6 +1152,9 @@ cleanup() {
     fi
   else
     gate_l_terminate_app
+    if [[ "$use_bootstrap_fixture" == "1" ]]; then
+      gate_l_cleanup_tmux
+    fi
   fi
   if (( exit_status == 0 )) && [[ "${AGTMUX_PERF_KEEP_TMP:-0}" != "1" ]]; then
     rm -rf "$gate_l_tmpdir"
@@ -1106,16 +1171,39 @@ if [[ "$attach_running_app" == "1" ]]; then
   mark_stage attach-running-done
 else
   mark_stage launch-app-start
-  gate_l_launch_app_without_bootstrap "agtmux-gate-l-$token" 0
+  if [[ "$use_bootstrap_fixture" == "1" ]]; then
+    python3 "$EMITTER_PY" \
+      --ready-file /dev/null \
+      --done-file "$fixture_build_done_file" \
+      --lines "$fixture_lines" \
+      --wrap-columns "$fixture_wrap_columns" \
+      --idle-seconds 0 \
+      --marker "$fixture_marker" >"$fixture_file"
+    shell_command="/bin/sh -lc 'cat \"$fixture_file\"; printf \"$fixture_marker\\n\"; exec env PS1=\"\" /bin/sh -i'"
+    gate_l_launch_app "agtmux-gate-l-$token" "$session_name" 1 "$shell_command"
+    bootstrap_json="$(gate_l_wait_for_bootstrap "$settle_timeout")"
+    if [[ "$(jq -r '.ok // false' <<<"$bootstrap_json")" != "true" ]]; then
+      echo "App-side bootstrap failed: $(jq -r '.error // \"unknown error\"' <<<"$bootstrap_json")" >&2
+      exit 1
+    fi
+    gate_l_record_bootstrap_tmux_socket_path "$bootstrap_json"
+  else
+    gate_l_launch_app_without_bootstrap "agtmux-gate-l-$token" 0
+  fi
   mark_stage launch-app-done
 fi
 mark_stage bridge-ready-wait-start
 gate_l_wait_for_bridge_ready "$settle_timeout"
 mark_stage bridge-ready-wait-done
-gate_l_activate_app
-mark_stage app-ready
-sleep_ms "$focus_settle_ms"
-mark_stage app-focused
+if [[ "$use_internal_scroll_measurement" == "1" ]]; then
+  gate_l_activate_app >/dev/null 2>&1 || true
+  mark_stage app-activation-optional
+else
+  gate_l_activate_app
+  mark_stage app-ready
+  sleep_ms "$focus_settle_ms"
+  mark_stage app-focused
+fi
 
 open_json_path="$gate_l_tmpdir/open-terminal.json"
 active_json_path="$gate_l_tmpdir/active-target.json"
@@ -1129,18 +1217,18 @@ printf '%s\n' 'null' >"$focus_registration_state_json_path"
 if [[ "$use_active_target" == "1" ]]; then
   mark_stage active-target-start
   open_json=""
-  if [[ "$prefer_direct_open_on_fresh_launch" != "1" ]] \
+  if [[ "$prefer_direct_open" != "1" ]] \
     && ! active_json="$(wait_for_live_active_target "$session_name" "$pane_id" "$active_target_initial_timeout")"; then
-      if open_json="$(gate_l_send_bridge_json_command false "$settle_timeout" "__agtmux_open_terminal_for_pane__" "local" "$session_name" "${pane_id:-}" 2>"$gate_l_tmpdir/open-terminal.last-error.log")"; then
+      if open_json="$(open_terminal_for_live_pane "local" "$session_name" "${pane_id:-}")"; then
         printf '%s\n' "$open_json" >"$open_json_path"
         surface_id="$(jq -r '.surfaceID // empty' <<<"$open_json")"
         resolved_session_name="$(jq -r '.sessionName // empty' <<<"$open_json")"
         resolution_reason="open-terminal-session-fallback"
         if [[ -n "$surface_id" ]]; then
+          wait_for_terminal_viewport_ready "$surface_id" "$settle_timeout"
           if [[ "$use_internal_scroll_measurement" == "1" ]]; then
             active_json="$open_json"
           else
-            wait_for_terminal_viewport_ready "$surface_id" "$settle_timeout"
             active_json="$(wait_for_rendered_terminal_target_ready "$surface_id" "$settle_timeout")"
           fi
         else
@@ -1152,17 +1240,17 @@ if [[ "$use_active_target" == "1" ]]; then
       active_json="$(wait_for_live_active_target "$session_name" "$pane_id" "$settle_timeout")"
       resolution_reason="active-target"
     fi
-  elif [[ "$prefer_direct_open_on_fresh_launch" == "1" ]]; then
-    if open_json="$(gate_l_send_bridge_json_command false "$settle_timeout" "__agtmux_open_terminal_for_pane__" "local" "$session_name" "${pane_id:-}" 2>"$gate_l_tmpdir/open-terminal.last-error.log")"; then
+  elif [[ "$prefer_direct_open" == "1" ]]; then
+    if open_json="$(open_terminal_for_live_pane "local" "$session_name" "${pane_id:-}")"; then
       printf '%s\n' "$open_json" >"$open_json_path"
       surface_id="$(jq -r '.surfaceID // empty' <<<"$open_json")"
       resolved_session_name="$(jq -r '.sessionName // empty' <<<"$open_json")"
-      resolution_reason="open-terminal-fresh-launch"
+      resolution_reason="open-terminal-direct"
       if [[ -n "$surface_id" ]]; then
+        wait_for_terminal_viewport_ready "$surface_id" "$settle_timeout"
         if [[ "$use_internal_scroll_measurement" == "1" ]]; then
           active_json="$open_json"
         else
-          wait_for_terminal_viewport_ready "$surface_id" "$settle_timeout"
           active_json="$(wait_for_rendered_terminal_target_ready "$surface_id" "$settle_timeout")"
         fi
       else
@@ -1291,25 +1379,31 @@ if [[ "$use_internal_scroll_measurement" != "1" ]]; then
   mark_stage viewport-ready
 fi
 
+if [[ "$use_bootstrap_fixture" == "1" ]]; then
+  wait_for_viewport_marker "$surface_id" "$fixture_marker" "$settle_timeout"
+  mark_stage fixture-ready
+fi
+
 rendered_client_tty="$(jq -r '.renderedClientTTY // empty' <<<"$active_json")"
 if [[ "$use_internal_scroll_measurement" != "1" && -z "$rendered_client_tty" ]]; then
   echo "Failed to resolve rendered client tty for $resolved_session_name $pane_id" >&2
   exit 1
 fi
 
-if ! gate_l_send_bridge_command false "$focus_terminal_host_timeout" "__agtmux_focus_terminal_host__" "$surface_id" \
-  >/dev/null 2>"$gate_l_tmpdir/focus-host.last-error.log"; then
-  gate_l_send_bridge_json_command false 5 "__agtmux_dump_terminal_registration_state__" "$surface_id" \
-    >"$focus_registration_state_json_path" 2>"$gate_l_tmpdir/focus-host-registration-state.last-error.log" || true
-  echo "Failed to focus terminal host for surface $surface_id" >&2
-  exit 1
-fi
-gate_l_activate_app
-sleep_ms "$focus_settle_ms"
 if [[ "$use_internal_scroll_measurement" == "1" ]]; then
-  mark_stage viewport-ready
+  mark_stage focus-host-skipped
+else
+  if ! gate_l_send_bridge_command false "$focus_terminal_host_timeout" "__agtmux_focus_terminal_host__" "$surface_id" \
+    >/dev/null 2>"$gate_l_tmpdir/focus-host.last-error.log"; then
+    gate_l_send_bridge_json_command false 5 "__agtmux_dump_terminal_registration_state__" "$surface_id" \
+      >"$focus_registration_state_json_path" 2>"$gate_l_tmpdir/focus-host-registration-state.last-error.log" || true
+    echo "Failed to focus terminal host for surface $surface_id" >&2
+    exit 1
+  fi
+  gate_l_activate_app
+  sleep_ms "$focus_settle_ms"
+  mark_stage focus-host
 fi
-mark_stage focus-host
 
 terminal_ax_identifier="workspace.terminalHost.${surface_id}"
 if focus_json="$(gate_l_send_bridge_json_command false 5 "__agtmux_dump_focus_state__" "$surface_id" 2>"$gate_l_tmpdir/focus-state.last-error.log")"; then

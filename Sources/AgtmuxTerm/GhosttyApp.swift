@@ -30,6 +30,8 @@ final class GhosttyApp {
 
     static let shared = GhosttyApp()
     private static var initializedShared: GhosttyApp?
+    @MainActor
+    private static var runtimeBootstrapped = false
     private static let hostSignpostsEnabled =
         ProcessInfo.processInfo.environment["AGTMUX_HOST_SIGNPOSTS_ENABLED"] == "1"
     private static let surfaceDrawTelemetryStateLock = NSLock()
@@ -37,6 +39,9 @@ final class GhosttyApp {
         ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
         || NSClassFromString("XCTestCase") != nil
         || ProcessInfo.processInfo.environment["AGTMUX_SCROLL_TELEMETRY_ENABLED"] == "1"
+    private static let rendererObservationStateLock = NSLock()
+    private static var rendererFrameCompletedObservedSurfaces: Set<GhosttySurfaceHandle> = []
+    private static var rendererFrameRequestedObservedSurfaces: Set<GhosttySurfaceHandle> = []
 
     typealias BridgeActionDispatcher = @MainActor (
         ghostty_target_s,
@@ -144,6 +149,20 @@ final class GhosttyApp {
         initializedShared
     }
 
+    @MainActor
+    @discardableResult
+    static func ensureSharedInitialized() -> GhosttyApp {
+        if runtimeBootstrapped == false {
+            let ghosttyInitResult = ghostty_init(UInt(CommandLine.argc), CommandLine.unsafeArgv)
+            guard ghosttyInitResult == 0 else {
+                fatalError("ghostty_init failed with code \(ghosttyInitResult)")
+            }
+            ghostty_cli_try_action()
+            runtimeBootstrapped = true
+        }
+        return shared
+    }
+
     private static func scheduleOnMainRunLoopCommonModes(
         _ action: @escaping @MainActor () -> Void
     ) {
@@ -167,6 +186,48 @@ final class GhosttyApp {
         surfaceDrawTelemetryStateLock.lock()
         _surfaceDrawTelemetryEnabled = enabled
         surfaceDrawTelemetryStateLock.unlock()
+    }
+
+    static func setRendererFrameCompletedObservationEnabled(
+        _ enabled: Bool,
+        for surfaceHandle: GhosttySurfaceHandle
+    ) {
+        rendererObservationStateLock.lock()
+        if enabled {
+            rendererFrameCompletedObservedSurfaces.insert(surfaceHandle)
+        } else {
+            rendererFrameCompletedObservedSurfaces.remove(surfaceHandle)
+        }
+        rendererObservationStateLock.unlock()
+    }
+
+    static func setRendererFrameRequestedObservationEnabled(
+        _ enabled: Bool,
+        for surfaceHandle: GhosttySurfaceHandle
+    ) {
+        rendererObservationStateLock.lock()
+        if enabled {
+            rendererFrameRequestedObservedSurfaces.insert(surfaceHandle)
+        } else {
+            rendererFrameRequestedObservedSurfaces.remove(surfaceHandle)
+        }
+        rendererObservationStateLock.unlock()
+    }
+
+    private static func rendererFrameCompletedObservationEnabled(
+        for surfaceHandle: GhosttySurfaceHandle
+    ) -> Bool {
+        rendererObservationStateLock.lock()
+        defer { rendererObservationStateLock.unlock() }
+        return rendererFrameCompletedObservedSurfaces.contains(surfaceHandle)
+    }
+
+    private static func rendererFrameRequestedObservationEnabled(
+        for surfaceHandle: GhosttySurfaceHandle
+    ) -> Bool {
+        rendererObservationStateLock.lock()
+        defer { rendererObservationStateLock.unlock() }
+        return rendererFrameRequestedObservedSurfaces.contains(surfaceHandle)
     }
 
     @MainActor
@@ -256,6 +317,12 @@ final class GhosttyApp {
         initializedShared?.enqueueTick()
     }
 
+    @MainActor
+    static func scheduleCoalescedTickIfInitialized() {
+        tickScheduleObserver()
+        _ = initializedShared?.tickScheduler.enqueueTickIfNeeded()
+    }
+
     // MARK: - Runtime callbacks
 
     /// Internal so integration tests can invoke the exact libghostty action callback seam.
@@ -329,19 +396,25 @@ final class GhosttyApp {
 
         @MainActor
         func applyRenderCallback() {
-            if surfaceDrawTelemetryEnabledSnapshot() {
+            if surfaceDrawTelemetryEnabledSnapshot(),
+               rendererFrameRequestedObservationEnabled(for: surfaceHandle) {
                 renderCallbackCount += 1
+                resolvedTerminalView(forSurfaceHandle: surfaceHandle)?
+                    .noteRenderRequestTelemetry()
             }
-            let view = resolvedTerminalView(forSurfaceHandle: surfaceHandle)
-            view?.noteRenderRequestTelemetry()
-            let now = ProcessInfo.processInfo.systemUptime
-
-            if let view, SurfacePool.shared.isActive(view: view) {
-                view.triggerRendererOwnedRenderCallback(now: now)
+            let resolvedView = resolvedTerminalView(forSurfaceHandle: surfaceHandle)
+            let didMarkDirty: Bool
+            if let resolvedView {
+                didMarkDirty = SurfacePool.shared.markDirtyForDirectDraw(view: resolvedView)
+            } else {
+                didMarkDirty = SurfacePool.shared.markDirtyForDirectDraw(surfaceHandle: surfaceHandle)
+            }
+            guard didMarkDirty else {
                 return
             }
-
-            _ = SurfacePool.shared.markDirtyForDirectDraw(surfaceHandle: surfaceHandle)
+            if runDirectDrawPassImmediatelyIfPossible() == false {
+                scheduleDirectDrawPassIfNeeded()
+            }
         }
 
         if Thread.isMainThread {
@@ -361,6 +434,10 @@ final class GhosttyApp {
         guard target.tag == GHOSTTY_TARGET_SURFACE,
               let rawSurface = target.target.surface else { return true }
         let surfaceHandle = GhosttySurfaceHandle(surface: rawSurface)
+        guard rendererFrameCompletedObservationEnabled(for: surfaceHandle)
+        else {
+            return true
+        }
 
         @MainActor
         func applyRendererFrameCompleted() {
@@ -434,6 +511,21 @@ final class GhosttyApp {
         surfaceHandle: GhosttySurfaceHandle
     ) -> GhosttyTerminalView? {
         resolvedTerminalView(forSurfaceHandle: surfaceHandle)
+    }
+
+    @MainActor
+    @discardableResult
+    static func dispatchRenderActionForTesting(
+        surfaceHandle: GhosttySurfaceHandle
+    ) -> Bool {
+        handleRender(
+            target: ghostty_target_s(
+                tag: GHOSTTY_TARGET_SURFACE,
+                target: ghostty_target_u(
+                    surface: UnsafeMutableRawPointer(bitPattern: surfaceHandle.rawValue)
+                )
+            )
+        )
     }
 
     /// Integration-test seam for the real action callback path.
@@ -552,6 +644,10 @@ final class GhosttyApp {
         dirtyDrawnSurfaceCount = 0
         ghosttyAppTickDurationSamplesMs = []
         dirtyDrawPassDurationSamplesMs = []
+        rendererObservationStateLock.lock()
+        rendererFrameCompletedObservedSurfaces.removeAll(keepingCapacity: false)
+        rendererFrameRequestedObservedSurfaces.removeAll(keepingCapacity: false)
+        rendererObservationStateLock.unlock()
     }
 
     @MainActor
@@ -646,9 +742,13 @@ final class GhosttyApp {
     ///   - command: Shell command string (e.g. "tmux attach-session -t main").
     ///              nil = default shell ($SHELL).
     /// - Returns: The new surface, or nil if ghostty_surface_new failed.
+    @MainActor
     func newSurface(for view: GhosttyTerminalView,
                     command: String? = nil) -> ghostty_surface_t? {
         guard let app else { return nil }
+        guard let attachmentContext = view.surfaceAttachmentContext() else {
+            return nil
+        }
 
         // Inner builder; uses withCString scope for safe C-string lifetime.
         func build(_ cmd: UnsafePointer<CChar>?) -> ghostty_surface_t? {
@@ -659,12 +759,7 @@ final class GhosttyApp {
                     nsview: Unmanaged.passUnretained(view).toOpaque()
                 )
             )
-            cfg.scale_factor = Double(
-                view.window?.backingScaleFactor
-                    ?? view.window?.screen?.backingScaleFactor
-                    ?? NSScreen.main?.backingScaleFactor
-                    ?? 1.0
-            )
+            cfg.scale_factor = attachmentContext.scaleFactor
             cfg.userdata = Unmanaged.passUnretained(view).toOpaque()
             cfg.command = cmd       // nil → default shell
             cfg.font_size = 0       // 0 = use Ghostty config default
@@ -681,6 +776,10 @@ final class GhosttyApp {
             surface = command.withCString { build($0) }
         } else {
             surface = build(nil)
+        }
+
+        if let surface {
+            ghostty_surface_set_display_id(surface, attachmentContext.displayID)
         }
 
         return surface
@@ -712,7 +811,6 @@ final class GhosttyApp {
         var drawnSurfaceCount = 0
         for view in dirtyViews {
             let drawNow = ProcessInfo.processInfo.systemUptime
-            view.noteHostDrawTelemetry()
             recordSurfaceDrawGap()
             let drawState = Self.hostSignpostsEnabled
                 ? AgtmuxSignpost.surfaceDraw.beginInterval(

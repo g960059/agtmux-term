@@ -57,7 +57,15 @@ Prepare or rebuild `GhosttyKit` explicitly with:
 That helper also applies the repo's aggregate Ghostty patch before the
 xcframework is rebuilt. The aggregate patch carries the custom OSC bridge, the
 current embedded-scroll renderer optimizations, and the renderer-owned cadence
-hooks needed by the embedded main terminal.
+hooks needed by the embedded main terminal. `prepare-ghosttykit.sh` now builds
+the xcframework with Ghostty's `ReleaseFast` optimize mode by default.
+
+Rebuild and reinstall the user-facing app bundle with the repo helper so you do
+not accidentally benchmark a Debug app:
+
+```bash
+./scripts/dev/rebuild-reinstall-app.sh
+```
 
 ## Manual Commands
 

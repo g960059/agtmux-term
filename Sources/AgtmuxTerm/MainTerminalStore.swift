@@ -2,6 +2,30 @@ import Foundation
 import Observation
 import AgtmuxTermCore
 
+struct LocalTmuxSocketOverride: Equatable, Hashable, Sendable {
+    let socketPath: String
+
+    init?(socketPath: String?) {
+        guard let socketPath = socketPath?.trimmingCharacters(in: .whitespacesAndNewlines),
+              socketPath.isEmpty == false else {
+            return nil
+        }
+        self.socketPath = socketPath
+    }
+
+    var tmuxArguments: [String] {
+        ["-S", socketPath]
+    }
+
+    var shellEscapedArguments: String {
+        tmuxArguments.map(LocalTmuxTarget.shellEscaped).joined(separator: " ")
+    }
+
+    var surfaceIdentity: String {
+        socketPath
+    }
+}
+
 enum MainTerminalMode: Equatable {
     case plainShell
     case tmux(
@@ -109,13 +133,15 @@ enum MainTerminalAttachResolver {
         sessionRef: SessionRef,
         activePaneRef: ActivePaneRef? = nil,
         hostsConfig: HostsConfig,
-        env: [String: String] = ProcessInfo.processInfo.environment
+        env: [String: String] = ProcessInfo.processInfo.environment,
+        localSocketOverride: LocalTmuxSocketOverride? = nil
     ) -> Result<MainTerminalAttachPlan, MainTerminalAttachError> {
         let baseCommand = telemetryWrappedCommand(
             directAttachCommand(
                 sessionRef: sessionRef,
                 activePaneRef: activePaneRef,
-                env: env
+                env: env,
+                localSocketOverride: localSocketOverride
             )
         )
 
@@ -124,7 +150,7 @@ enum MainTerminalAttachResolver {
             return .success(
                 MainTerminalAttachPlan(
                     command: baseCommand,
-                    surfaceKey: surfaceKey(for: sessionRef),
+                    surfaceKey: surfaceKey(for: sessionRef, localSocketOverride: localSocketOverride),
                     transport: .local,
                     displayTarget: "local"
                 )
@@ -151,7 +177,7 @@ enum MainTerminalAttachResolver {
             return .success(
                 MainTerminalAttachPlan(
                     command: command,
-                    surfaceKey: surfaceKey(for: sessionRef),
+                    surfaceKey: surfaceKey(for: sessionRef, localSocketOverride: localSocketOverride),
                     transport: transport,
                     displayTarget: host.id
                 )
@@ -162,14 +188,18 @@ enum MainTerminalAttachResolver {
     private static func directAttachCommand(
         sessionRef: SessionRef,
         activePaneRef: ActivePaneRef?,
-        env: [String: String]
+        env: [String: String],
+        localSocketOverride: LocalTmuxSocketOverride?
     ) -> String {
         let configSegment = LocalTmuxTarget.shellEscapedConfigArguments(from: env)
         let configArgs = configSegment.isEmpty ? "" : " " + configSegment
-        let socketSegment = LocalTmuxTarget.shellEscapedSocketArguments(from: env)
+        let socketSegment = localSocketOverride?.shellEscapedArguments
+            ?? LocalTmuxTarget.shellEscapedSocketArguments(from: env)
         let socketArgs = socketSegment.isEmpty ? "" : " " + socketSegment
         let escapedSessionName = LocalTmuxTarget.shellEscaped(sessionRef.sessionName)
-        var command = "env -u TMUX -u TMUX_PANE tmux\(configArgs)\(socketArgs)"
+        let tmuxPrefix = "env -u TMUX -u TMUX_PANE tmux\(configArgs)\(socketArgs)"
+        var command = tmuxPrefix
+        var scrollbackSeedCommand: String?
         if let activePaneRef,
            activePaneRef.target == sessionRef.target,
            activePaneRef.sessionName == sessionRef.sessionName {
@@ -181,11 +211,19 @@ enum MainTerminalAttachResolver {
             }
             let escapedWindowID = LocalTmuxTarget.shellEscaped(normalizedWindowID)
             let escapedPaneID = LocalTmuxTarget.shellEscaped(normalizedPaneID)
+            scrollbackSeedCommand = "\(tmuxPrefix) capture-pane -p -e -S -2000 -t \(escapedPaneID) 2>/dev/null || true"
             command += " select-window -t \(escapedWindowID) \\;"
             command += " select-pane -t \(escapedPaneID) \\;"
         }
         command += " attach-session -t \(escapedSessionName)"
-        return command
+        guard let scrollbackSeedCommand else {
+            return command
+        }
+        let script = """
+        \(scrollbackSeedCommand)
+        exec \(command)
+        """
+        return "/bin/sh -lc \(LocalTmuxTarget.shellEscaped(script))"
     }
 
     private static func telemetryWrappedCommand(_ command: String) -> String {
@@ -199,9 +237,15 @@ enum MainTerminalAttachResolver {
         return "/bin/sh -lc \(LocalTmuxTarget.shellEscaped(telemetryScript))"
     }
 
-    private static func surfaceKey(for sessionRef: SessionRef) -> String {
+    private static func surfaceKey(
+        for sessionRef: SessionRef,
+        localSocketOverride: LocalTmuxSocketOverride?
+    ) -> String {
         switch sessionRef.target {
         case .local:
+            if let localSocketOverride {
+                return "main-terminal:local:\(localSocketOverride.surfaceIdentity):\(sessionRef.sessionName)"
+            }
             return "main-terminal:local:\(sessionRef.sessionName)"
         case .remote(let hostKey):
             return "main-terminal:remote:\(hostKey):\(sessionRef.sessionName)"
@@ -210,42 +254,46 @@ enum MainTerminalAttachResolver {
 }
 
 struct MainTerminalStoreDependencies {
-    var liveTarget: @Sendable (SessionRef, HostsConfig) async throws -> TerminalLiveTarget
-    var liveWindowTarget: @Sendable (SessionRef, String, HostsConfig) async throws -> TerminalLiveTarget
-    var renderedLiveTarget: @Sendable (String, TargetRef, HostsConfig) async throws -> TerminalLiveTarget
+    var liveTarget: @Sendable (SessionRef, HostsConfig, LocalTmuxSocketOverride?) async throws -> TerminalLiveTarget
+    var liveWindowTarget: @Sendable (SessionRef, String, HostsConfig, LocalTmuxSocketOverride?) async throws -> TerminalLiveTarget
+    var renderedLiveTarget: @Sendable (String, TargetRef, HostsConfig, LocalTmuxSocketOverride?) async throws -> TerminalLiveTarget
     var renderedState: @MainActor (UUID) -> GhosttyRenderedTerminalSurfaceState?
-    var applyNavigationIntent: @Sendable (ActivePaneRef, String, HostsConfig) async throws -> Void
+    var applyNavigationIntent: @Sendable (ActivePaneRef, String, HostsConfig, LocalTmuxSocketOverride?) async throws -> Void
     var sleep: @Sendable (Duration) async throws -> Void
 
     static func live() -> Self {
         Self(
-            liveTarget: { sessionRef, hostsConfig in
+            liveTarget: { sessionRef, hostsConfig, localSocketOverride in
                 try await MainTerminalNavigationResolver.liveTarget(
                     sessionRef: sessionRef,
-                    hostsConfig: hostsConfig
+                    hostsConfig: hostsConfig,
+                    localSocketOverride: localSocketOverride
                 )
             },
-            liveWindowTarget: { sessionRef, windowID, hostsConfig in
+            liveWindowTarget: { sessionRef, windowID, hostsConfig, localSocketOverride in
                 try await MainTerminalNavigationResolver.liveTarget(
                     sessionRef: sessionRef,
                     windowID: windowID,
-                    hostsConfig: hostsConfig
+                    hostsConfig: hostsConfig,
+                    localSocketOverride: localSocketOverride
                 )
             },
-            renderedLiveTarget: { renderedClientTTY, target, hostsConfig in
+            renderedLiveTarget: { renderedClientTTY, target, hostsConfig, localSocketOverride in
                 try await MainTerminalNavigationResolver.liveTarget(
                     renderedClientTTY: renderedClientTTY,
                     target: target,
-                    hostsConfig: hostsConfig
+                    hostsConfig: hostsConfig,
+                    localSocketOverride: localSocketOverride
                 )
             },
             renderedState: { surfaceID in
                 GhosttyTerminalSurfaceRegistry.shared.renderedState(forSurfaceID: surfaceID)
             },
-            applyNavigationIntent: { activePaneRef, renderedClientTTY, hostsConfig in
+            applyNavigationIntent: { activePaneRef, renderedClientTTY, hostsConfig, localSocketOverride in
                 try await MainTerminalNavigationResolver.applySessionNavigationIntent(
                     activePaneRef: activePaneRef,
-                    hostsConfig: hostsConfig
+                    hostsConfig: hostsConfig,
+                    localSocketOverride: localSocketOverride
                 )
             },
             sleep: { duration in
@@ -270,6 +318,7 @@ final class MainTerminalStore {
     @ObservationIgnored private var lastRestoreTargetBySession: [SessionRef: ActivePaneRef]
     @ObservationIgnored private var navigationTask: Task<Void, Never>?
     @ObservationIgnored private var navigationGeneration: UInt64
+    @ObservationIgnored private var localSocketOverride: LocalTmuxSocketOverride?
 
     init(
         viewportID: UUID = UUID(),
@@ -279,6 +328,7 @@ final class MainTerminalStore {
         diagnostic: MainTerminalDiagnostic? = nil,
         attachSurfaceGeneration: UInt64 = 0,
         lastRestoreTargetBySession: [SessionRef: ActivePaneRef] = [:],
+        localSocketOverride: LocalTmuxSocketOverride? = nil,
         dependencies: MainTerminalStoreDependencies = .live()
     ) {
         self.viewportID = viewportID
@@ -288,6 +338,7 @@ final class MainTerminalStore {
         self.diagnostic = diagnostic
         self.attachSurfaceGeneration = attachSurfaceGeneration
         self.lastRestoreTargetBySession = lastRestoreTargetBySession
+        self.localSocketOverride = localSocketOverride
         self.dependencies = dependencies
         self.navigationGeneration = 0
     }
@@ -319,6 +370,10 @@ final class MainTerminalStore {
         TerminalPaneIdentity.visiblePaneIdentity(for: highlightedPaneRef)
     }
 
+    var currentLocalSocketOverride: LocalTmuxSocketOverride? {
+        localSocketOverride
+    }
+
     var diagnosticMessage: String? {
         diagnostic?.detailText
     }
@@ -335,7 +390,8 @@ final class MainTerminalStore {
         return MainTerminalAttachResolver.resolve(
             sessionRef: sessionRef,
             activePaneRef: highlightedPaneRef,
-            hostsConfig: currentHostsConfig
+            hostsConfig: currentHostsConfig,
+            localSocketOverride: localSocketOverride
         )
     }
 
@@ -366,6 +422,7 @@ final class MainTerminalStore {
 
     func startPlainShell() {
         currentHostsConfig = .empty
+        localSocketOverride = nil
         diagnostic = nil
         navigationGeneration &+= 1
         navigationTask?.cancel()
@@ -394,13 +451,15 @@ final class MainTerminalStore {
         sessionRef: SessionRef,
         requestedPaneRef: ActivePaneRef?,
         hostsConfig: HostsConfig,
-        diagnostic: MainTerminalDiagnostic? = nil
+        diagnostic: MainTerminalDiagnostic? = nil,
+        localSocketOverride: LocalTmuxSocketOverride? = nil
     ) {
         activateTmux(
             sessionRef: sessionRef,
             requestedPaneRef: requestedPaneRef,
             hostsConfig: hostsConfig,
-            diagnostic: diagnostic
+            diagnostic: diagnostic,
+            localSocketOverride: localSocketOverride
         )
     }
 
@@ -433,14 +492,19 @@ final class MainTerminalStore {
         )
     }
 
-    func activate(pane: AgtmuxPane, hostsConfig: HostsConfig) async {
+    func activate(
+        pane: AgtmuxPane,
+        hostsConfig: HostsConfig,
+        localSocketOverride: LocalTmuxSocketOverride? = nil
+    ) async {
         let sessionRef = Self.sessionRef(for: pane, hostsConfig: hostsConfig)
         let requestedPaneRef = Self.activePaneRef(for: pane, hostsConfig: hostsConfig)
         activateTmux(
             sessionRef: sessionRef,
             requestedPaneRef: requestedPaneRef,
             hostsConfig: hostsConfig,
-            diagnostic: nil
+            diagnostic: nil,
+            localSocketOverride: localSocketOverride
         )
     }
 
@@ -460,12 +524,14 @@ final class MainTerminalStore {
         sessionRef: SessionRef,
         requestedPaneRef: ActivePaneRef?,
         hostsConfig: HostsConfig,
-        diagnostic: MainTerminalDiagnostic? = nil
+        diagnostic: MainTerminalDiagnostic? = nil,
+        localSocketOverride: LocalTmuxSocketOverride? = nil
     ) {
-        if shouldResetSurface(for: sessionRef) {
+        if shouldResetSurface(for: sessionRef, localSocketOverride: localSocketOverride) {
             attachSurfaceGeneration &+= 1
         }
         currentHostsConfig = hostsConfig
+        self.localSocketOverride = localSocketOverride
         self.diagnostic = diagnostic
         mode = .tmux(
             sessionRef: sessionRef,
@@ -481,7 +547,11 @@ final class MainTerminalStore {
         sessionRef: SessionRef,
         hostsConfig: HostsConfig
     ) async -> (paneRef: ActivePaneRef?, diagnostic: MainTerminalDiagnostic?) {
-        if let liveTarget = try? await dependencies.liveTarget(sessionRef, hostsConfig) {
+        if let liveTarget = try? await dependencies.liveTarget(
+            sessionRef,
+            hostsConfig,
+            localSocketOverride
+        ) {
             return (
                 paneRef: Self.activePaneRef(
                     target: sessionRef.target,
@@ -518,7 +588,12 @@ final class MainTerminalStore {
         requestedPaneRefForDiagnostic: ActivePaneRef?,
         hostsConfig: HostsConfig
     ) async -> (paneRef: ActivePaneRef, diagnostic: MainTerminalDiagnostic?) {
-        if let liveTarget = try? await dependencies.liveWindowTarget(sessionRef, windowID, hostsConfig) {
+        if let liveTarget = try? await dependencies.liveWindowTarget(
+            sessionRef,
+            windowID,
+            hostsConfig,
+            localSocketOverride
+        ) {
             return (
                 paneRef: Self.activePaneRef(
                     target: sessionRef.target,
@@ -571,7 +646,8 @@ final class MainTerminalStore {
             do {
                 liveTarget = try await dependencies.liveTarget(
                     sessionRef,
-                    currentHostsConfig
+                    currentHostsConfig,
+                    localSocketOverride
                 )
             } catch let error as MainTerminalNavigationError {
                 switch error {
@@ -630,7 +706,8 @@ final class MainTerminalStore {
                     try await dependencies.applyNavigationIntent(
                         currentRequestedPaneRef,
                         dependencies.renderedState(surfaceID)?.clientTTY ?? "",
-                        currentHostsConfig
+                        currentHostsConfig,
+                        localSocketOverride
                     )
                     try await dependencies.sleep(.milliseconds(20))
                 } catch {
@@ -665,7 +742,10 @@ final class MainTerminalStore {
         }
     }
 
-    private func shouldResetSurface(for nextSessionRef: SessionRef) -> Bool {
+    private func shouldResetSurface(
+        for nextSessionRef: SessionRef,
+        localSocketOverride nextLocalSocketOverride: LocalTmuxSocketOverride?
+    ) -> Bool {
         let renderedClientTTY = dependencies.renderedState(surfaceID)?.clientTTY?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         switch mode {
@@ -673,6 +753,9 @@ final class MainTerminalStore {
             return true
         case .tmux(let currentSessionRef, _, _):
             if currentSessionRef != nextSessionRef {
+                return true
+            }
+            if localSocketOverride != nextLocalSocketOverride {
                 return true
             }
             return renderedClientTTY?.isEmpty != false
@@ -693,8 +776,12 @@ final class MainTerminalStore {
         }
         guard case .success(let basePlan) = MainTerminalAttachResolver.resolve(
             sessionRef: sessionRef,
-            hostsConfig: currentHostsConfig
+            hostsConfig: currentHostsConfig,
+            localSocketOverride: localSocketOverride
         ) else {
+            return nil
+        }
+        guard renderedState.context.surfaceKey == basePlan.surfaceKey else {
             return nil
         }
         return MainTerminalAttachPlan(

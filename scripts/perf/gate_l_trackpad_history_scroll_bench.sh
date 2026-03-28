@@ -257,9 +257,9 @@ elif ! wait_for_first_visible_line_number "$socket_name" "$target" 1 "$settle_ti
 fi
 ready_capture="$(gate_l_tmux capture-pane -p -t "$target" -S -200 2>/dev/null || true)"
 
-gate_l_activate_app
-open_terminal_json="$(gate_l_send_bridge_json_command false 10 "__agtmux_open_terminal_for_pane__" "local" "$session_name" "$pane_id")"
-gate_l_activate_app
+gate_l_activate_app || true
+open_terminal_json="$(gate_l_send_bridge_json_command false 10 "__agtmux_open_terminal_for_pane__" "local" "$session_name" "$pane_id" "nowait")"
+gate_l_activate_app || true
 
 # Read the successful open response directly so the bench does not depend on an
 # active-target snapshot appearing on plain-shell startup.
@@ -269,37 +269,66 @@ if [[ -z "$surface_id" || "$surface_id" == "null" ]]; then
   echo "$open_terminal_json" >&2
   exit 1
 fi
-gate_l_send_bridge_command false 10 "__agtmux_focus_terminal_host__" "$surface_id" >/dev/null
 gate_l_activate_app
-focus_snapshot="$(gate_l_send_bridge_json_command false 10 "__agtmux_dump_focus_state__" "$surface_id")"
+gate_l_send_bridge_command false 10 "__agtmux_focus_terminal_host__" "$surface_id" >/dev/null
+focus_snapshot="$(gate_l_wait_for_terminal_focus_ready "$surface_id" "$settle_timeout")"
 terminal_ax_identifier="$(jq -r '.terminalAccessibilityIdentifier // empty' <<<"$focus_snapshot")"
 terminal_ax_fallback_identifier="workspace.terminalHost.${surface_id}"
 resolved_terminal_ax_identifier="$terminal_ax_identifier"
 if [[ -z "$resolved_terminal_ax_identifier" ]]; then
   resolved_terminal_ax_identifier="$terminal_ax_fallback_identifier"
 fi
+scroll_point_x="$(jq -r '.terminalFrameInScreen.x // empty' <<<"$focus_snapshot")"
+scroll_point_y="$(jq -r '.terminalFrameInScreen.y // empty' <<<"$focus_snapshot")"
+scroll_frame_width="$(jq -r '.terminalFrameInScreen.width // empty' <<<"$focus_snapshot")"
+scroll_frame_height="$(jq -r '.terminalFrameInScreen.height // empty' <<<"$focus_snapshot")"
+if [[ -n "$scroll_point_x" && -n "$scroll_point_y" && -n "$scroll_frame_width" && -n "$scroll_frame_height" ]]; then
+  scroll_point_x="$(awk "BEGIN { printf \"%.3f\", ($scroll_point_x + ($scroll_frame_width * 0.5)) }")"
+  scroll_point_y="$(awk "BEGIN { printf \"%.3f\", ($scroll_point_y + ($scroll_frame_height * 0.5)) }")"
+fi
 
-initial_focus_json="$("$SCRIPT_DIR/gate_l_ax_key_sender.sh" \
-  --app-pid "$gate_l_app_pid" \
-  --click-identifier "$resolved_terminal_ax_identifier" \
-  --x-frac 0.5 \
-  --y-frac 0.5)"
+if [[ -n "$scroll_point_x" && -n "$scroll_point_y" ]]; then
+  initial_focus_json="$("$SCRIPT_DIR/gate_l_ax_key_sender.sh" \
+    --app-pid "$gate_l_app_pid" \
+    --click-point \
+    --point-x "$scroll_point_x" \
+    --point-y "$scroll_point_y")"
+else
+  initial_focus_json="$("$SCRIPT_DIR/gate_l_ax_key_sender.sh" \
+    --app-pid "$gate_l_app_pid" \
+    --click-identifier "$resolved_terminal_ax_identifier" \
+    --x-frac 0.5 \
+    --y-frac 0.5)"
+fi
 if [[ "$(jq -r '.sent // false' <<<"$initial_focus_json")" != "true" ]]; then
   echo "Failed to focus initial scroll target: $initial_focus_json" >&2
   exit 1
 fi
 sleep 0.2
+focus_snapshot="$(gate_l_wait_for_terminal_focus_ready "$surface_id" "$settle_timeout")"
 
 for (( i = 1; i <= warmup_bursts; i++ )); do
-  "$SCRIPT_DIR/gate_l_ax_key_sender.sh" \
-    --app-pid "$gate_l_app_pid" \
-    --focus-scroll-identifier "$resolved_terminal_ax_identifier" \
-    --x-frac 0.5 \
-    --y-frac 0.5 \
-    --scroll-pixels "$((-scroll_pixels_per_event))" \
-    --scroll-repeat "$events_per_burst" \
-    --scroll-interval-ms "$scroll_interval_ms" \
-    --scroll-phase-mode "$scroll_phase_mode" >/dev/null
+  if [[ -n "$scroll_point_x" && -n "$scroll_point_y" ]]; then
+    "$SCRIPT_DIR/gate_l_ax_key_sender.sh" \
+      --app-pid "$gate_l_app_pid" \
+      --focus-scroll-point \
+      --point-x "$scroll_point_x" \
+      --point-y "$scroll_point_y" \
+      --scroll-pixels "$((-scroll_pixels_per_event))" \
+      --scroll-repeat "$events_per_burst" \
+      --scroll-interval-ms "$scroll_interval_ms" \
+      --scroll-phase-mode "$scroll_phase_mode" >/dev/null
+  else
+    "$SCRIPT_DIR/gate_l_ax_key_sender.sh" \
+      --app-pid "$gate_l_app_pid" \
+      --focus-scroll-identifier "$resolved_terminal_ax_identifier" \
+      --x-frac 0.5 \
+      --y-frac 0.5 \
+      --scroll-pixels "$((-scroll_pixels_per_event))" \
+      --scroll-repeat "$events_per_burst" \
+      --scroll-interval-ms "$scroll_interval_ms" \
+      --scroll-phase-mode "$scroll_phase_mode" >/dev/null
+  fi
   sleep 0.2
 done
 
@@ -356,15 +385,27 @@ for (( i = 1; i <= iterations; i++ )); do
   fi
   gate_l_activate_app
   burst_started_at="$EPOCHREALTIME"
-  last_send_json="$("$SCRIPT_DIR/gate_l_ax_key_sender.sh" \
-    --app-pid "$gate_l_app_pid" \
-    --focus-scroll-identifier "$resolved_terminal_ax_identifier" \
-    --x-frac 0.5 \
-    --y-frac 0.5 \
-    --scroll-pixels "$scroll_pixels" \
-    --scroll-repeat "$events_per_burst" \
-    --scroll-interval-ms "$scroll_interval_ms" \
-    --scroll-phase-mode "$scroll_phase_mode")"
+  if [[ -n "$scroll_point_x" && -n "$scroll_point_y" ]]; then
+    last_send_json="$("$SCRIPT_DIR/gate_l_ax_key_sender.sh" \
+      --app-pid "$gate_l_app_pid" \
+      --focus-scroll-point \
+      --point-x "$scroll_point_x" \
+      --point-y "$scroll_point_y" \
+      --scroll-pixels "$scroll_pixels" \
+      --scroll-repeat "$events_per_burst" \
+      --scroll-interval-ms "$scroll_interval_ms" \
+      --scroll-phase-mode "$scroll_phase_mode")"
+  else
+    last_send_json="$("$SCRIPT_DIR/gate_l_ax_key_sender.sh" \
+      --app-pid "$gate_l_app_pid" \
+      --focus-scroll-identifier "$resolved_terminal_ax_identifier" \
+      --x-frac 0.5 \
+      --y-frac 0.5 \
+      --scroll-pixels "$scroll_pixels" \
+      --scroll-repeat "$events_per_burst" \
+      --scroll-interval-ms "$scroll_interval_ms" \
+      --scroll-phase-mode "$scroll_phase_mode")"
+  fi
 
   burst_latency_ms="null"
   wait_status=0

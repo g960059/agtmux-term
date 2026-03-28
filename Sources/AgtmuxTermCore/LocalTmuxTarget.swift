@@ -11,22 +11,51 @@ import Foundation
 /// Inherited `TMUX` is intentionally ignored to avoid pinning local commands to a
 /// stale or sandbox-inaccessible socket from the launch environment.
 public enum LocalTmuxTarget {
-    public static func configArguments(from env: [String: String] = ProcessInfo.processInfo.environment) -> [String] {
-        guard let path = env["AGTMUX_UITEST_TMUX_CONFIG_PATH"]?
-            .trimmingCharacters(in: .whitespacesAndNewlines),
+    public static let socketNameDefaultsKey = "UITestTmuxSocketName"
+    public static let socketPathDefaultsKey = "UITestTmuxSocketPath"
+    public static let configPathDefaultsKey = "UITestTmuxConfigPath"
+    public static let stableAttachEnabledRelativePath = "agtmux-term/gate-l-attach/enabled"
+
+    public static func configArguments(
+        from env: [String: String] = ProcessInfo.processInfo.environment,
+        userDefaults: UserDefaults = .standard,
+        fileManager: FileManager = .default,
+        markerURL: URL? = nil
+    ) -> [String] {
+        guard let path = explicitConfigPath(
+            from: env,
+            userDefaults: userDefaults,
+            fileManager: fileManager,
+            markerURL: markerURL
+        ),
             !path.isEmpty else {
             return []
         }
         return ["-f", path]
     }
 
-    public static func socketArguments(from env: [String: String] = ProcessInfo.processInfo.environment) -> [String] {
-        if let explicitName = env["AGTMUX_TMUX_SOCKET_NAME"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+    public static func socketArguments(
+        from env: [String: String] = ProcessInfo.processInfo.environment,
+        userDefaults: UserDefaults = .standard,
+        fileManager: FileManager = .default,
+        markerURL: URL? = nil
+    ) -> [String] {
+        if let explicitName = explicitSocketName(
+            from: env,
+            userDefaults: userDefaults,
+            fileManager: fileManager,
+            markerURL: markerURL
+        ),
            !explicitName.isEmpty {
             return ["-L", explicitName]
         }
 
-        if let explicitPath = explicitSocketPath(from: env),
+        if let explicitPath = explicitSocketPath(
+            from: env,
+            userDefaults: userDefaults,
+            fileManager: fileManager,
+            markerURL: markerURL
+        ),
            !explicitPath.isEmpty {
             return ["-S", explicitPath]
         }
@@ -36,11 +65,37 @@ public enum LocalTmuxTarget {
 
     public static func daemonCLIArguments(
         from env: [String: String] = ProcessInfo.processInfo.environment,
+        userDefaults: UserDefaults = .standard,
+        fileManager: FileManager = .default,
+        markerURL: URL? = nil,
         socketPathResolver: (([String: String]) -> String?)? = nil
     ) -> [String] {
-        let resolve = socketPathResolver ?? resolvedSocketPathForDaemon(from:)
-        guard let socketPath = resolve(env) else { return [] }
+        if let socketPathResolver {
+            guard let socketPath = socketPathResolver(env) else { return [] }
+            return ["--tmux-socket", socketPath]
+        }
+        guard let socketPath = resolvedSocketPathForDaemon(
+            from: env,
+            userDefaults: userDefaults,
+            fileManager: fileManager,
+            markerURL: markerURL
+        ) else {
+            return []
+        }
         return ["--tmux-socket", socketPath]
+    }
+
+    public static func defaultsBackedUITestTargetingActive(
+        from env: [String: String] = ProcessInfo.processInfo.environment,
+        fileManager: FileManager = .default,
+        markerURL: URL? = nil
+    ) -> Bool {
+        if env["AGTMUX_UITEST"] == "1" {
+            return true
+        }
+        return fileManager.fileExists(
+            atPath: stableAttachEnabledURL(fileManager: fileManager, markerURL: markerURL).path
+        )
     }
 
     public static func shellEscaped(_ value: String) -> String {
@@ -64,18 +119,97 @@ public enum LocalTmuxTarget {
         resolveTmuxURL(from: env)?.path
     }
 
-    private static func explicitSocketPath(from env: [String: String]) -> String? {
+    private static func explicitSocketPath(
+        from env: [String: String],
+        userDefaults: UserDefaults,
+        fileManager: FileManager,
+        markerURL: URL?
+    ) -> String? {
         for key in ["AGTMUX_TMUX_SOCKET_PATH", "AGTMUX_TMUX_SOCKET"] {
             if let value = env[key]?.trimmingCharacters(in: .whitespacesAndNewlines),
                !value.isEmpty {
                 return value
             }
         }
+        guard defaultsBackedUITestTargetingActive(
+            from: env,
+            fileManager: fileManager,
+            markerURL: markerURL
+        ) else {
+            return nil
+        }
+        if let value = userDefaults.string(forKey: socketPathDefaultsKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !value.isEmpty {
+            return value
+        }
         return nil
     }
 
-    private static func resolvedSocketPathForDaemon(from env: [String: String]) -> String? {
-        if let explicitPath = explicitSocketPath(from: env) {
+    private static func explicitConfigPath(
+        from env: [String: String],
+        userDefaults: UserDefaults,
+        fileManager: FileManager,
+        markerURL: URL?
+    ) -> String? {
+        if let value = env["AGTMUX_UITEST_TMUX_CONFIG_PATH"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !value.isEmpty {
+            return value
+        }
+        guard defaultsBackedUITestTargetingActive(
+            from: env,
+            fileManager: fileManager,
+            markerURL: markerURL
+        ) else {
+            return nil
+        }
+        if let value = userDefaults.string(forKey: configPathDefaultsKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !value.isEmpty {
+            return value
+        }
+        return nil
+    }
+
+    private static func explicitSocketName(
+        from env: [String: String],
+        userDefaults: UserDefaults,
+        fileManager: FileManager,
+        markerURL: URL?
+    ) -> String? {
+        if let value = env["AGTMUX_TMUX_SOCKET_NAME"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !value.isEmpty {
+            return value
+        }
+        guard defaultsBackedUITestTargetingActive(
+            from: env,
+            fileManager: fileManager,
+            markerURL: markerURL
+        ) else {
+            return nil
+        }
+        if let value = userDefaults.string(forKey: socketNameDefaultsKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !value.isEmpty {
+            return value
+        }
+        return nil
+    }
+
+    private static func resolvedSocketPathForDaemon(
+        from env: [String: String],
+        userDefaults: UserDefaults,
+        fileManager: FileManager,
+        markerURL: URL?
+    ) -> String? {
+        if let explicitPath = explicitSocketPath(
+            from: env,
+            userDefaults: userDefaults,
+            fileManager: fileManager,
+            markerURL: markerURL
+        ) {
             return explicitPath
         }
 
@@ -83,7 +217,12 @@ public enum LocalTmuxTarget {
             return runtimeResolvedPath
         }
 
-        guard let explicitName = env["AGTMUX_TMUX_SOCKET_NAME"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+        guard let explicitName = explicitSocketName(
+            from: env,
+            userDefaults: userDefaults,
+            fileManager: fileManager,
+            markerURL: markerURL
+        ),
               !explicitName.isEmpty else {
             return nil
         }
@@ -168,5 +307,14 @@ public enum LocalTmuxTarget {
             }
         }
         return nil
+    }
+
+    private static func stableAttachEnabledURL(fileManager: FileManager, markerURL: URL?) -> URL {
+        if let markerURL {
+            return markerURL
+        }
+        let cachesURL = fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Caches", isDirectory: true)
+        return cachesURL.appendingPathComponent(stableAttachEnabledRelativePath, isDirectory: false)
     }
 }

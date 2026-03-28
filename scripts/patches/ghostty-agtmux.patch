@@ -616,3 +616,111 @@ index 8c1b5b8ab..06022476b 100644
      fn showDesktopNotification(
          self: *StreamHandler,
          title: []const u8,
+diff --git a/pkg/macos/video/display_link.zig b/pkg/macos/video/display_link.zig
+index 4bbf58a0c..9f624e30c 100644
+--- a/pkg/macos/video/display_link.zig
++++ b/pkg/macos/video/display_link.zig
+@@ -8,12 +8,16 @@ pub const DisplayLink = opaque {
+         InvalidOperation,
+     };
+
+-    pub fn createWithActiveCGDisplays() Allocator.Error!*DisplayLink {
++    pub const CreateError = Allocator.Error || Error;
++
++    pub fn createWithActiveCGDisplays() CreateError!*DisplayLink {
+         var result: ?*DisplayLink = null;
+-        if (c.CVDisplayLinkCreateWithActiveCGDisplays(
++        const status = c.CVDisplayLinkCreateWithActiveCGDisplays(
+             @ptrCast(&result),
+-        ) != c.kCVReturnSuccess)
+-            return error.OutOfMemory;
++        );
++        if (status != c.kCVReturnSuccess) {
++            return error.InvalidOperation;
++        }
+
+         return result orelse error.OutOfMemory;
+     }
+diff --git a/src/renderer/generic.zig b/src/renderer/generic.zig
+index 02897f508..01fc0b06c 100644
+--- a/src/renderer/generic.zig
++++ b/src/renderer/generic.zig
+@@ -251,6 +251,9 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+         /// don't support a display link.
+         display_link: ?DisplayLink = null,
+
++        /// Cached render-thread wakeup target for display-link callbacks.
++        display_link_draw_now: ?*xev.Async = null,
++
+         /// Health of the most recently completed frame.
+         health: std.atomic.Value(Health) = .{ .raw = .healthy },
+
+@@ -746,7 +749,10 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+
+             const display_link: ?DisplayLink = switch (builtin.os.tag) {
+                 .macos => if (options.config.vsync)
+-                    try macos.video.DisplayLink.createWithActiveCGDisplays()
++                    macos.video.DisplayLink.createWithActiveCGDisplays() catch |err| display_link: {
++                        log.warn("display link unavailable during renderer init err={}", .{err});
++                        break :display_link null;
++                    }
+                 else
+                     null,
+                 else => null,
+@@ -824,6 +830,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+                 .api = api,
+                 .swap_chain = swap_chain,
+                 .display_link = display_link,
++                .display_link_draw_now = null,
+             };
+
+             try result.initShaders();
+@@ -945,6 +952,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+
+             // If we don't support a display link we have no work to do.
+             if (comptime DisplayLink == void) return;
++            self.display_link_draw_now = &thr.draw_now;
+
+             // This is when we know our "self" pointer is stable so we can
+             // setup the display link. To setup the display link we set our
+@@ -967,6 +975,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+
+             // If we don't support a display link we have no work to do.
+             if (comptime DisplayLink == void) return;
++            self.display_link_draw_now = null;
+
+             // Stop our display link. If this fails its okay it just means
+             // that we either never started it or the view its attached to
+@@ -1048,11 +1057,32 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+         /// Called when we get an updated display ID for our display link.
+         pub fn setMacOSDisplayID(self: *Self, id: u32) !void {
+             if (comptime DisplayLink == void) return;
++            if (self.display_link == null) {
++                self.display_link = macos.video.DisplayLink.createWithActiveCGDisplays() catch |err| create: {
++                    log.warn("display link unavailable while applying display id={} err={}", .{ id, err });
++                    break :create null;
++                };
++                if (self.display_link) |display_link| {
++                    if (self.display_link_draw_now) |draw_now| {
++                        display_link.setOutputCallback(
++                            xev.Async,
++                            &displayLinkCallback,
++                            draw_now,
++                        ) catch |err| {
++                            log.warn("error setting late display link callback err={}", .{err});
++                        };
++                    }
++                }
++            }
++
+             const display_link = self.display_link orelse return;
+             log.info("updating display link display id={}", .{id});
+             display_link.setCurrentCGDisplay(id) catch |err| {
+                 log.warn("error setting display link display id err={}", .{err});
+             };
++            if (self.display_link_draw_now != null) {
++                display_link.start() catch {};
++            }
+         }
+
+         /// True if our renderer has animations so that a higher frequency

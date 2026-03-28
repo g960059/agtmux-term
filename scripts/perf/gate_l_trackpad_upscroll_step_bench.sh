@@ -329,35 +329,6 @@ function wait_for_terminal_viewport_ready() {
   return 1
 }
 
-function wait_for_terminal_focus_ready() {
-  local surface_id="$1"
-  local timeout="${2:-5}"
-  local deadline=$(( EPOCHREALTIME + timeout ))
-  local last_snapshot=""
-
-  while (( EPOCHREALTIME < deadline )); do
-    if last_snapshot="$(gate_l_send_bridge_json_command false 5 "__agtmux_dump_focus_state__" "$surface_id" 2>"$gate_l_tmpdir/focus-ready.last-error.log")"; then
-      local app_is_active window_is_key terminal_is_first_responder
-      app_is_active="$(jq -r '.appIsActive // false' <<<"$last_snapshot")"
-      window_is_key="$(jq -r '.windowIsKey // false' <<<"$last_snapshot")"
-      terminal_is_first_responder="$(jq -r '.terminalIsFirstResponder // false' <<<"$last_snapshot")"
-      if [[ "$app_is_active" == "true" && "$window_is_key" == "true" && "$terminal_is_first_responder" == "true" ]]; then
-        print -r -- "$last_snapshot"
-        return 0
-      fi
-    fi
-    sleep 0.05
-  done
-
-  echo "Timed out waiting for terminal focus readiness for surfaceID $surface_id" >&2
-  if [[ -n "$last_snapshot" ]]; then
-    echo "Last focus snapshot: $last_snapshot" >&2
-  elif [[ -s "$gate_l_tmpdir/focus-ready.last-error.log" ]]; then
-    cat "$gate_l_tmpdir/focus-ready.last-error.log" >&2
-  fi
-  return 1
-}
-
 function build_fixture() {
   local fixture_path="$1"
   AGTMUX_PERF_TRACKPAD_FIXTURE_LINES="$line_count" python3 - <<'PY' >"$fixture_path"
@@ -560,7 +531,7 @@ fi
 ready_capture="$(gate_l_tmux capture-pane -p -t "$target" -S -200 2>/dev/null || true)"
 
 gate_l_activate_app
-open_terminal_json="$(gate_l_send_bridge_json_command false 10 "__agtmux_open_terminal_for_pane__" "local" "$session_name" "$pane_id")"
+open_terminal_json="$(gate_l_send_bridge_json_command false 10 "__agtmux_open_terminal_for_pane__" "local" "$session_name" "$pane_id" "nowait")"
 surface_id="$(jq -r '.surfaceID // empty' <<<"$open_terminal_json")"
 if [[ -z "$surface_id" ]]; then
   echo "Failed to resolve surface from __agtmux_open_terminal_for_pane__: $open_terminal_json" >&2
@@ -592,11 +563,17 @@ resolved_terminal_ax_identifier="$terminal_ax_identifier"
 if [[ -z "$resolved_terminal_ax_identifier" ]]; then
   resolved_terminal_ax_identifier="$terminal_ax_fallback_identifier"
 fi
+scroll_point_x="$(jq -r '.terminalFrameInScreen.x // empty' <<<"$focus_snapshot")"
+scroll_point_y="$(jq -r '.terminalFrameInScreen.y // empty' <<<"$focus_snapshot")"
+scroll_frame_width="$(jq -r '.terminalFrameInScreen.width // empty' <<<"$focus_snapshot")"
+scroll_frame_height="$(jq -r '.terminalFrameInScreen.height // empty' <<<"$focus_snapshot")"
+if [[ -n "$scroll_point_x" && -n "$scroll_point_y" && -n "$scroll_frame_width" && -n "$scroll_frame_height" ]]; then
+  scroll_point_x="$(awk "BEGIN { printf \"%.3f\", ($scroll_point_x + ($scroll_frame_width * 0.5)) }")"
+  scroll_point_y="$(awk "BEGIN { printf \"%.3f\", ($scroll_point_y + ($scroll_frame_height * 0.5)) }")"
+fi
 
 typeset -a scroll_sender_args
 typeset -a measure_scroll_sender_args
-scroll_point_x=""
-scroll_point_y=""
 scroll_sender_args=(
   --app-pid "$gate_l_app_pid"
   --x-frac "$scroll_x_frac"
@@ -604,7 +581,11 @@ scroll_sender_args=(
 )
 case "$scroll_target_mode" in
   identifier)
-    scroll_sender_args+=(--focus-scroll-identifier "$resolved_terminal_ax_identifier")
+    if [[ -n "$scroll_point_x" && -n "$scroll_point_y" ]]; then
+      scroll_sender_args+=(--focus-scroll-point --point-x "$scroll_point_x" --point-y "$scroll_point_y")
+    else
+      scroll_sender_args+=(--focus-scroll-identifier "$resolved_terminal_ax_identifier")
+    fi
     ;;
   front-window)
     scroll_sender_args+=(--focus-scroll-front-window)
@@ -633,7 +614,7 @@ measure_scroll_sender_args=(
   --point-x "$scroll_point_x"
   --point-y "$scroll_point_y"
 )
-if ! wait_for_terminal_focus_ready "$surface_id" 5 >/dev/null; then
+if ! gate_l_wait_for_terminal_focus_ready "$surface_id" 5 >/dev/null; then
   exit 1
 fi
 sleep 0.05
@@ -677,7 +658,7 @@ for (( burst = 1; burst <= bursts; burst++ )); do
     --point-x "$scroll_point_x"
     --point-y "$scroll_point_y"
   )
-  if ! wait_for_terminal_focus_ready "$surface_id" 5 >/dev/null; then
+  if ! gate_l_wait_for_terminal_focus_ready "$surface_id" 5 >/dev/null; then
     exit 1
   fi
   warmup_position_for_upscroll "$socket_name" "$target"

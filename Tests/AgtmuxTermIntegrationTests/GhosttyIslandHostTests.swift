@@ -4,6 +4,51 @@ import AppKit
 
 @MainActor
 final class GhosttyIslandHostTests: XCTestCase {
+    func testSurfaceBootstrapPolicyDefersInitialAttachUntilAppIsActiveAndWindowIsKey() {
+        XCTAssertTrue(
+            GhosttySurfaceBootstrapPolicy.shouldDeferInitialAttach(
+                windowIsVisible: true,
+                windowIsKey: true,
+                appIsActive: false,
+                hasExistingSurface: false
+            )
+        )
+    }
+
+    func testSurfaceBootstrapPolicyDoesNotDeferOnceWindowIsKeyAndAppIsActive() {
+        XCTAssertFalse(
+            GhosttySurfaceBootstrapPolicy.shouldDeferInitialAttach(
+                windowIsVisible: true,
+                windowIsKey: true,
+                appIsActive: true,
+                hasExistingSurface: false
+            )
+        )
+    }
+
+    func testSurfaceBootstrapPolicyDoesNotDeferRetargetForExistingSurface() {
+        XCTAssertFalse(
+            GhosttySurfaceBootstrapPolicy.shouldDeferInitialAttach(
+                windowIsVisible: false,
+                windowIsKey: false,
+                appIsActive: false,
+                hasExistingSurface: true
+            )
+        )
+    }
+
+    func testSurfaceBootstrapPolicyAllowsBackgroundAttachForAutomationLane() {
+        XCTAssertFalse(
+            GhosttySurfaceBootstrapPolicy.shouldDeferInitialAttach(
+                windowIsVisible: false,
+                windowIsKey: false,
+                appIsActive: false,
+                hasExistingSurface: false,
+                allowBackgroundAttach: true
+            )
+        )
+    }
+
     func testPaneRetargetRefreshSchedulesForSameSurfaceVisiblePaneChange() {
         XCTAssertTrue(
             GhosttyIslandViewController.shouldSchedulePaneRetargetPresentationRefresh(

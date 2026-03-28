@@ -18,6 +18,70 @@ enum TestConstants {
 }
 
 extension XCUIApplication {
+    private func testedAppBundleURL(
+        bundleID: String = "com.g960059.agtmux.term"
+    ) -> URL? {
+        let appName = "AgtmuxTerm.app"
+        let runnerBundleURL = Bundle.main.bundleURL
+        let candidateDirectories = [
+            runnerBundleURL.deletingLastPathComponent(),
+            runnerBundleURL.deletingLastPathComponent().deletingLastPathComponent()
+        ]
+
+        for directory in candidateDirectories {
+            let candidate = directory.appendingPathComponent(appName, isDirectory: true)
+            if FileManager.default.fileExists(atPath: candidate.path) {
+                return candidate
+            }
+        }
+
+        return NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID)
+    }
+
+    private func launchViaWorkspaceForUITest(
+        bundleID: String = "com.g960059.agtmux.term",
+        requireForegroundAttachment: Bool
+    ) {
+        guard let appBundleURL = testedAppBundleURL(bundleID: bundleID) else {
+            XCTFail("Failed to resolve tested app bundle URL for \(bundleID)")
+            return
+        }
+
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.arguments = launchArguments
+        configuration.environment = launchEnvironment
+        configuration.activates = true
+        configuration.createsNewApplicationInstance = true
+
+        let semaphore = DispatchSemaphore(value: 0)
+        var launchError: Error?
+        var launchedApplication: NSRunningApplication?
+
+        NSWorkspace.shared.openApplication(at: appBundleURL, configuration: configuration) { app, error in
+            launchedApplication = app
+            launchError = error
+            semaphore.signal()
+        }
+
+        if semaphore.wait(timeout: .now() + 15.0) == .timedOut {
+            XCTFail("Timed out launching tested app bundle via NSWorkspace at \(appBundleURL.path)")
+            return
+        }
+
+        if let launchError {
+            XCTFail("Failed to launch tested app bundle via NSWorkspace: \(launchError.localizedDescription)")
+            return
+        }
+
+        if let launchedApplication {
+            _ = launchedApplication.activate(options: [.activateAllWindows])
+        }
+
+        guard requireForegroundAttachment else { return }
+        activate()
+        stabilizeForegroundForUITest(bundleID: bundleID)
+    }
+
     private func runningExecutableProcessIDs(
         matching pattern: String
     ) -> [pid_t] {
@@ -77,7 +141,7 @@ extension XCUIApplication {
     /// should be gone within milliseconds of terminate(). The NSRunningApplication poll below
     /// is a safety net for any residual OS state.
     func launchForUITest() {
-        launchForUITest(inventoryOnly: true)
+        launchForUITest(inventoryOnly: true, requireForegroundAttachment: true)
     }
 
     /// Launch with UITest environment but keep metadata/health polling enabled.
@@ -86,10 +150,21 @@ extension XCUIApplication {
     /// `ui.health.v1` surfacing. Existing tests should keep using
     /// `launchForUITest()` unless they explicitly need metadata-enabled behavior.
     func launchForMetadataUITest() {
-        launchForUITest(inventoryOnly: false)
+        launchForUITest(inventoryOnly: false, requireForegroundAttachment: true)
     }
 
-    private func launchForUITest(inventoryOnly: Bool) {
+    /// Launch with UITest environment through LaunchServices but do not ask XCUI
+    /// to foreground-attach the app. This keeps bridge-driven real-surface tests
+    /// runnable in sessions where `XCUIApplication.launch()` or `activate()` still
+    /// fail with `Running Background`.
+    func launchForBridgeDrivenUITest() {
+        launchForUITest(inventoryOnly: true, requireForegroundAttachment: false)
+    }
+
+    private func launchForUITest(
+        inventoryOnly: Bool,
+        requireForegroundAttachment: Bool
+    ) {
         let preserveTmux = launchEnvironment["AGTMUX_UITEST_PRESERVE_TMUX"] == "1"
         if !preserveTmux {
             launchEnvironment["TMUX"] = ""
@@ -180,7 +255,9 @@ extension XCUIApplication {
         // 3. Small buffer so the OS can fully reap the process entry.
         Thread.sleep(forTimeInterval: 0.5)
 
-        launch()
-        stabilizeForegroundForUITest(bundleID: bundleID)
+        launchViaWorkspaceForUITest(
+            bundleID: bundleID,
+            requireForegroundAttachment: requireForegroundAttachment
+        )
     }
 }

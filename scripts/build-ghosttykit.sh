@@ -10,6 +10,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 VENDOR_GHOSTTY="${AGTMUX_VENDOR_GHOSTTY_DIR:-$REPO_ROOT/vendor/ghostty}"
 DEST="${AGTMUX_GHOSTTYKIT_DIR:-$REPO_ROOT/GhosttyKit/GhosttyKit.xcframework}"
+GHOSTTY_OPTIMIZE="${AGTMUX_GHOSTTY_OPTIMIZE:-ReleaseFast}"
 
 if [[ ! -d "$VENDOR_GHOSTTY" ]]; then
   echo "ERROR: vendor/ghostty not found. Run:" >&2
@@ -41,7 +42,8 @@ cd "$VENDOR_GHOSTTY"
 # We only embed the xcframework in agtmux-term, so skip Ghostty.app.
 "$ZIG" build \
   -Demit-xcframework=true \
-  -Demit-macos-app=false
+  -Demit-macos-app=false \
+  -Doptimize="$GHOSTTY_OPTIMIZE"
 
 XCF_SRC="$VENDOR_GHOSTTY/macos/GhosttyKit.xcframework"
 if [[ ! -d "$XCF_SRC" ]]; then

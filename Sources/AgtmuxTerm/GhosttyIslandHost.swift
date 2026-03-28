@@ -327,16 +327,20 @@ final class GhosttyIslandViewController: NSViewController {
             pendingSurfaceContext = surfaceContext
             return
         }
-        guard tv.window != nil else {
+        guard tv.surfaceAttachmentContext() != nil else {
             scheduleRetry(for: command, surfaceContext: surfaceContext)
             return
         }
-
-        guard let ghosttyApp = GhosttyApp.sharedIfInitialized else {
+        guard GhosttySurfaceBootstrapPolicy.shouldDeferInitialAttach(
+            window: tv.window,
+            appIsActive: NSApp.isActive,
+            hasExistingSurface: tv.surface != nil
+        ) == false else {
             pendingAttachCommand = command
             pendingSurfaceContext = surfaceContext
             return
         }
+        let ghosttyApp = GhosttyApp.ensureSharedInitialized()
 
         guard let surface = ghosttyApp.newSurface(for: tv, command: command) else {
             scheduleRetry(for: command, surfaceContext: surfaceContext)

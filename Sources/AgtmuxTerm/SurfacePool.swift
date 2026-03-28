@@ -265,6 +265,20 @@ final class SurfacePool {
         )
     }
 
+    @discardableResult
+    func markDirtyForDirectDraw(view: GhosttyTerminalView) -> Bool {
+        guard let leafID = leafIDsByViewID[ObjectIdentifier(view)],
+              let managed = pool[leafID],
+              managed.state != .pendingGC,
+              managed.state != .defunct else { return false }
+        telemetryState.markDirtyForDirectDrawCount += 1
+        return markDirty(
+            viewID: ObjectIdentifier(managed.view),
+            view: managed.view,
+            scheduleTick: false
+        )
+    }
+
     func markDirty(view: GhosttyTerminalView) {
         guard let leafID = leafIDsByViewID[ObjectIdentifier(view)],
               let managed = pool[leafID],

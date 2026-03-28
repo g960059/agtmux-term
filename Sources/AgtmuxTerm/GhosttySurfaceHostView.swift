@@ -53,7 +53,6 @@ struct GhosttySurfaceHostView: NSViewRepresentable {
                     coordinator: context.coordinator,
                     command: cmd
                 ) else {
-                    guard GhosttyApp.sharedIfInitialized != nil else { return }
                     scheduleSurfaceRetry(
                         for: nsView,
                         coordinator: context.coordinator,
@@ -66,7 +65,6 @@ struct GhosttySurfaceHostView: NSViewRepresentable {
                     nsView,
                     coordinator: context.coordinator
                 ) else {
-                    guard GhosttyApp.sharedIfInitialized != nil else { return }
                     scheduleDefaultShellRetry(
                         for: nsView,
                         coordinator: context.coordinator
@@ -160,12 +158,16 @@ struct GhosttySurfaceHostView: NSViewRepresentable {
         command: String?,
         registryAttachCommand: String
     ) -> Bool {
-        guard nsView.window != nil else { return false }
-
-        guard let ghosttyApp = GhosttyApp.sharedIfInitialized else {
-            coordinator.currentCommand = nil
+        guard nsView.surfaceAttachmentContext() != nil else { return false }
+        guard GhosttySurfaceBootstrapPolicy.shouldDeferInitialAttach(
+            window: nsView.window,
+            appIsActive: NSApp.isActive,
+            hasExistingSurface: nsView.surface != nil
+        ) == false else {
             return false
         }
+
+        let ghosttyApp = GhosttyApp.ensureSharedInitialized()
 
         guard let surface = ghosttyApp.newSurface(for: nsView, command: command) else {
             return false
@@ -222,7 +224,6 @@ struct GhosttySurfaceHostView: NSViewRepresentable {
             guard self.attachSurfaceIfPossible(nsView, coordinator: coordinator, command: command) == false else {
                 return
             }
-            guard GhosttyApp.sharedIfInitialized != nil else { return }
             self.scheduleSurfaceRetry(for: nsView, coordinator: coordinator, command: command)
         }
 
@@ -247,7 +248,6 @@ struct GhosttySurfaceHostView: NSViewRepresentable {
             guard self.attachDefaultShellIfPossible(nsView, coordinator: coordinator) == false else {
                 return
             }
-            guard GhosttyApp.sharedIfInitialized != nil else { return }
             self.scheduleDefaultShellRetry(for: nsView, coordinator: coordinator)
         }
 

@@ -55,61 +55,6 @@ function wait_for_terminal_viewport_ready() {
   return 1
 }
 
-function gate_l_start_async_bridge_command() {
-  local refresh="$1"
-  shift
-
-  local request_id
-  request_id="$(uuidgen)"
-
-  rm -f "$gate_l_command_path" "$gate_l_command_result_path"
-  jq -n \
-    --arg id "$request_id" \
-    --argjson refresh "$refresh" \
-    '{id:$id, args:$ARGS.positional, refreshInventory:$refresh}' \
-    --args -- "$@" \
-    >"$gate_l_command_path"
-
-  print -r -- "$request_id"
-}
-
-function gate_l_wait_for_async_bridge_json_result() {
-  local request_id="$1"
-  local timeout="$2"
-  local deadline=$((EPOCHREALTIME + timeout))
-
-  while (( EPOCHREALTIME < deadline )); do
-    if [[ -s "$gate_l_command_result_path" ]]; then
-      local response_id
-      response_id="$(jq -r '.id // empty' "$gate_l_command_result_path" 2>/dev/null || true)"
-      if [[ "$response_id" == "$request_id" ]]; then
-        local ok
-        ok="$(jq -r '.ok' "$gate_l_command_result_path")"
-        if [[ "$ok" == "true" ]]; then
-          local output
-          output="$(jq -r '.stdout' "$gate_l_command_result_path")"
-          if ! jq -e . >/dev/null 2>&1 <<<"$output"; then
-            echo "App-side tmux command returned non-JSON stdout for request $request_id" >&2
-            print -r -- "$output" >&2
-            return 1
-          fi
-          print -r -- "$output"
-          return 0
-        fi
-
-        local error_message
-        error_message="$(jq -r '.error // "unknown error"' "$gate_l_command_result_path")"
-        echo "App-side tmux command failed: $error_message" >&2
-        return 1
-      fi
-    fi
-    sleep 0.05
-  done
-
-  echo "Timed out waiting for app-side tmux command result: $request_id" >&2
-  return 1
-}
-
 while (( $# > 0 )); do
   case "$1" in
     --session-name)
@@ -165,7 +110,7 @@ gate_l_launch_app_without_bootstrap "agtmux-gate-l-$token" 0
 gate_l_wait_for_bridge_ready "$settle_timeout"
 gate_l_activate_app
 
-open_json="$(gate_l_send_bridge_json_command true "$settle_timeout" "__agtmux_open_terminal_for_pane__" "local" "$session_name" "$pane_id")"
+open_json="$(gate_l_send_bridge_json_command true "$settle_timeout" "__agtmux_open_terminal_for_pane__" "local" "$session_name" "$pane_id" "nowait")"
 surface_id="$(jq -r '.surfaceID // empty' <<<"$open_json")"
 if [[ -z "$surface_id" ]]; then
   echo "Failed to open live pane $session_name $pane_id: $open_json" >&2
@@ -184,6 +129,14 @@ resolved_terminal_ax_identifier="$terminal_ax_identifier"
 if [[ -z "$resolved_terminal_ax_identifier" ]]; then
   resolved_terminal_ax_identifier="workspace.terminalHost.${surface_id}"
 fi
+scroll_point_x="$(jq -r '.terminalFrameInScreen.x // empty' <<<"$focus_json")"
+scroll_point_y="$(jq -r '.terminalFrameInScreen.y // empty' <<<"$focus_json")"
+scroll_frame_width="$(jq -r '.terminalFrameInScreen.width // empty' <<<"$focus_json")"
+scroll_frame_height="$(jq -r '.terminalFrameInScreen.height // empty' <<<"$focus_json")"
+if [[ -n "$scroll_point_x" && -n "$scroll_point_y" && -n "$scroll_frame_width" && -n "$scroll_frame_height" ]]; then
+  scroll_point_x="$(awk "BEGIN { printf \"%.3f\", ($scroll_point_x + ($scroll_frame_width * 0.5)) }")"
+  scroll_point_y="$(awk "BEGIN { printf \"%.3f\", ($scroll_point_y + ($scroll_frame_height * 0.5)) }")"
+fi
 
 typeset -a scroll_sender_args
 scroll_sender_args=(
@@ -193,7 +146,11 @@ scroll_sender_args=(
 )
 case "$scroll_target_mode" in
   identifier)
-    scroll_sender_args+=(--focus-scroll-identifier "$resolved_terminal_ax_identifier")
+    if [[ -n "$scroll_point_x" && -n "$scroll_point_y" ]]; then
+      scroll_sender_args+=(--focus-scroll-point --point-x "$scroll_point_x" --point-y "$scroll_point_y")
+    else
+      scroll_sender_args+=(--focus-scroll-identifier "$resolved_terminal_ax_identifier")
+    fi
     ;;
   front-window)
     scroll_sender_args+=(--focus-scroll-front-window)

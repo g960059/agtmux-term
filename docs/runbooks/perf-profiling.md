@@ -9,12 +9,18 @@ Gate-L benches now default to the installed app bundle at
 `/Applications/AgtmuxTerm.app`. Rebuild and reinstall that bundle first when
 you want to measure the user-facing runtime.
 
+Use the repo helper so the installed app is always a Release build:
+
+```bash
+./scripts/dev/rebuild-reinstall-app.sh
+```
+
 If you intentionally want to benchmark a repo-local build instead, build it and
 override `AGTMUX_PERF_APP_BIN`:
 
 ```bash
-swift build -c debug --build-path .build-codex
-export AGTMUX_PERF_APP_BIN="$PWD/.build-codex/arm64-apple-macosx/debug/AgtmuxTerm"
+xcodebuild -project AgtmuxTerm.xcodeproj -scheme AgtmuxTerm -configuration Release -derivedDataPath .derived-perf-release build
+export AGTMUX_PERF_APP_BIN="$PWD/.derived-perf-release/Build/Products/Release/AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm"
 ```
 
 Confirm the AX helper is trusted before running any input-driven bench:

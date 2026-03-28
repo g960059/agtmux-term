@@ -36,6 +36,23 @@ final class GhosttyTickScheduler {
         }
     }
 
+    @discardableResult
+    func enqueueTickIfNeeded() -> Bool {
+        lock.lock()
+        guard pendingTickCredits == 0, tickDrainScheduled == false else {
+            lock.unlock()
+            return false
+        }
+        pendingTickCredits = 1
+        tickDrainScheduled = true
+        lock.unlock()
+
+        scheduleOnMainRunLoop { [weak self] in
+            self?.drainTickQueue()
+        }
+        return true
+    }
+
     @MainActor
     private func drainTickQueue() {
         while consumePendingTickCredit() {

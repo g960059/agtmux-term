@@ -25,6 +25,28 @@ enum TerminalViewRegistrationRequirement: String {
     }
 }
 
+enum UITestFocusRequirement {
+    case appWindow
+    case terminalResponder
+    case terminalHost
+
+    func isSatisfied(
+        appIsActive: Bool,
+        windowIsVisible: Bool,
+        windowIsKey: Bool,
+        terminalIsFirstResponder: Bool
+    ) -> Bool {
+        switch self {
+        case .appWindow:
+            return appIsActive && windowIsVisible && windowIsKey
+        case .terminalResponder:
+            return windowIsVisible && terminalIsFirstResponder
+        case .terminalHost:
+            return appIsActive && windowIsVisible && windowIsKey && terminalIsFirstResponder
+        }
+    }
+}
+
 private func uiTestBridgeDebugLog(_ message: @autoclosure () -> String) {
     let line = "[ui-test-bridge] " + message() + "\n"
     if let debugPath = UserDefaults.standard.string(forKey: "UITestBridgeDebugLogPath"),
@@ -59,12 +81,16 @@ private func uiTestBridgeDebugLog(_ message: @autoclosure () -> String) {
 /// Enabled only when `AGTMUX_UITEST=1`.
 @MainActor
 final class UITestTmuxBridge {
-    static let bridgeEnabledDefaultsKey = "UITestBridgeEnabled"
-    static let commandPathDefaultsKey = "UITestTmuxCommandPath"
-    static let commandResultPathDefaultsKey = "UITestTmuxCommandResultPath"
-    static let bootstrapResultPathDefaultsKey = "UITestTmuxResultPath"
-    static let registrationTimeoutDefaultsKey = "UITestTerminalViewRegistrationTimeoutMS"
-    static let sessionOnlyFallbackDefaultsKey = "UITestAllowSessionOnlyOpenFallback"
+    nonisolated static let automationEnabledDefaultsKey = "UITestAutomationEnabled"
+    nonisolated static let bridgeEnabledDefaultsKey = "UITestBridgeEnabled"
+    nonisolated static let inventoryOnlyDefaultsKey = "UITestInventoryOnly"
+    nonisolated static let enableGhosttySurfacesDefaultsKey = "UITestEnableGhosttySurfaces"
+    nonisolated static let bootstrapScenarioDefaultsKey = "UITestTmuxScenario"
+    nonisolated static let commandPathDefaultsKey = "UITestTmuxCommandPath"
+    nonisolated static let commandResultPathDefaultsKey = "UITestTmuxCommandResultPath"
+    nonisolated static let bootstrapResultPathDefaultsKey = "UITestTmuxResultPath"
+    nonisolated static let registrationTimeoutDefaultsKey = "UITestTerminalViewRegistrationTimeoutMS"
+    nonisolated static let sessionOnlyFallbackDefaultsKey = "UITestAllowSessionOnlyOpenFallback"
     nonisolated static let stableAttachEnabledRelativePath = "agtmux-term/gate-l-attach/enabled"
     nonisolated static let stableAttachCommandRelativePath = "agtmux-term/gate-l-attach/tmux-command.json"
     nonisolated static let stableAttachCommandResultRelativePath = "agtmux-term/gate-l-attach/tmux-command-result.json"
@@ -80,25 +106,81 @@ final class UITestTmuxBridge {
         stableAttachURL(relativePath: stableAttachEnabledRelativePath)
     }
 
+    nonisolated static func defaultsBackedBridgeActive(
+        userDefaults: UserDefaults = .standard,
+        fileManager: FileManager = .default,
+        enabledURL: URL? = nil
+    ) -> Bool {
+        _ = userDefaults
+        let effectiveEnabledURL = enabledURL ?? stableAttachEnabledURL
+        return fileManager.fileExists(atPath: effectiveEnabledURL.path)
+    }
+
     nonisolated static func bridgeRequested(
         environment: [String: String],
-        userDefaults: UserDefaults = .standard
+        userDefaults: UserDefaults = .standard,
+        fileManager: FileManager = .default,
+        enabledURL: URL? = nil
     ) -> Bool {
-        let bridgeEnabledKey = "UITestBridgeEnabled"
-        let commandPathKey = "UITestTmuxCommandPath"
-        let commandResultPathKey = "UITestTmuxCommandResultPath"
         if environment["AGTMUX_UITEST"] == "1" {
             return true
         }
-        if userDefaults.bool(forKey: bridgeEnabledKey) {
+        return defaultsBackedBridgeActive(
+            userDefaults: userDefaults,
+            fileManager: fileManager,
+            enabledURL: enabledURL
+        )
+    }
+
+    nonisolated static func automationRequested(
+        environment: [String: String],
+        userDefaults: UserDefaults = .standard,
+        fileManager: FileManager = .default,
+        enabledURL: URL? = nil
+    ) -> Bool {
+        if environment["AGTMUX_UITEST"] == "1" {
             return true
         }
-        let commandPath = userDefaults.string(forKey: commandPathKey)
-        let commandResultPath = userDefaults.string(forKey: commandResultPathKey)
-        if FileManager.default.fileExists(atPath: stableAttachEnabledURL.path) {
-            return true
+        return defaultsBackedBridgeActive(
+            userDefaults: userDefaults,
+            fileManager: fileManager,
+            enabledURL: enabledURL
+        )
+    }
+
+    nonisolated static func inventoryOnlyRequested(
+        environment: [String: String],
+        userDefaults: UserDefaults = .standard
+    ) -> Bool {
+        if let raw = environment["AGTMUX_UITEST_INVENTORY_ONLY"] {
+            return raw == "1"
         }
-        return (commandPath?.isEmpty == false) && (commandResultPath?.isEmpty == false)
+        return userDefaults.bool(forKey: inventoryOnlyDefaultsKey)
+    }
+
+    nonisolated static func ghosttySurfacesRequested(
+        environment: [String: String],
+        userDefaults: UserDefaults = .standard
+    ) -> Bool {
+        if let raw = environment["AGTMUX_UITEST_ENABLE_GHOSTTY_SURFACES"] {
+            return raw == "1"
+        }
+        return userDefaults.bool(forKey: enableGhosttySurfacesDefaultsKey)
+    }
+
+    nonisolated static func bootstrapScenario(
+        environment: [String: String],
+        userDefaults: UserDefaults = .standard
+    ) -> String? {
+        if let scenario = environment["AGTMUX_UITEST_TMUX_SCENARIO"],
+           !scenario.isEmpty {
+            return scenario
+        }
+        guard let scenario = userDefaults.string(forKey: bootstrapScenarioDefaultsKey),
+              !scenario.isEmpty else {
+            return nil
+        }
+        return scenario
     }
 
     private struct BootstrapScenario: Decodable {
@@ -175,6 +257,13 @@ final class UITestTmuxBridge {
         let paneID: String
     }
 
+    private struct ScreenRectSnapshot: Codable {
+        let x: Double
+        let y: Double
+        let width: Double
+        let height: Double
+    }
+
     private struct FocusStateSnapshot: Codable {
         let appIsActive: Bool
         let keyWindowNumber: Int?
@@ -188,6 +277,7 @@ final class UITestTmuxBridge {
         let windowFirstResponderDescription: String?
         let terminalIsFirstResponder: Bool
         let terminalAccessibilityIdentifier: String?
+        let terminalFrameInScreen: ScreenRectSnapshot?
         let terminalKeyDownCount: Int
         let terminalLastKeyCode: UInt16?
         let terminalLastCharacters: String?
@@ -243,15 +333,23 @@ final class UITestTmuxBridge {
         let sampling: TerminalViewportTextSamplingSnapshot
     }
 
+    struct DirectLocalPaneResolution: Sendable {
+        let pane: AgtmuxPane
+        let localSocketOverride: LocalTmuxSocketOverride?
+    }
+
     private let viewModel: AppViewModel
     private let mainTerminalStore: MainTerminalStore
     private let enableMetadataMode: @MainActor () async -> Void
-    private let resolveDirectLocalPane: @Sendable (_ sessionName: String, _ paneID: String) async throws -> AgtmuxPane?
-    private let applyNavigationIntent: @Sendable (_ activePaneRef: ActivePaneRef, _ renderedClientTTY: String, _ hostsConfig: HostsConfig) async throws -> Void
-    private let resolveRenderedLiveTarget: @Sendable (_ renderedClientTTY: String, _ target: TargetRef, _ hostsConfig: HostsConfig) async throws -> TerminalLiveTarget
+    private let refreshAll: @MainActor () async -> Void
+    private let refreshAfterBootstrap: @MainActor () async -> Void
+    private let resolveDirectLocalPane: @Sendable (_ sessionName: String, _ paneID: String) async throws -> DirectLocalPaneResolution?
+    private let applyNavigationIntent: @Sendable (_ activePaneRef: ActivePaneRef, _ renderedClientTTY: String, _ hostsConfig: HostsConfig, _ localSocketOverride: LocalTmuxSocketOverride?) async throws -> Void
+    private let resolveRenderedLiveTarget: @Sendable (_ renderedClientTTY: String, _ target: TargetRef, _ hostsConfig: HostsConfig, _ localSocketOverride: LocalTmuxSocketOverride?) async throws -> TerminalLiveTarget
     private let env: [String: String]
     private let userDefaults: UserDefaults
     private var bridgeActivationMonitorTask: Task<Void, Never>?
+    private var postBootstrapRefreshTask: Task<Void, Never>?
     private var activeCommandLoopPaths: (command: String, response: String)?
     private var commandLoopTask: Task<Void, Never>?
     private var lastProcessedCommandID: String?
@@ -265,6 +363,7 @@ final class UITestTmuxBridge {
     private let enableMetadataCommand = "__agtmux_enable_metadata__"
     private let openTerminalForPaneCommand = "__agtmux_open_terminal_for_pane__"
     private let focusTerminalHostCommand = "__agtmux_focus_terminal_host__"
+    private let activateAppCommand = "__agtmux_activate_app__"
     private let focusRenderedPaneCommand = "__agtmux_focus_rendered_pane__"
     private let renderedTerminalTargetCommand = "__agtmux_dump_rendered_terminal_target__"
     private let sendTerminalKeyDownCommand = "__agtmux_send_terminal_key_down__"
@@ -303,6 +402,19 @@ final class UITestTmuxBridge {
         return value
     }
 
+    private var focusAcquisitionTimeoutMilliseconds: Int {
+        1_500
+    }
+
+    private var bridgePollIntervalMilliseconds: Int {
+        guard let raw = env["AGTMUX_UITEST_BRIDGE_POLL_INTERVAL_MS"],
+              let value = Int(raw),
+              value > 0 else {
+            return 10
+        }
+        return value
+    }
+
     private var allowSessionOnlyOpenFallback: Bool {
         if let raw = env["AGTMUX_UITEST_ALLOW_SESSION_ONLY_OPEN_FALLBACK"] {
             return raw == "1"
@@ -314,38 +426,47 @@ final class UITestTmuxBridge {
         if env["AGTMUX_UITEST"] == "1" {
             return true
         }
-        if userDefaults.bool(forKey: Self.bridgeEnabledDefaultsKey) {
-            return true
-        }
-        let commandPath = userDefaults.string(forKey: Self.commandPathDefaultsKey)
-        let commandResultPath = userDefaults.string(forKey: Self.commandResultPathDefaultsKey)
-        return (commandPath?.isEmpty == false) && (commandResultPath?.isEmpty == false)
+        return Self.defaultsBackedBridgeActive(userDefaults: userDefaults)
     }
 
     init(
         viewModel: AppViewModel,
         mainTerminalStore: MainTerminalStore? = nil,
         enableMetadataMode: @escaping @MainActor () async -> Void = {},
-        resolveDirectLocalPane: @escaping @Sendable (_ sessionName: String, _ paneID: String) async throws -> AgtmuxPane? = { sessionName, paneID in
+        refreshAll: (@MainActor () async -> Void)? = nil,
+        refreshAfterBootstrap: (@MainActor () async -> Void)? = nil,
+        resolveDirectLocalPane: @escaping @Sendable (_ sessionName: String, _ paneID: String) async throws -> DirectLocalPaneResolution? = { sessionName, paneID in
             let output = try await TmuxCommandRunner.shared.run(
                 ["list-panes", "-a", "-F", LocalTmuxInventoryClient.formatString],
                 source: "local-default"
             )
             let panes = try LocalTmuxInventoryClient.parse(output: output, source: "local")
-            return panes.first(where: { $0.sessionName == sessionName && $0.paneId == paneID })
+            guard let pane = panes.first(where: { $0.sessionName == sessionName && $0.paneId == paneID }) else {
+                return nil
+            }
+            let socketPath = try? await TmuxCommandRunner.shared.run(
+                ["display-message", "-p", "#{socket_path}"],
+                source: "local-default"
+            )
+            return DirectLocalPaneResolution(
+                pane: pane,
+                localSocketOverride: LocalTmuxSocketOverride(socketPath: socketPath)
+            )
         },
-        applyNavigationIntent: @escaping @Sendable (_ activePaneRef: ActivePaneRef, _ renderedClientTTY: String, _ hostsConfig: HostsConfig) async throws -> Void = { activePaneRef, renderedClientTTY, hostsConfig in
+        applyNavigationIntent: @escaping @Sendable (_ activePaneRef: ActivePaneRef, _ renderedClientTTY: String, _ hostsConfig: HostsConfig, _ localSocketOverride: LocalTmuxSocketOverride?) async throws -> Void = { activePaneRef, renderedClientTTY, hostsConfig, localSocketOverride in
             try await UITestTmuxBridge.applyRenderedPaneNavigation(
                 activePaneRef: activePaneRef,
                 renderedClientTTY: renderedClientTTY,
-                hostsConfig: hostsConfig
+                hostsConfig: hostsConfig,
+                localSocketOverride: localSocketOverride
             )
         },
-        resolveRenderedLiveTarget: @escaping @Sendable (_ renderedClientTTY: String, _ target: TargetRef, _ hostsConfig: HostsConfig) async throws -> TerminalLiveTarget = { renderedClientTTY, target, hostsConfig in
+        resolveRenderedLiveTarget: @escaping @Sendable (_ renderedClientTTY: String, _ target: TargetRef, _ hostsConfig: HostsConfig, _ localSocketOverride: LocalTmuxSocketOverride?) async throws -> TerminalLiveTarget = { renderedClientTTY, target, hostsConfig, localSocketOverride in
             try await MainTerminalNavigationResolver.liveTarget(
                 renderedClientTTY: renderedClientTTY,
                 target: target,
-                hostsConfig: hostsConfig
+                hostsConfig: hostsConfig,
+                localSocketOverride: localSocketOverride
             )
         },
         env: [String: String] = ProcessInfo.processInfo.environment,
@@ -354,6 +475,10 @@ final class UITestTmuxBridge {
         self.viewModel = viewModel
         self.mainTerminalStore = mainTerminalStore ?? MainTerminalStore()
         self.enableMetadataMode = enableMetadataMode
+        self.refreshAll = refreshAll ?? { await viewModel.fetchAll() }
+        self.refreshAfterBootstrap = refreshAfterBootstrap ?? {
+            try? await viewModel.refreshLocalPaneInventoryOnlyForTesting()
+        }
         self.resolveDirectLocalPane = resolveDirectLocalPane
         self.applyNavigationIntent = applyNavigationIntent
         self.resolveRenderedLiveTarget = resolveRenderedLiveTarget
@@ -372,13 +497,16 @@ final class UITestTmuxBridge {
 
         startCommandLoopIfNeeded()
 
-        if let scenarioJSON = env["AGTMUX_UITEST_TMUX_SCENARIO"],
+        if let scenarioJSON = Self.bootstrapScenario(
+            environment: env,
+            userDefaults: userDefaults
+        ),
            !scenarioJSON.isEmpty {
             await runBootstrapScenario(from: scenarioJSON)
             return
         }
 
-        await viewModel.fetchAll()
+        await refreshAll()
     }
 
     @MainActor
@@ -386,6 +514,9 @@ final class UITestTmuxBridge {
         bridgeActivationMonitorTask?.cancel()
         _ = await bridgeActivationMonitorTask?.value
         bridgeActivationMonitorTask = nil
+        postBootstrapRefreshTask?.cancel()
+        _ = await postBootstrapRefreshTask?.value
+        postBootstrapRefreshTask = nil
         commandLoopTask?.cancel()
         _ = await commandLoopTask?.value
         commandLoopTask = nil
@@ -504,18 +635,11 @@ final class UITestTmuxBridge {
 
             let resolvedTmuxSocketPath = try await resolveBootstrapTmuxSocketPath()
             AgtmuxManagedDaemonRuntime.setBootstrapResolvedTmuxSocketPath(resolvedTmuxSocketPath)
-
-            await viewModel.fetchAll()
-
-            writeBootstrapResult(
-                BootstrapResult(
-                    ok: true,
-                    sessionName: scenario.sessionName,
-                    windowID: windowID,
-                    paneIDs: paneIDs,
-                    socketPath: resolvedTmuxSocketPath,
-                    error: nil
-                )
+            completeBootstrapSuccess(
+                sessionName: scenario.sessionName,
+                windowID: windowID,
+                paneIDs: paneIDs,
+                socketPath: resolvedTmuxSocketPath
             )
         } catch {
             writeBootstrapResult(
@@ -529,6 +653,10 @@ final class UITestTmuxBridge {
     @MainActor
     private func startCommandLoopIfNeeded() {
         guard let commandURL = commandURL, let responseURL = commandResponseURL else {
+            commandLoopTask?.cancel()
+            commandLoopTask = nil
+            activeCommandLoopPaths = nil
+            lastProcessedCommandID = nil
             uiTestBridgeDebugLog("startCommandLoopIfNeeded missing command paths")
             return
         }
@@ -538,19 +666,34 @@ final class UITestTmuxBridge {
             uiTestBridgeDebugLog(
                 "startCommandLoopIfNeeded commandURL=\(commandURL.path) responseURL=\(responseURL.path)"
             )
+            commandLoopTask?.cancel()
+            commandLoopTask = nil
             activeCommandLoopPaths = requestedPaths
             lastProcessedCommandID = nil
         }
 
         guard commandLoopTask == nil else { return }
 
-        commandLoopTask = Task { @MainActor [weak self] in
+        let pollIntervalMilliseconds = bridgePollIntervalMilliseconds
+        commandLoopTask = Task.detached(priority: .background) { [weak self] in
             guard let self else { return }
-            defer { self.commandLoopTask = nil }
-            _ = await self.processCommandFileIfNeeded(
-                commandURL: commandURL,
-                responseURL: responseURL
-            )
+            defer {
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    if self.commandLoopTask?.isCancelled != false {
+                        self.commandLoopTask = nil
+                    }
+                }
+            }
+            while !Task.isCancelled {
+                let processed = await self.processCommandFileIfNeeded(
+                    commandURL: commandURL,
+                    responseURL: responseURL
+                )
+                if processed == false {
+                    try? await Task.sleep(for: .milliseconds(pollIntervalMilliseconds))
+                }
+            }
         }
     }
 
@@ -659,8 +802,7 @@ final class UITestTmuxBridge {
             return URL(fileURLWithPath: path)
         }
         guard env["AGTMUX_UITEST"] == "1"
-            || userDefaults.bool(forKey: Self.bridgeEnabledDefaultsKey)
-            || FileManager.default.fileExists(atPath: Self.stableAttachEnabledURL.path) else {
+            || Self.defaultsBackedBridgeActive(userDefaults: userDefaults) else {
             return nil
         }
         return Self.stableAttachURL(relativePath: Self.stableAttachBootstrapResultRelativePath)
@@ -673,8 +815,7 @@ final class UITestTmuxBridge {
             return URL(fileURLWithPath: path)
         }
         guard env["AGTMUX_UITEST"] == "1"
-            || userDefaults.bool(forKey: Self.bridgeEnabledDefaultsKey)
-            || FileManager.default.fileExists(atPath: Self.stableAttachEnabledURL.path) else {
+            || Self.defaultsBackedBridgeActive(userDefaults: userDefaults) else {
             return nil
         }
         return Self.stableAttachURL(relativePath: Self.stableAttachCommandRelativePath)
@@ -687,8 +828,7 @@ final class UITestTmuxBridge {
             return URL(fileURLWithPath: path)
         }
         guard env["AGTMUX_UITEST"] == "1"
-            || userDefaults.bool(forKey: Self.bridgeEnabledDefaultsKey)
-            || FileManager.default.fileExists(atPath: Self.stableAttachEnabledURL.path) else {
+            || Self.defaultsBackedBridgeActive(userDefaults: userDefaults) else {
             return nil
         }
         return Self.stableAttachURL(relativePath: Self.stableAttachCommandResultRelativePath)
@@ -751,6 +891,9 @@ final class UITestTmuxBridge {
                 stdout = String(decoding: data, as: UTF8.self)
             case focusTerminalHostCommand:
                 try await focusTerminalHost(request.args)
+                stdout = "ok"
+            case activateAppCommand:
+                try await activateApp()
                 stdout = "ok"
             case focusRenderedPaneCommand:
                 try await focusRenderedPane(request.args)
@@ -1137,6 +1280,7 @@ final class UITestTmuxBridge {
             "openTerminalForPaneForTesting start source=\(source) session=\(sessionName) pane=\(paneID)"
         )
         let pane: AgtmuxPane
+        let localSocketOverride: LocalTmuxSocketOverride?
         let usedSessionOnlyFallback: Bool
         let hostsConfig = viewModel.hostsConfig
         let currentSessionRef = mainTerminalStore.sessionRef
@@ -1147,6 +1291,7 @@ final class UITestTmuxBridge {
             $0.source == source && $0.sessionName == sessionName && $0.paneId == paneID
         }) {
             pane = inventoryPane
+            localSocketOverride = nil
             usedSessionOnlyFallback = false
             uiTestBridgeDebugLog(
                 "openTerminalForPaneForTesting inventory-hit panes=\(viewModel.panes.count)"
@@ -1156,18 +1301,20 @@ final class UITestTmuxBridge {
                       $0.source == "local" && $0.paneId == paneID
                   }) {
             pane = localPane
+            localSocketOverride = nil
             usedSessionOnlyFallback = false
             uiTestBridgeDebugLog(
                 "openTerminalForPaneForTesting inventory-paneid-fallback requestedSession=\(sessionName) resolvedSession=\(localPane.sessionName)"
             )
         } else if source == "local",
-                  let directPane = try await resolveDirectLocalPane(sessionName, paneID) {
+                  let directResolution = try await resolveDirectLocalPane(sessionName, paneID) {
             uiTestBridgeDebugLog(
                 "openTerminalForPaneForTesting default-socket-fallback session=\(sessionName) pane=\(paneID)"
             )
-            pane = directPane
+            pane = directResolution.pane
+            localSocketOverride = directResolution.localSocketOverride
             usedSessionOnlyFallback = false
-            prepareDirectLocalPaneForRendering(directPane)
+            prepareDirectLocalPaneForRendering(directResolution.pane)
         } else if source == "local" && allowSessionOnlyOpenFallback && !hasExistingLocalTerminalTarget {
             uiTestBridgeDebugLog(
                 "openTerminalForPaneForTesting session-only-fallback session=\(sessionName) pane=\(paneID)"
@@ -1175,11 +1322,21 @@ final class UITestTmuxBridge {
             prepareDirectLocalSessionForRendering(sessionName)
             let sessionRef = SessionRef(target: .local, sessionName: sessionName)
             let disposition = currentSessionRef == sessionRef ? "revealedExisting" : "opened"
-            mainTerminalStore.activate(
-                sessionRef: sessionRef,
-                requestedPaneRef: nil,
-                hostsConfig: hostsConfig
-            )
+            if waitForRegistration {
+                mainTerminalStore.activate(
+                    sessionRef: sessionRef,
+                    requestedPaneRef: nil,
+                    hostsConfig: hostsConfig
+                )
+            } else {
+                Task { @MainActor [weak self] in
+                    self?.mainTerminalStore.activate(
+                        sessionRef: sessionRef,
+                        requestedPaneRef: nil,
+                        hostsConfig: hostsConfig
+                    )
+                }
+            }
             if waitForRegistration {
                 try await waitForTerminalViewRegistration(
                     surfaceID: mainTerminalStore.surfaceID,
@@ -1203,12 +1360,23 @@ final class UITestTmuxBridge {
             prepareDirectLocalSessionForRendering(sessionName)
             let sessionRef = SessionRef(target: .local, sessionName: sessionName)
             let disposition = currentSessionRef == sessionRef ? "revealedExisting" : "opened"
-            mainTerminalStore.activate(
-                sessionRef: sessionRef,
-                requestedPaneRef: nil,
-                hostsConfig: hostsConfig
-            )
             if waitForRegistration {
+                mainTerminalStore.activate(
+                    sessionRef: sessionRef,
+                    requestedPaneRef: nil,
+                    hostsConfig: hostsConfig
+                )
+            } else {
+                Task { @MainActor [weak self] in
+                    self?.mainTerminalStore.activate(
+                        sessionRef: sessionRef,
+                        requestedPaneRef: nil,
+                        hostsConfig: hostsConfig
+                    )
+                }
+            }
+            if waitForRegistration {
+                try await activateApp()
                 try await waitForTerminalViewRegistration(
                     surfaceID: mainTerminalStore.surfaceID,
                     timeoutMilliseconds: terminalViewRegistrationTimeoutMilliseconds,
@@ -1242,7 +1410,21 @@ final class UITestTmuxBridge {
         )
         let sessionRef = sessionRef(forPane: pane, hostsConfig: hostsConfig)
         let disposition = currentSessionRef == sessionRef ? "revealedExisting" : "opened"
-        await mainTerminalStore.activate(pane: pane, hostsConfig: hostsConfig)
+        if waitForRegistration {
+            await mainTerminalStore.activate(
+                pane: pane,
+                hostsConfig: hostsConfig,
+                localSocketOverride: localSocketOverride
+            )
+        } else {
+            Task { @MainActor [weak self] in
+                await self?.mainTerminalStore.activate(
+                    pane: pane,
+                    hostsConfig: hostsConfig,
+                    localSocketOverride: localSocketOverride
+                )
+            }
+        }
         uiTestBridgeDebugLog(
             "openTerminalForPaneForTesting main-terminal-activated surface=\(mainTerminalStore.surfaceID.uuidString)"
         )
@@ -1351,10 +1533,12 @@ final class UITestTmuxBridge {
         let source = args[1]
         let sessionName = args[2]
         let paneID = args[3]
+        let waitForRegistration = !(args.count >= 5 && args[4] == "nowait")
         return try await openTerminalForPaneForTesting(
             source: source,
             sessionName: sessionName,
-            paneID: paneID
+            paneID: paneID,
+            waitForRegistration: waitForRegistration
         )
     }
 
@@ -1390,6 +1574,16 @@ final class UITestTmuxBridge {
         let terminalFirstResponder = terminalWindow?.firstResponder
         let keyWindow = NSApp.keyWindow
         let keyWindowFirstResponder = keyWindow?.firstResponder
+        let terminalFrameInScreen = terminalWindow.map { window -> ScreenRectSnapshot in
+            let frameInWindow = terminalView.convert(terminalView.bounds, to: nil)
+            let frameInScreen = window.convertToScreen(frameInWindow)
+            return ScreenRectSnapshot(
+                x: frameInScreen.origin.x,
+                y: frameInScreen.origin.y,
+                width: frameInScreen.size.width,
+                height: frameInScreen.size.height
+            )
+        }
 
         return FocusStateSnapshot(
             appIsActive: NSApp.isActive,
@@ -1408,6 +1602,7 @@ final class UITestTmuxBridge {
             windowFirstResponderDescription: terminalFirstResponder.map(String.init(describing:)),
             terminalIsFirstResponder: terminalFirstResponder === terminalView,
             terminalAccessibilityIdentifier: terminalView.accessibilityIdentifier(),
+            terminalFrameInScreen: terminalFrameInScreen,
             terminalKeyDownCount: terminalView.debugKeyDownCount,
             terminalLastKeyCode: terminalView.debugLastKeyCode,
             terminalLastCharacters: terminalView.debugLastCharacters,
@@ -1417,6 +1612,10 @@ final class UITestTmuxBridge {
             terminalRecentInputEvents: terminalView.debugRecentInputEvents,
             terminalSurfaceMetrics: terminalView.surfaceMetricsSnapshotForTesting()
         )
+    }
+
+    private func focusStateSnapshot(for surfaceID: UUID) throws -> FocusStateSnapshot {
+        try focusStateSnapshot(for: [focusStateCommand, surfaceID.uuidString])
     }
 
     private func terminalRegistrationStateSnapshot(
@@ -1485,9 +1684,47 @@ final class UITestTmuxBridge {
             )
         }
 
-        NSApplication.shared.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil)
-        window.makeFirstResponder(terminalView)
+        try await waitForFocusAcquisition(
+            requirement: .terminalHost,
+            surfaceID: surfaceID,
+            window: window,
+            terminalView: terminalView,
+            timeoutMilliseconds: focusAcquisitionTimeoutMilliseconds
+        )
+    }
+
+    private func activateApp() async throws {
+        let window = try await waitForAppWindowAvailability(
+            timeoutMilliseconds: focusAcquisitionTimeoutMilliseconds
+        )
+
+        try await waitForFocusAcquisition(
+            requirement: .appWindow,
+            surfaceID: nil,
+            window: window,
+            terminalView: nil,
+            timeoutMilliseconds: focusAcquisitionTimeoutMilliseconds
+        )
+    }
+
+    private func waitForAppWindowAvailability(timeoutMilliseconds: Int) async throws -> NSWindow {
+        let deadline = ContinuousClock.now + .milliseconds(timeoutMilliseconds)
+        while ContinuousClock.now < deadline {
+            flushAppWindowHostingIfNeeded()
+            if let window = NSApp.windows.first(where: \.isVisible) ?? NSApp.mainWindow ?? NSApp.windows.first {
+                return window
+            }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+
+        throw NSError(
+            domain: "UITestTmuxBridge",
+            code: 65,
+            userInfo: [
+                NSLocalizedDescriptionKey:
+                    "No app window became available for activation within \(timeoutMilliseconds)ms"
+            ]
+        )
     }
 
     private func focusRenderedPane(_ args: [String]) async throws {
@@ -1528,7 +1765,8 @@ final class UITestTmuxBridge {
                 paneID: paneID
             ),
             renderedClientTTY,
-            viewModel.hostsConfig
+            viewModel.hostsConfig,
+            mainTerminalStore.currentLocalSocketOverride
         )
         uiTestBridgeDebugLog("focusRenderedPane applyNavigationIntent done pane=\(paneID)")
     }
@@ -1536,7 +1774,8 @@ final class UITestTmuxBridge {
     private static func applyRenderedPaneNavigation(
         activePaneRef: ActivePaneRef,
         renderedClientTTY: String,
-        hostsConfig: HostsConfig
+        hostsConfig: HostsConfig,
+        localSocketOverride: LocalTmuxSocketOverride?
     ) async throws {
         uiTestBridgeDebugLog(
             "applyRenderedPaneNavigation tty=\(renderedClientTTY) pane=\(activePaneRef.paneID)"
@@ -1544,7 +1783,8 @@ final class UITestTmuxBridge {
         try await MainTerminalNavigationResolver.applyRenderedClientNavigationIntent(
             activePaneRef: activePaneRef,
             renderedClientTTY: renderedClientTTY,
-            hostsConfig: hostsConfig
+            hostsConfig: hostsConfig,
+            localSocketOverride: localSocketOverride
         )
     }
 
@@ -1660,8 +1900,8 @@ final class UITestTmuxBridge {
     private func resetScrollTelemetry(_ args: [String]) throws {
         let terminalView = try terminalView(for: args, command: resetScrollTelemetryCommand)
         let surfaceID = try surfaceID(from: args, command: resetScrollTelemetryCommand)
-        terminalView.resetScrollTelemetryForTesting()
         GhosttyApp.resetSurfaceDrawTelemetryForTesting()
+        terminalView.resetScrollTelemetryForTesting()
         GhosttyIslandUpdateTelemetry.shared.reset(surfaceID: surfaceID)
         SurfacePool.shared.resetTelemetryForTesting()
         MainTerminalPaneControllerTelemetry.shared.reset(surfaceID: surfaceID)
@@ -1762,34 +2002,36 @@ final class UITestTmuxBridge {
             )
         }
 
-        return try await Task.detached(priority: .userInitiated) { [weak self] in
-            guard let self else {
-                throw CancellationError()
-            }
+        try await waitForTerminalViewRegistration(
+            surfaceID: surfaceID,
+            timeoutMilliseconds: terminalViewRegistrationTimeoutMilliseconds,
+            requirement: .terminalViewInWindow
+        )
+        let terminalView = try terminalView(
+            for: [sampleTerminalViewportTextCommand, surfaceID.uuidString],
+            command: sampleTerminalViewportTextCommand
+        )
 
-            var samples: [TerminalViewportTextSampleSnapshot] = []
-            samples.reserveCapacity(sampleCount)
-            let startUptime = ProcessInfo.processInfo.systemUptime
+        var samples: [TerminalViewportTextSampleSnapshot] = []
+        samples.reserveCapacity(sampleCount)
+        let startUptime = ProcessInfo.processInfo.systemUptime
 
-            for sampleIndex in 0..<sampleCount {
-                let snapshot = try await MainActor.run {
-                    try self.terminalViewportTextSnapshotForTesting(surfaceID: surfaceID)
-                }
-                let elapsedMs = (ProcessInfo.processInfo.systemUptime - startUptime) * 1000.0
-                samples.append(
-                    TerminalViewportTextSampleSnapshot(
-                        sampleIndex: sampleIndex,
-                        elapsedMs: elapsedMs,
-                        snapshot: snapshot
-                    )
+        for sampleIndex in 0..<sampleCount {
+            let snapshot = terminalView.viewportTextSnapshotForTesting()
+            let elapsedMs = (ProcessInfo.processInfo.systemUptime - startUptime) * 1000.0
+            samples.append(
+                TerminalViewportTextSampleSnapshot(
+                    sampleIndex: sampleIndex,
+                    elapsedMs: elapsedMs,
+                    snapshot: snapshot
                 )
-                if sampleIndex < sampleCount - 1, intervalMilliseconds > 0 {
-                    try await Task.sleep(for: .milliseconds(intervalMilliseconds))
-                }
+            )
+            if sampleIndex < sampleCount - 1, intervalMilliseconds > 0 {
+                try await Task.sleep(for: .milliseconds(intervalMilliseconds))
             }
+        }
 
-            return TerminalViewportTextSamplingSnapshot(samples: samples)
-        }.value
+        return TerminalViewportTextSamplingSnapshot(samples: samples)
     }
 
     func measureTerminalScrollBurstForTesting(
@@ -1858,7 +2100,7 @@ final class UITestTmuxBridge {
         terminalView.prepareForInternalTrackpadScrollInjectionForTesting()
 
         let startUptime = ProcessInfo.processInfo.systemUptime
-        let samplingTask = Task { @MainActor [self] in
+        let samplingTask = Task.detached { [self] in
             var samples: [TerminalViewportTextSampleSnapshot] = []
             samples.reserveCapacity(sampleCount)
 
@@ -1866,7 +2108,9 @@ final class UITestTmuxBridge {
                 if sampleIndex > 0, sampleIntervalMilliseconds > 0 {
                     try await Task.sleep(for: .milliseconds(sampleIntervalMilliseconds))
                 }
-                let snapshot = try await terminalViewportTextSnapshotAfterRegistrationForTesting(surfaceID: surfaceID)
+                let snapshot = try await terminalViewportTextSnapshotAfterRegistrationForTesting(
+                    surfaceID: surfaceID
+                )
                 let elapsedMs = (ProcessInfo.processInfo.systemUptime - startUptime) * 1000.0
                 samples.append(
                     TerminalViewportTextSampleSnapshot(
@@ -1880,15 +2124,17 @@ final class UITestTmuxBridge {
             return samples
         }
 
-        let injectionTask = Task { @MainActor in
+        let injectionTask = Task.detached { [terminalView] in
             try await Task.sleep(for: .milliseconds(20))
 
             for (eventIndex, event) in syntheticEvents.enumerated() {
-                terminalView.dispatchInternalTrackpadScrollStepForTesting(
-                    verticalDelta: event.deliversDelta ? verticalDelta : 0,
-                    phase: event.phase,
-                    momentumPhase: event.momentumPhase
-                )
+                await MainActor.run {
+                    terminalView.dispatchInternalTrackpadScrollStepForTesting(
+                        verticalDelta: event.deliversDelta ? verticalDelta : 0,
+                        phase: event.phase,
+                        momentumPhase: event.momentumPhase
+                    )
+                }
 
                 if eventIndex + 1 < syntheticEvents.count, intervalMilliseconds > 0 {
                     try await Task.sleep(for: .milliseconds(intervalMilliseconds))
@@ -2139,9 +2385,15 @@ final class UITestTmuxBridge {
     ) async -> TerminalLiveTarget? {
         let resolver = resolveRenderedLiveTarget
         let timeoutMilliseconds = renderedLiveTargetTimeoutMilliseconds
+        let localSocketOverride = mainTerminalStore.currentLocalSocketOverride
         let resolved = await withTaskGroup(of: TerminalLiveTarget?.self) { group in
             group.addTask {
-                try? await resolver(renderedClientTTY, target, hostsConfig)
+                try? await resolver(
+                    renderedClientTTY,
+                    target,
+                    hostsConfig,
+                    localSocketOverride
+                )
             }
             group.addTask {
                 try? await Task.sleep(for: .milliseconds(timeoutMilliseconds))
@@ -2203,6 +2455,151 @@ final class UITestTmuxBridge {
         }
     }
 
+    private func applyActivationRequest(
+        window: NSWindow,
+        terminalView: GhosttyTerminalView?
+    ) {
+        NSApplication.shared.unhide(nil)
+        NSRunningApplication.current.unhide()
+        NSRunningApplication.current.activate(options: [.activateAllWindows])
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        window.orderFrontRegardless()
+        window.makeKeyAndOrderFront(nil)
+        window.makeMain()
+        NSRunningApplication.current.activate(options: [.activateAllWindows])
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        if let terminalView {
+            _ = window.makeFirstResponder(nil)
+            _ = window.makeFirstResponder(terminalView)
+            NSRunningApplication.current.activate(options: [.activateAllWindows])
+            NSApplication.shared.activate(ignoringOtherApps: true)
+        }
+    }
+
+    private func waitForFocusAcquisition(
+        requirement: UITestFocusRequirement,
+        surfaceID: UUID?,
+        window: NSWindow,
+        terminalView: GhosttyTerminalView?,
+        timeoutMilliseconds: Int
+    ) async throws {
+        let deadline = ContinuousClock.now + .milliseconds(timeoutMilliseconds)
+        var lastSnapshot: FocusStateSnapshot?
+
+        while ContinuousClock.now < deadline {
+            applyActivationRequest(window: window, terminalView: terminalView)
+            flushAppWindowHostingIfNeeded()
+
+            let snapshot = try focusStateSnapshot(
+                requirement: requirement,
+                surfaceID: surfaceID,
+                window: window,
+                terminalView: terminalView
+            )
+            lastSnapshot = snapshot
+
+            if requirement.isSatisfied(
+                appIsActive: snapshot.appIsActive,
+                windowIsVisible: snapshot.windowNumber != nil,
+                windowIsKey: snapshot.windowIsKey,
+                terminalIsFirstResponder: snapshot.terminalIsFirstResponder
+            ) {
+                return
+            }
+
+            try await Task.sleep(for: .milliseconds(20))
+        }
+
+        let snapshotJSON = lastSnapshot
+            .flatMap { try? JSONEncoder().encode($0) }
+            .flatMap { String(data: $0, encoding: .utf8) }
+            ?? "{}"
+        throw NSError(
+            domain: "UITestTmuxBridge",
+            code: 66,
+            userInfo: [
+                NSLocalizedDescriptionKey:
+                    "Timed out acquiring \(requirement) focus snapshot=\(snapshotJSON)"
+            ]
+        )
+    }
+
+    private func focusStateSnapshot(
+        requirement: UITestFocusRequirement,
+        surfaceID: UUID?,
+        window: NSWindow,
+        terminalView: GhosttyTerminalView?
+    ) throws -> FocusStateSnapshot {
+        switch requirement {
+        case .appWindow:
+            let keyWindow = NSApp.keyWindow
+            let keyWindowFirstResponder = keyWindow?.firstResponder
+            let terminalFirstResponder = window.firstResponder
+            let terminalMetrics = terminalView?.surfaceMetricsSnapshotForTesting()
+                ?? GhosttyTerminalView.SurfaceMetricsSnapshot(
+                    boundsWidth: 0,
+                    boundsHeight: 0,
+                    frameWidth: 0,
+                    frameHeight: 0,
+                    pixelWidth: nil,
+                    pixelHeight: nil,
+                    xScale: nil,
+                    yScale: nil,
+                    displayID: nil
+                )
+            let terminalFrameInScreen = terminalView.map { terminalView -> ScreenRectSnapshot in
+                let frameInWindow = terminalView.convert(terminalView.bounds, to: nil)
+                let frameInScreen = window.convertToScreen(frameInWindow)
+                return ScreenRectSnapshot(
+                    x: frameInScreen.origin.x,
+                    y: frameInScreen.origin.y,
+                    width: frameInScreen.size.width,
+                    height: frameInScreen.size.height
+                )
+            }
+
+            return FocusStateSnapshot(
+                appIsActive: NSApp.isActive,
+                keyWindowNumber: keyWindow?.windowNumber,
+                keyWindowFirstResponderClass: keyWindowFirstResponder.map {
+                    String(describing: type(of: $0))
+                },
+                keyWindowFirstResponderDescription: keyWindowFirstResponder.map(String.init(describing:)),
+                surfaceID: surfaceID?.uuidString ?? "",
+                windowNumber: window.windowNumber,
+                windowIsKey: window.isKeyWindow,
+                windowIsMain: window.isMainWindow,
+                windowFirstResponderClass: terminalFirstResponder.map {
+                    String(describing: type(of: $0))
+                },
+                windowFirstResponderDescription: terminalFirstResponder.map(String.init(describing:)),
+                terminalIsFirstResponder: terminalView.map { terminalFirstResponder === $0 } ?? false,
+                terminalAccessibilityIdentifier: terminalView?.accessibilityIdentifier(),
+                terminalFrameInScreen: terminalFrameInScreen,
+                terminalKeyDownCount: terminalView?.debugKeyDownCount ?? 0,
+                terminalLastKeyCode: terminalView?.debugLastKeyCode,
+                terminalLastCharacters: terminalView?.debugLastCharacters,
+                terminalLastCharactersIgnoringModifiers: terminalView?.debugLastCharactersIgnoringModifiers,
+                terminalLastModifierFlagsRawValue: terminalView?.debugLastModifierFlagsRawValue,
+                terminalLastSendKeyResult: terminalView?.debugLastSendKeyResult,
+                terminalRecentInputEvents: terminalView?.debugRecentInputEvents ?? [],
+                terminalSurfaceMetrics: terminalMetrics
+            )
+        case .terminalResponder, .terminalHost:
+            guard let surfaceID else {
+                throw NSError(
+                    domain: "UITestTmuxBridge",
+                    code: 67,
+                    userInfo: [
+                        NSLocalizedDescriptionKey:
+                            "surfaceID is required for terminal host focus snapshots"
+                    ]
+                )
+            }
+            return try focusStateSnapshot(for: surfaceID)
+        }
+    }
+
     private func controlModeKey(for sessionRef: SessionRef) -> String {
         "\(sourceLabel(for: sessionRef.target, hostsConfig: viewModel.hostsConfig)):\(sessionRef.sessionName)"
     }
@@ -2247,6 +2644,50 @@ final class UITestTmuxBridge {
         guard let url = bootstrapResultURL else { return }
         guard let data = try? JSONEncoder().encode(result) else { return }
         try? data.write(to: url, options: .atomic)
+    }
+
+    func completeBootstrapSuccessForTesting(
+        sessionName: String,
+        windowID: String,
+        paneIDs: [String],
+        socketPath: String?
+    ) {
+        completeBootstrapSuccess(
+            sessionName: sessionName,
+            windowID: windowID,
+            paneIDs: paneIDs,
+            socketPath: socketPath
+        )
+    }
+
+    private func completeBootstrapSuccess(
+        sessionName: String,
+        windowID: String,
+        paneIDs: [String],
+        socketPath: String?
+    ) {
+        writeBootstrapResult(
+            BootstrapResult(
+                ok: true,
+                sessionName: sessionName,
+                windowID: windowID,
+                paneIDs: paneIDs,
+                socketPath: socketPath,
+                error: nil
+            )
+        )
+        uiTestBridgeDebugLog(
+            "bootstrap result published session=\(sessionName) panes=\(paneIDs.count) socket=\(socketPath ?? "<nil>")"
+        )
+        schedulePostBootstrapRefresh()
+    }
+
+    private func schedulePostBootstrapRefresh() {
+        postBootstrapRefreshTask?.cancel()
+        postBootstrapRefreshTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.refreshAfterBootstrap()
+        }
     }
 
     private func sessionNameFromNewSessionArgs(_ args: [String]) -> String? {

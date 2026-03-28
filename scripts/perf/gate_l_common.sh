@@ -28,7 +28,32 @@ function gate_l_app_bundle_path() {
 }
 
 function gate_l_configure_bridge_defaults() {
+  local bootstrap_scenario_json="${1:-}"
+  local inventory_only="${2:-0}"
+  local attach_dir=""
+
+  attach_dir="${AGTMUX_PERF_ATTACH_BRIDGE_DIR:-$HOME/Library/Caches/agtmux-term/gate-l-attach}"
+  mkdir -p "$attach_dir"
+  if [[ -z "$gate_l_attach_enabled_path" ]]; then
+    gate_l_attach_enabled_path="$attach_dir/enabled"
+  fi
+  : >"$gate_l_attach_enabled_path"
+
+  defaults write com.g960059.agtmux.term UITestAutomationEnabled -bool true
   defaults write com.g960059.agtmux.term UITestBridgeEnabled -bool true
+  defaults write com.g960059.agtmux.term UITestInventoryOnly -bool $([[ "$inventory_only" == "1" ]] && print true || print false)
+  defaults write com.g960059.agtmux.term UITestEnableGhosttySurfaces -bool true
+  if [[ -n "${gate_l_socket_name:-}" ]]; then
+    defaults write com.g960059.agtmux.term UITestTmuxSocketName -string "$gate_l_socket_name"
+  else
+    defaults delete com.g960059.agtmux.term UITestTmuxSocketName >/dev/null 2>&1 || true
+  fi
+  defaults write com.g960059.agtmux.term UITestTmuxConfigPath -string /dev/null
+  if [[ -n "$bootstrap_scenario_json" ]]; then
+    defaults write com.g960059.agtmux.term UITestTmuxScenario -string "$bootstrap_scenario_json"
+  else
+    defaults delete com.g960059.agtmux.term UITestTmuxScenario >/dev/null 2>&1 || true
+  fi
   defaults write com.g960059.agtmux.term UITestBridgeDebugEnabled -bool true
   defaults write com.g960059.agtmux.term UITestBridgeDebugLogPath -string "$gate_l_tmpdir/bridge-debug.log"
   defaults write com.g960059.agtmux.term UITestTmuxCommandPath -string "$gate_l_command_path"
@@ -50,7 +75,13 @@ function gate_l_configure_bridge_defaults() {
 }
 
 function gate_l_clear_bridge_defaults() {
+  defaults delete com.g960059.agtmux.term UITestAutomationEnabled >/dev/null 2>&1 || true
   defaults delete com.g960059.agtmux.term UITestBridgeEnabled >/dev/null 2>&1 || true
+  defaults delete com.g960059.agtmux.term UITestInventoryOnly >/dev/null 2>&1 || true
+  defaults delete com.g960059.agtmux.term UITestEnableGhosttySurfaces >/dev/null 2>&1 || true
+  defaults delete com.g960059.agtmux.term UITestTmuxSocketName >/dev/null 2>&1 || true
+  defaults delete com.g960059.agtmux.term UITestTmuxConfigPath >/dev/null 2>&1 || true
+  defaults delete com.g960059.agtmux.term UITestTmuxScenario >/dev/null 2>&1 || true
   defaults delete com.g960059.agtmux.term UITestBridgeDebugEnabled >/dev/null 2>&1 || true
   defaults delete com.g960059.agtmux.term UITestBridgeDebugLogPath >/dev/null 2>&1 || true
   defaults delete com.g960059.agtmux.term UITestTmuxCommandPath >/dev/null 2>&1 || true
@@ -76,7 +107,7 @@ function gate_l_launch_app_via_bundle() {
   }
 
   local app_exec="$GATE_L_APP_BIN"
-  local before after new_pid
+  local launch_json new_pid
   if [[ "$terminate_all_instances" == "1" ]]; then
     osascript -e 'tell application id "com.g960059.agtmux.term" to quit' >/dev/null 2>&1 || true
     pkill -f 'AgtmuxTerm.app/Contents/MacOS/AgtmuxTerm' >/dev/null 2>&1 || true
@@ -96,25 +127,26 @@ function gate_l_launch_app_via_bundle() {
     fi
     sleep 0.1
   done
-  before="$(pgrep -f "$app_exec" || true)"
   if [[ "$disable_app_state_restore" == "1" ]]; then
-    open -na "$app_bundle" --args -ApplePersistenceIgnoreState YES -NSQuitAlwaysKeepsWindows NO >/dev/null
+    launch_json="$("$SCRIPT_DIR/gate_l_app_launcher.sh" \
+      "$app_bundle" \
+      --args \
+      -ApplePersistenceIgnoreState YES \
+      -NSQuitAlwaysKeepsWindows NO)"
   else
-    open -na "$app_bundle" >/dev/null
+    launch_json="$("$SCRIPT_DIR/gate_l_app_launcher.sh" "$app_bundle")"
   fi
 
-  local deadline=$((EPOCHREALTIME + 15))
-  while (( EPOCHREALTIME < deadline )); do
-    after="$(pgrep -f "$app_exec" || true)"
-    new_pid="$(comm -13 <(printf '%s\n' $before | sed '/^$/d' | sort -n) <(printf '%s\n' $after | sed '/^$/d' | sort -n) | tail -n 1)"
-    if [[ -n "$new_pid" ]]; then
-      gate_l_app_pid="$new_pid"
-      return 0
-    fi
-    sleep 0.1
-  done
+  new_pid="$(jq -r '.pid // empty' <<<"$launch_json")"
+  if [[ -n "$new_pid" && "$new_pid" != "null" ]]; then
+    gate_l_app_pid="$new_pid"
+    return 0
+  fi
 
   echo "Timed out waiting for app bundle launch: $app_bundle" >&2
+  if [[ -n "$launch_json" ]]; then
+    echo "$launch_json" >&2
+  fi
   return 1
 }
 
@@ -253,6 +285,8 @@ function gate_l_native_ghostty_metadata_json() {
 function gate_l_setup_paths() {
   local token="$1"
 
+  gate_l_clear_bridge_defaults
+
   gate_l_tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/agtmux-gate-l-${token}.XXXXXX")"
   mkdir -p "$HOME/.agt"
   gate_l_tmux_socket_path=""
@@ -279,6 +313,8 @@ function gate_l_configure_stable_attach_bridge_paths() {
 }
 
 function gate_l_cleanup_stale_perf_processes() {
+  gate_l_clear_bridge_defaults
+
   local kill_pattern_new='tmux -f /dev/null -L agtmux-gate-l-[^ ]* new-session -d -s agtmux-gate-l-'
   local kill_pattern_attach='tmux -f /dev/null -L agtmux-gate-l-[^ ]* -C attach-session -t agtmux-gate-l-'
   local stale_sockets=()
@@ -347,6 +383,12 @@ function gate_l_launch_app() {
     --argjson paneCount "$pane_count" \
     --arg shellCommand "$shell_command" \
     '{sessionName:$sessionName, windowName:$windowName, paneCount:$paneCount, shellCommand:$shellCommand}')"
+
+  if gate_l_app_bundle_path >/dev/null 2>&1; then
+    gate_l_configure_bridge_defaults "$scenario_json" "$inventory_only"
+    gate_l_launch_app_via_bundle
+    return 0
+  fi
 
   gate_l_app_pid="$(
   env \
@@ -442,7 +484,13 @@ function gate_l_launch_app_without_bootstrap() {
   fi
 
   if [[ "$bridge_config_mode" == "defaults" ]]; then
-    gate_l_configure_bridge_defaults
+    gate_l_configure_bridge_defaults "" "$inventory_only"
+    gate_l_launch_app_via_bundle
+    return 0
+  fi
+
+  if gate_l_app_bundle_path >/dev/null 2>&1; then
+    gate_l_configure_bridge_defaults "" "$inventory_only"
     gate_l_launch_app_via_bundle
     return 0
   fi
@@ -489,21 +537,81 @@ PY
 }
 
 function gate_l_activate_app() {
+  if [[ -n "${gate_l_command_path:-}" && -n "${gate_l_command_result_path:-}" ]]; then
+    if gate_l_send_bridge_command false 5 "__agtmux_activate_app__" >/dev/null 2>&1; then
+      return 0
+    fi
+  fi
   if [[ -n "${gate_l_app_pid:-}" ]]; then
     if "$GATE_L_ROOT/scripts/perf/gate_l_ax_key_sender.sh" --app-pid "$gate_l_app_pid" --activate-app >/dev/null 2>&1; then
       return 0
     fi
-    local app_bundle=""
-    if app_bundle="$(gate_l_app_bundle_path)"; then
-      perl -e 'alarm shift @ARGV; exec @ARGV' 2 \
-        open -a "$app_bundle" >/dev/null 2>&1 || true
-      return 0
-    fi
+    return 1
   fi
   perl -e 'alarm shift @ARGV; exec @ARGV' 2 \
     osascript -e 'tell application id "com.g960059.agtmux.term" to activate' >/dev/null 2>&1 || true
   perl -e 'alarm shift @ARGV; exec @ARGV' 2 \
     open -b com.g960059.agtmux.term >/dev/null 2>&1 || true
+}
+
+function gate_l_wait_for_terminal_focus_ready() {
+  local surface_id="$1"
+  local timeout="${2:-5}"
+  local deadline=$(( EPOCHREALTIME + timeout ))
+  local last_snapshot=""
+
+  while (( EPOCHREALTIME < deadline )); do
+    if last_snapshot="$(gate_l_send_bridge_json_command false 5 "__agtmux_dump_focus_state__" "$surface_id" 2>"$gate_l_tmpdir/focus-ready.last-error.log")"; then
+      local app_is_active window_is_key terminal_is_first_responder
+      app_is_active="$(jq -r '.appIsActive // false' <<<"$last_snapshot")"
+      window_is_key="$(jq -r '.windowIsKey // false' <<<"$last_snapshot")"
+      terminal_is_first_responder="$(jq -r '.terminalIsFirstResponder // false' <<<"$last_snapshot")"
+      if [[ "$app_is_active" == "true" && "$window_is_key" == "true" && "$terminal_is_first_responder" == "true" ]]; then
+        print -r -- "$last_snapshot"
+        return 0
+      fi
+    fi
+    sleep 0.05
+  done
+
+  echo "Timed out waiting for terminal focus readiness for surfaceID $surface_id" >&2
+  if [[ -n "$last_snapshot" ]]; then
+    echo "Last focus snapshot: $last_snapshot" >&2
+  elif [[ -s "$gate_l_tmpdir/focus-ready.last-error.log" ]]; then
+    cat "$gate_l_tmpdir/focus-ready.last-error.log" >&2
+  fi
+  return 1
+}
+
+function gate_l_wait_for_terminal_snapshot_ready() {
+  local surface_id="$1"
+  local timeout="${2:-5}"
+  local deadline=$(( EPOCHREALTIME + timeout ))
+  local last_snapshot=""
+
+  while (( EPOCHREALTIME < deadline )); do
+    if last_snapshot="$(gate_l_send_bridge_json_command false 5 "__agtmux_dump_focus_state__" "$surface_id" 2>"$gate_l_tmpdir/focus-geometry.last-error.log")"; then
+      local window_number frame_width frame_height
+      window_number="$(jq -r '.windowNumber // empty' <<<"$last_snapshot")"
+      frame_width="$(jq -r '.terminalFrameInScreen.width // empty' <<<"$last_snapshot")"
+      frame_height="$(jq -r '.terminalFrameInScreen.height // empty' <<<"$last_snapshot")"
+      if [[ -n "$window_number" && "$window_number" != "null" \
+         && -n "$frame_width" && "$frame_width" != "null" \
+         && -n "$frame_height" && "$frame_height" != "null" ]]; then
+        print -r -- "$last_snapshot"
+        return 0
+      fi
+    fi
+    sleep 0.05
+  done
+
+  echo "Timed out waiting for terminal snapshot readiness for surfaceID $surface_id" >&2
+  if [[ -n "$last_snapshot" ]]; then
+    echo "Last focus snapshot: $last_snapshot" >&2
+  elif [[ -s "$gate_l_tmpdir/focus-geometry.last-error.log" ]]; then
+    cat "$gate_l_tmpdir/focus-geometry.last-error.log" >&2
+  fi
+  return 1
 }
 
 function gate_l_wait_for_bootstrap() {

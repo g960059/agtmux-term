@@ -184,7 +184,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 gate_l_launch_app "$socket_name" "$session_name" 1 "python3 -u $keypress_driver_path"
-gate_l_activate_app
+gate_l_activate_app || true
 
 bootstrap_json="$(gate_l_wait_for_bootstrap "$settle_timeout")"
 if [[ "$(jq -r '.ok' <<<"$bootstrap_json")" != "true" ]]; then
@@ -201,12 +201,24 @@ if ! wait_for_pane_text "$socket_name" "$target" "__GATE_L_READY__" "$settle_tim
   exit 1
 fi
 
-gate_l_send_bridge_command false 10 "__agtmux_open_terminal_for_pane__" "local" "$session_name" "$pane_id" >/dev/null
-gate_l_activate_app
+if [[ "$delivery" == "ax" ]]; then
+  open_terminal_json="$(gate_l_send_bridge_json_command false 10 "__agtmux_open_terminal_for_pane__" "local" "$session_name" "$pane_id" "nowait")"
+  surface_id="$(jq -r '.surfaceID // empty' <<<"$open_terminal_json")"
+  if [[ -z "$surface_id" || "$surface_id" == "null" ]]; then
+    echo "Failed to resolve surfaceID from open_terminal_for_pane result" >&2
+    echo "$open_terminal_json" >&2
+    exit 1
+  fi
+  gate_l_activate_app || true
+  focus_snapshot="$(gate_l_wait_for_terminal_snapshot_ready "$surface_id" "$settle_timeout")"
+else
+  gate_l_send_bridge_command false 10 "__agtmux_open_terminal_for_pane__" "local" "$session_name" "$pane_id" >/dev/null
+  gate_l_activate_app || true
 
-active_snapshot="$(gate_l_wait_for_active_snapshot "$session_name" "$settle_timeout")"
-surface_id="$(jq -r '.surfaceID' <<<"$active_snapshot")"
-focus_snapshot="$(gate_l_send_bridge_command false 10 "__agtmux_dump_focus_state__" "$surface_id")"
+  active_snapshot="$(gate_l_wait_for_active_snapshot "$session_name" "$settle_timeout")"
+  surface_id="$(jq -r '.surfaceID' <<<"$active_snapshot")"
+  focus_snapshot="$(gate_l_send_bridge_command false 10 "__agtmux_dump_focus_state__" "$surface_id")"
+fi
 terminal_ax_identifier="$(jq -r '.terminalAccessibilityIdentifier // empty' <<<"$focus_snapshot")"
 terminal_ax_fallback_identifier="workspace.terminalHost.${surface_id}"
 resolved_terminal_ax_identifier="$terminal_ax_identifier"
@@ -216,20 +228,41 @@ fi
 
 keypress_point_x=""
 keypress_point_y=""
+ax_refocus_each_iteration=0
 if [[ "$delivery" == "ax" ]]; then
-  initial_focus_json="$("$SCRIPT_DIR/gate_l_ax_key_sender.sh" \
-    --app-pid "$gate_l_app_pid" \
-    --click-identifier "$resolved_terminal_ax_identifier" \
-    --x-frac 0.5 \
-    --y-frac 0.5)"
-  keypress_point_x="$(jq -r '.clickPoint.x // empty' <<<"$initial_focus_json")"
-  keypress_point_y="$(jq -r '.clickPoint.y // empty' <<<"$initial_focus_json")"
+  keypress_point_x="$(jq -r '.terminalFrameInScreen.x // empty' <<<"$focus_snapshot")"
+  keypress_point_y="$(jq -r '.terminalFrameInScreen.y // empty' <<<"$focus_snapshot")"
+  keypress_frame_width="$(jq -r '.terminalFrameInScreen.width // empty' <<<"$focus_snapshot")"
+  keypress_frame_height="$(jq -r '.terminalFrameInScreen.height // empty' <<<"$focus_snapshot")"
+  if [[ -n "$keypress_point_x" && -n "$keypress_point_y" && -n "$keypress_frame_width" && -n "$keypress_frame_height" ]]; then
+    keypress_point_x="$(awk "BEGIN { printf \"%.3f\", ($keypress_point_x + ($keypress_frame_width * 0.5)) }")"
+    keypress_point_y="$(awk "BEGIN { printf \"%.3f\", ($keypress_point_y + ($keypress_frame_height * 0.5)) }")"
+    initial_focus_json="$("$SCRIPT_DIR/gate_l_ax_key_sender.sh" \
+      --app-pid "$gate_l_app_pid" \
+      --click-point \
+      --point-x "$keypress_point_x" \
+      --point-y "$keypress_point_y")"
+  else
+    initial_focus_json="$("$SCRIPT_DIR/gate_l_ax_key_sender.sh" \
+      --app-pid "$gate_l_app_pid" \
+      --click-identifier "$resolved_terminal_ax_identifier" \
+      --x-frac 0.5 \
+      --y-frac 0.5)"
+    keypress_point_x="$(jq -r '.clickPoint.x // empty' <<<"$initial_focus_json")"
+    keypress_point_y="$(jq -r '.clickPoint.y // empty' <<<"$initial_focus_json")"
+  fi
   if [[ -z "$keypress_point_x" || -z "$keypress_point_y" ]]; then
     echo "Failed to resolve initial keypress target point" >&2
     exit 1
   fi
   sleep 0.2
-  focus_snapshot="$(gate_l_send_bridge_command false 10 "__agtmux_dump_focus_state__" "$surface_id")"
+  focus_snapshot="$(gate_l_wait_for_terminal_focus_ready "$surface_id" "$settle_timeout")"
+  if [[ -n "$keypress_point_x" && -n "$keypress_point_y" ]]; then
+    if [[ "$(jq -r '.appIsActive // false' <<<"$focus_snapshot")" != "true" \
+       || "$(jq -r '.terminalIsFirstResponder // false' <<<"$focus_snapshot")" != "true" ]]; then
+      ax_refocus_each_iteration=1
+    fi
+  fi
 fi
 gate_l_send_bridge_command false 10 "__agtmux_reset_scroll_telemetry__" "$surface_id" >/dev/null
 
@@ -261,9 +294,18 @@ for (( i = 1; i <= iterations; i++ )); do
       --argjson keyCode "$key_code" \
       '{action:$action, surfaceID:$surface_id, characters:$characters, keyCode:$keyCode, sent:true}')"
   else
-    last_send_json="$("$SCRIPT_DIR/gate_l_ax_key_sender.sh" \
-      --app-pid "$gate_l_app_pid" \
-      --key-code "$key_code")"
+    if [[ "$ax_refocus_each_iteration" == "1" && -n "$keypress_point_x" && -n "$keypress_point_y" ]]; then
+      last_send_json="$("$SCRIPT_DIR/gate_l_ax_key_sender.sh" \
+        --app-pid "$gate_l_app_pid" \
+        --focus-key-point \
+        --point-x "$keypress_point_x" \
+        --point-y "$keypress_point_y" \
+        --key-code "$key_code")"
+    else
+      last_send_json="$("$SCRIPT_DIR/gate_l_ax_key_sender.sh" \
+        --app-pid "$gate_l_app_pid" \
+        --key-code "$key_code")"
+    fi
   fi
   if ! wait_for_pane_text "$socket_name" "$target" "$expected_marker" "$settle_timeout" last_capture; then
     echo "Timed out waiting for keypress marker $expected_marker" >&2

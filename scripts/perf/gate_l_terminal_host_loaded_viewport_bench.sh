@@ -187,7 +187,7 @@ if [[ -z "$window_id" || -z "$pane_id" ]]; then
 fi
 
 gate_l_activate_app
-open_json="$(gate_l_send_bridge_json_command false 10 "__agtmux_open_terminal_for_pane__" "local" "$session_name" "$pane_id")"
+open_json="$(gate_l_send_bridge_json_command false 10 "__agtmux_open_terminal_for_pane__" "local" "$session_name" "$pane_id" "nowait")"
 printf '%s\n' "$open_json" >"$open_json_path"
 surface_id="$(jq -r '.surfaceID // empty' <<<"$open_json")"
 if [[ -z "$surface_id" ]]; then
@@ -211,6 +211,14 @@ resolved_terminal_ax_identifier="$terminal_ax_identifier"
 if [[ -z "$resolved_terminal_ax_identifier" ]]; then
   resolved_terminal_ax_identifier="workspace.terminalHost.${surface_id}"
 fi
+scroll_point_x="$(jq -r '.terminalFrameInScreen.x // empty' <<<"$focus_json")"
+scroll_point_y="$(jq -r '.terminalFrameInScreen.y // empty' <<<"$focus_json")"
+scroll_frame_width="$(jq -r '.terminalFrameInScreen.width // empty' <<<"$focus_json")"
+scroll_frame_height="$(jq -r '.terminalFrameInScreen.height // empty' <<<"$focus_json")"
+if [[ -n "$scroll_point_x" && -n "$scroll_point_y" && -n "$scroll_frame_width" && -n "$scroll_frame_height" ]]; then
+  scroll_point_x="$(awk "BEGIN { printf \"%.3f\", ($scroll_point_x + ($scroll_frame_width * 0.5)) }")"
+  scroll_point_y="$(awk "BEGIN { printf \"%.3f\", ($scroll_point_y + ($scroll_frame_height * 0.5)) }")"
+fi
 
 if ! wait_for_viewport_marker "$surface_id" "$fixture_marker" "$settle_timeout"; then
   exit 1
@@ -223,11 +231,19 @@ gate_l_send_bridge_command false 10 "__agtmux_reset_scroll_telemetry__" "$surfac
 
 gate_l_activate_app
 if [[ "$focus_mode" == "identifier" ]]; then
-  focus_sender_json="$("$SCRIPT_DIR/gate_l_ax_key_sender.sh" \
-    --app-pid "$gate_l_app_pid" \
-    --focus-scroll-identifier "$resolved_terminal_ax_identifier" \
-    --x-frac "$scroll_x_frac" \
-    --y-frac "$scroll_y_frac")"
+  if [[ -n "$scroll_point_x" && -n "$scroll_point_y" ]]; then
+    focus_sender_json="$("$SCRIPT_DIR/gate_l_ax_key_sender.sh" \
+      --app-pid "$gate_l_app_pid" \
+      --focus-scroll-point \
+      --point-x "$scroll_point_x" \
+      --point-y "$scroll_point_y")"
+  else
+    focus_sender_json="$("$SCRIPT_DIR/gate_l_ax_key_sender.sh" \
+      --app-pid "$gate_l_app_pid" \
+      --focus-scroll-identifier "$resolved_terminal_ax_identifier" \
+      --x-frac "$scroll_x_frac" \
+      --y-frac "$scroll_y_frac")"
+  fi
 else
   focus_sender_json="$("$SCRIPT_DIR/gate_l_ax_key_sender.sh" \
     --app-pid "$gate_l_app_pid" \

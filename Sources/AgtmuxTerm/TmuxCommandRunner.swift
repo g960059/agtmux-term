@@ -127,7 +127,12 @@ actor TmuxCommandRunner {
     ///   - sshTarget: Full SSH connection target (e.g. "user@host"). When provided,
     ///     overrides `source` as the SSH connection string. This is needed when the
     ///     hostname and username are configured separately in `RemoteHost`.
-    func run(_ args: [String], source: String = "local", sshTarget: String? = nil) async throws -> String {
+    func run(
+        _ args: [String],
+        source: String = "local",
+        sshTarget: String? = nil,
+        localSocketArguments: [String]? = nil
+    ) async throws -> String {
         let runID = AgtmuxSignpost.tmuxRunner.makeSignpostID()
         let runState = AgtmuxSignpost.tmuxRunner.beginInterval("run", id: runID)
         defer { AgtmuxSignpost.tmuxRunner.endInterval("run", runState) }
@@ -141,9 +146,14 @@ actor TmuxCommandRunner {
             }
             process.executableURL = tmuxURL
             let configArgs = tmuxConfigArguments(from: normalizedEnv)
-            let socketArgs = source == "local"
-                ? LocalTmuxTarget.socketArguments(from: normalizedEnv)
-                : []
+            let socketArgs: [String]
+            if let localSocketArguments {
+                socketArgs = localSocketArguments
+            } else if source == "local" {
+                socketArgs = LocalTmuxTarget.socketArguments(from: normalizedEnv)
+            } else {
+                socketArgs = []
+            }
             process.arguments = configArgs + socketArgs + args
             process.environment = normalizedEnv
         } else {

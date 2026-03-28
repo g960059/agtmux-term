@@ -36,6 +36,11 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         let displayID: UInt32
     }
 
+    struct SurfaceAttachmentContext: Equatable {
+        let scaleFactor: Double
+        let displayID: UInt32
+    }
+
     struct ScrollTelemetryMetricSummary: Codable, Equatable {
         let count: Int
         let p50Ms: Double?
@@ -187,6 +192,10 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     private var lastAppliedSurfaceMetrics: SurfaceMetrics?
     private var desiredSurfaceFocus = false
     private var appliedSurfaceFocus = false
+    private var observedRendererFrameSurfaceHandle: GhosttySurfaceHandle?
+    private var rendererFrameObservationRegistered = false
+    private var observedRendererFrameRequestSurfaceHandle: GhosttySurfaceHandle?
+    private var rendererFrameRequestObservationRegistered = false
     private weak var observedRenderLayer: CALayer?
     private var renderLayerContentsObservation: NSKeyValueObservation?
     private(set) var debugKeyDownCount = 0
@@ -232,6 +241,7 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     private var lastPaneRetargetPresentationDrawUptime: TimeInterval?
     private var scrollPresentationDirectGestureActive = false
     private var lastPreciseScrollVerticalDirection: ScrollVerticalDirection?
+    private var lastScrollUsedAlternateScroll = false
     private var pendingScrollToRenderStates: [OSSignpostIntervalState] = []
     private var pendingScrollToDrawStates: [OSSignpostIntervalState] = []
     private var pendingScrollToLayerPresentStates: [OSSignpostIntervalState] = []
@@ -309,6 +319,16 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
 
     deinit {
         removeWindowObservers()
+        if let observedRendererFrameSurfaceHandle, rendererFrameObservationRegistered {
+            GhosttyApp.setRendererFrameCompletedObservationEnabled(false, for: observedRendererFrameSurfaceHandle)
+        }
+        rendererFrameObservationRegistered = false
+        observedRendererFrameSurfaceHandle = nil
+        if let observedRendererFrameRequestSurfaceHandle, rendererFrameRequestObservationRegistered {
+            GhosttyApp.setRendererFrameRequestedObservationEnabled(false, for: observedRendererFrameRequestSurfaceHandle)
+        }
+        rendererFrameRequestObservationRegistered = false
+        observedRendererFrameRequestSurfaceHandle = nil
         renderLayerContentsObservation?.invalidate()
         scrollPresentationContinuationTimer?.invalidate()
         interactivePresentationContinuationTimer?.invalidate()
@@ -329,6 +349,7 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
             ghostty_surface_free(s)
             surface = nil
         }
+        syncRendererFrameCompletedObservation()
         lastAppliedSurfaceMetrics = nil
         appliedSurfaceFocus = false
         awaitingInitialLayerPresentation = false
@@ -352,6 +373,7 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         syncSurfaceMetrics(shouldMarkDirty: false, force: true)
         applySurfaceFocusIfNeeded(force: true)
         invalidateScrollPresentationDrawPump()
+        syncRendererFrameCompletedObservation()
         syncRenderLayerContentsObservation()
         resetScrollTelemetry()
         needsDisplay = true
@@ -381,6 +403,16 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     @MainActor
     func prefersRenderLayerContentsObservationForTesting() -> Bool {
         prefersRenderLayerContentsObservation()
+    }
+
+    @MainActor
+    func prefersRendererFrameCompletedObservationForTesting() -> Bool {
+        prefersRendererFrameCompletedObservation()
+    }
+
+    @MainActor
+    func prefersRendererFrameRequestedObservationForTesting() -> Bool {
+        prefersRendererFrameRequestedObservation()
     }
 
     struct InteractivePresentationContinuationState: Equatable {
@@ -438,6 +470,7 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         interactivePresentationRecoveryProbeDrawUptime = recoveryDrawUptime
         self.lastInteractiveInputUptime = lastInputUptime
         lastInteractivePresentationDrawUptime = lastDrawUptime
+        syncRendererFrameCompletedObservation()
         syncRenderLayerContentsObservation()
     }
 
@@ -452,6 +485,7 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         scrollPresentationContinuationScheduled = continuationScheduled
         scrollPresentationDrawPumpScheduled = pumpScheduled
         scrollPresentationRecoveryProbeScheduled = recoveryScheduled
+        syncRendererFrameCompletedObservation()
         syncRenderLayerContentsObservation()
     }
 
@@ -467,6 +501,7 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     ) {
         paneRetargetPresentationDrawPending = drawPending
         paneRetargetPresentationRecoveryProbeScheduled = recoveryScheduled
+        syncRendererFrameCompletedObservation()
         syncRenderLayerContentsObservation()
     }
 
@@ -548,8 +583,7 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
 
     @MainActor
     func triggerDirtyDrawForRenderCallback(now: TimeInterval) {
-        _ = now
-        performRenderCallbackPresentationDraw()
+        triggerRendererOwnedRenderCallback(now: now)
     }
 
     // MARK: - NSTextInputClient (IME)
@@ -631,16 +665,24 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         scheduleInteractivePresentationAfterInput()
     }
 
-    private func scheduleGhosttyRuntimeTickAfterSurfaceInput() {
+    func scheduleGhosttyRuntimeTickAfterSurfaceInput(coalesced: Bool = false) {
         if Thread.isMainThread {
             MainActor.assumeIsolated {
-                GhosttyApp.scheduleTickIfInitialized()
+                if coalesced {
+                    GhosttyApp.scheduleCoalescedTickIfInitialized()
+                } else {
+                    GhosttyApp.scheduleTickIfInitialized()
+                }
             }
             return
         }
 
         DispatchQueue.main.async {
-            GhosttyApp.scheduleTickIfInitialized()
+            if coalesced {
+                GhosttyApp.scheduleCoalescedTickIfInitialized()
+            } else {
+                GhosttyApp.scheduleTickIfInitialized()
+            }
         }
     }
 
@@ -942,6 +984,8 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         guard let window else { return }
         NSApplication.shared.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
+        window.orderFrontRegardless()
+        NSRunningApplication.current.activate(options: [.activateAllWindows])
         window.makeFirstResponder(self)
     }
 
@@ -988,6 +1032,37 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
 
     func hasSurfaceForMetricsSync() -> Bool {
         surface != nil
+    }
+
+    @MainActor
+    func surfaceAttachmentContext() -> SurfaceAttachmentContext? {
+        Self.resolveSurfaceAttachmentContext(window: window)
+    }
+
+    static func resolveSurfaceAttachmentContext(
+        backingScaleFactor: CGFloat,
+        screenBackingScaleFactor: CGFloat?,
+        displayID: UInt32?
+    ) -> SurfaceAttachmentContext? {
+        guard let displayID else { return nil }
+        let resolvedScaleFactor = Double(
+            backingScaleFactor > 0
+                ? backingScaleFactor
+                : (screenBackingScaleFactor ?? 1.0)
+        )
+        return SurfaceAttachmentContext(
+            scaleFactor: resolvedScaleFactor,
+            displayID: displayID
+        )
+    }
+
+    private static func resolveSurfaceAttachmentContext(window: NSWindow?) -> SurfaceAttachmentContext? {
+        guard let window else { return nil }
+        return resolveSurfaceAttachmentContext(
+            backingScaleFactor: window.backingScaleFactor,
+            screenBackingScaleFactor: window.screen?.backingScaleFactor,
+            displayID: window.screen?.agtmuxDisplayID
+        )
     }
 
     func updateSurfaceContentScale(xScale: Double, yScale: Double) {
@@ -1224,6 +1299,7 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         var horizontalDelta = rawHorizontalDelta
         var verticalDelta = rawVerticalDelta
         let usesAlternateScroll = ghostty_surface_uses_alternate_scroll(surface)
+        lastScrollUsedAlternateScroll = usesAlternateScroll
         if precision {
             let precisionMultiplier = Self.precisionScrollMultiplier(
                 usesAlternateScroll: usesAlternateScroll,
@@ -1266,6 +1342,11 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
             scrollMods
         )
         let dispatchEndUptime = ProcessInfo.processInfo.systemUptime
+        // Scroll should stay renderer-owned, but embedded wheel input still
+        // needs one prompt runtime drain so libghostty does not wait on a later
+        // unrelated wakeup before producing the next scrolled frame.
+        scheduleGhosttyRuntimeTickAfterSurfaceInput(coalesced: true)
+        armRendererOwnedScrollPresentationRecoveryIfNeeded(now: dispatchEndUptime)
         if shouldUseHostScrollPresentation(
             usesAlternateScroll: usesAlternateScroll,
             precision: precision
@@ -1456,6 +1537,7 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
             hasCompletedInitialVisiblePresentation = true
             lastLayerPresentUptime = ProcessInfo.processInfo.systemUptime
             layerPresentCount += 1
+            syncRendererFrameCompletedObservation()
             syncRenderLayerContentsObservation()
             return
         }
@@ -1466,7 +1548,10 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     @MainActor
     func noteLayerPresentationForTesting(now: TimeInterval) {
         lastLayerPresentUptime = now
+        awaitingInitialLayerPresentation = false
         hasCompletedInitialVisiblePresentation = true
+        syncRendererFrameCompletedObservation()
+        syncRenderLayerContentsObservation()
     }
 
     @MainActor
@@ -1555,6 +1640,7 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         if let surface {
             ghostty_surface_reset_alternate_scroll_telemetry(surface)
         }
+        syncRendererFrameCompletedObservation()
         syncRenderLayerContentsObservation()
     }
 
@@ -1599,6 +1685,17 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
             momentumPhase: momentumPhase,
             verticalDelta: verticalDelta
         )
+    }
+
+    @MainActor
+    func armRendererOwnedScrollPresentationRecoveryForTesting(now: TimeInterval) {
+        lastScrollInputUptime = now
+        armRendererOwnedScrollPresentationRecoveryIfNeeded(now: now)
+    }
+
+    @MainActor
+    func setLastScrollUsedAlternateScrollForTesting(_ enabled: Bool) {
+        lastScrollUsedAlternateScroll = enabled
     }
 
     @MainActor
@@ -1881,7 +1978,53 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         runScrollPresentationDrawPumpPass(now: now, reschedule: false)
     }
 
+    @MainActor
+    private func syncRendererFrameCompletedObservation() {
+        let currentSurfaceHandle = surface.map { GhosttySurfaceHandle(surface: $0) }
+        let shouldObserve = currentSurfaceHandle != nil && prefersRendererFrameCompletedObservation()
+
+        if observedRendererFrameSurfaceHandle == currentSurfaceHandle,
+           rendererFrameObservationRegistered == shouldObserve {
+            return
+        }
+
+        if let observedRendererFrameSurfaceHandle, rendererFrameObservationRegistered {
+            GhosttyApp.setRendererFrameCompletedObservationEnabled(false, for: observedRendererFrameSurfaceHandle)
+        }
+
+        observedRendererFrameSurfaceHandle = currentSurfaceHandle
+        rendererFrameObservationRegistered = shouldObserve
+
+        if let currentSurfaceHandle, shouldObserve {
+            GhosttyApp.setRendererFrameCompletedObservationEnabled(true, for: currentSurfaceHandle)
+        }
+    }
+
+    @MainActor
+    private func syncRendererFrameRequestObservation() {
+        let currentSurfaceHandle = surface.map { GhosttySurfaceHandle(surface: $0) }
+        let shouldObserve = currentSurfaceHandle != nil && prefersRendererFrameRequestedObservation()
+
+        if observedRendererFrameRequestSurfaceHandle == currentSurfaceHandle,
+           rendererFrameRequestObservationRegistered == shouldObserve {
+            return
+        }
+
+        if let observedRendererFrameRequestSurfaceHandle, rendererFrameRequestObservationRegistered {
+            GhosttyApp.setRendererFrameRequestedObservationEnabled(false, for: observedRendererFrameRequestSurfaceHandle)
+        }
+
+        observedRendererFrameRequestSurfaceHandle = currentSurfaceHandle
+        rendererFrameRequestObservationRegistered = shouldObserve
+
+        if let currentSurfaceHandle, shouldObserve {
+            GhosttyApp.setRendererFrameRequestedObservationEnabled(true, for: currentSurfaceHandle)
+        }
+    }
+
     private func syncRenderLayerContentsObservation() {
+        syncRendererFrameCompletedObservation()
+        syncRendererFrameRequestObservation()
         let currentLayer = surface != nil && prefersRenderLayerContentsObservation()
             ? layer
             : nil
@@ -1918,9 +2061,7 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
 
     @MainActor
     private func prefersRenderLayerContentsObservation() -> Bool {
-        scrollTelemetryCollectionEnabled
-            || awaitingInitialLayerPresentation
-            || scrollPresentationDrawPending
+        scrollPresentationDrawPending
             || scrollPresentationContinuationScheduled
             || scrollPresentationDrawPumpScheduled
             || scrollPresentationRecoveryProbeScheduled
@@ -1930,6 +2071,17 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
             || interactivePresentationRecoveryProbeScheduled
             || paneRetargetPresentationDrawPending
             || paneRetargetPresentationRecoveryProbeScheduled
+    }
+
+    @MainActor
+    private func prefersRendererFrameCompletedObservation() -> Bool {
+        scrollTelemetryCollectionEnabled
+            || awaitingInitialLayerPresentation
+    }
+
+    @MainActor
+    private func prefersRendererFrameRequestedObservation() -> Bool {
+        scrollTelemetryCollectionEnabled
     }
 
     /// Run presentation work on the current main-actor turn when the caller is in
@@ -2051,8 +2203,26 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
 
     @MainActor
     func prefersImmediateDirtyDrawForRenderCallback(now: TimeInterval) -> Bool {
-        guard let preciseAlternateScrollDirtyDrawEligibleUntilUptime else { return false }
-        return now <= preciseAlternateScrollDirtyDrawEligibleUntilUptime
+        if let preciseAlternateScrollDirtyDrawEligibleUntilUptime,
+           now <= preciseAlternateScrollDirtyDrawEligibleUntilUptime
+        {
+            return true
+        }
+
+        // During the direct-touch phase of a trackpad burst, a refresh-only
+        // render callback leaves the first visible movement waiting on another
+        // renderer turn. Using one immediate draw here keeps the active scroll
+        // gesture responsive without reopening the broader steady-state host
+        // pump during later momentum frames.
+        guard hasCompletedInitialLayerPresentation(),
+              canScheduleImmediatePresentationDraw()
+        else {
+            return false
+        }
+        guard lastScrollUsedAlternateScroll == false else {
+            return false
+        }
+        return isDirectScrollPresentationGestureActive(now: now)
     }
 
     @MainActor
@@ -2078,6 +2248,7 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         lastInteractiveInputUptime = now
         syncRenderLayerContentsObservation()
         if hasCompletedInitialLayerPresentation(), canScheduleImmediatePresentationDraw() {
+            armRendererOwnedInteractivePresentationRecoveryIfNeeded(now: now)
             return
         }
         scheduleGhosttyRuntimeTickAfterSurfaceInput()
@@ -2092,10 +2263,17 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         lastInteractiveInputUptime = now
         syncRenderLayerContentsObservation()
         if hasCompletedInitialLayerPresentation(), canScheduleImmediatePresentationDraw() {
+            armRendererOwnedInteractivePresentationRecoveryIfNeeded(now: now)
             return
         }
         lastInteractivePresentationDrawUptime = now
         triggerDraw()
+        scheduleInteractivePresentationRecoveryProbeIfNeeded(forDrawAt: now)
+    }
+
+    @MainActor
+    private func armRendererOwnedInteractivePresentationRecoveryIfNeeded(now: TimeInterval) {
+        lastInteractivePresentationDrawUptime = now
         scheduleInteractivePresentationRecoveryProbeIfNeeded(forDrawAt: now)
     }
 
@@ -2177,12 +2355,19 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
 
     @MainActor
     private func scheduleScrollPresentationRecoveryProbeIfNeeded(forDrawAt drawUptime: TimeInterval) {
-        guard scrollPresentationRecoveryProbeScheduled == false else { return }
-        guard shouldContinueScrollPresentationDrawPump(now: drawUptime) else { return }
+        guard shouldContinueAnyScrollPresentationRecovery(now: drawUptime) else { return }
+        let dueUptime = drawUptime + Self.scrollPresentationDrawRecoveryProbeDelaySeconds
+        if scrollPresentationRecoveryProbeScheduled,
+           let scheduledDrawUptime = scrollPresentationRecoveryProbeDrawUptime,
+           let scheduledDueUptime = scrollPresentationRecoveryProbeDueUptime,
+           scheduledDrawUptime >= drawUptime,
+           scheduledDueUptime >= dueUptime
+        {
+            return
+        }
 
         scrollPresentationRecoveryProbeScheduled = true
-        scrollPresentationRecoveryProbeDueUptime =
-            drawUptime + Self.scrollPresentationDrawRecoveryProbeDelaySeconds
+        scrollPresentationRecoveryProbeDueUptime = dueUptime
         scrollPresentationRecoveryProbeDrawUptime = drawUptime
         syncRenderLayerContentsObservation()
         scheduleNextScrollPresentationContinuationWakeIfNeeded(now: drawUptime)
@@ -2217,7 +2402,7 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
 
         if scrollPresentationContinuationScheduled,
            let scheduledDue = scrollPresentationContinuationDueUptime,
-           scheduledDue <= nextDue
+           abs(scheduledDue - nextDue) < 0.000_001
         {
             return
         }
@@ -2484,7 +2669,7 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         drawUptime: TimeInterval,
         now: TimeInterval
     ) -> Bool {
-        guard shouldContinueScrollPresentationDrawPump(now: now) else { return false }
+        guard shouldContinueAnyScrollPresentationRecovery(now: now) else { return false }
         guard drawUptime == lastScrollPresentationDrawUptime else { return false }
         guard shouldRecoverDelayedScrollPresentation(afterDrawAt: drawUptime) else { return false }
 
@@ -2544,6 +2729,19 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         guard hasSurfaceForScrollPresentationDraw(),
               let lastScrollInputUptime else { return false }
         return now - lastScrollInputUptime <= Self.scrollPresentationDrawPumpTailSeconds
+    }
+
+    @MainActor
+    private func shouldContinueRendererOwnedScrollRecovery(now: TimeInterval) -> Bool {
+        guard canScheduleImmediatePresentationDraw(),
+              let lastScrollInputUptime else { return false }
+        return now - lastScrollInputUptime <= Self.scrollPresentationDrawPumpTailSeconds
+    }
+
+    @MainActor
+    private func shouldContinueAnyScrollPresentationRecovery(now: TimeInterval) -> Bool {
+        shouldContinueScrollPresentationDrawPump(now: now)
+            || shouldContinueRendererOwnedScrollRecovery(now: now)
     }
 
     @MainActor
@@ -2620,6 +2818,7 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         lastScrollInputUptime = nil
         lastScrollPresentationDrawUptime = nil
         lastPaneRetargetPresentationDrawUptime = nil
+        lastScrollUsedAlternateScroll = false
         preciseAlternateScrollDirtyDrawEligibleUntilUptime = nil
         scrollPresentationDirectGestureActive = false
         lastPreciseScrollVerticalDirection = nil
@@ -2627,6 +2826,16 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         scrollPresentationContinuationGeneration &+= 1
         paneRetargetPresentationRecoveryProbeGeneration &+= 1
         syncRenderLayerContentsObservation()
+    }
+
+    @MainActor
+    private func armRendererOwnedScrollPresentationRecoveryIfNeeded(now: TimeInterval) {
+        guard hasCompletedInitialLayerPresentation(), canScheduleImmediatePresentationDraw() else {
+            return
+        }
+
+        lastScrollPresentationDrawUptime = now
+        scheduleScrollPresentationRecoveryProbeIfNeeded(forDrawAt: now)
     }
 
     @MainActor
@@ -2821,13 +3030,15 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
 
     private func currentSurfaceMetrics() -> SurfaceMetrics? {
         guard hasSurfaceForMetricsSync(),
-              let window else { return nil }
+              window != nil,
+              let attachmentContext = surfaceAttachmentContext()
+        else { return nil }
 
         let viewBounds = bounds
         let backingBounds = convertToBacking(viewBounds)
         let pixelWidth = UInt32(max(0, Int(backingBounds.width.rounded())))
         let pixelHeight = UInt32(max(0, Int(backingBounds.height.rounded())))
-        let fallbackScale = Double(window.backingScaleFactor)
+        let fallbackScale = attachmentContext.scaleFactor
         let xScale = viewBounds.width > 0
             ? Double(backingBounds.width / viewBounds.width)
             : fallbackScale
@@ -2839,7 +3050,7 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
             pixelHeight: pixelHeight,
             xScale: xScale,
             yScale: yScale,
-            displayID: window.screen?.agtmuxDisplayID ?? 0
+            displayID: attachmentContext.displayID
         )
     }
 

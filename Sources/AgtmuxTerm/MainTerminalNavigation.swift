@@ -45,59 +45,71 @@ enum MainTerminalNavigationResolver {
 
     static func applySessionNavigationIntent(
         activePaneRef: ActivePaneRef,
-        hostsConfig: HostsConfig
+        hostsConfig: HostsConfig,
+        localSocketOverride: LocalTmuxSocketOverride? = nil
     ) async throws {
-        let source = try tmuxSource(for: activePaneRef.target, hostsConfig: hostsConfig)
         for command in globalNavigationCommands(for: activePaneRef) {
-            _ = try await TmuxCommandRunner.shared.run(command, source: source)
+            _ = try await run(
+                command,
+                target: activePaneRef.target,
+                hostsConfig: hostsConfig,
+                localSocketOverride: localSocketOverride
+            )
         }
     }
 
     static func applyNavigationIntent(
         activePaneRef: ActivePaneRef,
         renderedClientTTY: String,
-        hostsConfig: HostsConfig
+        hostsConfig: HostsConfig,
+        localSocketOverride: LocalTmuxSocketOverride? = nil
     ) async throws {
         _ = renderedClientTTY
         try await applySessionNavigationIntent(
             activePaneRef: activePaneRef,
-            hostsConfig: hostsConfig
+            hostsConfig: hostsConfig,
+            localSocketOverride: localSocketOverride
         )
     }
 
     static func applyRenderedClientNavigationIntent(
         activePaneRef: ActivePaneRef,
         renderedClientTTY: String,
-        hostsConfig: HostsConfig
+        hostsConfig: HostsConfig,
+        localSocketOverride: LocalTmuxSocketOverride? = nil
     ) async throws {
-        let source = try tmuxSource(for: activePaneRef.target, hostsConfig: hostsConfig)
         let tmuxClientName = try await resolveRenderedClientName(
             renderedClientTTY: renderedClientTTY,
             target: activePaneRef.target,
-            hostsConfig: hostsConfig
+            hostsConfig: hostsConfig,
+            localSocketOverride: localSocketOverride
         )
-        _ = try await TmuxCommandRunner.shared.run(
+        _ = try await run(
             [
                 "switch-client",
                 "-c", tmuxClientName,
                 "-t", activePaneRef.paneID,
             ],
-            source: source
+            target: activePaneRef.target,
+            hostsConfig: hostsConfig,
+            localSocketOverride: localSocketOverride
         )
     }
 
     static func liveTarget(
         sessionRef: SessionRef,
-        hostsConfig: HostsConfig
+        hostsConfig: HostsConfig,
+        localSocketOverride: LocalTmuxSocketOverride? = nil
     ) async throws -> TerminalLiveTarget {
-        let source = try tmuxSource(for: sessionRef.target, hostsConfig: hostsConfig)
-        let output = try await TmuxCommandRunner.shared.run(
+        let output = try await run(
             [
                 "list-panes",
                 "-t", sessionRef.sessionName,
                 "-F", "#{session_name}|#{window_id}|#{pane_id}|#{window_active}|#{pane_active}"
             ],
-            source: source
+            target: sessionRef.target,
+            hostsConfig: hostsConfig,
+            localSocketOverride: localSocketOverride
         )
         return try parseLiveTarget(output: output, expectedSessionName: sessionRef.sessionName)
     }
@@ -105,16 +117,18 @@ enum MainTerminalNavigationResolver {
     static func liveTarget(
         sessionRef: SessionRef,
         windowID: String,
-        hostsConfig: HostsConfig
+        hostsConfig: HostsConfig,
+        localSocketOverride: LocalTmuxSocketOverride? = nil
     ) async throws -> TerminalLiveTarget {
-        let source = try tmuxSource(for: sessionRef.target, hostsConfig: hostsConfig)
-        let output = try await TmuxCommandRunner.shared.run(
+        let output = try await run(
             [
                 "list-panes",
                 "-t", windowID,
                 "-F", "#{session_name}|#{window_id}|#{pane_id}|#{pane_active}"
             ],
-            source: source
+            target: sessionRef.target,
+            hostsConfig: hostsConfig,
+            localSocketOverride: localSocketOverride
         )
         return try parseLiveTarget(
             output: output,
@@ -126,15 +140,17 @@ enum MainTerminalNavigationResolver {
     static func liveTarget(
         renderedClientTTY: String,
         target: TargetRef,
-        hostsConfig: HostsConfig
+        hostsConfig: HostsConfig,
+        localSocketOverride: LocalTmuxSocketOverride? = nil
     ) async throws -> TerminalLiveTarget {
-        let source = try tmuxSource(for: target, hostsConfig: hostsConfig)
-        let output = try await TmuxCommandRunner.shared.run(
+        let output = try await run(
             [
                 "list-clients",
                 "-F", "#{client_tty}|#{session_name}|#{window_id}|#{pane_id}"
             ],
-            source: source
+            target: target,
+            hostsConfig: hostsConfig,
+            localSocketOverride: localSocketOverride
         )
         return try parseLiveTarget(
             output: output,
@@ -145,15 +161,17 @@ enum MainTerminalNavigationResolver {
     static func resolveRenderedClientName(
         renderedClientTTY: String,
         target: TargetRef,
-        hostsConfig: HostsConfig
+        hostsConfig: HostsConfig,
+        localSocketOverride: LocalTmuxSocketOverride? = nil
     ) async throws -> String {
-        let source = try tmuxSource(for: target, hostsConfig: hostsConfig)
-        let output = try await TmuxCommandRunner.shared.run(
+        let output = try await run(
             [
                 "list-clients",
                 "-F", "#{client_name}|#{client_tty}"
             ],
-            source: source
+            target: target,
+            hostsConfig: hostsConfig,
+            localSocketOverride: localSocketOverride
         )
         return try parseClientName(
             output: output,
@@ -260,6 +278,25 @@ enum MainTerminalNavigationResolver {
                 throw MainTerminalNavigationError.missingRemoteHostKey(hostKey)
             }
             return host.sshTarget
+        }
+    }
+
+    private static func run(
+        _ args: [String],
+        target: TargetRef,
+        hostsConfig: HostsConfig,
+        localSocketOverride: LocalTmuxSocketOverride?
+    ) async throws -> String {
+        switch target {
+        case .local:
+            return try await TmuxCommandRunner.shared.run(
+                args,
+                source: "local",
+                localSocketArguments: localSocketOverride?.tmuxArguments
+            )
+        case .remote:
+            let source = try tmuxSource(for: target, hostsConfig: hostsConfig)
+            return try await TmuxCommandRunner.shared.run(args, source: source)
         }
     }
 }

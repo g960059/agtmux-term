@@ -101,6 +101,12 @@ targets:
           mkdir -p "$(dirname "$dest")"
           cp "$src" "$dest"
           chmod +x "$dest"
+      - name: Bundle Ghostty resources
+        shell: /bin/sh
+        basedOnDependencyAnalysis: false
+        script: |
+          set -euo pipefail
+          "$SRCROOT/scripts/dev/install-ghostty-resources.sh"
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.g960059.agtmux.term

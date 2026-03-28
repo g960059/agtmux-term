@@ -257,8 +257,106 @@ final class MainTerminalStoreTests: XCTestCase {
         XCTAssertTrue(plan.command.contains("@1"))
         XCTAssertTrue(plan.command.contains("select-pane -t"))
         XCTAssertTrue(plan.command.contains("%2"))
+        XCTAssertTrue(plan.command.contains("capture-pane -p -e -S -2000 -t"))
+        XCTAssertTrue(plan.command.contains("%2"))
         XCTAssertTrue(plan.command.contains("attach-session -t"))
         XCTAssertTrue(plan.command.contains("feature branch"))
+
+        store.startPlainShell()
+    }
+
+    func testSocketOverrideChangesLocalAttachPlanAndSurfaceKey() async throws {
+        let pane = makePane(sessionName: "shared", windowID: "@2", paneID: "%8")
+        let socketOverride = try XCTUnwrap(LocalTmuxSocketOverride(socketPath: "/tmp/direct.sock"))
+        let store = MainTerminalStore(
+            dependencies: makeDependencies()
+        )
+
+        await store.activate(
+            pane: pane,
+            hostsConfig: .empty,
+            localSocketOverride: socketOverride
+        )
+
+        let plan = try XCTUnwrap(try? store.attachResolution?.get())
+        XCTAssertTrue(plan.command.contains("capture-pane -p -e -S -2000 -t"))
+        XCTAssertTrue(plan.command.contains("%8"))
+        XCTAssertTrue(plan.command.contains("tmux -S /tmp/direct.sock"))
+        XCTAssertEqual(plan.surfaceKey, "main-terminal:local:/tmp/direct.sock:shared")
+
+        store.startPlainShell()
+    }
+
+    func testSocketOverrideFlowsIntoLiveTargetAndNavigationIntent() async throws {
+        let clickedPane = makePane(
+            sessionName: "shared",
+            windowID: "@2",
+            paneID: "%8"
+        )
+        let socketOverride = try XCTUnwrap(LocalTmuxSocketOverride(socketPath: "/tmp/direct.sock"))
+        let initialLiveTarget = TerminalLiveTarget(
+            sessionName: "shared",
+            windowID: "@1",
+            paneID: "%1"
+        )
+        let resolvedLiveTarget = TerminalLiveTarget(
+            sessionName: "shared",
+            windowID: "@2",
+            paneID: "%8"
+        )
+        let renderedTargets = LiveTargetSequence([initialLiveTarget, resolvedLiveTarget])
+        let liveTargetOverrides = SocketOverrideRecorder()
+        let navigationOverrides = SocketOverrideRecorder()
+        let sleepController = SleepController(allowedSleeps: 2)
+        let surfaceID = UUID()
+        let sessionRef = SessionRef(target: .local, sessionName: "shared")
+        let store = MainTerminalStore(
+            surfaceID: surfaceID,
+            dependencies: MainTerminalStoreDependencies(
+                liveTarget: { _, _, localSocketOverride in
+                    await liveTargetOverrides.record(localSocketOverride)
+                    return await renderedTargets.next()
+                },
+                liveWindowTarget: { _, _, _, _ in
+                    throw StubError.liveTargetUnavailable
+                },
+                renderedLiveTarget: { _, _, _, _ in
+                    throw StubError.renderedLiveTargetUnavailable
+                },
+                renderedState: { renderedSurfaceID in
+                    XCTAssertEqual(renderedSurfaceID, surfaceID)
+                    return self.makeRenderedState(
+                        surfaceID: renderedSurfaceID,
+                        sessionRef: sessionRef,
+                        clientTTY: "/dev/ttys001"
+                    )
+                },
+                applyNavigationIntent: { _, _, _, localSocketOverride in
+                    await navigationOverrides.record(localSocketOverride)
+                },
+                sleep: { _ in
+                    try await sleepController.sleep()
+                }
+            )
+        )
+
+        await store.activate(
+            pane: clickedPane,
+            hostsConfig: .empty,
+            localSocketOverride: socketOverride
+        )
+
+        let didResolve = try await waitUntil {
+            store.requestedPaneRef == nil
+                && store.resolvedPaneRef?.windowID == "@2"
+                && store.resolvedPaneRef?.paneID == "%8"
+        }
+        let recordedLiveTargetOverrides = await liveTargetOverrides.values()
+        let recordedNavigationOverrides = await navigationOverrides.values()
+
+        XCTAssertTrue(didResolve)
+        XCTAssertEqual(recordedLiveTargetOverrides, [socketOverride, socketOverride])
+        XCTAssertEqual(recordedNavigationOverrides, [socketOverride])
 
         store.startPlainShell()
     }
@@ -481,11 +579,19 @@ final class MainTerminalStoreTests: XCTestCase {
         }
     ) -> MainTerminalStoreDependencies {
         MainTerminalStoreDependencies(
-            liveTarget: liveTarget,
-            liveWindowTarget: liveWindowTarget,
-            renderedLiveTarget: renderedLiveTarget,
+            liveTarget: { sessionRef, hostsConfig, _ in
+                try await liveTarget(sessionRef, hostsConfig)
+            },
+            liveWindowTarget: { sessionRef, windowID, hostsConfig, _ in
+                try await liveWindowTarget(sessionRef, windowID, hostsConfig)
+            },
+            renderedLiveTarget: { renderedClientTTY, target, hostsConfig, _ in
+                try await renderedLiveTarget(renderedClientTTY, target, hostsConfig)
+            },
             renderedState: renderedState,
-            applyNavigationIntent: applyNavigationIntent,
+            applyNavigationIntent: { activePaneRef, renderedClientTTY, hostsConfig, _ in
+                try await applyNavigationIntent(activePaneRef, renderedClientTTY, hostsConfig)
+            },
             sleep: sleep
         )
     }
@@ -645,6 +751,18 @@ private actor Counter {
 
     func value() -> Int {
         storedValue
+    }
+}
+
+private actor SocketOverrideRecorder {
+    private var storedValues: [LocalTmuxSocketOverride?] = []
+
+    func record(_ value: LocalTmuxSocketOverride?) {
+        storedValues.append(value)
+    }
+
+    func values() -> [LocalTmuxSocketOverride?] {
+        storedValues
     }
 }
 

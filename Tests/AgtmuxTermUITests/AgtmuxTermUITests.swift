@@ -159,7 +159,7 @@ final class AgtmuxTermUITests: XCTestCase {
 
     /// Dumps the full accessibility tree so we can see what XCUITest actually observes.
     func testDumpAccessibilityTree() {
-        app.launchForUITest()
+        app.launchForBridgeDrivenUITest()
         Thread.sleep(forTimeInterval: 5.0)
 
         let desc = app.debugDescription
@@ -207,7 +207,7 @@ final class AgtmuxTermUITests: XCTestCase {
 
     /// T-E2E-001: App launches and sidebar is visible.
     func testAppLaunchShowsSidebar() {
-        app.launchForUITest()
+        app.launchForBridgeDrivenUITest()
         let predicate = NSPredicate(format: "identifier == %@", AccessibilityID.sidebar)
         let sidebar = app.descendants(matching: .any).matching(predicate).firstMatch
         XCTAssertTrue(
@@ -219,7 +219,7 @@ final class AgtmuxTermUITests: XCTestCase {
     /// T-E2E-002: Launch shows the single main terminal and no legacy tab chrome.
     func testEmptyStateOnLaunch() {
         app.launchEnvironment["AGTMUX_JSON"] = #"{"version":1,"panes":[]}"#
-        app.launchForUITest()
+        app.launchForBridgeDrivenUITest()
         let terminal = mainTerminal()
         XCTAssertTrue(
             terminal.waitForExistence(timeout: TestConstants.settleTimeout),
@@ -248,7 +248,7 @@ final class AgtmuxTermUITests: XCTestCase {
         """
 
         app.launchEnvironment["AGTMUX_JSON"] = json
-        app.launchForUITest()
+        app.launchForBridgeDrivenUITest()
 
         let paneKey = AccessibilityID.paneKey(
             source: "local",
@@ -367,7 +367,7 @@ final class AgtmuxTermUITests: XCTestCase {
         app.launchEnvironment.removeValue(forKey: "AGTMUX_JSON")
         app.launchEnvironment.removeValue(forKey: "AGTMUX_UI_HEALTH_V1_JSON")
         configureAppDrivenTmux(socketName: socket, control: control, scenario: scenario)
-        app.launchForUITest()
+        app.launchForBridgeDrivenUITest()
 
         let bootstrap = try waitForAppTmuxBootstrapResult(control: control)
         guard bootstrap.ok,
@@ -1126,7 +1126,7 @@ final class AgtmuxTermUITests: XCTestCase {
 
         app.launchEnvironment.removeValue(forKey: "AGTMUX_JSON")
         configureAppDrivenTmux(socketName: socket, control: control, scenario: scenario)
-        app.launchForUITest()
+        app.launchForBridgeDrivenUITest()
 
         let bootstrap = try waitForAppTmuxBootstrapResult(control: control)
         guard bootstrap.ok,
@@ -1238,7 +1238,7 @@ final class AgtmuxTermUITests: XCTestCase {
 
         app.launchEnvironment.removeValue(forKey: "AGTMUX_JSON")
         configureAppDrivenTmux(socketName: socket, control: control, scenario: scenario)
-        app.launchForUITest()
+        app.launchForBridgeDrivenUITest()
 
         let bootstrap = try waitForAppTmuxBootstrapResult(control: control)
         guard bootstrap.ok,
@@ -1385,7 +1385,7 @@ final class AgtmuxTermUITests: XCTestCase {
 
         app.launchEnvironment.removeValue(forKey: "AGTMUX_JSON")
         configureAppDrivenTmux(socketName: socket, control: control, scenario: scenario)
-        app.launchForUITest()
+        app.launchForBridgeDrivenUITest()
 
         let bootstrap = try waitForAppTmuxBootstrapResult(control: control)
         guard bootstrap.ok,
@@ -1840,7 +1840,7 @@ final class AgtmuxTermUITests: XCTestCase {
         )
 
         configureAppDrivenTmux(socketName: socket, control: control, scenario: scenario)
-        app.launchForUITest()
+        app.launchForBridgeDrivenUITest()
 
         let bootstrap = try waitForAppTmuxBootstrapResult(control: control)
         guard bootstrap.ok,
@@ -1954,7 +1954,7 @@ final class AgtmuxTermUITests: XCTestCase {
         )
 
         configureAppDrivenTmux(socketName: socket, control: control, scenario: scenario)
-        app.launchForUITest()
+        app.launchForBridgeDrivenUITest()
 
         let bootstrap = try waitForAppTmuxBootstrapResult(control: control)
         guard bootstrap.ok,

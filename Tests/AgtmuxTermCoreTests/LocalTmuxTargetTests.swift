@@ -7,6 +7,29 @@ final class LocalTmuxTargetTests: XCTestCase {
         super.tearDown()
     }
 
+    private func makeUserDefaultsSuite() -> UserDefaults {
+        let suiteName = "LocalTmuxTargetCoreTests.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            fatalError("Failed to create isolated UserDefaults suite")
+        }
+        defaults.removePersistentDomain(forName: suiteName)
+        return defaults
+    }
+
+    private func makeMarkerURL() -> URL {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent("LocalTmuxTargetCoreTests.\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("enabled", isDirectory: false)
+    }
+
+    private func writeMarker(at markerURL: URL) throws {
+        try FileManager.default.createDirectory(
+            at: markerURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data().write(to: markerURL, options: .atomic)
+    }
+
     func testExplicitSocketNameTakesHighestPrecedence() {
         let env: [String: String] = [
             "AGTMUX_TMUX_SOCKET_NAME": "named-socket",
@@ -92,6 +115,33 @@ final class LocalTmuxTargetTests: XCTestCase {
         XCTAssertEqual(
             LocalTmuxTarget.daemonCLIArguments(from: env),
             ["--tmux-socket", "/private/tmp/tmux-501/runtime.sock"]
+        )
+    }
+
+    func testSocketArgumentsIgnoreUITestDefaultsWhenMarkerIsAbsent() {
+        let defaults = makeUserDefaultsSuite()
+        defaults.set("stale-socket", forKey: LocalTmuxTarget.socketNameDefaultsKey)
+
+        XCTAssertEqual(
+            LocalTmuxTarget.socketArguments(from: [:], userDefaults: defaults),
+            []
+        )
+    }
+
+    func testSocketArgumentsHonorUITestDefaultsWhenMarkerExists() throws {
+        let defaults = makeUserDefaultsSuite()
+        let markerURL = makeMarkerURL()
+        defaults.set("stale-socket", forKey: LocalTmuxTarget.socketNameDefaultsKey)
+        try writeMarker(at: markerURL)
+        defer { try? FileManager.default.removeItem(at: markerURL.deletingLastPathComponent()) }
+
+        XCTAssertEqual(
+            LocalTmuxTarget.socketArguments(
+                from: [:],
+                userDefaults: defaults,
+                markerURL: markerURL
+            ),
+            ["-L", "stale-socket"]
         )
     }
 }
