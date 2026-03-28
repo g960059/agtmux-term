@@ -835,6 +835,49 @@ final class GhosttyTerminalViewIMETests: XCTestCase {
         )
     }
 
+    func testScrollInputAfterPaneRetargetCancelsStalePaneRetargetRecovery() {
+        let view = GhosttyTerminalViewSpy()
+        view.canScheduleImmediatePresentation = true
+        view.noteLayerPresentationForTesting(now: 80.0)
+        view.configurePaneRetargetObservationStateForTesting(
+            drawPending: false,
+            recoveryScheduled: true,
+            lastDrawUptime: 90.0
+        )
+
+        view.armRendererOwnedScrollPresentationRecoveryForTesting(now: 100.0)
+
+        let paneRetargetState = view.paneRetargetPresentationStateForTesting()
+        let scrollState = view.scrollPresentationContinuationStateForTesting()
+        XCTAssertFalse(paneRetargetState.recoveryScheduled)
+        XCTAssertNil(paneRetargetState.lastDrawUptime)
+        XCTAssertEqual(scrollState.recoveryDrawUptime, 100.0)
+        XCTAssertNotNil(scrollState.recoveryDueUptime)
+    }
+
+    func testScrollRecoveryIgnoresLatePaneRetargetLayerPresentation() {
+        let view = GhosttyTerminalViewSpy()
+        view.canScheduleImmediatePresentation = true
+        view.scrollPresentationSurfacePresent = true
+        view.noteLayerPresentationForTesting(now: 80.0)
+        view.configurePaneRetargetObservationStateForTesting(
+            drawPending: false,
+            recoveryScheduled: false,
+            lastDrawUptime: 99.99
+        )
+
+        view.armRendererOwnedScrollPresentationRecoveryForTesting(now: 100.0)
+        view.noteLayerPresentationForTesting(now: 100.002)
+
+        XCTAssertTrue(
+            view.runScrollPresentationRecoveryProbePassForTesting(
+                drawUptime: 100.0,
+                now: 100.01
+            )
+        )
+        XCTAssertEqual(view.scrollTelemetrySnapshotForTesting().immediatePresentationDrawCount, 1)
+    }
+
     func testScrollPresentationRecoveryProbeFallsBackToImmediateDraw() {
         let view = GhosttyTerminalViewSpy()
         view.scrollPresentationSurfacePresent = true
@@ -896,6 +939,27 @@ final class GhosttyTerminalViewIMETests: XCTestCase {
         XCTAssertTrue(window.firstResponder === view)
     }
 
+    func testScrollWheelClaimsFirstResponderBeforeSurfaceInput() {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 480),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        let root = NSView(frame: window.contentView?.bounds ?? .zero)
+        let otherResponder = NSTextField(frame: .zero)
+        let view = GhosttyTerminalViewSpy(frame: NSRect(x: 0, y: 0, width: 320, height: 240))
+        root.addSubview(otherResponder)
+        root.addSubview(view)
+        window.contentView = root
+        window.makeFirstResponder(otherResponder)
+
+        let event = makeScrollWheelEvent()
+        view.scrollWheel(with: event)
+
+        XCTAssertTrue(window.firstResponder === view)
+    }
+
     private func makeKeyDownEvent(
         characters: String,
         keyCode: UInt16,
@@ -913,6 +977,18 @@ final class GhosttyTerminalViewIMETests: XCTestCase {
             isARepeat: false,
             keyCode: keyCode
         )!
+    }
+
+    private func makeScrollWheelEvent() -> NSEvent {
+        let event = CGEvent(
+            scrollWheelEvent2Source: nil,
+            units: .pixel,
+            wheelCount: 1,
+            wheel1: 12,
+            wheel2: 0,
+            wheel3: 0
+        )!
+        return NSEvent(cgEvent: event)!
     }
 
     private func makeMouseDownEvent(windowNumber: Int) -> NSEvent {

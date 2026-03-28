@@ -166,6 +166,10 @@ Current state:
   all". It is now the smaller but still user-visible difference between loaded
   live scrollback and native Ghostty cadence / step accumulation after the
   first visible movement
+- first-scroll stalls after same-window pane retarget now cancel stale
+  pane-retarget recovery before arming scroll recovery, so a delayed
+  retarget-only layer present can no longer falsely satisfy the first scroll's
+  renderer-owned recovery path
 - `GHOSTTY_ACTION_RENDER` dirty draws now follow the same resolved active
   terminal view that renderer frame telemetry uses. This closes the case where
   live panes could record render/layer callbacks on the visible surface while
@@ -232,6 +236,17 @@ Current state:
 - user-perceived keyboard, scroll, and pane-switch smoothness still trail
   native Ghostty; the remaining work is real hot-path thinning and scheduler
   cleanup, not compatibility preservation
+- same-window pane retarget now keeps first-scroll recovery from being masked
+  by one late pane-retarget layer present, and a real preserved-surface UI
+  regression now proves the first internal scroll burst moves the viewport on
+  the retargeted pane without requiring a second gesture
+- first real wheel input after a sidebar pane retarget now explicitly reclaims
+  terminal first responder before dispatch so the gesture is not spent only on
+  focus recovery after the sidebar button click
+- same-session preserved-surface retarget now keeps the live navigation path on
+  the rendered tmux client when `renderedClientTTY` is already known, instead
+  of accidentally dropping back to session-global navigation before the first
+  post-retarget scroll
 
 Remaining engineering focus:
 

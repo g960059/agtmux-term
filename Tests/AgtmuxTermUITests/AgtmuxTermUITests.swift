@@ -1647,6 +1647,14 @@ final class AgtmuxTermUITests: XCTestCase {
             windowID: secondWindowSplitSnapshot.windowID,
             paneID: secondWindowInactivePaneID
         )
+        let retargetFocus = try dumpAppTerminalFocusState(
+            control: control,
+            surfaceID: secondSnapshot.surfaceID
+        )
+        XCTAssertTrue(
+            retargetFocus.terminalIsFirstResponder,
+            "Same-session pane retarget must restore terminal first responder before the first user scroll gesture"
+        )
         XCTAssertEqual(
             secondSnapshot.desiredWindowID,
             secondWindowSplitSnapshot.windowID,
@@ -1672,6 +1680,164 @@ final class AgtmuxTermUITests: XCTestCase {
             linkedAfter,
             linkedBefore,
             "Window-active retarget must reuse the same real-session surface without linked sessions"
+        )
+    }
+
+    func testPaneRetargetFirstScrollBurstMovesViewportOnPreservedSurface() throws {
+        let token = String(UUID().uuidString.prefix(8)).lowercased()
+        let session = "agtmux-e2e-retarget-scroll-\(token)"
+        let socket = "agtmux-e2e-retarget-scroll-\(token)"
+        let control = try makeAppTmuxControlPaths(token: token)
+        let scenario = AppTmuxScenario(
+            sessionName: session,
+            windowName: "main",
+            paneCount: 1,
+            shellCommand: "/bin/sleep 600"
+        )
+
+        app.launchEnvironment.removeValue(forKey: "AGTMUX_JSON")
+        configureAppDrivenTmux(socketName: socket, control: control, scenario: scenario)
+        app.launchForUITest()
+
+        let bootstrap = try waitForAppTmuxBootstrapResult(control: control)
+        guard bootstrap.ok,
+              bootstrap.sessionName == session,
+              let firstWindowID = bootstrap.windowID,
+              let firstPaneID = bootstrap.paneIDs.first else {
+            throw XCTSkip("App-driven tmux bootstrap failed for pane-retarget scroll regression")
+        }
+
+        let historyCommand = """
+        python3 - <<'PY'
+        for i in range(320):
+            print("__agtmux_retarget_scroll_\(token)__:%03d" % i)
+        PY
+        exec sleep 600
+        """
+        let secondWindowName = "secondary"
+        let secondWindowActiveCommand = "/bin/sh -lc " + shellQuote(
+            "printf '__agtmux_retarget_scroll_active_\(token)__\\n'; exec sleep 600"
+        )
+        let secondWindowInactiveCommand = "/bin/sh -lc " + shellQuote(historyCommand)
+        _ = try sendAppTmuxCommand(
+            ["new-window", "-t", session, "-n", secondWindowName, secondWindowActiveCommand],
+            control: control
+        )
+        let secondWindowSnapshot = try waitForAppPaneDescriptors(
+            tmuxTarget: "\(session):\(secondWindowName)",
+            windowDescription: secondWindowName,
+            expectedPaneCount: 1,
+            control: control
+        )
+        guard let secondWindowActivePaneID = secondWindowSnapshot.paneIDs.first else {
+            throw XCTSkip("Could not resolve secondary active pane for pane-retarget scroll regression")
+        }
+        _ = try sendAppTmuxCommand(
+            ["split-window", "-t", "\(session):\(secondWindowName)", "-h", secondWindowInactiveCommand],
+            control: control
+        )
+        let secondWindowSplitSnapshot = try waitForAppPaneDescriptors(
+            tmuxTarget: "\(session):\(secondWindowName)",
+            windowDescription: secondWindowName,
+            expectedPaneCount: 2,
+            control: control
+        )
+        let secondWindowPaneIDs = Set(secondWindowSplitSnapshot.paneIDs)
+        guard let secondWindowInactivePaneID = secondWindowPaneIDs.subtracting([secondWindowActivePaneID]).first else {
+            throw XCTSkip("Could not resolve secondary inactive pane for pane-retarget scroll regression")
+        }
+        _ = try sendAppTmuxCommand(
+            ["select-pane", "-t", secondWindowActivePaneID],
+            refreshInventory: false,
+            control: control
+        )
+
+        XCTAssertTrue(
+            clickSidebarPaneRow(source: "local", sessionName: session, paneID: firstPaneID),
+            "Initial pane must appear in sidebar before preserved-surface scroll regression"
+        )
+        let firstSnapshot = waitForAppMainTerminalTarget(
+            control: control,
+            sessionName: session,
+            windowID: firstWindowID,
+            paneID: firstPaneID,
+            selectedPaneInventoryID: paneInventoryID(
+                source: "local",
+                sessionName: session,
+                paneID: firstPaneID
+            )
+        )
+        waitForRenderedClientTmuxTarget(
+            control: control,
+            clientTTY: firstSnapshot.renderedClientTTY,
+            sessionName: session,
+            windowID: firstWindowID,
+            paneID: firstPaneID
+        )
+
+        try waitForAppSidebarPanePresentation(
+            control: control,
+            sessionName: session,
+            paneID: secondWindowInactivePaneID
+        )
+        XCTAssertTrue(
+            clickSidebarPaneRow(source: "local", sessionName: session, paneID: secondWindowInactivePaneID),
+            "Inactive pane row in the target window must remain clickable before preserved-surface scroll regression"
+        )
+        let secondSnapshot = waitForAppMainTerminalTarget(
+            control: control,
+            sessionName: session,
+            windowID: secondWindowSplitSnapshot.windowID,
+            paneID: secondWindowInactivePaneID,
+            selectedPaneInventoryID: paneInventoryID(
+                source: "local",
+                sessionName: session,
+                paneID: secondWindowInactivePaneID
+            )
+        )
+        XCTAssertEqual(
+            secondSnapshot.renderedSurfaceGeneration,
+            firstSnapshot.renderedSurfaceGeneration,
+            "Pane retarget scroll regression must keep the preserved Ghostty surface alive"
+        )
+        waitForRenderedClientTmuxTarget(
+            control: control,
+            clientTTY: secondSnapshot.renderedClientTTY,
+            sessionName: session,
+            windowID: secondWindowSplitSnapshot.windowID,
+            paneID: secondWindowInactivePaneID
+        )
+        _ = try waitForAppTerminalViewportTextContains(
+            control: control,
+            surfaceID: secondSnapshot.surfaceID,
+            expected: "__agtmux_retarget_scroll_\(token)__",
+            failureContext: "retargeted pane history fixture readiness"
+        )
+
+        let baselineViewport = try dumpAppTerminalViewportText(
+            control: control,
+            surfaceID: secondSnapshot.surfaceID
+        )
+        try resetAppScrollTelemetry(control: control, surfaceID: secondSnapshot.surfaceID)
+        let measurement = try measureAppTerminalScrollBurst(
+            control: control,
+            surfaceID: secondSnapshot.surfaceID,
+            verticalDelta: -12.0
+        )
+        let focusAfterRetarget = try dumpAppTerminalFocusState(
+            control: control,
+            surfaceID: secondSnapshot.surfaceID
+        )
+        XCTAssertTrue(
+            focusAfterRetarget.terminalIsFirstResponder,
+            "Preserved-surface pane retarget must return first responder to the terminal before the first scroll burst"
+        )
+        let firstChangedSample = measurement.sampling.samples.first(where: { sample in
+            sample.snapshot.text != baselineViewport.text
+        })
+        XCTAssertNotNil(
+            firstChangedSample,
+            "The first internal trackpad burst after pane retarget must move the preserved viewport without requiring a second gesture"
         )
     }
 
@@ -3132,6 +3298,20 @@ final class AgtmuxTermUITests: XCTestCase {
         let usesAlternateScroll: Bool
     }
 
+    private struct TerminalViewportTextSampleSnapshot: Decodable {
+        let sampleIndex: Int
+        let elapsedMs: Double
+        let snapshot: TerminalViewportTextSnapshot
+    }
+
+    private struct TerminalViewportTextSamplingSnapshot: Decodable {
+        let samples: [TerminalViewportTextSampleSnapshot]
+    }
+
+    private struct TerminalScrollBurstMeasurementSnapshot: Decodable {
+        let sampling: TerminalViewportTextSamplingSnapshot
+    }
+
     private struct AppTerminalFocusStateSnapshot: Decodable {
         let appIsActive: Bool
         let windowIsKey: Bool
@@ -3597,6 +3777,37 @@ final class AgtmuxTermUITests: XCTestCase {
             timeout: 2.0
         )
         return try JSONDecoder().decode(TerminalViewportTextSnapshot.self, from: Data(output.utf8))
+    }
+
+    private func measureAppTerminalScrollBurst(
+        control: AppTmuxControlPaths,
+        surfaceID: String,
+        verticalDelta: Double,
+        repeatCount: Int = 12,
+        intervalMs: Int = 8,
+        sampleCount: Int = 20,
+        sampleIntervalMs: Int = 50,
+        phaseMode: String = "trackpad-burst-momentum"
+    ) throws -> TerminalScrollBurstMeasurementSnapshot {
+        let output = try sendAppTmuxCommand(
+            [
+                "__agtmux_measure_terminal_scroll_burst__",
+                surfaceID,
+                String(verticalDelta),
+                String(repeatCount),
+                String(intervalMs),
+                String(sampleCount),
+                String(sampleIntervalMs),
+                phaseMode,
+            ],
+            refreshInventory: false,
+            control: control,
+            timeout: 5.0
+        )
+        return try JSONDecoder().decode(
+            TerminalScrollBurstMeasurementSnapshot.self,
+            from: Data(output.utf8)
+        )
     }
 
     private func waitForAppTerminalViewportTextContains(

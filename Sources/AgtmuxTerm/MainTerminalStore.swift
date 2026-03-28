@@ -290,8 +290,9 @@ struct MainTerminalStoreDependencies {
                 GhosttyTerminalSurfaceRegistry.shared.renderedState(forSurfaceID: surfaceID)
             },
             applyNavigationIntent: { activePaneRef, renderedClientTTY, hostsConfig, localSocketOverride in
-                try await MainTerminalNavigationResolver.applySessionNavigationIntent(
+                try await MainTerminalNavigationResolver.applyNavigationIntent(
                     activePaneRef: activePaneRef,
+                    renderedClientTTY: renderedClientTTY,
                     hostsConfig: hostsConfig,
                     localSocketOverride: localSocketOverride
                 )
@@ -637,6 +638,43 @@ final class MainTerminalStore {
         }
     }
 
+    private func renderedClientTTY(for sessionRef: SessionRef) -> String? {
+        guard let renderedState = dependencies.renderedState(surfaceID),
+              renderedState.context.sessionRef == sessionRef,
+              let renderedClientTTY = renderedState.clientTTY?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+              renderedClientTTY.isEmpty == false else {
+            return nil
+        }
+        return renderedClientTTY
+    }
+
+    private func resolveObservedLiveTarget(sessionRef: SessionRef) async throws -> TerminalLiveTarget {
+        if let renderedClientTTY = renderedClientTTY(for: sessionRef) {
+            do {
+                return try await dependencies.renderedLiveTarget(
+                    renderedClientTTY,
+                    sessionRef.target,
+                    currentHostsConfig,
+                    localSocketOverride
+                )
+            } catch let error as MainTerminalNavigationError {
+                switch error {
+                case .renderedClientUnavailable:
+                    break
+                case .missingRemoteHostKey, .activePaneUnavailable:
+                    throw error
+                }
+            }
+        }
+
+        return try await dependencies.liveTarget(
+            sessionRef,
+            currentHostsConfig,
+            localSocketOverride
+        )
+    }
+
     private func runNavigationLoop(generation: UInt64) async {
         while !Task.isCancelled {
             guard navigationGeneration == generation else { return }
@@ -644,11 +682,7 @@ final class MainTerminalStore {
 
             let liveTarget: TerminalLiveTarget
             do {
-                liveTarget = try await dependencies.liveTarget(
-                    sessionRef,
-                    currentHostsConfig,
-                    localSocketOverride
-                )
+                liveTarget = try await resolveObservedLiveTarget(sessionRef: sessionRef)
             } catch let error as MainTerminalNavigationError {
                 switch error {
                 case .activePaneUnavailable:
@@ -682,6 +716,7 @@ final class MainTerminalStore {
                 return
             }
             guard currentSessionRef == sessionRef else { return }
+            let renderedClientTTY = renderedClientTTY(for: currentSessionRef) ?? ""
 
             let livePaneRef = Self.activePaneRef(
                 target: sessionRef.target,
@@ -705,7 +740,7 @@ final class MainTerminalStore {
                 do {
                     try await dependencies.applyNavigationIntent(
                         currentRequestedPaneRef,
-                        dependencies.renderedState(surfaceID)?.clientTTY ?? "",
+                        renderedClientTTY,
                         currentHostsConfig,
                         localSocketOverride
                     )

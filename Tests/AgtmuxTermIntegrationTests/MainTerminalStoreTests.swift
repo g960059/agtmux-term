@@ -305,7 +305,7 @@ final class MainTerminalStoreTests: XCTestCase {
             paneID: "%8"
         )
         let renderedTargets = LiveTargetSequence([initialLiveTarget, resolvedLiveTarget])
-        let liveTargetOverrides = SocketOverrideRecorder()
+        let renderedLiveTargetOverrides = SocketOverrideRecorder()
         let navigationOverrides = SocketOverrideRecorder()
         let sleepController = SleepController(allowedSleeps: 2)
         let surfaceID = UUID()
@@ -314,14 +314,16 @@ final class MainTerminalStoreTests: XCTestCase {
             surfaceID: surfaceID,
             dependencies: MainTerminalStoreDependencies(
                 liveTarget: { _, _, localSocketOverride in
-                    await liveTargetOverrides.record(localSocketOverride)
+                    XCTFail("Same-session preserved-surface retarget should observe the rendered client target, not the session-global target")
+                    await renderedLiveTargetOverrides.record(localSocketOverride)
                     return await renderedTargets.next()
                 },
                 liveWindowTarget: { _, _, _, _ in
                     throw StubError.liveTargetUnavailable
                 },
-                renderedLiveTarget: { _, _, _, _ in
-                    throw StubError.renderedLiveTargetUnavailable
+                renderedLiveTarget: { _, _, _, localSocketOverride in
+                    await renderedLiveTargetOverrides.record(localSocketOverride)
+                    return await renderedTargets.next()
                 },
                 renderedState: { renderedSurfaceID in
                     XCTAssertEqual(renderedSurfaceID, surfaceID)
@@ -351,7 +353,7 @@ final class MainTerminalStoreTests: XCTestCase {
                 && store.resolvedPaneRef?.windowID == "@2"
                 && store.resolvedPaneRef?.paneID == "%8"
         }
-        let recordedLiveTargetOverrides = await liveTargetOverrides.values()
+        let recordedLiveTargetOverrides = await renderedLiveTargetOverrides.values()
         let recordedNavigationOverrides = await navigationOverrides.values()
 
         XCTAssertTrue(didResolve)
@@ -386,6 +388,10 @@ final class MainTerminalStoreTests: XCTestCase {
             surfaceID: surfaceID,
             dependencies: makeDependencies(
                 liveTarget: { _, _ in
+                    XCTFail("Same-session preserved-surface retarget should observe the rendered client target first")
+                    return initialLiveTarget
+                },
+                renderedLiveTarget: { _, _, _ in
                     await renderedTargets.next()
                 },
                 renderedState: { renderedSurfaceID in
@@ -448,6 +454,9 @@ final class MainTerminalStoreTests: XCTestCase {
                 liveTarget: { _, _ in
                     liveTarget
                 },
+                renderedLiveTarget: { _, _, _ in
+                    liveTarget
+                },
                 renderedState: { renderedSurfaceID in
                     XCTAssertEqual(renderedSurfaceID, surfaceID)
                     return self.makeRenderedState(
@@ -504,6 +513,7 @@ final class MainTerminalStoreTests: XCTestCase {
             resolvedLiveTarget
         ])
         let liveTargetCalls = Counter()
+        let renderedLiveTargetCalls = Counter()
         let navigationRecorder = NavigationRecorder()
         let sleepController = SleepController(allowedSleeps: 2)
         let surfaceID = UUID()
@@ -513,6 +523,10 @@ final class MainTerminalStoreTests: XCTestCase {
             dependencies: makeDependencies(
                 liveTarget: { _, _ in
                     await liveTargetCalls.increment()
+                    return initialLiveTarget
+                },
+                renderedLiveTarget: { _, _, _ in
+                    await renderedLiveTargetCalls.increment()
                     return await renderedTargets.next()
                 },
                 renderedState: { renderedSurfaceID in
@@ -544,6 +558,7 @@ final class MainTerminalStoreTests: XCTestCase {
         }
         let calls = await navigationRecorder.calls()
         let liveTargetCallCount = await liveTargetCalls.value()
+        let renderedLiveTargetCallCount = await renderedLiveTargetCalls.value()
 
         XCTAssertTrue(
             didObserveDrift,
@@ -551,8 +566,13 @@ final class MainTerminalStoreTests: XCTestCase {
         )
         XCTAssertEqual(
             liveTargetCallCount,
+            0,
+            "Preserved-surface retarget should not poll the session-global target when a rendered client target is available"
+        )
+        XCTAssertEqual(
+            renderedLiveTargetCallCount,
             2,
-            "Converged navigation should stop polling the session live target after the clicked pane is visible"
+            "Converged navigation should stop polling the rendered client target after the clicked pane is visible"
         )
         XCTAssertEqual(calls.count, 1)
         XCTAssertEqual(calls[0].paneRef.windowID, "@2")

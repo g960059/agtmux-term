@@ -128,6 +128,20 @@
 - [x] align `GHOSTTY_ACTION_RENDER` dirty-draw targeting with the resolved
   active terminal view so live-pane frame callbacks and draw completion land on
   the same `GhosttyTerminalView`
+- [x] cancel stale pane-retarget recovery before arming first-scroll recovery
+  so pane-switch layer presents cannot mask the first live scroll after a
+  same-window retarget
+- [x] ignore the first late pane-retarget layer present when arming preserved-
+  surface scroll recovery so the first scroll burst after a sidebar pane switch
+  still moves the viewport
+- [x] add a real UI regression that retargets a preserved surface to a pane
+  with history and proves the first internal trackpad burst changes the
+  viewport immediately
+- [x] reclaim first responder on the first real wheel event after sidebar pane
+  retarget so the initial user scroll is not consumed only by focus handoff
+- [x] keep same-session preserved-surface retarget on rendered-client
+  navigation when `renderedClientTTY` is known so the first post-retarget
+  scroll does not wait on an unnecessary session-global convergence hop
 - [ ] shrink the remaining live-pane cadence gap now that fresh attach enters
   real local scrollback on the real `%1` session path
 - [ ] make foreground activation deterministic across shell-driven AX helpers

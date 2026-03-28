@@ -64,7 +64,17 @@ enum MainTerminalNavigationResolver {
         hostsConfig: HostsConfig,
         localSocketOverride: LocalTmuxSocketOverride? = nil
     ) async throws {
-        _ = renderedClientTTY
+        let normalizedTTY = renderedClientTTY.trimmingCharacters(in: .whitespacesAndNewlines)
+        if normalizedTTY.isEmpty == false {
+            try await applyRenderedClientNavigationIntent(
+                activePaneRef: activePaneRef,
+                renderedClientTTY: normalizedTTY,
+                hostsConfig: hostsConfig,
+                localSocketOverride: localSocketOverride
+            )
+            return
+        }
+
         try await applySessionNavigationIntent(
             activePaneRef: activePaneRef,
             hostsConfig: hostsConfig,

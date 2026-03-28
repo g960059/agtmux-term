@@ -20,6 +20,7 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     private static let scrollPresentationDrawPumpIntervalSeconds = 1.0 / 120.0
     private static let scrollPresentationDrawPumpTailSeconds = 0.18
     private static let scrollPresentationDrawRecoveryProbeDelaySeconds = 1.0 / 180.0
+    private static let paneRetargetScrollRecoveryIgnoreWindowSeconds = 0.1
     private static let preciseAlternateScrollDirtyDrawFastPathTailSeconds = 0.18
     private static let scrollDirectionFlipEpsilon = 0.001
     private static let defaultScrollTelemetryCollectionEnabled =
@@ -284,6 +285,8 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     private var preciseAlternateScrollDirtyDrawEligibleUntilUptime: TimeInterval?
     private var lastScrollPresentationDrawTelemetryUptime: TimeInterval?
     private var lastLayerPresentUptime: TimeInterval?
+    private var lastScrollRecoveryRelevantLayerPresentUptime: TimeInterval?
+    private var pendingIgnoredLayerPresentsForScrollRecovery = 0
     private var surfaceMetricsSyncAttemptCount = 0
     private var surfaceMetricsSyncForceCount = 0
     private var surfaceMetricsUnavailableCount = 0
@@ -497,12 +500,29 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     @MainActor
     func configurePaneRetargetObservationStateForTesting(
         drawPending: Bool,
-        recoveryScheduled: Bool
+        recoveryScheduled: Bool,
+        lastDrawUptime: TimeInterval? = nil
     ) {
         paneRetargetPresentationDrawPending = drawPending
         paneRetargetPresentationRecoveryProbeScheduled = recoveryScheduled
+        lastPaneRetargetPresentationDrawUptime = lastDrawUptime
         syncRendererFrameCompletedObservation()
         syncRenderLayerContentsObservation()
+    }
+
+    struct PaneRetargetPresentationState: Equatable {
+        let drawPending: Bool
+        let recoveryScheduled: Bool
+        let lastDrawUptime: TimeInterval?
+    }
+
+    @MainActor
+    func paneRetargetPresentationStateForTesting() -> PaneRetargetPresentationState {
+        PaneRetargetPresentationState(
+            drawPending: paneRetargetPresentationDrawPending,
+            recoveryScheduled: paneRetargetPresentationRecoveryProbeScheduled,
+            lastDrawUptime: lastPaneRetargetPresentationDrawUptime
+        )
     }
 
     // MARK: - Layout
@@ -1157,6 +1177,12 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     }
 
     override func scrollWheel(with event: NSEvent) {
+        // Sidebar pane clicks can leave first responder on the clicked row until
+        // the event loop unwinds. Reclaim terminal focus on the first wheel event
+        // so the initial post-retarget scroll is not spent only restoring focus.
+        if window?.firstResponder !== self {
+            window?.makeFirstResponder(self)
+        }
         dispatchScrollInput(
             horizontalDelta: event.scrollingDeltaX,
             verticalDelta: event.scrollingDeltaY,
@@ -1532,10 +1558,12 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
 
     @MainActor
     func noteRendererFrameCompletedTelemetry() {
+        let now = ProcessInfo.processInfo.systemUptime
         if awaitingInitialLayerPresentation {
             awaitingInitialLayerPresentation = false
             hasCompletedInitialVisiblePresentation = true
-            lastLayerPresentUptime = ProcessInfo.processInfo.systemUptime
+            lastLayerPresentUptime = now
+            noteScrollRecoveryRelevantLayerPresentation(now: now)
             layerPresentCount += 1
             syncRendererFrameCompletedObservation()
             syncRenderLayerContentsObservation()
@@ -1548,6 +1576,7 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     @MainActor
     func noteLayerPresentationForTesting(now: TimeInterval) {
         lastLayerPresentUptime = now
+        noteScrollRecoveryRelevantLayerPresentation(now: now)
         awaitingInitialLayerPresentation = false
         hasCompletedInitialVisiblePresentation = true
         syncRendererFrameCompletedObservation()
@@ -1623,6 +1652,8 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         lastHostDrawUptime = nil
         lastScrollPresentationDrawTelemetryUptime = nil
         lastLayerPresentUptime = nil
+        lastScrollRecoveryRelevantLayerPresentUptime = nil
+        pendingIgnoredLayerPresentsForScrollRecovery = 0
         surfaceMetricsSyncAttemptCount = 0
         surfaceMetricsSyncForceCount = 0
         surfaceMetricsUnavailableCount = 0
@@ -2776,8 +2807,8 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
 
     @MainActor
     private func shouldRecoverDelayedScrollPresentation(afterDrawAt drawUptime: TimeInterval) -> Bool {
-        guard let lastLayerPresentUptime else { return true }
-        return lastLayerPresentUptime < drawUptime
+        guard let lastScrollRecoveryRelevantLayerPresentUptime else { return true }
+        return lastScrollRecoveryRelevantLayerPresentUptime < drawUptime
     }
 
     @MainActor
@@ -2822,8 +2853,20 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         preciseAlternateScrollDirtyDrawEligibleUntilUptime = nil
         scrollPresentationDirectGestureActive = false
         lastPreciseScrollVerticalDirection = nil
+        lastScrollRecoveryRelevantLayerPresentUptime = nil
+        pendingIgnoredLayerPresentsForScrollRecovery = 0
         interactivePresentationContinuationGeneration &+= 1
         scrollPresentationContinuationGeneration &+= 1
+        paneRetargetPresentationRecoveryProbeGeneration &+= 1
+        syncRenderLayerContentsObservation()
+    }
+
+    @MainActor
+    private func invalidatePaneRetargetPresentationRecovery() {
+        paneRetargetPresentationRecoveryTimer?.invalidate()
+        paneRetargetPresentationRecoveryTimer = nil
+        paneRetargetPresentationRecoveryProbeScheduled = false
+        lastPaneRetargetPresentationDrawUptime = nil
         paneRetargetPresentationRecoveryProbeGeneration &+= 1
         syncRenderLayerContentsObservation()
     }
@@ -2834,8 +2877,23 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
             return
         }
 
+        if shouldIgnoreNextLayerPresentForScrollRecovery(now: now) {
+            pendingIgnoredLayerPresentsForScrollRecovery =
+                max(pendingIgnoredLayerPresentsForScrollRecovery, 1)
+        }
+        invalidatePaneRetargetPresentationRecovery()
         lastScrollPresentationDrawUptime = now
         scheduleScrollPresentationRecoveryProbeIfNeeded(forDrawAt: now)
+    }
+
+    @MainActor
+    private func shouldIgnoreNextLayerPresentForScrollRecovery(now: TimeInterval) -> Bool {
+        if paneRetargetPresentationDrawPending || paneRetargetPresentationRecoveryProbeScheduled {
+            return true
+        }
+        guard let lastPaneRetargetPresentationDrawUptime else { return false }
+        return now - lastPaneRetargetPresentationDrawUptime
+            <= Self.paneRetargetScrollRecoveryIgnoreWindowSeconds
     }
 
     @MainActor
@@ -3194,6 +3252,7 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         let now = ProcessInfo.processInfo.systemUptime
         guard scrollTelemetryCollectionEnabled else {
             lastLayerPresentUptime = now
+            noteScrollRecoveryRelevantLayerPresentation(now: now)
             return
         }
         if Self.scrollLatencySignpostsEnabled {
@@ -3211,7 +3270,17 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
             layerPresentGapSamplesMs.append((now - lastLayerPresentUptime) * 1000.0)
         }
         lastLayerPresentUptime = now
+        noteScrollRecoveryRelevantLayerPresentation(now: now)
         layerPresentCount += 1
+    }
+
+    @MainActor
+    private func noteScrollRecoveryRelevantLayerPresentation(now: TimeInterval) {
+        if pendingIgnoredLayerPresentsForScrollRecovery > 0 {
+            pendingIgnoredLayerPresentsForScrollRecovery -= 1
+            return
+        }
+        lastScrollRecoveryRelevantLayerPresentUptime = now
     }
 
     private func summary(for samples: [Double]) -> ScrollTelemetryMetricSummary {
